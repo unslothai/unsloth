@@ -1384,77 +1384,98 @@ class DiffusionBackend:
                 return False
             if mm is None and kwargs.get("cpu_offload"):
                 return False
-            # The card this load will land on: the dense-quant path is a device capability, so
-            # judging it on the default card stages shards the selected one replaces, or omits
-            # shards it needs and forces an inline fallback after eviction.
-            target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
-            # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
-            # plan must not stage the base transformer/ shards either.
-            if (
-                auto
-                # Active weights only: disagreeing with the load stages shards it never reads.
-                and not _has_active_lora(kwargs.get("loras"))
-                and _uncached_prequant_repo(
+            # The card this load will land on, and SCOPED: the selectors below use argument-less
+            # capability, smoke and memory probes, so building an indexed target is not enough to
+            # move them off the default card.
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                return self._dense_quant_prefetch_decision(
                     fam,
-                    target,
-                    mode,
-                    base_repo = kwargs.get("base_repo"),
-                    prequant_path = kwargs.get("transformer_prequant_path"),
-                )
-                is not None
-            ):
-                return False
-            # The same rule, applied to the base repo's own dense shards. The fast path loads
-            # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
-            # base means fetching a second, much larger denoiser and never opening the first:
-            # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
-            # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
-            # path, and an EXPLICIT transformer_quant still opts in as before.
-            #
-            # This returns the same False a PREQUANT candidate returns below, so a cached
-            # pre-quant reaches the load with no transformer/ staged and NOT because a download
-            # was refused. That is why the load side re-asks the resolver rather than reading an
-            # empty stage as a decline: same verdict here, two different reasons there.
-            if (
-                auto
-                and not _has_active_lora(kwargs.get("loras"))
-                and not _dense_transformer_cached(
-                    kwargs.get("base_repo"),
+                    kwargs,
+                    auto = auto,
+                    mode = mode,
                     companion_files = companion_files,
                     transformer_files = transformer_files,
                 )
-            ):
-                return False
-            # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
-            candidate = resolve_dense_quant_candidate(
-                fam = fam,
-                target = target,
-                requested = mode,
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the GGUF
+            return False
+
+    def _dense_quant_prefetch_decision(
+        self,
+        fam: DiffusionFamily,
+        kwargs: dict,
+        *,
+        auto: bool,
+        mode: str,
+        companion_files: Optional[Sequence[str]] = None,
+        transformer_files: Optional[Sequence[str]] = None,
+    ) -> bool:
+        """``_dense_quant_prefetch_needed``'s body, run with the selected card current."""
+        target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+        # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
+        # plan must not stage the base transformer/ shards either.
+        if (
+            auto
+            # Active weights only: disagreeing with the load stages shards it never reads.
+            and not _has_active_lora(kwargs.get("loras"))
+            and _uncached_prequant_repo(
+                fam,
+                target,
+                mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
-                # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
-                force_dense = _has_active_lora(kwargs.get("loras")),
-                logger = None,
             )
-            # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
-            if candidate is None or candidate.prequant:
-                return False
-            # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
-            from .diffusion_memory import (
-                _reserve_mib,
-                snapshot_device_memory,
-            )
-
-            memory = snapshot_device_memory(target)
-            total = memory.total_mib
-            steady = getattr(candidate, "steady_total_mib", None)
-            if total is not None and steady is not None:
-                budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
-                if int(steady) > budget:
-                    return False
-            return True
-        except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
+            is not None
+        ):
             return False
+        # The same rule, applied to the base repo's own dense shards. The fast path loads
+        # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
+        # base means fetching a second, much larger denoiser and never opening the first:
+        # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
+        # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
+        # path, and an EXPLICIT transformer_quant still opts in as before.
+        #
+        # This returns the same False a PREQUANT candidate returns below, so a cached
+        # pre-quant reaches the load with no transformer/ staged and NOT because a download
+        # was refused. That is why the load side re-asks the resolver rather than reading an
+        # empty stage as a decline: same verdict here, two different reasons there.
+        if (
+            auto
+            and not _has_active_lora(kwargs.get("loras"))
+            and not _dense_transformer_cached(
+                kwargs.get("base_repo"),
+                companion_files = companion_files,
+                transformer_files = transformer_files,
+            )
+        ):
+            return False
+        # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
+        candidate = resolve_dense_quant_candidate(
+            fam = fam,
+            target = target,
+            requested = mode,
+            base_repo = kwargs.get("base_repo"),
+            prequant_path = kwargs.get("transformer_prequant_path"),
+            # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
+            force_dense = _has_active_lora(kwargs.get("loras")),
+            logger = None,
+        )
+        # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
+        if candidate is None or candidate.prequant:
+            return False
+        # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
+        from .diffusion_memory import (
+            _reserve_mib,
+            snapshot_device_memory,
+        )
+
+        memory = snapshot_device_memory(target)
+        total = memory.total_mib
+        steady = getattr(candidate, "steady_total_mib", None)
+        if total is not None and steady is not None:
+            budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
+            if int(steady) > budget:
+                return False
+        return True
 
     @staticmethod
     def _auto_prequant_retry_scheme(
@@ -2059,65 +2080,66 @@ class DiffusionBackend:
                 return None
             if mm is None and kwargs.get("cpu_offload"):
                 return None
-            # The card this load will land on: a hosted quant the selected card can take is not
-            # the same set the default card can, so planning on the wrong one either omits the
-            # artifact the load then fetches inline, or stages one it never opens.
-            target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
-            # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
-            # those bytes never land. Only a cached one, or an explicit request, counts.
-            if (
-                auto
-                and _uncached_prequant_repo(
-                    fam,
-                    target,
-                    mode,
-                    base_repo = kwargs.get("base_repo"),
-                    prequant_path = kwargs.get("transformer_prequant_path"),
-                )
-                is not None
-            ):
-                return None
-            scheme = select_transformer_quant_scheme(
-                target, mode, family = getattr(fam, "name", None)
-            )
-            if scheme is None:
-                return None
-            source = usable_prequant_source(
-                fam,
-                scheme,
-                path_override = kwargs.get("transformer_prequant_path"),
-                base_repo = kwargs.get("base_repo"),
-            )
-
-            if source is None and auto:
-                retry = self._auto_prequant_retry_scheme(
-                    target,
-                    fam,
-                    mode,
-                    scheme,
-                    base_repo = kwargs.get("base_repo"),
-                    path_override = kwargs.get("transformer_prequant_path"),
-                    loras = kwargs.get("loras"),
-                )
-                if retry is not None:
-                    source = usable_prequant_source(
+            # The card this load will land on, and SCOPED for the same reason as the dense-quant
+            # probe: the selectors below read the current device, so an indexed target alone
+            # leaves them on the default card.
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
+                # those bytes never land. Only a cached one, or an explicit request, counts.
+                if (
+                    auto
+                    and _uncached_prequant_repo(
                         fam,
-                        retry,
-                        path_override = kwargs.get("transformer_prequant_path"),
+                        target,
+                        mode,
                         base_repo = kwargs.get("base_repo"),
+                        prequant_path = kwargs.get("transformer_prequant_path"),
                     )
-            # A local override is the operator's own file: already on disk, never downloaded.
-            if source is None or source.kind != "repo":
-                return None
-            from huggingface_hub import HfApi
+                    is not None
+                ):
+                    return None
+                scheme = select_transformer_quant_scheme(
+                    target, mode, family = getattr(fam, "name", None)
+                )
+                if scheme is None:
+                    return None
+                source = usable_prequant_source(
+                    fam,
+                    scheme,
+                    path_override = kwargs.get("transformer_prequant_path"),
+                    base_repo = kwargs.get("base_repo"),
+                )
 
-            info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
-            sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-            # Primary name first, then the legacy one, in the order the loader tries them.
-            for name in (source.filename, source.fallback_filename):
-                if name and name in sizes:
-                    return (source.location, name, int(sizes[name]))
-            return None
+                if source is None and auto:
+                    retry = self._auto_prequant_retry_scheme(
+                        target,
+                        fam,
+                        mode,
+                        scheme,
+                        base_repo = kwargs.get("base_repo"),
+                        path_override = kwargs.get("transformer_prequant_path"),
+                        loras = kwargs.get("loras"),
+                    )
+                    if retry is not None:
+                        source = usable_prequant_source(
+                            fam,
+                            retry,
+                            path_override = kwargs.get("transformer_prequant_path"),
+                            base_repo = kwargs.get("base_repo"),
+                        )
+                # A local override is the operator's own file: already on disk, never downloaded.
+                if source is None or source.kind != "repo":
+                    return None
+                from huggingface_hub import HfApi
+
+                info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
+                sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
+                # Primary name first, then the legacy one, in the order the loader tries them.
+                for name in (source.filename, source.fallback_filename):
+                    if name and name in sizes:
+                        return (source.location, name, int(sizes[name]))
+                return None
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
             return None

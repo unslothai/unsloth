@@ -2096,26 +2096,29 @@ class VideoBackend:
 
             # SCOPED, not pinned: the plan route reaches this on a pooled asyncio.to_thread
             # thread, which must not be handed back to the pool set to this request's card.
+            # The WHOLE sizing call, not just the target: _h3_device_capacity_bytes and the
+            # encoder-scheme probe read the current device, so a scope that closes early measures
+            # the pooled thread's default card and stages the wrong denoiser.
             with diffusion_device_scope(gpu_ordinal):
                 target = (
                     resolve_diffusion_device_target()
                     if gpu_ordinal is None
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
-            dtype = target.dtype
-            if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
-                dtype = torch.float32
-            return _h3_auto_denoiser_scheme(
-                fam,
-                target = target,
-                dtype = dtype,
-                device = target.device,
-                te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, target),
-                task = h3_task or getattr(fam, "modular_workflow", None),
-                base_repo = base,
-                speed_mode = speed_mode,
-                free_reader = _h3_device_capacity_bytes,
-            )
+                dtype = target.dtype
+                if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
+                    dtype = torch.float32
+                return _h3_auto_denoiser_scheme(
+                    fam,
+                    target = target,
+                    dtype = dtype,
+                    device = target.device,
+                    te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, target),
+                    task = h3_task or getattr(fam, "modular_workflow", None),
+                    base_repo = base,
+                    speed_mode = speed_mode,
+                    free_reader = _h3_device_capacity_bytes,
+                )
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
             return None
 

@@ -22168,10 +22168,6 @@ async def diffusion_download_plan(
 
     backend = get_diffusion_backend()
     try:
-        # ONE ranking for the whole request: the preflight's smoke probe allocates on the card it
-        # tests, so a second call could rank a different winner and plan for a card the precision
-        # was never validated on.
-        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
         if kind == "pipeline" and not request.gguf_filename:
@@ -22203,7 +22199,12 @@ async def diffusion_download_plan(
         # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
         # files during training is legitimate and needs no GPU, so the plan is answered without
         # the precision check; /images/load still refuses the same pick afterwards.
+        # Ranking reads free VRAM per candidate, which opens a CUDA context on each: exactly what
+        # the training guard below exists to prevent, so it is resolved only once training is
+        # known idle. ONE ranking for the whole request, reused by the preflight and the plan.
+        gpu_ordinal = None
         if fam is not None and not await asyncio.to_thread(_training_is_active):
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
             if planner is backend:
                 await asyncio.to_thread(
                     backend.assert_precision_available,

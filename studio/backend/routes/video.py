@@ -108,9 +108,6 @@ async def video_download_plan(
 
     backend = get_video_backend()
     try:
-        # ONE ranking for the whole request, as the images plan does: a second call after the
-        # preflight can pick a different card than the precision was validated on.
-        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
@@ -141,7 +138,11 @@ async def video_download_plan(
         # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
         # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
         # plan runs before the load's training guard can refuse. Staging needs no GPU.
+        # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
+        # so it waits until training is known idle. ONE ranking, reused by preflight and plan.
+        gpu_ordinal = None
         if fam is not None and not await asyncio.to_thread(_training_is_active):
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
             await asyncio.to_thread(
                 assert_video_precision_available,
                 fam,
