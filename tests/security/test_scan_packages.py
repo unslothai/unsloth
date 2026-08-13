@@ -1021,6 +1021,54 @@ def test_an_exec_inside_an_fstring_is_still_the_builtin():
             assert got == [expected], f"{literal} must yield {expected!r}: {got}"
 
 
+def test_a_renamed_loader_is_a_receiver_inside_an_opaque_fstring():
+    # Below 3.12 an f-string is one opaque STRING token, so its interpolations
+    # are adjudicated by the regex pass rather than the statement walk. That pass
+    # spelled the loaders out - `__import__`, `import_module` - instead of using
+    # the file's own names for them, so `from builtins import __import__ as load`
+    # with `f"{load(name).exec(marshal.loads(BLOB))}"` produced no match and came
+    # back MEDIUM on 3.9-3.11. The same call outside an f-string was HIGH, and so
+    # was the unaliased loader inside one, so only the rename was being lost.
+    payload = (
+        "from builtins import __import__ as load\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        'x = f"{load(name).exec(marshal.loads(BLOB))}"\n'
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a renamed loader called inside an f-string must be flagged"
+
+    # On 3.12+ the tokenizer splits the literal, so the check above runs through
+    # the ordinary statement scan and says nothing about the pre-3.12 path.
+    # Drive that path directly, with `load` bound as the file's loader name.
+    aliases = sp._Aliases(set(), set(), {}, {"load"})
+    for literal, expected in (
+        ('f"{load(name).exec(BLOB)}"', "load(name).exec("),
+        ('f"{__import__(name).exec(BLOB)}"', "__import__(name).exec("),
+        (
+            'f"{importlib.import_module(name).exec(BLOB)}"',
+            "importlib.import_module(name).exec(",
+        ),
+        # A call that is not a loader is still not a receiver, so the widened
+        # regex does not hand the false positive back: `model.compile(x).eval()`
+        # and an unknown `loader(name)` are ordinary methods.
+        ('f"{model.compile(x).eval(BLOB)}"', None),
+        ('f"{loader(name).exec(BLOB)}"', None),
+    ):
+        line = f"x = {literal}\n"
+        tok = sp.tokenize.TokenInfo(
+            sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line
+        )
+        out: list = []
+        sp._fstring_spans(tok, aliases, sp._Offsets(line), out)
+        got = [line[s.start() : s.end()] for s in out]
+        if expected is None:
+            assert got == [], f"{literal} must not read as the builtin: {got}"
+        else:
+            assert got == [expected], f"{literal} must yield {expected!r}: {got}"
+
+
 def test_a_class_attribute_does_not_cancel_the_global_alias():
     # `class C: b = model` binds an attribute of C. Python methods do not close
     # over the class namespace, so a `b.exec(...)` written in one still resolves

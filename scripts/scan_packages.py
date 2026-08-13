@@ -1145,7 +1145,7 @@ def _fstring_spans(
             frontier = cancel.get(name)
             return frontier is None or not _is_cancelled(frontier, base + at, col)
 
-    for span in _regex_spans(code, receivers, funcs, live):
+    for span in _regex_spans(code, receivers, funcs, live, aliases.loaders):
         out.append(_Span(base + span.start(), base + span.end()))
 
 
@@ -1220,8 +1220,12 @@ _EXEC_EVAL_PATTERN_TEXT = (
 RE_FALLBACK_QUALIFIED = re.compile(r"(?<![\w.])(\w+)\s*\)*\s*\.\s*(?:exec|eval)\s*\(")
 RE_FALLBACK_STR_RECEIVER = re.compile(r"""(['"])builtins\1\s*\)\s*\.\s*(?:exec|eval)\s*\(""")
 # `__import__(name).exec(`: a loader call is the receiver whatever it is handed.
+# The callee is captured and looked up rather than spelled out, so a file that
+# renames the loader - `from builtins import __import__ as load` - is read the
+# same way. Membership beats an alternation per alias, which would cost the
+# alias count per character of the file.
 RE_FALLBACK_LOADER_RECEIVER = re.compile(
-    r"(?<![\w.])(?:__import__|(?:\w+\s*\.\s*)?import_module)\s*\([^()]*\)\s*\.\s*(?:exec|eval)\s*\("
+    r"(?<![\w.])(\w+)(?:\s*\.\s*(\w+))?\s*\([^()]*\)\s*\.\s*(?:exec|eval)\s*\("
 )
 RE_FALLBACK_BARE = re.compile(r"(?<![\w.])(exec|eval)\s*\(")
 RE_FALLBACK_CALL = re.compile(r"(?<![\w.])(\w+)\s*\(")
@@ -1297,12 +1301,18 @@ def _regex_spans(
     receivers: frozenset,
     funcs: frozenset,
     live = None,
+    loaders: frozenset = _DEFAULT_LOADER_FUNCS,
 ) -> list:
     """Spans of every call this text reaches the builtin through.
 
     `live(name, at)`, when given, decides whether the alias `name` is still the
     builtin at offset `at`; without it every alias in `receivers` / `funcs` is
     taken as live, which is what the unparseable-source fallback wants.
+
+    `loaders` is the file's local names for the module loaders. It has to be the
+    file's rather than the defaults, because this is the only pass that reads a
+    pre-3.12 f-string - one opaque STRING token the token walk skips - and
+    `f"{load(name).exec(...)}"` runs the builtin exactly as `__import__` does.
     """
     out = []
     for m in RE_FALLBACK_QUALIFIED.finditer(text):
@@ -1312,7 +1322,10 @@ def _regex_spans(
     for m in RE_FALLBACK_STR_RECEIVER.finditer(text):
         out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_LOADER_RECEIVER.finditer(text):
-        out.append(_Span(m.start(), m.end()))
+        # `importlib.import_module(n)` names the loader in the second group;
+        # a bare `load(n)` names it in the first.
+        if _ident(m.group(2) or m.group(1)) in loaders:
+            out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_BARE.finditer(text):
         if not _preceded_by_dot(text, m.start()):
             out.append(_Span(m.start(), m.end()))
@@ -1415,7 +1428,13 @@ class _ExecEvalMatcher:
             # reports offsets but not the alias behind them, so it uses the
             # aliases with no rebinding at all rather than the per-call cutoff.
             seen = {span.start() for span in out}
-            for span in _regex_spans(text, self.aliases.safe_receivers, self.aliases.safe_funcs):
+            for span in _regex_spans(
+                text,
+                self.aliases.safe_receivers,
+                self.aliases.safe_funcs,
+                None,
+                self.aliases.loaders,
+            ):
                 if span.start() not in seen:
                     out.append(span)
             out.sort(key = lambda s: s.start())
