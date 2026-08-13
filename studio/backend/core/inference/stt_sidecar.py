@@ -4,11 +4,17 @@
 """
 Standalone speech-to-text (STT) sidecar for dictation.
 
-Loads a Whisper model (via Transformers) in the backend process, separate from
-the chat model's inference subprocess, so dictation works with any chat model
-without evicting it. Curated defaults plus any Transformers-compatible Whisper
-repo; weights come through Studio's Model Hub and stay warm briefly between
-dictations. CUDA runs float16; MPS and CPU run float32.
+Loads a Whisper model (via Transformers) in a spawn child of its own, separate
+from the chat model's inference subprocess, so dictation works with any chat
+model without evicting it. Curated defaults plus any Transformers-compatible
+Whisper repo; weights come through Studio's Model Hub and stay warm briefly
+between dictations. CUDA runs float16; MPS and CPU run float32.
+
+Everything except the model itself stays here: device choice, the Hub cache,
+audio decoding, windowing and the idle timer. Only the load and the generate
+happen in core/inference/stt_transformers_worker.py, because an accelerator
+context is never returned while the process holding it lives and the backend
+must not be the process that takes one.
 """
 
 from __future__ import annotations
@@ -988,6 +994,30 @@ def _pick_device():
         return "cpu", torch.float32
 
 
+def _dtype_name(dtype) -> str:
+    """Name a dtype for the worker command: torch.float16 becomes float16.
+
+    Takes the plain strings tests use as readily as a real torch dtype, so the
+    command carries no torch object across the process boundary.
+    """
+    return str(dtype).rsplit(".", 1)[-1]
+
+
+def _engine_is_alive(engine) -> bool:
+    """False only for a worker whose process has died.
+
+    Anything without a liveness check counts as live, so a caller holding a
+    plain object (tests, or a future in-process engine) is unaffected.
+    """
+    is_alive = getattr(engine, "is_alive", None)
+    if is_alive is None:
+        return True
+    try:
+        return bool(is_alive())
+    except Exception:  # noqa: BLE001 - an unanswerable probe must not fail a status read
+        return False
+
+
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
@@ -1088,6 +1118,11 @@ class WhisperSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
+        # A worker that died holds nothing, so reporting its model would make
+        # training admission reserve memory for a model that is not there.
+        engine = self._engine
+        if engine is not None and not _engine_is_alive(engine):
+            return None
         return self._model_id
 
     @property
@@ -1187,39 +1222,36 @@ class WhisperSttSidecar:
         self._engine = None
         self._model_id = None
         self._device = None
+        close = getattr(engine, "close", None)
+        if close is not None:
+            # Ending the worker is what returns its accelerator context;
+            # dropping the model and emptying the cache cannot.
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 - a stuck worker must not block the unload
+                logger.warning("Could not stop the STT worker: %s", exc)
         del engine
         _clear_device_cache(device)
 
+    def _release_dead_engine_locked(self) -> None:
+        """Drop a worker whose process is gone, so the next use loads a fresh one."""
+        if self._engine is not None and not _engine_is_alive(self._engine):
+            logger.warning("STT worker for %s exited; it will be reloaded", self._model_id)
+            self._release_engine_locked()
+
     def _build_model(self, snapshot_path: str, device: str, dtype, cancel_event: threading.Event):
-        """Load a Whisper model + processor from the local Hub cache.
+        """Start a worker process holding this model and return its handle.
 
-        local_files_only keeps the Model Hub the only download path; a cache
-        miss raises so the caller can surface SttModelNotDownloadedError.
+        Out of process because an accelerator context is never given back while
+        the process holding it lives, so an in-process load made the backend
+        permanently heavier even after unload.
         """
-        import torch
-        from transformers import WhisperForConditionalGeneration, WhisperProcessor
+        from core.inference.stt_transformers_worker import WhisperWorker
 
-        processor = None
-        model = None
-        try:
-            processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
-            self._raise_if_load_cancelled(cancel_event)
-            # use_safetensors forces the pickle-free load path even if a
-            # pytorch_model.bin somehow reached the cache; the selector and the
-            # completeness check already exclude pickle weights upstream.
-            model = WhisperForConditionalGeneration.from_pretrained(
-                snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
-            )
-            self._raise_if_load_cancelled(cancel_event)
-            model.to(torch.device(device))
-            self._raise_if_load_cancelled(cancel_event)
-            model.eval()
-            return model, processor
-        except SttLoadCancelledError:
-            model = None
-            processor = None
-            _clear_device_cache(device)
-            raise
+        worker = WhisperWorker()
+        # start() kills its own child on any failure, including cancellation.
+        worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
+        return worker
 
     def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:
         """Validate the local snapshot before decode or model replacement.
@@ -1277,6 +1309,7 @@ class WhisperSttSidecar:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
+            self._release_dead_engine_locked()
             if self._engine is not None and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return self._engine
@@ -1314,7 +1347,11 @@ class WhisperSttSidecar:
                 except SttLoadCancelledError:
                     raise
                 except Exception as exc:
-                    if _is_missing_local_model_error(exc):
+                    # The worker classifies a cache miss for us, since the
+                    # original exception cannot cross a process boundary.
+                    if isinstance(exc, SttModelNotDownloadedError) or _is_missing_local_model_error(
+                        exc
+                    ):
                         raise not_downloaded(exc) from exc
                     if device == "cpu":
                         raise
@@ -1336,7 +1373,9 @@ class WhisperSttSidecar:
                     except SttLoadCancelledError:
                         raise
                     except Exception as cpu_exc:
-                        if _is_missing_local_model_error(cpu_exc):
+                        if isinstance(
+                            cpu_exc, SttModelNotDownloadedError
+                        ) or _is_missing_local_model_error(cpu_exc):
                             raise not_downloaded(cpu_exc) from cpu_exc
                         raise
                     device = "cpu"
@@ -1375,57 +1414,38 @@ class WhisperSttSidecar:
     ) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
-        Feeds a pre-decoded array so nothing here touches the Transformers audio
-        path (torchcodec/ffmpeg). Splits into 30s windows (Whisper's receptive
-        field); short clips take one pass.
+        Splits into 30s windows (Whisper's receptive field) and sends one window
+        at a time to the worker; short clips take one pass. Windowing stays here
+        so a cancelled dictation stops between windows even while the worker is
+        busy, and so no single message carries more than 30 seconds of audio.
         """
-        import torch
+        import numpy as np
 
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         if cancel_event is None:
-            model, processor = self.load(model_id)
+            engine = self.load(model_id)
         else:
-            model, processor = self.load(model_id, request_cancel_event = cancel_event)
+            engine = self.load(model_id, request_cancel_event = cancel_event)
         effective_generate_kwargs = dict(generate_kwargs)
-        if cancel_event is not None:
-            from transformers import StoppingCriteriaList
-            class _CancelCriteria:
-                def __call__(self, *_args, **_kwargs):
-                    return cancel_event.is_set()
-
-            effective_generate_kwargs["stopping_criteria"] = StoppingCriteriaList(
-                [_CancelCriteria()]
-            )
-        generation_config = getattr(model, "generation_config", None)
+        generation_config = getattr(engine, "generation_config", None)
         if getattr(generation_config, "is_multilingual", None) is False:
             # English-only checkpoints fix language and task in their generation
             # config, and Transformers rejects passing them here.
             effective_generate_kwargs.pop("task", None)
             effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
-        target_dtype = getattr(model, "dtype", None)
         parts: list[str] = []
-        with torch.no_grad():
-            for start in range(0, max(len(decoded_audio), 1), window):
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                segment = decoded_audio[start : start + window]
-                if segment.size == 0:
-                    continue
-                inputs = processor(
-                    segment,
-                    sampling_rate = _TARGET_SAMPLE_RATE,
-                    return_tensors = "pt",
-                )
-                features = inputs.input_features.to(model.device)
-                if target_dtype is not None:
-                    features = features.to(target_dtype)
-                generated = model.generate(features, **effective_generate_kwargs)
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                text = processor.batch_decode(generated, skip_special_tokens = True)
-                parts.append(text[0] if text else "")
+        for start in range(0, max(len(decoded_audio), 1), window):
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            segment = decoded_audio[start : start + window]
+            if segment.size == 0:
+                continue
+            pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
+            parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
 
     def transcribe(
@@ -1499,7 +1519,12 @@ class WhisperSttSidecar:
         }
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
-        """Ask this request's Transformers generation or load to stop."""
+        """Ask this request's Transformers generation or load to stop.
+
+        Only this request's own event is set. The thread waiting on the worker
+        mirrors it into the child within a poll, so a cancel never reaches a
+        window belonging to a different request.
+        """
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
         return self._cancel_owned_load(cancel_event) or not already_cancelled

@@ -311,36 +311,15 @@ def test_english_only_model_rejects_non_english_before_decode(monkeypatch, tmp_p
 def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     calls = []
 
-    class FakeTensor:
-        def to(self, *_args):
-            return self
-
-    class FakeProcessor:
-        def __call__(self, *_args, **_kwargs):
-            return SimpleNamespace(input_features = FakeTensor())
-
-        def batch_decode(self, *_args, **_kwargs):
-            return ["hello"]
-
-    class FakeModel:
-        dtype = None
-        device = "cpu"
+    class FakeWorker:
         generation_config = SimpleNamespace(is_multilingual = False)
 
-        def generate(self, _features, **kwargs):
-            calls.append(kwargs)
-            return [[1]]
+        def transcribe_window(self, _pcm, generate_kwargs, _cancel_event = None):
+            calls.append(generate_kwargs)
+            return "hello"
 
-    class NoGrad:
-        def __enter__(self):
-            return None
-
-        def __exit__(self, *_args):
-            return False
-
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(no_grad = NoGrad))
     sidecar = WhisperSttSidecar()
-    monkeypatch.setattr(sidecar, "load", lambda _model: (FakeModel(), FakeProcessor()))
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
 
     text = sidecar._transcribe_decoded(
         "owner/whisper-small.en",
@@ -453,45 +432,92 @@ def _install_fake_torch(monkeypatch):
     return fake_torch
 
 
-def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
-    calls = []
-    _install_fake_torch(monkeypatch)
+def _install_fake_worker(monkeypatch, start = None):
+    """Replace the spawn child with a handle that records how it was started."""
+    started = []
 
-    class FakeWhisperForConditionalGeneration:
-        @classmethod
-        def from_pretrained(cls, repo, **kwargs):
-            calls.append(("model", repo, kwargs))
-            return _FakeModel()
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closed = False
+            self.alive = True
 
-    class FakeWhisperProcessor:
-        @classmethod
-        def from_pretrained(cls, repo, **kwargs):
-            calls.append(("processor", repo, kwargs))
-            return object()
+        def start(self, snapshot_path, device, dtype_name, cancel_event = None):
+            started.append((snapshot_path, device, dtype_name))
+            if start is not None:
+                start(snapshot_path, device, dtype_name, cancel_event)
+            self.device = device
 
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            WhisperForConditionalGeneration = FakeWhisperForConditionalGeneration,
-            WhisperProcessor = FakeWhisperProcessor,
-        ),
+        def is_alive(self):
+            return self.alive
+
+        def close(self):
+            self.closed = True
+            self.alive = False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", FakeWorker, raising = True
     )
+    return started
+
+
+def test_load_hands_the_cached_snapshot_to_the_worker_process(monkeypatch):
+    # The model never enters this process: an accelerator context taken here is
+    # never given back, which is the whole reason the engine is out of process.
+    _install_fake_torch(monkeypatch)
+    started = _install_fake_worker(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    # str(Path(...)), so the separator is the platform's.
+    assert started == [(str(Path("/cached/model")), "cpu", "float32")]
+    assert sidecar.loaded_model == "small"
+
+
+def test_load_sends_the_dtype_by_name_so_torch_stays_out_of_the_command(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    fake_torch.float16 = "torch.float16"
+    started = _install_fake_worker(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", fake_torch.float16))
 
     WhisperSttSidecar(keep_alive_seconds = 0).load("small")
 
-    # str(Path(...)), so the separator is the platform's.
-    cached = str(Path("/cached/model"))
-    assert {(kind, repo) for kind, repo, _ in calls} == {
-        ("processor", cached),
-        ("model", cached),
-    }
-    # Never fetch weights implicitly; the Model Hub owns downloads.
-    assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
-    # The weight load forces safetensors so a pickle checkpoint cannot execute.
-    model_kwargs = next(kwargs for kind, _, kwargs in calls if kind == "model")
-    assert model_kwargs.get("use_safetensors") is True
+    assert started == [(str(Path("/cached/model")), "cuda", "float16")]
+
+
+def test_a_worker_that_died_is_not_resident_and_is_replaced_on_the_next_load(monkeypatch):
+    _install_fake_torch(monkeypatch)
+    started = _install_fake_worker(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    worker = sidecar.load("small")
+    worker.alive = False
+
+    assert sidecar.loaded_model is None
+
+    replacement = sidecar.load("small")
+
+    assert replacement is not worker
+    assert len(started) == 2
+    assert sidecar.loaded_model == "small"
+
+
+def test_unload_stops_the_worker_process(monkeypatch):
+    # empty_cache cannot return the context; ending the process is what does.
+    _install_fake_torch(monkeypatch)
+    _install_fake_worker(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    worker = sidecar.load("small")
+    sidecar.unload()
+
+    assert worker.closed is True
+    assert sidecar.loaded_model is None
 
 
 def test_model_cache_preflight_uses_shared_offline_resolver(monkeypatch):
@@ -517,25 +543,14 @@ def test_model_cache_preflight_reports_missing_snapshot(monkeypatch):
 def test_load_reports_model_hub_cache_miss(monkeypatch):
     _install_fake_torch(monkeypatch)
 
-    class LocalEntryNotFoundError(RuntimeError):
-        pass
+    def missing(*_args, **_kwargs):
+        # What the worker reports for a cache miss it hit inside from_pretrained.
+        raise SttModelNotDownloadedError("The dictation model is not downloaded.")
 
-    class MissingWhisperProcessor:
-        @classmethod
-        def from_pretrained(cls, *_args, **_kwargs):
-            raise LocalEntryNotFoundError("not cached")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            WhisperForConditionalGeneration = object,
-            WhisperProcessor = MissingWhisperProcessor,
-        ),
-    )
+    _install_fake_worker(monkeypatch, start = missing)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
-    with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
+    with pytest.raises(SttModelNotDownloadedError, match = "large-v3"):
         WhisperSttSidecar(keep_alive_seconds = 0).load("large-v3")
 
 
