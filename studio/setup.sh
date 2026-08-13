@@ -1766,7 +1766,19 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
             substep "$_PKG_NAME $POST_VER confirmed"
         elif [ "$POST_VER" = "__MISSING__" ]; then
             # the one unambiguous failure: a "successful" pass with no package left
-            # behind (no-op pass, stale dist-info) -- the case this check exists for
+            # behind (no-op pass, stale dist-info) -- the case this check exists for.
+            # The pass already wrote its success manifest (step 15, before this
+            # check) and verify_install accepts a null recorded version, so the
+            # marker must not survive: its presence means "install completed".
+            "$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+    install_manifest.remove_manifest()
+except Exception:
+    pass
+" "$SCRIPT_DIR" 2>/dev/null || true
             step "python" "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}" "$C_ERR"
             setup_fail 1 "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
         elif [ -z "$POST_VER" ]; then

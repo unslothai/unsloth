@@ -4908,7 +4908,21 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
         substep "$_PkgName $PostVer confirmed"
     } elseif ($PostVer -eq "__MISSING__") {
         # the one unambiguous failure: a "successful" pass with no package left
-        # behind (no-op pass, stale dist-info) -- the case this check exists for
+        # behind (no-op pass, stale dist-info) -- the case this check exists for.
+        # The pass already wrote its success manifest (step 15, before this check)
+        # and verify_install accepts a null recorded version, so the marker must
+        # not survive: its presence means "install completed".
+        try {
+            & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+    install_manifest.remove_manifest()
+except Exception:
+    pass
+" "$PSScriptRoot" 2>$null
+        } catch {}
         $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
         Write-StudioLine "[FAILED] update ran but $_PkgName is not installed$_expected" -ForegroundColor Red
         Exit-SetupFailure "update ran but $_PkgName is not installed$_expected"
