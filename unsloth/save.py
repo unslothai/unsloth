@@ -3324,8 +3324,11 @@ def _preflight_merge_disk(
         # one always prices an intermediate GGUF conversion this never does.
         # The full-model fallback casts nothing, so it is sized from the
         # tensors' own dtype instead.
-        need = (_full_model_checkpoint_bytes(model, state_dict) if full_model_lora
-                else model_16bit_bytes(model))
+        need = (
+            _full_model_checkpoint_bytes(model, state_dict)
+            if full_model_lora
+            else model_16bit_bytes(model)
+        )
         if need <= 0:
             return save_directory
         # What the torchao staging directory costs on whatever filesystem

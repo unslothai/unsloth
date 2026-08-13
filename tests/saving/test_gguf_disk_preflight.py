@@ -1257,9 +1257,7 @@ class TestFullModelSavedAsLora:
         import torch
 
         model = torch.nn.Linear(8, 8, dtype = torch.float16)
-        state_dict = {
-            name: tensor.to(torch.float32) for name, tensor in model.state_dict().items()
-        }
+        state_dict = {name: tensor.to(torch.float32) for name, tensor in model.state_dict().items()}
         n_parameters = sum(p.numel() for p in model.parameters())
         assert S._full_model_checkpoint_bytes(model, state_dict) == n_parameters * 4
         S._preflight_merge_disk(model, "model", "lora", state_dict = state_dict)
@@ -1534,9 +1532,10 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         zero, the whole export is the sibling's, and 1GB is enough here.
         """
         split.update(free = 1 * GB, sibling_free = 1000 * GB)
-        assert S._preflight_gguf_disk(
-            _FakeModel(), "model", "q4_k_m", needs_merge = False
-        ) == ("model", True)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", needs_merge = False) == (
+            "model",
+            True,
+        )
 
     def test_the_reserve_never_exceeds_the_aggregate(self, split, monkeypatch):
         """A sibling small next to the checkpoint must not add a refusal.
@@ -1550,9 +1549,11 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             S,
             "estimate_gguf_export_bytes",
             lambda **kwargs: (
-                1 * GB if not kwargs.get("needs_merge", True)
-                else (self.AGGREGATE_WITH_CACHE if kwargs.get("base_cache_copy")
-                      else self.AGGREGATE)
+                1 * GB
+                if not kwargs.get("needs_merge", True)
+                else (
+                    self.AGGREGATE_WITH_CACHE if kwargs.get("base_cache_copy") else self.AGGREGATE
+                )
             ),
         )
         split.update(free = 34 * GB, sibling_free = 1000 * GB)
@@ -1847,9 +1848,7 @@ class TestIgnoredModulesAreSizedFromLogicalShapes:
                                         "linear_attn": _NamedModule(
                                             children = {
                                                 "in_proj_qkvz": _NamedModule(
-                                                    parameters = [
-                                                        _Packed4bitParameter(4 * GB)
-                                                    ],
+                                                    parameters = [_Packed4bitParameter(4 * GB)],
                                                 ),
                                             },
                                         ),
@@ -1928,8 +1927,8 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
 
     AGGREGATE = 141 * GB
     AGGREGATE_WITH_CACHE = 204 * GB
-    MERGE_PHASE = 123 * GB          # merge + intermediate, before reclamation
-    QUANT_PHASE = 78 * GB           # intermediate + quants, after it
+    MERGE_PHASE = 123 * GB  # merge + intermediate, before reclamation
+    QUANT_PHASE = 78 * GB  # intermediate + quants, after it
 
     @pytest.fixture
     def phases(self, monkeypatch, tmp_path):
@@ -2067,18 +2066,16 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         monkeypatch.setattr(
             S,
             "estimate_gguf_export_bytes",
-            lambda **kwargs: 300 * GB if kwargs.get("base_cache_copy") else (
-                200 * GB if not kwargs.get("quantization_methods") else 141 * GB
-            ),
+            lambda **kwargs: 300 * GB
+            if kwargs.get("base_cache_copy")
+            else (200 * GB if not kwargs.get("quantization_methods") else 141 * GB),
         )
         phases.update(free = 132 * GB)
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
         assert "141.0GB" in str(error.value)
 
-    def test_an_estimator_that_cannot_size_a_phase_charges_the_aggregate(
-        self, phases, monkeypatch
-    ):
+    def test_an_estimator_that_cannot_size_a_phase_charges_the_aggregate(self, phases, monkeypatch):
         real = S.estimate_gguf_export_bytes
 
         def fake_estimate(**kwargs):
@@ -2132,18 +2129,13 @@ class TestTheConversionWorkingDirectoryIsMeasured:
             "free_bytes",
             lambda path: 1000 * GB if str(path).startswith("/tmp") else state["cwd_free"],
         )
-        monkeypatch.setattr(
-            S, "kaggle_tmp_redirect", lambda *a, **k: (self.TMP, "moved to /tmp")
-        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (self.TMP, "moved to /tmp"))
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
-            lambda left, right: str(left).startswith("/tmp")
-            != str(right).startswith("/tmp"),
+            lambda left, right: str(left).startswith("/tmp") != str(right).startswith("/tmp"),
         )
-        monkeypatch.setattr(
-            S, "_gguf_conversion_directory", lambda directory: state["conversion"]
-        )
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: state["conversion"])
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         return state
