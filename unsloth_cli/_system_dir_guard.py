@@ -319,6 +319,11 @@ _RELATIVE_PATH_ENV = (
     "LLAMA_ARG_MMPROJ",
     "LLAMA_ARG_MODEL_DRAFT",
     "LLAMA_ARG_SPEC_DRAFT_MODEL",
+    # Read straight from the environment as a file path: the ASIC table by
+    # unsloth/import_fixes.py, the vLLM cache root by Studio when the caller set
+    # it themselves (storage_roots.py only fills a blank one).
+    "AMDGPU_ASIC_ID_TABLE_PATH",
+    "VLLM_CACHE_ROOT",
     # GPU SDK roots, joined with bin/ for DLL discovery.
     "CUDA_PATH",
     "HIP_PATH",

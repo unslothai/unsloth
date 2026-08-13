@@ -1130,6 +1130,8 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "LLAMA_ARG_MMPROJ",
     "LLAMA_ARG_MODEL_DRAFT",
     "LLAMA_ARG_SPEC_DRAFT_MODEL",
+    "AMDGPU_ASIC_ID_TABLE_PATH",
+    "VLLM_CACHE_ROOT",
     "CUDA_PATH",
     "HIP_PATH",
     "HIP_PATH_57",
@@ -1414,7 +1416,11 @@ const UPDATE_ONLY_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
 /// expand it themselves: llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to
 /// Path(), so a moved child would look for a folder called "~" beside its new
 /// working directory.
-fn expand_windows_user(value: &str, home: &std::path::Path) -> String {
+fn expand_windows_user(
+    value: &str,
+    home: &std::path::Path,
+    username: Option<&str>,
+) -> String {
     if !value.starts_with('~') {
         return value.to_string();
     }
@@ -1426,12 +1432,20 @@ fn expand_windows_user(value: &str, home: &std::path::Path) -> String {
     let base = if name.is_empty() {
         home.into_owned()
     } else {
-        // ~someone-else is the sibling of this profile, as ntpath resolves it.
+        // ~someone-else is the sibling of this profile, but only where ntpath
+        // agrees: it declines to guess unless this profile is named after the
+        // current user, since C:\Users\alice.DOMAIN is not alice's sibling.
         // Split on the string, not with Path::parent: these are Windows paths
         // whichever platform the code is running on.
-        match home.rfind(['\\', '/']) {
-            Some(cut) => format!("{}{}", &home[..cut + 1], name),
+        let cut = match home.rfind(['\\', '/']) {
+            Some(cut) => cut,
             None => return value.to_string(),
+        };
+        let this_profile = &home[cut + 1..];
+        match username {
+            Some(user) if user == name => home.clone().into_owned(),
+            Some(user) if user == this_profile => format!("{}{}", &home[..cut + 1], name),
+            _ => return value.to_string(),
         }
     };
     format!("{}{}", base, rest)
@@ -1448,6 +1462,7 @@ fn relative_override_pins_from(
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     // Written out, so the reader that expands %VAR% and the reader that does not
     // land in the same folder. Only for the names that have both.
+    let username = lookup("USERNAME");
     let expanded = |name: &str, value: &str| -> Option<String> {
         if EXPANDED_ENV.contains(&name) {
             expand_settled(value, &lookup)
@@ -1487,12 +1502,12 @@ fn relative_override_pins_from(
                 // that decides nothing here (an expanded %LOCALAPPDATA%, inline
                 // JSON, a 0/1 toggle) would be read as relative and refuse
                 // every spawn over a value no directory ever decided.
-                let Some(entry) = expanded(name, entry) else {
-                    continue;
-                };
                 let entry = match home {
-                    Some(home) => expand_windows_user(&entry, home),
-                    None => entry,
+                    Some(home) => expand_windows_user(entry, home, username.as_deref()),
+                    None => entry.to_string(),
+                };
+                let Some(entry) = expanded(name, &entry) else {
+                    continue;
                 };
                 if is_cwd_independent(&entry, windows) {
                     continue;
@@ -1532,15 +1547,16 @@ fn relative_override_pins_from(
         }
         let Some(value) = lookup(name) else { continue };
         let original = value.trim().to_string();
-        // A value whose expansion never settles is left exactly as written: no
-        // reader can resolve it either, and anchoring a half-expanded string
-        // would build a folder name with a second drive in the middle of it.
-        let Some(value) = expanded(name, &original) else {
-            continue;
-        };
+        // The tilde first and the variables second, the order the CLI guard uses,
+        // so a value that names a folder through both reaches the same one.
         let value = match home {
-            Some(home) => expand_windows_user(&value, home),
-            None => value,
+            Some(home) => expand_windows_user(&original, home, username.as_deref()),
+            None => original.clone(),
+        };
+        // A value one pass does not settle is left exactly as written: writing
+        // back a half-expanded string would have the reader expand it again.
+        let Some(value) = expanded(name, &value) else {
+            continue;
         };
         if value.is_empty() {
             continue;
@@ -1568,7 +1584,16 @@ fn relative_override_pins_from(
         let mut entries: Vec<String> = Vec::new();
         for entry in raw.split(';') {
             let original = entry.trim().to_string();
-            let Some(entry) = expanded(name, &original) else {
+            // Python never expands `~` in PYTHONPATH, so `~\plugins` is an
+            // ordinary relative folder there, and expanding it would point the
+            // import at a profile folder the interpreter was never reading.
+            let entry = match home {
+                Some(home) if *name != "PYTHONPATH" => {
+                    expand_windows_user(&original, home, username.as_deref())
+                }
+                _ => original.clone(),
+            };
+            let Some(entry) = expanded(name, &entry) else {
                 entries.push(original);
                 continue;
             };
@@ -1581,13 +1606,6 @@ fn relative_override_pins_from(
                 entries.push(cwd.to_string_lossy().into_owned());
                 continue;
             }
-            // Python never expands `~` in PYTHONPATH, so `~\plugins` is an
-            // ordinary relative folder there, and expanding it would point the
-            // import at a profile folder that the interpreter was never reading.
-            let entry = match home {
-                Some(home) if *name != "PYTHONPATH" => expand_windows_user(&entry, home),
-                _ => entry,
-            };
             if entry.is_empty() || is_fully_qualified(&entry) {
                 entries.push(entry);
                 continue;
@@ -1649,6 +1667,19 @@ fn pins_for_move(
     }
 }
 
+/// What the update child neither receives nor needs. It is the one child that
+/// reads STUDIO_LOCAL_REPO, and the one that wants no PYTHONPATH at all on
+/// Windows, where -I covers only the first interpreter and the update starts
+/// more. Skipping it here rather than removing it afterwards means an
+/// unresolvable entry cannot refuse an update that was never going to read it.
+fn update_child_skipped_env() -> Vec<&'static str> {
+    MANAGED_CHILD_SCRUBBED_ENV
+        .iter()
+        .copied()
+        .chain(cfg!(windows).then_some("PYTHONPATH"))
+        .collect()
+}
+
 /// What an ordinary managed child neither receives nor needs.
 fn child_skipped_env() -> Vec<&'static str> {
     MANAGED_CHILD_SCRUBBED_ENV
@@ -1706,7 +1737,12 @@ fn needs_explicit_cwd(work_dir: &std::path::Path) -> bool {
 /// scrubbing, creation flags and the ownership handshake stay with the caller.
 /// For the update, which is the one child that reads STUDIO_LOCAL_REPO.
 pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String> {
-    apply_managed_cli_context_inner(cmd, &managed_cli_working_dir()?, MANAGED_CHILD_SCRUBBED_ENV)
+    // The update is the one child that reads STUDIO_LOCAL_REPO, and the one that
+    // wants no PYTHONPATH at all on Windows: -I covers only the first
+    // interpreter, and the update starts more. Skipping it here rather than
+    // removing it afterwards means an unresolvable entry cannot refuse an update
+    // that was never going to read it.
+    apply_managed_cli_context_inner(cmd, &managed_cli_working_dir()?, &update_child_skipped_env())
 }
 
 pub(crate) fn apply_managed_cli_context_at(
@@ -3239,6 +3275,21 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn the_update_child_skips_the_value_the_windows_update_drops_anyway() {
+        // build_update_command removes PYTHONPATH on Windows, so pinning it there
+        // could only refuse an update over a value the child never receives.
+        let skipped = update_child_skipped_env();
+        assert_eq!(
+            skipped.contains(&"PYTHONPATH"),
+            cfg!(windows),
+            "PYTHONPATH is skipped exactly where the update drops it"
+        );
+        // STUDIO_LOCAL_REPO stays: the update is the one child that reads it.
+        assert!(!skipped.contains(&"STUDIO_LOCAL_REPO"));
+        assert!(child_skipped_env().contains(&"STUDIO_LOCAL_REPO"));
+    }
+
+    #[test]
     fn the_pin_decision_is_a_table_with_no_other_outcomes() {
         // Every combination of the three things the pinning looks at, so "nothing
         // happens unless the directory is one the CLI refuses" is a table rather
@@ -3897,14 +3948,28 @@ mod managed_cli_working_dir_tests {
     #[test]
     fn a_tilde_is_written_out_the_way_expanduser_writes_it() {
         let home = std::path::Path::new("C:\\Users\\me");
-        assert_eq!(expand_windows_user("~", home), "C:\\Users\\me");
-        assert_eq!(expand_windows_user("~\\llama.cpp", home), "C:\\Users\\me\\llama.cpp");
-        assert_eq!(expand_windows_user("~/llama.cpp", home), "C:\\Users\\me/llama.cpp");
+        let me = Some("me");
+        assert_eq!(expand_windows_user("~", home, me), "C:\\Users\\me");
+        assert_eq!(
+            expand_windows_user("~\\llama.cpp", home, me),
+            "C:\\Users\\me\\llama.cpp"
+        );
+        assert_eq!(
+            expand_windows_user("~/llama.cpp", home, me),
+            "C:\\Users\\me/llama.cpp"
+        );
         // ~name is the sibling profile, as ntpath resolves it.
-        assert_eq!(expand_windows_user("~other\\x", home), "C:\\Users\\other\\x");
+        assert_eq!(expand_windows_user("~other\\x", home, me), "C:\\Users\\other\\x");
+        // ~me is this profile whatever the folder is called.
+        let domain = std::path::Path::new("C:\\Users\\me.DOMAIN");
+        assert_eq!(expand_windows_user("~me\\x", domain, me), "C:\\Users\\me.DOMAIN\\x");
+        // And ntpath declines to guess a sibling when this profile is not named
+        // after the current user, so neither does this.
+        assert_eq!(expand_windows_user("~other\\x", domain, me), "~other\\x");
+        assert_eq!(expand_windows_user("~other\\x", home, None), "~other\\x");
         // Nothing else is touched.
         for value in ["cache", "C:\\cache", "a~b"] {
-            assert_eq!(expand_windows_user(value, home), value);
+            assert_eq!(expand_windows_user(value, home, me), value);
         }
     }
 

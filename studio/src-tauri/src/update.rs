@@ -106,11 +106,8 @@ fn spawn_update(
         )
     })?;
 
-    // After the context, not before: pinning a relative PYTHONPATH would put back
-    // what the Windows branch dropped, and -I only covers the first interpreter
-    // while the update's descendants start further Python processes.
-    #[cfg(windows)]
-    cmd.env_remove("PYTHONPATH");
+    // PYTHONPATH is dropped by the context itself on Windows, where -I covers
+    // only the first interpreter and the update starts more.
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
