@@ -390,25 +390,23 @@ def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(mon
     assert seen[1][:3] == ["bash", "-s", "--"], seen[1]
 
 
-def test_a_site_installed_opener_is_still_honoured(monkeypatch):
-    """urlopen() used whatever install_opener() set. Dropping it would strand any
-    machine whose proxy auth or corporate CA lives in a site-wide handler."""
+def test_building_the_opener_never_mutates_global_urllib(monkeypatch):
+    """A private opener is needed to check redirects, but it must stay private.
+
+    OpenerDirector.add_handler() assigns handler.parent, so an earlier attempt to carry
+    the site-installed handlers over repointed that opener's own handlers at ours and
+    broke every later urlopen() in the process.
+    """
     studio = _studio()
     import urllib.request
 
-    # A handler with no recognised *_open/*_request method is never registered by
-    # add_handler at all, so use the shape a corporate site actually installs.
-    marker = urllib.request.ProxyHandler({"https": "http://proxy.example:3128"})
-    installed = urllib.request.build_opener(marker)
+    site = urllib.request.ProxyHandler({"https": "http://proxy.example:3128"})
+    installed = urllib.request.build_opener(site)
     monkeypatch.setattr(urllib.request, "_opener", installed, raising = False)
 
     opener = studio._build_installer_opener()
-    assert any(h is marker for h in opener.handlers), "site handler was dropped"
     assert any(
         isinstance(h, studio._InstallerRedirectHandler) for h in opener.handlers
     ), "redirect validation was lost"
-
-    # A private attribute of an unexpected shape must not cost anyone a refresh.
-    monkeypatch.setattr(urllib.request, "_opener", object(), raising = False)
-    fallback = studio._build_installer_opener()
-    assert any(isinstance(h, studio._InstallerRedirectHandler) for h in fallback.handlers)
+    assert site.parent is installed, "the installed opener's handler was hijacked"
+    assert urllib.request._opener is installed

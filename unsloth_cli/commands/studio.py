@@ -3433,28 +3433,19 @@ class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _build_installer_opener() -> urllib.request.OpenerDirector:
-    """An opener that validates redirects but still honours a site-wide urllib setup.
+    """A private opener, so the redirect chain can be checked before it is followed.
 
-    The refresh used to call urlopen(), which uses whatever install_opener() put in
-    place, so a corporate sitecustomize supplying a proxy-auth or custom-CA handler
-    reached the network through it. Validating the redirect chain needs our own
-    handler, so carry the installed handlers across rather than dropping them and
-    silently ending the launcher refresh for those machines.
+    urlopen() would instead use whatever install_opener() put in place. Carrying those
+    handlers over was tried and abandoned: OpenerDirector.add_handler() assigns
+    handler.parent, so sharing them repoints the installed opener at this one and
+    breaks every later urlopen() in the process, and copying them does not help either
+    because the default HTTPSHandler here already answers first. Proxy environment
+    variables and the system trust store still work, since build_opener() sets up both.
+    The residue is a machine whose proxy auth or CA lives in a programmatically
+    installed opener: its refresh is skipped, which the update survives, rather than
+    silently pulling the installer through an unchecked path.
     """
-    opener = urllib.request.build_opener(_InstallerRedirectHandler)
-    installed = getattr(urllib.request, "_opener", None)
-    if installed is None:
-        return opener
-    try:
-        for handler in installed.handlers:
-            # Ours is the whole point, so it is never displaced by the installed one.
-            if isinstance(handler, urllib.request.HTTPRedirectHandler):
-                continue
-            opener.add_handler(handler)
-    except Exception:
-        # A private attribute of an unexpected shape must not cost anyone a refresh.
-        return urllib.request.build_opener(_InstallerRedirectHandler)
-    return opener
+    return urllib.request.build_opener(_InstallerRedirectHandler)
 
 
 def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
