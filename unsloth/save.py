@@ -3539,6 +3539,21 @@ def _on_separate_filesystems(directory, sibling):
     return left != right
 
 
+def _shares_filesystem(directory, sibling):
+    """True only when both paths are identified AND on the same filesystem.
+
+    Not `not _on_separate_filesystems(...)`: that reads an unidentifiable path
+    as "together", which is right where the answer removes a charge and wrong
+    where it adds one. This is the predicate for the adding case, so it says
+    no to anything it cannot see, and neither predicate ever guesses.
+    """
+    left = _filesystem_id(directory)
+    right = _filesystem_id(sibling)
+    if left is None or right is None:
+        return False
+    return left == right
+
+
 def _directory_is_writable(directory):
     """Can a file be created here? The same probe `convert_to_gguf` makes.
 
@@ -3799,6 +3814,11 @@ def _preflight_gguf_disk(
         and gguf_free is not None
         and _on_separate_filesystems(save_directory, gguf_directory)
     )
+    # Resolved before the split is priced, because where the conversion lands
+    # decides which filesystem it is charged to.
+    conversion_directory = _gguf_conversion_directory(
+        _gguf_model_input_directory(model, save_directory)
+    )
 
     need_here = need
     need_here_with_cache = need_with_cache
@@ -3840,6 +3860,21 @@ def _preflight_gguf_disk(
             reserved = min(need, math.ceil(checkpoint_here / _MERGE_FREE_SPACE_RESERVE))
             need_here = max(need_here, reserved)
             need_here_with_cache = max(need_here_with_cache, reserved)
+        # The intermediate conversion is written to the working directory and
+        # only moved to the sibling afterwards, so when that working directory
+        # is on THIS filesystem the checkpoint and the conversion are on it
+        # together. Charging each of them alone lets a 60GB checkpoint and a
+        # 60GB conversion both pass on 100GB, and then it fills. Only the
+        # split branch needs this: on one filesystem the aggregate already
+        # counts them both, and a conversion sharing the sibling's disk is
+        # counted in `need_sibling`.
+        if (
+            need_conversion > 0
+            and conversion_directory is not None
+            and _shares_filesystem(conversion_directory, save_directory)
+        ):
+            need_here += need_conversion
+            need_here_with_cache += need_conversion
         # Not gated on the sibling being the TIGHTER of the two any more.
         # Now that the checkpoint is charged only its own portion, a sibling
         # with more free space than `save_directory` and still less than
@@ -3889,9 +3924,6 @@ def _preflight_gguf_disk(
     # moved. When that CWD is on its own filesystem, nothing above has measured
     # the disk the largest staging artefact actually lands on: on Kaggle it is
     # the 20GB working directory the redirect just moved the export away from.
-    conversion_directory = _gguf_conversion_directory(
-        _gguf_model_input_directory(model, save_directory)
-    )
     if (
         need_conversion > 0
         and conversion_directory is not None

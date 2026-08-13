@@ -1427,7 +1427,8 @@ class TestTheGgufSiblingIsMeasuredToo:
         # Only the save-directory / sibling pair is split. Every other pair the
         # preflight asks about -- notably the working directory the intermediate
         # conversion is written to -- is one filesystem, which is the ordinary
-        # machine these tests describe.
+        # machine these tests describe. The conversion travels with the sibling
+        # there, so the save directory's filesystem holds the checkpoint alone.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -1435,6 +1436,7 @@ class TestTheGgufSiblingIsMeasuredToo:
             if (str(left), str(right)) == ("model", "model_gguf")
             else False,
         )
+        monkeypatch.setattr(S, "_shares_filesystem", lambda left, right: False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         return state
@@ -1555,7 +1557,8 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         # Only the save-directory / sibling pair is split. Every other pair the
         # preflight asks about -- notably the working directory the intermediate
         # conversion is written to -- is one filesystem, which is the ordinary
-        # machine these tests describe.
+        # machine these tests describe. The conversion travels with the sibling
+        # there, so the save directory's filesystem holds the checkpoint alone.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -1563,6 +1566,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             if (str(left), str(right)) == ("model", "model_gguf")
             else False,
         )
+        monkeypatch.setattr(S, "_shares_filesystem", lambda left, right: False)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         # The reserve below belongs to `merge_and_overwrite_lora`, which only
@@ -2070,12 +2074,14 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
         # Only the save-directory / sibling pair can be split. The working
-        # directory the conversion writes to is one filesystem with them here.
+        # directory the conversion writes to is one filesystem with the sibling
+        # here, so it is never charged to the save directory's disk.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
             lambda left, right: state["separate"] and str(right).endswith("_gguf"),
         )
+        monkeypatch.setattr(S, "_shares_filesystem", lambda left, right: False)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         # A disposable merge is a LoRA merge, so the model is a PEFT one and
@@ -2332,6 +2338,87 @@ class TestWhereTheConversionWrites:
     def test_the_probe_leaves_nothing_behind(self, tmp_path):
         S._directory_is_writable(str(tmp_path))
         assert list(tmp_path.iterdir()) == []
+
+
+class TestAColocatedConversionIsChargedWithTheCheckpoint:
+    """Split storage, and the conversion lands on the checkpoint's disk.
+
+    `save_directory` is a mount, so the `_gguf` sibling is on another
+    filesystem and the split branch charges this one for the checkpoint alone.
+    The intermediate conversion goes to the working directory and is only
+    moved to the sibling afterwards, so when that working directory is on the
+    same filesystem as `save_directory` the two sit there together - and the
+    conversion check charged this disk for the conversion alone. A 60GB
+    checkpoint and a 60GB conversion each passed on 100GB, and then it filled.
+
+    Numbers: 120GB aggregate, 60GB of it the sibling's, so a 60GB checkpoint
+    and a 60GB conversion.
+    """
+
+    CHECKPOINT = 60 * GB
+    SIBLING = 60 * GB
+    CONVERSION = 60 * GB
+
+    @pytest.fixture
+    def colocated(self, monkeypatch):
+        # One device map rather than a stub per pair, so the three paths cannot
+        # describe a machine that does not exist -- and so this fixture drives
+        # the code as it stands rather than a helper added to fix it.
+        state = {"free": 100 * GB, "devices": {"model": 1, "model_gguf": 2, "work": 1}}
+
+        def fake_estimate(**kwargs):
+            if not kwargs.get("needs_merge", True):
+                return self.SIBLING if kwargs.get("quantization_methods") else self.CONVERSION
+            return self.CHECKPOINT + self.SIBLING
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: 1000 * GB if str(path).endswith("_gguf") else state["free"],
+        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        # `model` is the mount and `model_gguf` is not, so the export is split;
+        # the working directory is on the mount with `model`.
+        monkeypatch.setattr(S, "_filesystem_id", lambda path: state["devices"].get(str(path)))
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def _preflight(self):
+        return S._preflight_gguf_disk(
+            _FakeModel(), "model", "q4_k_m", first_conversion = "bf16"
+        )
+
+    def test_both_artefacts_are_charged_to_the_one_filesystem(self, colocated):
+        """100GB holds either alone and not the pair."""
+        with pytest.raises(RuntimeError) as error:
+            self._preflight()
+        assert "120.0GB" in str(error.value)
+
+    def test_room_for_the_pair_is_not_refused(self, colocated):
+        colocated.update(free = 120 * GB)
+        assert self._preflight() == ("model", True)
+
+    def test_a_conversion_elsewhere_is_charged_only_once(self, colocated):
+        """The working directory on the sibling's disk leaves this one alone."""
+        colocated["devices"]["work"] = 2
+        assert self._preflight() == ("model", True)
+
+    def test_an_unmeasurable_working_directory_charges_nothing_extra(
+        self, colocated, monkeypatch
+    ):
+        """`_shares_filesystem` says no to what it cannot see, so this is unchanged."""
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: None)
+        assert self._preflight() == ("model", True)
+
+    def test_the_predicate_never_guesses(self, monkeypatch):
+        monkeypatch.setattr(S, "_filesystem_id", lambda path: None)
+        assert S._shares_filesystem("a", "b") is False
+        assert S._on_separate_filesystems("a", "b") is False
 
 
 class TestTheFallbackFollowsTheReusedCheckpoint:
