@@ -3,10 +3,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import {
+  AttachmentIcon,
+  FileDatabaseIcon,
+  Folder02Icon,
+} from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  type ProjectAttachmentTarget,
+  useChatRuntimeStore,
+} from "@/features/chat/stores/chat-runtime-store";
 import {
   chatHistoryClearBoundary,
   ChatThreadDeletedError,
@@ -18,8 +26,20 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
-import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT } from "../types/rag";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  invalidateProjectSources,
+  listKnowledgeBases,
+  listProjectDocuments,
+  listThreadDocuments,
+} from "../api/rag-api";
+import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
@@ -80,6 +100,116 @@ async function requireStoredThread(threadId: string): Promise<void> {
   }
 }
 
+/** The composer's attach control. Wording and glyph follow the active target, so
+ * a project chat says up front where the file is going. */
+function AttachFilesButton({
+  disabled,
+  compact,
+  sharesWithProject,
+  onClick,
+}: {
+  disabled: boolean;
+  /** Icon-only once documents are attached, to leave the chips room. */
+  compact: boolean;
+  sharesWithProject: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "composer-pill-btn shrink-0 -translate-y-px !text-foreground/80",
+        // Square button so the rounded-full hover reads as a circle.
+        compact && "size-8 justify-center px-0",
+      )}
+      aria-label={
+        sharesWithProject
+          ? "Attach documents to this project"
+          : "Attach documents to this thread"
+      }
+      title={
+        sharesWithProject
+          ? "Attach documents for retrieval, shared with every chat in this project"
+          : "Attach documents for retrieval in this chat"
+      }
+    >
+      <HugeiconsIcon
+        icon={sharesWithProject ? Folder02Icon : AttachmentIcon}
+        strokeWidth={2}
+        className="size-3.5"
+      />
+      {compact ? null : (
+        <span>
+          {sharesWithProject
+            ? "Add files for this project"
+            : "Add files to chat with"}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Picks whether new attachments go to the project (shared with every chat in it)
+ * or to this chat alone. Only a project chat has the choice. */
+function AttachmentTargetMenu({
+  disabled,
+  sharesWithProject,
+  onSelect,
+}: {
+  disabled: boolean;
+  sharesWithProject: boolean;
+  onSelect: (target: ProjectAttachmentTarget) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild={true}>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label="Choose where attached files go"
+          title="Choose where attached files go"
+          className="composer-pill-btn shrink-0 -translate-y-px !text-foreground/60 px-2"
+        >
+          <span className="text-ui-11">
+            {sharesWithProject ? "Project" : "This chat"}
+          </span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="unsloth-plus-menu w-64">
+        <DropdownMenuLabel>New files go to</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={() => onSelect("project")}>
+          <HugeiconsIcon
+            icon={sharesWithProject ? Tick02Icon : Folder02Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+          <span className="flex flex-col">
+            <span>The project</span>
+            <span className="text-ui-11 text-muted-foreground">
+              Every chat in this project can use them
+            </span>
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onSelect("thread")}>
+          <HugeiconsIcon
+            icon={sharesWithProject ? AttachmentIcon : Tick02Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+          <span className="flex flex-col">
+            <span>This chat only</span>
+            <span className="text-ui-11 text-muted-foreground">
+              Other chats in the project won't see them
+            </span>
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function ThreadDocumentsBar({
   threadId,
   onIndexingChange,
@@ -91,7 +221,20 @@ export function ThreadDocumentsBar({
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  // activeProjectId is set by the chat page from the thread's own row, so it is
+  // null for every chat with no project.
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
+  const projectAttachmentTarget = useChatRuntimeStore(
+    (s) => s.projectAttachmentTarget,
+  );
+  const setProjectAttachmentTarget = useChatRuntimeStore(
+    (s) => s.setProjectAttachmentTarget,
+  );
   const aui = useAui();
+  // A KB-scoped chat uploads through the KB dialog, so neither scope applies there.
+  const projectId = ragSource.type === "kb" ? null : activeProjectId;
+  const sharesWithProject =
+    projectId !== null && projectAttachmentTarget === "project";
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // A fresh chat has no thread id until the first message; materialize one on demand
@@ -124,10 +267,27 @@ export function ThreadDocumentsBar({
     lister,
   );
 
+  // The project's shared sources, listed alongside this chat's own so a file added
+  // from another chat is visible rather than silently in effect. Retrieval already
+  // combines both scopes (core/rag/tool.py).
+  const projectLister = useCallback(
+    () => (projectId ? listProjectDocuments(projectId) : Promise.resolve([])),
+    [projectId],
+  );
+  const {
+    documents: projectDocuments,
+    uploading: projectUploading,
+    upload: uploadToProject,
+    remove: removeFromProject,
+  } = useRagDocuments(
+    projectId && ragEnabled ? { type: "project", projectId } : null,
+    projectLister,
+  );
+
   // Tell the composer whether any doc is still indexing, so it can hold a queued
   // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
-  // is null, so `documents` is empty and this reads false.
-  const hasIndexing = documents.some(
+  // is null, so both lists are empty and this reads false.
+  const hasIndexing = [...documents, ...projectDocuments].some(
     (d) => d.status === "pending" || d.status === "running",
   );
   useEffect(() => {
@@ -182,6 +342,29 @@ export function ThreadDocumentsBar({
     return pending;
   }, [aui, effectiveThreadId]);
 
+  // One entry point for the picker and desktop drops: project files go straight to
+  // the project, per-chat files materialize the thread first. The sources probe
+  // caches for 30s, so invalidate both sides of a project upload or a message sent
+  // mid-index keeps answering from a cached "no sources".
+  const attach = useCallback(
+    (items: Parameters<typeof upload>[0]) => {
+      if (sharesWithProject && projectId) {
+        invalidateProjectSources(projectId);
+        void uploadToProject(items).finally(() =>
+          invalidateProjectSources(projectId),
+        );
+        return;
+      }
+      // Pass the id as a promise so upload() flips its in-flight guard before
+      // materialization re-renders us; on the first click `scope` is still null.
+      const threadScope = ensureThreadId().then((id) =>
+        id ? ({ type: "thread", threadId: id } as const) : null,
+      );
+      void upload(items, threadScope);
+    },
+    [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
+  );
+
   // Desktop drops land in the native-intent store because the drop listener lives on
   // the chat page; only the chat that received the OS drop may drain its batch.
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
@@ -213,7 +396,7 @@ export function ThreadDocumentsBar({
       setRagSource({ type: "thread" });
       setRagEnabled(true);
     }
-    void upload(
+    attach(
       intents.map((intent) => ({
         kind: "native" as const,
         token: intent.path.token,
@@ -221,15 +404,11 @@ export function ThreadDocumentsBar({
         sizeBytes: intent.path.sizeBytes,
         modifiedMs: intent.path.modifiedMs,
       })),
-      ensureThreadId().then((id) =>
-        id ? ({ type: "thread", threadId: id } as const) : null,
-      ),
     );
   }, [
     hasPendingAttachments,
     nativeAttachmentTargetKey,
-    upload,
-    ensureThreadId,
+    attach,
     ragEnabled,
     ragSource,
     setRagSource,
@@ -262,28 +441,25 @@ export function ThreadDocumentsBar({
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
   }
 
+  const busy = uploading || projectUploading;
+  const chipCount = documents.length + projectDocuments.length;
+
   return (
     <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <button
-        type="button"
+      <AttachFilesButton
+        disabled={busy}
+        compact={chipCount > 0}
+        sharesWithProject={sharesWithProject}
         onClick={handleAddDocs}
-        disabled={uploading}
-        className={cn(
-          "composer-pill-btn shrink-0 -translate-y-px !text-foreground/80",
-          // Square button so the rounded-full hover reads as a circle.
-          documents.length > 0 && "size-8 justify-center px-0",
-        )}
-        aria-label="Attach documents to this thread"
-        title="Attach documents for retrieval"
-      >
-        <HugeiconsIcon
-          icon={AttachmentIcon}
-          strokeWidth={2}
-          className="size-3.5"
+      />
+      {/* Only a project chat has two scopes to choose between. */}
+      {projectId ? (
+        <AttachmentTargetMenu
+          disabled={busy}
+          sharesWithProject={sharesWithProject}
+          onSelect={setProjectAttachmentTarget}
         />
-        {/* Icon-only once documents are attached. */}
-        {documents.length === 0 && <span>Add files to chat with</span>}
-      </button>
+      ) : null}
       <input
         ref={fileInputRef}
         type="file"
@@ -294,14 +470,7 @@ export function ThreadDocumentsBar({
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
           if (files.length === 0) return;
-          // Pass the id as a promise so upload() flips its in-flight guard before
-          // materialization re-renders us; on the first click `scope` is still null.
-          void upload(
-            files,
-            ensureThreadId().then((id) =>
-              id ? ({ type: "thread", threadId: id } as const) : null,
-            ),
-          );
+          attach(files);
         }}
       />
       {/* Cap height so a large set scrolls; fade the cut-off row. */}
@@ -313,6 +482,22 @@ export function ThreadDocumentsBar({
           chipsOverflow && "rag-docs-bottom-fade",
         )}
       >
+        {/* Project sources first: inherited context, and it outlives this chat. */}
+        {projectDocuments.map((doc) => (
+          <DocumentStatusChip
+            key={`project:${doc.id}`}
+            filename={doc.filename}
+            status={doc.status}
+            progress={doc.progress}
+            error={doc.error}
+            shared={true}
+            onRemove={
+              doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
+                ? undefined
+                : () => void removeFromProject(doc.id)
+            }
+          />
+        ))}
         {documents.map((doc) => (
           <DocumentStatusChip
             key={doc.id}

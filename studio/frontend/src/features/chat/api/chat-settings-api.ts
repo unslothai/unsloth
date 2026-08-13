@@ -18,6 +18,9 @@ export interface PersistedChatPreset {
 
 export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
+  /** Last-used params per checkpoint id, replayed on model switch. */
+  inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
+  rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
   activePresetSource?: ChatPresetSource;

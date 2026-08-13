@@ -152,6 +152,24 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
+// The server merge never removes keys, so this load-time trim is what bounds the
+// map. Insertion order is preserved, so it drops the longest-known models first.
+const MAX_REMEMBERED_MODELS = 100;
+
+function sanitizeInferenceParamsByModel(
+  value: unknown,
+): Record<string, PersistedInferenceParams> | undefined {
+  if (!isRecord(value)) return undefined;
+  const byModel: Record<string, PersistedInferenceParams> = {};
+  const entries = Object.entries(value).slice(-MAX_REMEMBERED_MODELS);
+  for (const [modelId, params] of entries) {
+    if (!modelId) continue;
+    const sanitized = sanitizeInferenceParams(params);
+    if (sanitized) byModel[modelId] = sanitized;
+  }
+  return hasKeys(byModel) ? byModel : undefined;
+}
+
 function toFullPreset(preset: PersistedChatPreset): Preset {
   const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
   return {
@@ -223,6 +241,10 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
 
   const settings: PersistedChatSettings = {};
   const inferenceParams = sanitizeInferenceParams(value.inferenceParams);
+  const inferenceParamsByModel = sanitizeInferenceParamsByModel(
+    value.inferenceParamsByModel,
+  );
+  const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
@@ -238,6 +260,12 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
+  if (inferenceParamsByModel) {
+    settings.inferenceParamsByModel = inferenceParamsByModel;
+  }
+  if (rememberParamsPerModel !== undefined) {
+    settings.rememberParamsPerModel = rememberParamsPerModel;
+  }
   if (customPresets !== undefined) settings.customPresets = customPresets;
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
@@ -310,6 +338,8 @@ function loadLegacySystemPromptPresets(
 export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
   return (
     (!settings.inferenceParams || !hasKeys(settings.inferenceParams)) &&
+    settings.inferenceParamsByModel === undefined &&
+    settings.rememberParamsPerModel === undefined &&
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&

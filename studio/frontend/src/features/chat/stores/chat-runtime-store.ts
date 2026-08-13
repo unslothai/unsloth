@@ -29,6 +29,14 @@ import {
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
+  PERSISTED_INFERENCE_PARAM_KEYS,
+  type PersistedInferenceParamKey,
+  getRememberedParamsPatch,
+  getReplayedParams,
+  pickPersistedInferenceParams,
+  setInferenceParam,
+} from "../lib/per-model-params";
+import {
   type ChatLoraSummary,
   type ChatModelSummary,
   DEFAULT_INFERENCE_PARAMS,
@@ -87,6 +95,8 @@ export type PermissionMode = "ask" | "auto" | "off" | "full";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_PROJECT_ATTACHMENT_TARGET_KEY =
+  "unsloth_chat_project_attachment_target";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
@@ -105,9 +115,17 @@ const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
+/** Where the composer files an attachment in a project chat. `project` indexes
+ * into the project's shared sources; `thread` keeps the file to the one chat.
+ * Ignored outside a project. */
+export type ProjectAttachmentTarget = "project" | "thread";
+
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+// A project exists to share context, so its chats default to the whole project.
+export const DEFAULT_PROJECT_ATTACHMENT_TARGET: ProjectAttachmentTarget =
+  "project";
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
 // `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
@@ -183,6 +201,14 @@ function saveRagSource(value: RagSource): void {
   } catch {
     // Ignore storage failures; the default RAG source still works for this session.
   }
+}
+
+function loadProjectAttachmentTarget(): ProjectAttachmentTarget {
+  const raw = loadString(
+    CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+    DEFAULT_PROJECT_ATTACHMENT_TARGET,
+  );
+  return raw === "thread" ? "thread" : DEFAULT_PROJECT_ATTACHMENT_TARGET;
 }
 
 function loadRagMode(): RagMode {
@@ -883,6 +909,9 @@ type ToolStatusEntry = {
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
+  /** Last-used sampling params per checkpoint id, replayed on model switch. */
+  paramsByModel: Record<string, PersistedInferenceParams>;
+  rememberParamsPerModel: boolean;
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
@@ -985,6 +1014,8 @@ type ChatRuntimeStore = {
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
+  /** Composer attachment scope for chats inside a project. */
+  projectAttachmentTarget: ProjectAttachmentTarget;
   ragMode: RagMode;
   ragTopK: number;
   // autoInject = forced first-pass retrieval before answering.
@@ -1288,7 +1319,9 @@ type ChatRuntimeStore = {
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
+  setRememberParamsPerModel: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
+  setProjectAttachmentTarget: (target: ProjectAttachmentTarget) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
@@ -1354,9 +1387,9 @@ type PersistedChatSettings = Awaited<
 type PersistedInferenceParams = NonNullable<
   PersistedChatSettings["inferenceParams"]
 >;
-type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 type ScalarSettingKey =
   | "autoTitle"
+  | "rememberParamsPerModel"
   | "reasoningEffort"
   | "preserveThinking"
   | "collapseHtmlArtifacts"
@@ -1374,27 +1407,14 @@ type PresetHydrationVersions = {
 
 type SettingsHydrationVersions = {
   inferenceParams: Record<PersistedInferenceParamKey, number>;
+  paramsByModel: number;
   scalarSettings: Record<ScalarSettingKey, number>;
   presets: PresetHydrationVersions;
 };
 
-const PERSISTED_INFERENCE_PARAM_KEYS = [
-  "temperature",
-  "topP",
-  "topK",
-  "minP",
-  "repetitionPenalty",
-  "presencePenalty",
-  "maxSeqLength",
-  "maxTokens",
-  "systemPrompt",
-  "systemVariables",
-  "trustRemoteCode",
-  "fastMode",
-] as const satisfies readonly PersistedInferenceParamKey[];
-
 const SCALAR_SETTING_KEYS = [
   "autoTitle",
+  "rememberParamsPerModel",
   "reasoningEffort",
   "preserveThinking",
   "collapseHtmlArtifacts",
@@ -1405,6 +1425,7 @@ const SCALAR_SETTING_KEYS = [
   "toolCallTimeout",
 ] as const satisfies readonly ScalarSettingKey[];
 
+let paramsByModelMutationVersion = 0;
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
 ) as Record<PersistedInferenceParamKey, number>;
@@ -1419,6 +1440,7 @@ function hasKeys(value: object): boolean {
 function getSettingsHydrationVersions(): SettingsHydrationVersions {
   return {
     inferenceParams: { ...inferenceParamMutationVersions },
+    paramsByModel: paramsByModelMutationVersion,
     scalarSettings: { ...scalarSettingMutationVersions },
     presets: {
       customPresets: customPresetsMutationVersion,
@@ -1426,14 +1448,6 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
       activePresetSource: activePresetSourceMutationVersion,
     },
   };
-}
-
-function setInferenceParam(
-  params: InferenceParams,
-  key: PersistedInferenceParamKey,
-  value: PersistedInferenceParams[PersistedInferenceParamKey],
-): void {
-  (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
 }
 
 function getChangedInferenceParams(
@@ -1452,6 +1466,51 @@ function getChangedInferenceParams(
     }
   }
   return changedParams;
+}
+
+/** Bump the hydration versions for the replayed keys and mirror them into the
+ * global set, so a reload lands on this model's settings. */
+function persistReplayedParams(
+  state: ChatRuntimeStore,
+  nextParams: InferenceParams,
+  replayed: boolean,
+): void {
+  if (!replayed) {
+    return;
+  }
+  const changed = getChangedInferenceParams(nextParams, state.params);
+  if (state.settingsHydrated && hasKeys(changed)) {
+    saveSettingsPatch({ inferenceParams: changed });
+  }
+}
+
+/** Same contract as the inference-param versions: a local edit must not be
+ * clobbered by a hydration response already in flight. */
+function trackParamsByModel(
+  paramsByModel: Record<string, PersistedInferenceParams> | null,
+): Record<string, PersistedInferenceParams> | null {
+  if (paramsByModel) {
+    paramsByModelMutationVersion += 1;
+  }
+  return paramsByModel;
+}
+
+/** Write an edit to the global set, and to the model's own set when one is
+ * selected. Only the touched model is patched, so others are left alone. */
+function persistParamEdit(
+  changedParams: PersistedInferenceParams,
+  paramsByModel: Record<string, PersistedInferenceParams> | null,
+  modelId: string | undefined,
+): void {
+  if (!hasKeys(changedParams)) {
+    return;
+  }
+  saveSettingsPatch({
+    inferenceParams: changedParams,
+    ...(paramsByModel && modelId
+      ? { inferenceParamsByModel: { [modelId]: paramsByModel[modelId] } }
+      : {}),
+  });
 }
 
 function getHydratedCustomPresets(
@@ -1520,6 +1579,12 @@ function getHydratedSettingsState(
     }
   }
   nextState.params = params;
+  if (
+    settings.inferenceParamsByModel !== undefined &&
+    paramsByModelMutationVersion === versions.paramsByModel
+  ) {
+    nextState.paramsByModel = settings.inferenceParamsByModel;
+  }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
     if (
@@ -1555,6 +1620,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ? { ...DEFAULT_INFERENCE_PARAMS, checkpoint: persistedExternal }
       : DEFAULT_INFERENCE_PARAMS;
   })(),
+  paramsByModel: {},
+  // On by default; a model with nothing remembered keeps the current settings.
+  rememberParamsPerModel: true,
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
@@ -1620,6 +1688,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
   ragSource: loadRagSource(),
+  projectAttachmentTarget: loadProjectAttachmentTarget(),
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
   ragAutoInject: loadRagAutoInject(),
@@ -1778,12 +1847,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         params,
         options?.trackQueuedSettings !== false,
       );
-      if (
-        options?.persist !== false &&
-        state.settingsHydrated &&
-        hasKeys(changedParams)
-      ) {
-        saveSettingsPatch({ inferenceParams: changedParams });
+      // An edit belongs to the model the params now describe, so a call that moves
+      // checkpoint and sliders at once files them under the destination.
+      const paramsByModel = trackParamsByModel(
+        getRememberedParamsPatch(
+          state.rememberParamsPerModel,
+          state.paramsByModel,
+          params.checkpoint,
+          changedParams,
+        ),
+      );
+      if (options?.persist !== false && state.settingsHydrated) {
+        persistParamEdit(changedParams, paramsByModel, params.checkpoint);
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
       // via setParams() before setCheckpoint runs, leaving stale per-turn
@@ -1791,6 +1866,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
+        ...(paramsByModel ? { paramsByModel } : {}),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),
@@ -1968,10 +2044,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      const baseParams = getReplayedParams(
+        state.rememberParamsPerModel,
+        state.paramsByModel,
+        state.params,
+        modelId,
+        checkpointChanged,
+      );
       // Clamp maxTokens to the new model's cap when switching into an external
       // model so a value carried over from a local session doesn't exceed the
       // slider's max.
-      let nextMaxTokens = state.params.maxTokens;
+      let nextMaxTokens = baseParams.maxTokens;
       if (checkpointChanged && isExternalModelId(modelId)) {
         const parsed = parseExternalModelId(modelId);
         const provider = parsed
@@ -2013,12 +2096,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         },
         options?.trackQueuedSettings !== false,
       );
+      const nextParams = {
+        ...baseParams,
+        checkpoint: modelId,
+        maxTokens: nextMaxTokens,
+      };
+      persistReplayedParams(state, nextParams, baseParams !== state.params);
       return {
-        params: {
-          ...state.params,
-          checkpoint: modelId,
-          maxTokens: nextMaxTokens,
-        },
+        params: nextParams,
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
@@ -2448,6 +2533,39 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ragEnabled,
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
     })),
+  setRememberParamsPerModel: (rememberParamsPerModel) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "rememberParamsPerModel",
+        rememberParamsPerModel,
+        state.rememberParamsPerModel,
+      );
+      // Turning it on adopts the settings on screen for the active model.
+      const paramsByModel = trackParamsByModel(
+        getRememberedParamsPatch(
+          rememberParamsPerModel,
+          state.paramsByModel,
+          state.params.checkpoint,
+          pickPersistedInferenceParams(state.params),
+        ),
+      );
+      if (paramsByModel && state.settingsHydrated && state.params.checkpoint) {
+        saveSettingsPatch({
+          inferenceParamsByModel: {
+            [state.params.checkpoint]: paramsByModel[state.params.checkpoint],
+          },
+        });
+      }
+      return {
+        rememberParamsPerModel,
+        ...(paramsByModel ? { paramsByModel } : {}),
+      };
+    }),
+  setProjectAttachmentTarget: (projectAttachmentTarget) =>
+    set(() => {
+      saveString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, projectAttachmentTarget);
+      return { projectAttachmentTarget };
+    }),
   setRagSource: (ragSource) =>
     set((state) => {
       saveRagSource(ragSource);

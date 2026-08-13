@@ -925,6 +925,12 @@ export const en = {
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
+      rememberParamsPerModel: "Remember settings per model",
+      rememberParamsPerModelDescription:
+        "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
+      projectAttachments: "Share files across a project",
+      projectAttachmentsDescription:
+        "Files attached in a chat that belongs to a project are indexed for the whole project, so every chat in it can use them. Change it per chat from the attach menu.",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
