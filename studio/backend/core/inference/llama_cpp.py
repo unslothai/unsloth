@@ -5861,6 +5861,43 @@ class LlamaCppBackend:
         ]
 
     @staticmethod
+    def _metal_zero_ctx_floor(
+        effective_ctx: int,
+        auto_fit: bool,
+        gpu_memory_mode: Optional[str],
+        native_ctx: Optional[int],
+    ) -> int:
+        """Context to start at when Metal would otherwise be sent "-c 0", else 0.
+
+        "-c 0" is the over-commit the Apple cap exists to prevent: llama.cpp
+        reads it as fit_params_min_ctx = UINT32_MAX, which pins the model's full
+        native length and disables the reduction --fit would do. Two paths reach
+        the command builder with a zero context after that cap has been skipped
+        or thrown away:
+
+          * the cap is guarded on ``effective_ctx > 0``, so a GGUF whose
+            metadata carries no context length is never capped at all;
+          * the ``except Exception`` around GPU selection restores the original
+            request, which is 0 when context is on Auto. That discards a context
+            the cap had already computed, and logs "using --fit on" while
+            emitting the one argument that disables --fit.
+
+        Either way the child starts at native on unified memory and dies in KV
+        or compute allocation (#5118, #6529). Floor to the same 4096 the cap
+        itself falls back to when it cannot estimate KV.
+
+        Only when a Metal budget is resolvable, which is 0 off Apple Silicon, so
+        this is inert everywhere else. Auto-layers is left alone because it omits
+        -c entirely and lets --fit size it, and manual offload is left alone
+        because there the user owns memory management, cap included.
+        """
+        if effective_ctx > 0 or auto_fit or gpu_memory_mode == "manual":
+            return 0
+        if not LlamaCppBackend._apple_metal_memory_budget_bytes():
+            return 0
+        return min(4096, native_ctx or 4096)
+
+    @staticmethod
     def _apple_metal_memory_budget_bytes() -> int:
         """Unified-memory budget for GGUF context fitting on Apple Silicon.
 
@@ -14075,6 +14112,18 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
+                auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                _metal_floor = self._metal_zero_ctx_floor(
+                    effective_ctx, auto_fit, gpu_memory_mode, self._context_length
+                )
+                if _metal_floor:
+                    effective_ctx = _metal_floor
+                    max_available_ctx = max(max_available_ctx or 0, effective_ctx)
+                    logger.warning(
+                        "No GPU is enumerated on Metal and the context cap did not "
+                        f"run, so starting at {effective_ctx} rather than the model's "
+                        "native length."
+                    )
                 cmd = [
                     binary,
                     "-m",
@@ -14094,7 +14143,6 @@ class LlamaCppBackend:
                 # "-c 0" would instead pin the FULL native context (llama.cpp's
                 # -c handler sets fit_params_min_ctx = UINT32_MAX on value 0,
                 # disabling --fit's reduction). See gpu_memory_mode.
-                auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
                 if effective_ctx > 0:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
