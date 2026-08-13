@@ -1127,8 +1127,32 @@ def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int
     return min(free_bytes, max(0, total_bytes - reserved)), total_bytes
 
 
+# clr fills hipDeviceProp_t.integrated from the HSA "agent is APU" flag only from
+# ROCm 6.1.2 on; before that an APU answers 0 exactly like a discrete card. HIP's
+# last version field is a build number, so 6.1.2 cannot be told from 6.1.0 and the
+# whole 6.1 line stays untrusted.
+_HIP_INTEGRATED_FLAG_MIN = (6, 2)
+
+
+def _hip_runtime_version() -> Optional[tuple[int, int]]:
+    """(major, minor) of the HIP runtime torch was built against, None if unreadable."""
+    try:
+        import torch
+
+        raw = getattr(torch.version, "hip", None)
+        if raw:
+            parts = str(raw).split(".")
+            return (int(parts[0]), int(parts[1]))
+        # AMD SDK / Radeon wheels leave version.hip unset; the tag is in __version__.
+        match = re.search(r"rocm(\d+)\.(\d+)", getattr(torch, "__version__", "") or "")
+        return (int(match.group(1)), int(match.group(2))) if match else None
+    except Exception as e:
+        logger.debug("HIP runtime version probe failed: %s", e)
+        return None
+
+
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
-    """True when ``props.total_memory`` understates what torch can actually use.
+    """True when ``props.total_memory`` may understate what torch can actually use.
 
     On a unified-memory ROCm APU the two totals are NOT the same number:
     ``props.total_memory`` is the dedicated carve-out while ``hipMemGetInfo``'s
@@ -1139,15 +1163,29 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
     the GTT total, so only APUs pay mem_get_info; every discrete device keeps the
     free inventory. Same classifier the training worker and the llama.cpp backend
     use, so all three agree on what an APU is.
+
+    "Not unified" is not the same answer as "discrete". That classifier knows an APU
+    by the driver's integrated flag or by a hardcoded arch set, so a gfx1103 Phoenix
+    iGPU on a runtime that leaves the flag at 0 reads as discrete and would publish
+    its carve-out as the whole device. Only a runtime that fills the flag in gets to
+    settle it; on anything older, and when the classifier itself fails, the driver
+    total is worth a context, because a total that is too small hides models.
     """
     if not IS_ROCM:
         return False
     try:
         from core.training.worker import _rocm_classify_unified_memory
-        return _rocm_classify_unified_memory(props)[1]
+        if _rocm_classify_unified_memory(props)[1]:
+            return True
     except Exception as e:
         logger.debug("ROCm unified-memory classification failed: %s", e)
-        return False
+        return True
+    hip_version = _hip_runtime_version()
+    return (
+        getattr(props, "is_integrated", None) is None
+        or hip_version is None
+        or hip_version < _HIP_INTEGRATED_FLAG_MIN
+    )
 
 
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:

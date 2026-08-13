@@ -317,14 +317,28 @@ def test_rocm_apu_inventory_keeps_the_gtt_total(monkeypatch):
     assert inventory[0]["total_gb"] != round(_APU_CARVE_OUT / (1024**3), 2)
 
 
+class _FakeRocmProps(_FakeProps):
+    """Discrete card as a current ROCm runtime describes it: the flag is filled in."""
+
+    def __init__(self, name = "MI300X", total = 191505498112, arch = "gfx942", integrated = 0):
+        super().__init__(name, total)
+        self.gcnArchName = arch
+        self.is_integrated = integrated
+
+
+def _rocm_mod(props, gtt_total = _APU_GTT_TOTAL):
+    mod = types.SimpleNamespace()
+    mod.get_device_properties = lambda o: props
+    mod.mem_get_info = lambda o: (gtt_total - (2 << 30), gtt_total)
+    return mod
+
+
 def test_rocm_discrete_inventory_stays_context_free(monkeypatch):
     # Only APUs pay for mem_get_info. An MI300X must keep the free path.
-    def _boom(*a, **k):
-        raise AssertionError("mem_get_info would create a primary context")
-
-    mod = _fake_mod([191505498112], names = ["MI300X"])
-    mod.mem_get_info = _boom
+    mod = _rocm_mod(_FakeRocmProps())
+    mod.mem_get_info = lambda o: pytest.fail("mem_get_info would create a primary context")
     monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 178.35
 
@@ -368,6 +382,72 @@ def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch
     inventory = hw._torch_get_device_inventory([0])
     probe = [{"index": d["index"], "vram_total_gb": d["total_gb"]} for d in inventory]
     assert hw._rocm_system_wide_vram_by_index(probe) == {}
+
+
+# ========== APUs the classifier cannot place ==========
+
+# The classifier answers unified or not-unified, never "cannot tell", and it knows an
+# APU by the driver's integrated flag or by a hardcoded gfx1150/1151/1152 set. Every
+# other iGPU therefore reads as not-unified, and taking that for discrete would publish
+# an 8 GiB-class carve-out as the whole device and hide models. clr only fills that flag
+# in from ROCm 6.1.2, so only a runtime new enough to answer gets to settle it.
+
+
+class _FakeUnclassifiedApuProps(_FakeProps):
+    """gfx1103 Phoenix: a real APU that sits outside the classifier's arch set."""
+
+    def __init__(self, total = _APU_CARVE_OUT, *, integrated = 0):
+        super().__init__("AMD Radeon 780M Graphics", total)
+        self.gcnArchName = "gfx1103"
+        if integrated is not None:
+            self.is_integrated = integrated
+
+
+def test_rocm_unclassified_apu_keeps_the_driver_total_on_an_older_runtime(monkeypatch):
+    mod = _rocm_mod(_FakeUnclassifiedApuProps())
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 1))
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
+
+
+def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypatch):
+    # A wheel that omits the field reads as 0 through getattr, exactly like a runtime
+    # that never set it, so the arch set is again the only signal left.
+    mod = _rocm_mod(_FakeUnclassifiedApuProps(integrated = None))
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
+
+
+def test_rocm_props_that_cannot_be_classified_keep_the_driver_total(monkeypatch):
+    class _HostileProps(_FakeProps):
+        def __init__(self):
+            super().__init__("AMD Radeon Graphics", _APU_CARVE_OUT)
+
+        @property
+        def gcnArchName(self):
+            raise RuntimeError("properties unreadable")
+
+    mod = _rocm_mod(_HostileProps())
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
+
+
+def test_hip_runtime_version_reads_both_wheel_spellings(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.version, "hip", "6.4.43483-a187df25c", raising = False)
+    assert hw._hip_runtime_version() == (6, 4)
+    # AMD SDK / Radeon wheels leave version.hip unset; the tag is in __version__.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm6.2", raising = False)
+    assert hw._hip_runtime_version() == (6, 2)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+cu128", raising = False)
+    assert hw._hip_runtime_version() is None
 
 
 # ========== clear_gpu_cache ==========
