@@ -4054,7 +4054,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             </Field>
             <Field
               label="Resolution"
-              hint="Width and height in pixels. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
+              hint={
+                // Image-conditioned workflows size from the source, so "this is the output size"
+                // is wrong there: Transform caps the source by this box, the rest ignore it.
+                workflow === "transform"
+                  ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
+                  : workflow === "inpaint" ||
+                      workflow === "extend" ||
+                      workflow === "upscale" ||
+                      workflow === "edit"
+                    ? "Not used by this workflow: the output size comes from the source image. Upload a smaller image to generate at a smaller size."
+                    : "Width and height in pixels. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
+              }
             >
               <div className="flex items-center gap-2">
                 <DimensionSelect

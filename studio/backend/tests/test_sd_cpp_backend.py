@@ -251,8 +251,9 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: filename
-            in cached
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: (
+                filename in cached
+            )
         ),
     )
 
@@ -966,6 +967,9 @@ def test_ensure_binary_install_disabled_returns_none(monkeypatch):
 # A --help extract shaped like the real one: the mode list and --audio-vae are old enough to be in
 # a pre-H3 build too (they came with LTX-2), so only the H3-only --ref-video separates the two.
 _PRE_H3_HELP = (
+    # The banner is what upstream's print_usage() emits first, and it is also what separates "an
+    # sd.cpp build without H3" from "not sd.cpp at all" -- two outcomes the gate now distinguishes.
+    "stable-diffusion.cpp version unknown, commit unknown\n"
     "  -M, --mode                    run mode, one of [img_gen, vid_gen, upscale, convert]\n"
     "  --audio-vae <string>          path to standalone LTX audio vae model\n"
 )
@@ -1034,9 +1038,133 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
     monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
 
-    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
         bk.ensure_h3_sd_cpp_binary()
     assert own.exists()
+    # Not Studio's to delete, so the refusal must not ask for anything to be removed. The old
+    # wording said "remove that directory" whatever the binary was, and PATH discovery hands this
+    # branch /usr/bin/sd, i.e. it read as "remove /usr/bin".
+    assert "remove" not in str(excinfo.value)
+    assert str(own) in str(excinfo.value)
+
+
+def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatch, tmp_path):
+    # The one case where clearing the path IS the fix: a build in a layout the installer writes to.
+    # It has no ownership marker (or the branch above would own it), so it is the user's own build
+    # at the installer's path: offer to MOVE it, never to delete it.
+    root = tmp_path / "studio" / "stable-diffusion.cpp"
+    own = root / "sd-cli"
+    root.mkdir(parents = True)
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "managed_install_root", lambda: root)
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
+        bk.ensure_h3_sd_cpp_binary()
+    assert f"move {root} aside" in str(excinfo.value)
+    assert "remove" not in str(excinfo.value)
+    assert own.exists()
+
+
+def test_h3_binary_gate_never_offers_to_delete_the_in_tree_developer_build(monkeypatch, tmp_path):
+    # <repo_root>/stable-diffusion.cpp is the developer-build fallback, and a git clone of
+    # leejet's repo lands exactly there. Deleting it takes the user's source checkout and no
+    # reinstall follows, so it is never offered.
+    root = tmp_path / "repo" / "stable-diffusion.cpp"
+    own = root / "build" / "bin" / "sd-cli"
+    own.parent.mkdir(parents = True)
+    own.write_text("binary")
+    # raising = False because the hint does not import it. The patch is what makes this a
+    # regression guard: re-add the root to _h3_replacement_hint and it resolves to this tree.
+    monkeypatch.setattr(bk, "in_tree_install_root", lambda: root, raising = False)
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
+        bk.ensure_h3_sd_cpp_binary()
+    assert "remove" not in str(excinfo.value)
+    assert own.exists()
+
+
+def test_h3_binary_gate_logs_the_real_fault_for_a_managed_non_sd_cpp_binary(
+    monkeypatch, tmp_path, capsys
+):
+    # A managed tree holding something that is not sd.cpp is still replaced, but the log line has to
+    # say why. Calling that fault "does not advertise MiniMax-H3" is the same wrong diagnosis #8507
+    # was reported as, just written to the log instead of to the user.
+    own = tmp_path / "sd-cli"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: True)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: "sd 1.0.0\nFind & replace CLI\n")
+
+    assert bk.ensure_h3_sd_cpp_binary(allow_install = False) is None
+    # capsys, not caplog: the backend logs through structlog, which writes to stdout.
+    logged = capsys.readouterr().out
+    assert "is not stable-diffusion.cpp" in logged
+    assert "MiniMax-H3" not in logged
+    assert own.exists()
+
+
+def test_h3_binary_gate_names_a_binary_that_is_not_sd_cpp_at_all(monkeypatch, tmp_path):
+    # #8507: SD_CLI_PATH pointed at Debian/Ubuntu's `sd` find-and-replace tool, and the gate
+    # reported it as a stable-diffusion.cpp build predating MiniMax-H3. Every program that is not
+    # sd.cpp is missing --ref-video, so that verdict sent the user hunting for a newer build of
+    # something they had never installed. Identity and capability are separate answers.
+    own = tmp_path / "sd"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_args: "sd 1.0.0\nFind & replace CLI\n\nUSAGE:\n    sd <find> <replace-with>\n",
+    )
+
+    with pytest.raises(RuntimeError, match = "is not stable-diffusion.cpp"):
+        bk.ensure_h3_sd_cpp_binary()
+    assert own.exists()  # never ours to delete
+
+
+def test_h3_binary_gate_requires_identity_not_just_the_h3_marker(monkeypatch, tmp_path):
+    # --ref-video is a plain option name, not a signature: unrelated reference-video tools expose
+    # it too. Returning early on the marker alone would readmit the #8507 class of program through
+    # SD_CLI_PATH -- accepted as H3-capable, bundle downloaded, failure deferred to generation.
+    own = tmp_path / "reference-video-cli"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_args: "reference-video-cli 2.1\n  --ref-video PATH   reference clip\n",
+    )
+
+    with pytest.raises(RuntimeError, match = "is not stable-diffusion.cpp"):
+        bk.ensure_h3_sd_cpp_binary()
+
+
+def test_h3_binary_gate_probes_help_once_for_both_questions(monkeypatch, tmp_path):
+    # Identity is read off the capability probe's own output. A second spawn would double the cost
+    # of the refusal path and, worse, could read a DIFFERENT build than the one just judged.
+    own = tmp_path / "sd-cli"
+    own.write_text("binary")
+    calls: list[tuple] = []
+
+    def _probe(binary, *args):
+        calls.append((binary, args))
+        return "sd 1.0.0\nFind & replace CLI\n"
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", _probe)
+
+    with pytest.raises(RuntimeError, match = "is not stable-diffusion.cpp"):
+        bk.ensure_h3_sd_cpp_binary()
+    assert [args for _b, args in calls] == [("--help",)]
 
 
 def test_h3_binary_gate_keeps_a_binary_it_cannot_probe(monkeypatch):
