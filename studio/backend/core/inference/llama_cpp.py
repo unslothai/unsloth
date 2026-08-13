@@ -16521,10 +16521,9 @@ class LlamaCppBackend:
             content = conversation[-1].get("content")
             if not isinstance(content, str):
                 return False
-            # Replaced, not mutated: ``conversation`` is a shallow copy, so the trailing
-            # dict can be one the caller still owns (/v1/messages hands its own history
-            # straight through, and it may legitimately end on a tool result). Editing it
-            # in place would leave the nudge in the caller's list and re-send it next turn.
+            # Replaced, not mutated: ``conversation`` copies the list, not the dicts, and
+            # /v1/messages passes a caller's own history through, which may end on a tool
+            # result. An in-place edit would leave the nudge there and re-send it next turn.
             conversation[-1] = {**conversation[-1], "content": f"{content}\n\n{feedback}"}
             return True
 

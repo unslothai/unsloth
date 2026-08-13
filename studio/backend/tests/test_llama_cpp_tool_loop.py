@@ -836,12 +836,10 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
 def test_tool_loop_does_not_mutate_the_caller_s_messages(monkeypatch):
     """The caller's own message dicts stay untouched across a fold.
 
-    ``conversation`` copies the list, not the dicts. Today every fold target is a
-    result this loop just built, so nothing caller-owned is reachable -- this pins
-    that. It is worth pinning because the entry points are not all internal:
-    /v1/messages hands a client's own history straight through, and that history may
-    end on a tool result, so a fold that moved to a different target would silently
-    leave the hidden instruction in the client's list and replay it next request.
+    ``conversation`` copies the list, not the dicts. Every fold target is a result this
+    loop just built, so nothing caller-owned is reachable today; pinning it matters
+    because /v1/messages passes a client's own history through, and a fold that moved
+    to a different target would leave the hidden instruction in that client's list.
     """
     messages = [
         {"role": "user", "content": "weather?"},
