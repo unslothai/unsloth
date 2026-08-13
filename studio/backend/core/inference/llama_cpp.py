@@ -6040,6 +6040,26 @@ class LlamaCppBackend:
         return _keep
 
     @staticmethod
+    def _rocm_hip_is_reachable() -> bool:
+        """Whether HIP can actually open a device on this ROCm host.
+
+        amd-smi reads the driver over sysfs and libdrm, HIP needs ``/dev/kfd`` and a
+        matching HSA runtime, so the two disagree on a container given only
+        ``/dev/dri`` and on a torch built against another ROCm: amd-smi lists the
+        card and ``hipGetDeviceCount`` returns 0. The llama-server child is a HIP
+        process too, so answering there places a model on a device nothing can open.
+
+        ``is_available()`` is that ``hipGetDeviceCount``, not ``_lazy_init``, so it
+        creates no primary context; ``_rocm_unified_memory_gpu_ids`` already calls it
+        further down the same probe. False when torch is missing or unreadable.
+        """
+        try:
+            import torch
+            return bool(hasattr(torch, "cuda") and torch.cuda.is_available())
+        except Exception:
+            return False
+
+    @staticmethod
     def _amd_smi_hip_id_map(
         enumerated: list[int], mask: Optional[list[int]]
     ) -> Optional[dict[int, int]]:
@@ -6098,6 +6118,15 @@ class LlamaCppBackend:
             if not LlamaCppBackend._torch_is_rocm(torch):
                 return []
         except Exception:
+            return []
+        if not LlamaCppBackend._rocm_hip_is_reachable():
+            # amd-smi would still list the hardware, but HIP cannot open it and
+            # neither can the llama-server child. Torch answers [] here, as it did
+            # before this branch existed, and the load goes to CPU.
+            logger.debug(
+                "amd-smi VRAM probe deferring to torch: this ROCm torch cannot open "
+                "a device, so amd-smi's inventory is not usable by llama-server"
+            )
             return []
         try:
             from utils.hardware.amd import get_gpu_vram_report

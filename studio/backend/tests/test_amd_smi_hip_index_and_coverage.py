@@ -40,8 +40,12 @@ from utils.hardware import amd
 
 @pytest.fixture
 def rocm(monkeypatch):
-    """A ROCm host whose nvidia-smi probe finds nothing, with no APUs and no mask."""
+    """A ROCm host whose nvidia-smi probe finds nothing, with no APUs and no mask.
+
+    HIP reachability is declared, not inherited: unpatched it reads this host's own
+    GPU, and CI has none."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
         LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
     )

@@ -44,8 +44,10 @@ def rocm(monkeypatch):
     The mask is cleared from the environment as well as patched: the probe asks
     whether a mask is SET before asking what it resolves to, so the shell's own
     CUDA_VISIBLE_DEVICES would otherwise read as a mask that resolves to nothing
-    (#8662 for the same trap in the APU tests)."""
+    (#8662 for the same trap in the APU tests). HIP reachability is declared for the
+    same reason: unpatched it reads this host's own GPU, and CI has none."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
         LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
     )
