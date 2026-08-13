@@ -1241,11 +1241,10 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
         )
-        # Resolved out here so the companion claim can be published in the SAME locked section that
-        # publishes _loading. The worker cannot do it early enough: begin_load returns as soon as
-        # the thread is scheduled, and a delete arriving in that gap reads loading_repo_ids() with
-        # repo_id and base_repo only, passes the guard, and starts removing a companion repo the
-        # load is about to pull from. Claiming afterwards does not revoke a delete already admitted.
+        # Resolved out here so the companion claim is published in the SAME locked section as
+        # _loading. begin_load returns as soon as the thread is scheduled, and a delete arriving in
+        # that gap sees only repo_id and base_repo, passes the guard, and starts removing a
+        # companion repo this load needs. A later claim does not revoke a delete already admitted.
         from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
 
         h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
@@ -1513,23 +1512,16 @@ class VideoBackend:
         filename = gguf_filename or ""
         qwen_filename = h3_text_encoder_filename(filename)
 
-        # Claimed before anything slow, the preflight below included. asset_repos is what stops the
-        # delete-cached guard admitting a delete of the H3 companion repos while this load is
-        # pulling from them, and the preflight can spend minutes installing the sd-cli prebuilt.
-        # Claiming only after it left that whole window open, and a delete admitted inside it is
-        # not revoked by claiming the repos afterwards. expected_bytes stays below, where the sizes
-        # are known.
-        #
-        # begin_load publishes the same claim when it constructs _VideoLoadingState, which is what
-        # covers the gap between that publication and this thread being scheduled. This one is for
-        # load_pipeline, which reaches here without going through begin_load, and is a no-op repeat
-        # otherwise.
+        # Claimed before anything slow, the preflight included: it can spend minutes installing the
+        # sd-cli prebuilt, and asset_repos is what stops the delete-cached guard admitting a delete
+        # of the H3 companion repos mid-load, which a later claim cannot revoke. The download list
+        # pulls from both, and neither is repo_id or base_repo. loaded_repo_ids() is the committed
+        # twin; expected_bytes stays below, where the sizes are known.
+        # begin_load publishes the same claim with _loading, covering the gap before this thread is
+        # scheduled. This one is for load_pipeline, which never goes through begin_load.
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.base_repo = fam.base_repo
-                # The download list below pulls from the H3 companion repos too, and neither is
-                # repo_id or base_repo, so without this the delete-cached guard would let one be
-                # deleted out from under the in-flight load. The committed twin is loaded_repo_ids().
                 self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
 
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
