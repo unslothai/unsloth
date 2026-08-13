@@ -63,7 +63,7 @@ export function useMediaGenerationPresets<Params extends object>({
   >([]);
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET_NAME);
   const [hydrationSource, setHydrationSource] = useState<
-    "pending" | "fresh" | "saved" | "claimed" | "unreadable"
+    "pending" | "fresh" | "saved" | "claiming" | "claimed" | "unreadable"
   >("pending");
   // Settled, not readable: an unreadable store still answers "stored settings do not own the form",
   // which is what the load-state controls wait for. Only the preset UI itself needs a readable store.
@@ -79,11 +79,15 @@ export function useMediaGenerationPresets<Params extends object>({
   const latestSettingsRef = useRef<MediaGenerationPresetState<Params> | null>(
     null,
   );
+  const deferredSavedSettingsRef =
+    useRef<MediaGenerationPresetSettings<Params> | null>(null);
+  const deferredFreshSettingsRef = useRef(false);
   const baselineParamsRef = useRef(defaultParams);
   const activePresetRef = useRef(activePreset);
   // Bumped by every action that takes over the form, so a write that resolves late can still
   // update the list without moving a selection the user made while it was in flight.
   const formClaim = useRef(0);
+  const committedRecipeClaim = useRef(0);
   const defaultParamsRef = useRef(defaultParams);
   const applyParamsRef = useRef(applyParams);
   const paramsKeyRef = useRef(paramsKey);
@@ -111,22 +115,34 @@ export function useMediaGenerationPresets<Params extends object>({
   );
 
   const hydrateLocalSettings = useCallback((source: "fresh" | "unreadable") => {
+    deferredSavedSettingsRef.current = null;
+    deferredFreshSettingsRef.current = false;
     baselineParamsRef.current = defaultParamsRef.current;
     setCustomPresets([]);
     setActivePreset(DEFAULT_PRESET_NAME);
+    if (source === "fresh" && formClaim.current !== 0) {
+      const committed = committedRecipeClaim.current === formClaim.current;
+      deferredFreshSettingsRef.current = !committed;
+      setHydrationSource(committed ? "claimed" : "claiming");
+      return;
+    }
     setHydrationSource(source);
   }, []);
 
   const hydrateSavedSettings = useCallback(
     (settings: MediaGenerationPresetSettings<Params>) => {
       const custom = settings.customPresets ?? [];
+      deferredFreshSettingsRef.current = false;
       setCustomPresets(custom);
       // A model pick made while the request was in flight is newer than storage. Keep its form
       // values, but still hydrate the named presets so the user's library remains available.
       if (formClaim.current !== 0) {
-        setHydrationSource("claimed");
+        const committed = committedRecipeClaim.current === formClaim.current;
+        deferredSavedSettingsRef.current = committed ? null : settings;
+        setHydrationSource(committed ? "claimed" : "claiming");
         return;
       }
+      deferredSavedSettingsRef.current = null;
       const available = new Set([
         DEFAULT_PRESET_NAME,
         ...custom.map((preset) => preset.name),
@@ -180,10 +196,55 @@ export function useMediaGenerationPresets<Params extends object>({
     };
   }, [hydrateLocalSettings, hydrateSavedSettings, kind]);
 
-  // Explicit model picks own the form over a settings request that was already in flight.
+  // Explicit model picks own the form over a settings request that was already in flight. A load
+  // that fails gives that ownership back, provided no newer form action superseded the pick.
   const claimRecipe = useCallback(() => {
-    claimForm(formClaim);
-  }, []);
+    const previousClaim = formClaim.current;
+    const previousCommittedClaim = committedRecipeClaim.current;
+    const claim = claimForm(formClaim);
+    let settled = false;
+    const ownsClaim = () => !settled && formClaim.current === claim;
+    return {
+      commit: () => {
+        if (!ownsClaim()) {
+          return;
+        }
+        settled = true;
+        committedRecipeClaim.current = claim;
+        deferredSavedSettingsRef.current = null;
+        deferredFreshSettingsRef.current = false;
+        setHydrationSource((source) =>
+          source === "claiming" ? "claimed" : source,
+        );
+      },
+      release: () => {
+        if (!ownsClaim()) {
+          return;
+        }
+        settled = true;
+        committedRecipeClaim.current = previousCommittedClaim;
+        formClaim.current = previousClaim;
+        if (previousClaim !== 0 && previousCommittedClaim === previousClaim) {
+          deferredSavedSettingsRef.current = null;
+          deferredFreshSettingsRef.current = false;
+          setHydrationSource((source) =>
+            source === "claiming" ? "claimed" : source,
+          );
+          return;
+        }
+        if (previousClaim !== 0 || !deferredSavedSettingsRef.current) {
+          if (previousClaim === 0 && deferredFreshSettingsRef.current) {
+            deferredFreshSettingsRef.current = false;
+            setHydrationSource("fresh");
+          }
+          return;
+        }
+        const deferred = deferredSavedSettingsRef.current;
+        deferredSavedSettingsRef.current = null;
+        hydrateSavedSettings(deferred);
+      },
+    };
+  }, [hydrateSavedSettings]);
 
   const settings = useMemo<MediaGenerationPresetState<Params>>(
     () => ({

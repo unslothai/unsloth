@@ -1139,6 +1139,8 @@ type PickRevert = {
   prev: string | null;
   steps: number;
   guidance: number;
+  commitRecipeClaim?: () => void;
+  releaseRecipeClaim?: () => void;
   // What the pick applied. A field the user changed after that is theirs, not ours to put back.
   appliedSteps?: number;
   appliedGuidance?: number;
@@ -1185,6 +1187,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setPendingModelDefaults(null);
     setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
     setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    r.releaseRecipeClaim?.();
+    r.releaseRecipeClaim = undefined;
   }, []);
   // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
   // it. Without this the Default preset would read as "modified" for the whole download.
@@ -1386,12 +1390,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const claimImageRecipe = imagePresets.claimRecipe;
   const applyImageModelDefaults = useCallback(
     (repoId: string) => {
-      claimImageRecipe();
+      const revert = quantRevert.current;
+      if (revert && !revert.releaseRecipeClaim) {
+        const claim = claimImageRecipe();
+        revert.commitRecipeClaim = claim.commit;
+        revert.releaseRecipeClaim = claim.release;
+      }
       const recommended = defaultsFor(repoId);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
-      const revert = quantRevert.current;
       if (revert) {
         revert.appliedSteps = recommended.steps;
         revert.appliedGuidance = recommended.guidance;
@@ -2102,6 +2110,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
+        quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
         // Status owns the recipe from here, so the pick's claim on Default expires with it.
         setPendingModelDefaults(null);

@@ -262,6 +262,13 @@ def _validated_without_invalid_fields(schema: type[BaseModel], payload: dict) ->
                 return schema()
 
 
+def _validated_readable_model(schema: type[BaseModel], payload: Any) -> Optional[BaseModel]:
+    try:
+        return schema.model_validate(_readable(schema, payload))
+    except ValidationError:
+        return None
+
+
 def _get_generation_preset_settings(kind, schema):
     stored = get_media_generation_preset_settings(kind)
     try:
@@ -273,11 +280,10 @@ def _get_generation_preset_settings(kind, schema):
         presets = schema.model_fields["customPresets"].annotation
         item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
         readable = []
-        for raw in _readable(item, stored.get("customPresets", []) or []):
-            try:
-                readable.append(item.model_validate(raw))
-            except ValidationError:
-                continue
+        for raw in stored.get("customPresets", []) or []:
+            validated = _validated_readable_model(item, raw)
+            if validated is not None:
+                readable.append(validated)
         state = {
             key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
         }
@@ -326,7 +332,12 @@ def _upsert_custom_generation_preset(
     kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
 ) -> dict[str, bool]:
     try:
-        upsert_media_generation_preset(kind, payload.model_dump())
+        schema = type(payload)
+        upsert_media_generation_preset(
+            kind,
+            payload.model_dump(),
+            lambda stored: _validated_readable_model(schema, stored) is not None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     return {"saved": True}

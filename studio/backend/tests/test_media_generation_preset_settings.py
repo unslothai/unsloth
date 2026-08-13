@@ -216,6 +216,51 @@ def test_a_store_larger_than_the_write_cap_still_reads(monkeypatch):
     assert body["currentParams"]["steps"] == 24
 
 
+def test_unreadable_presets_do_not_consume_the_write_cap(monkeypatch):
+    stored = {
+        "image_generation_presets": {
+            "activePreset": "Default",
+            "currentParams": {"steps": 24},
+            "customPresets": [
+                {"name": f"Unreadable {index}", "params": {"steps": 999_999}}
+                for index in range(100)
+            ],
+        }
+    }
+    client = _client(monkeypatch, stored)
+
+    response = client.put(
+        "/api/settings/generation-presets/image/custom",
+        json = {"name": "Readable", "params": {"steps": 20}},
+    )
+
+    assert response.status_code == 200
+    body = client.get("/api/settings/generation-presets/image").json()
+    assert [preset["name"] for preset in body["customPresets"]] == ["Readable"]
+    assert len(stored["image_generation_presets"]["customPresets"]) == 101
+
+
+def test_unreadable_presets_do_not_expand_the_readable_write_cap(monkeypatch):
+    stored = {
+        "image_generation_presets": {
+            "activePreset": "Default",
+            "currentParams": {"steps": 24},
+            "customPresets": [
+                {"name": f"Readable {index}", "params": {"steps": 20}} for index in range(100)
+            ]
+            + [{"name": "Unreadable", "params": {"steps": 999_999}}],
+        }
+    }
+    client = _client(monkeypatch, stored)
+
+    response = client.put(
+        "/api/settings/generation-presets/image/custom",
+        json = {"name": "One too many", "params": {"steps": 20}},
+    )
+
+    assert response.status_code == 409
+
+
 def test_a_blob_written_by_another_build_still_reads(monkeypatch):
     # extra = "forbid" is right for a submitted payload and wrong for reading storage back: a single
     # field from a newer build must not cost the user every recipe this build can still render.

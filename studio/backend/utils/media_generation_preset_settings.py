@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from threading import RLock
-from typing import Literal
+from typing import Callable, Literal
 
 
 MediaGenerationKind = Literal["image", "video"]
@@ -62,13 +62,16 @@ def set_media_generation_preset_settings(kind: MediaGenerationKind, settings: di
         upsert_app_settings({_setting_key(kind): updated})
 
 
-def upsert_media_generation_preset(kind: MediaGenerationKind, preset: dict) -> None:
+def upsert_media_generation_preset(
+    kind: MediaGenerationKind, preset: dict, is_readable: Callable[[dict], bool]
+) -> None:
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)
         presets = _custom_presets(stored)
-        replacing = any(item.get("name") == preset["name"] for item in presets)
-        if not replacing and len(presets) >= _MAX_PRESETS:
+        readable = [item for item in presets if is_readable(item)]
+        replacing = any(item.get("name") == preset["name"] for item in readable)
+        if not replacing and len(readable) >= _MAX_PRESETS:
             raise ValueError("Delete a preset before saving another one")
         stored["customPresets"] = [
             item for item in presets if item.get("name") != preset["name"]

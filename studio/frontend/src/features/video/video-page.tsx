@@ -735,6 +735,8 @@ type PickRevert = {
   prev: string | null;
   steps: number;
   guidance: number;
+  commitRecipeClaim?: () => void;
+  releaseRecipeClaim?: () => void;
   // What the pick applied. A field the user changed after that is theirs, not ours to put back.
   appliedSteps?: number;
   appliedGuidance?: number;
@@ -822,6 +824,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
     if (r.modelSeeded != null) modelSeeded.current = r.modelSeeded;
     if (r.familySeeded != null) familySeeded.current = r.familySeeded;
+    r.releaseRecipeClaim?.();
+    r.releaseRecipeClaim = undefined;
   }, []);
   // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
   // it. Without this the Default preset would read as "modified" for the whole download.
@@ -1199,12 +1203,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const claimVideoRecipe = videoPresets.claimRecipe;
   const applyVideoModelDefaults = useCallback(
     (repoId: string) => {
-      claimVideoRecipe();
+      const revert = quantRevert.current;
+      if (revert && !revert.releaseRecipeClaim) {
+        const claim = claimVideoRecipe();
+        revert.commitRecipeClaim = claim.commit;
+        revert.releaseRecipeClaim = claim.release;
+      }
       const recommended = defaultsFor(repoId);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
-      const revert = quantRevert.current;
       if (revert) {
         revert.modelSeeded ??= modelSeeded.current;
         revert.familySeeded ??= familySeeded.current;
@@ -1876,6 +1884,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
         setBusy(null);
+        quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
         // lastLoad.current already holds the now-resident pick, so drop its revert too.
         lastLoadRevert.current = null;
