@@ -128,7 +128,10 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: [])
         env = _env_for(binary)
-        assert env["LD_LIBRARY_PATH"].split(":")[0] == str(binary.parent)
+        # startswith, not split(":")[0]: the Linux branch joins with a literal
+        # ":" and this test simulates Linux on whatever host runs it, so on a
+        # Windows runner the first entry is "C:\..." and splitting yields "C".
+        assert env["LD_LIBRARY_PATH"].startswith(str(binary.parent))
         assert "DYLD_LIBRARY_PATH" not in env
 
     def test_inherited_entries_stay_last(self, monkeypatch, binary):

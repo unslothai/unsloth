@@ -154,7 +154,7 @@ def test_build_env_gpu_inherits_devices(monkeypatch):
     assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Unsloth's selection
 
 
-def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch):
+def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch, tmp_path):
     # dyld ignores LD_LIBRARY_PATH, and Apple Silicon is routed through the
     # use_gpu branch, so the embedding server needs the same treatment the chat
     # server got in #8566.
@@ -167,14 +167,20 @@ def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch):
     # env is a copy of os.environ, so an ambient LD_LIBRARY_PATH would be there
     # whatever this branch does. What matters is that it is left alone.
     monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/sentinel")
+    # A host-native directory, not a POSIX literal: _llama_lib_dir resolves the
+    # path, and this test simulates darwin on whatever host runs it, so on a
+    # Windows runner "/opt/llama/bin" comes back drive-anchored as "D:\opt\...".
+    bin_dir = tmp_path / "llama" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
     b = LlamaServerBackend()
-    env = b._build_env("/opt/llama/bin/llama-server", use_gpu = True)
+    env = b._build_env(str(bin_dir / "llama-server"), use_gpu = True)
     entries = env["DYLD_LIBRARY_PATH"].split(os.pathsep)
-    assert entries == ["/opt/llama/bin", "/opt/inherited"]
+    assert entries == [str(bin_dir), "/opt/inherited"]
     assert env["LD_LIBRARY_PATH"] == "/opt/sentinel"
 
 
-def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch):
+def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch, tmp_path):
     # EMBED_DEVICE=cpu, and the CPU retry after a failed GPU start, load the
     # same sibling dylibs; the loader path cannot be gated on use_gpu.
     import os
@@ -182,9 +188,13 @@ def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch):
 
     monkeypatch.setattr(_sys, "platform", "darwin")
     monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    # Host-native, for the same reason as the GPU case above.
+    bin_dir = tmp_path / "llama" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
     b = LlamaServerBackend()
-    env = b._build_env("/opt/llama/bin/llama-server", use_gpu = False)
-    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == "/opt/llama/bin"
+    env = b._build_env(str(bin_dir / "llama-server"), use_gpu = False)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(bin_dir)
     assert env["CUDA_VISIBLE_DEVICES"] == ""
 
 
