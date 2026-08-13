@@ -1937,6 +1937,28 @@ def test_a_certificate_that_cannot_be_removed_keeps_the_record_that_owns_it(cf, 
     assert ct._read(ct._RECORD) is None
 
 
+def test_credentials_a_failed_setup_cannot_remove_keep_the_record_that_names_them(cf, monkeypatch):
+    # The credentials authorize serving a tunnel that may have outlived the
+    # failure, and only this record carries the path to them.
+    credentials = ct.state_root() / f"{_TUNNEL_ID}.json"
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == credentials else real_unlink(path, **kw),
+    )
+    cf.route_outcome = (1, "failed to find zone")
+    with pytest.raises(ct.ProvisioningError):
+        _provision()
+    assert credentials.exists()
+    assert ct._read(ct._RECORD)["credentials"] == str(credentials)
+
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    _settle()
+    assert not credentials.exists()
+    assert ct._read(ct._RECORD) is None
+
+
 def test_teardown_carries_the_digest_of_a_certificate_setup_could_not_remove(cf, monkeypatch):
     # Teardown replaces the retained record, so dropping the digest here would
     # leave the certificate on disk with nothing that could ever claim it.

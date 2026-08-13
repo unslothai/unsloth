@@ -1974,6 +1974,7 @@ def _settle(
         return False
     identity = read_identity()
     teardown = record.get("operation") == "teardown"
+    stranded = False
     if teardown:
         if record.get("hostname"):
             _set_orphan(str(record["hostname"]), stranded = True)
@@ -1995,12 +1996,22 @@ def _settle(
             _set_orphan(str(record["hostname"]), stranded = True)
         _abandon(binary, record.get("tunnel_names") or ())
         if record.get("credentials"):
-            _unlink(Path(str(record["credentials"])))
+            credentials = Path(str(record["credentials"]))
+            _unlink(credentials)
+            if credentials.exists():
+                # That file authorizes serving the tunnel, which may itself have
+                # outlived the failure, and this record is the only thing naming
+                # either of them.
+                logger.warning("Cloudflare credentials could not be removed; keeping the record.")
+                stranded = True
     if not _delete_our_certificate(record, required = teardown):
         # The digest in this record is the only proof that Studio wrote that
         # account-wide certificate, so dropping the record now would strand a
-        # file no later run could delete. The next launch settles it instead.
+        # file no later run could delete.
         logger.warning("Cloudflare certificate could not be removed; keeping its setup record.")
+        stranded = True
+    if stranded:
+        # The next launch settles what this one could not remove.
         return False
     _discard(_RECORD, required = teardown)
     return teardown
