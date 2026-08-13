@@ -20,18 +20,19 @@ import {
   EMPTY_BUFFER,
   type LogBufferState,
   REFRESH_MODE_STORAGE_KEY,
+  REQUEST_TIMEOUT_MS,
   type RefreshMode,
   applyLogChunk,
+  isPageStale,
+  nextDroppedState,
   parseRefreshMode,
   pollDelayMs,
+  withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
-// Generous next to a 1s poll: this is the "this request will never answer"
-// backstop, not a latency budget. A remote tunnel can legitimately be slow.
-const POLL_TIMEOUT_MS = 20_000;
 // How often the picker rescans for log files that did not exist when the tab
 // was opened. Slower than the poll, since it is a directory walk rather than a
 // tail read.
@@ -62,7 +63,13 @@ export function DebuggingTab() {
   // The buffer is read inside the poll loop, which must not restart whenever a
   // line arrives, so the cursor lives in a ref as well as in state.
   const cursorRef = useRef<string | null>(null);
-  const inFlightRef = useRef(false);
+  // Counts source changes, so a request that is already in flight can tell that
+  // the view it was started for has since been replaced.
+  const selectionRef = useRef(0);
+  // The selection a request is in flight for, rather than a bare flag: a poll
+  // for the newly picked source must not be swallowed by a slow read of the one
+  // the user just left, or the new pane stays empty (in manual mode, for good).
+  const inFlightRef = useRef<number | null>(null);
   const paneRef = useRef<HTMLPreElement | null>(null);
   const pinnedRef = useRef(true);
   const lastSourceScanRef = useRef(Date.now());
@@ -78,7 +85,14 @@ export function DebuggingTab() {
   const refreshSources = useCallback(
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
       try {
-        const result = await loadDebugLogSources(options.signal);
+        // Bounded like the tail read: the poll loop awaits this before polling,
+        // and the failure recovery awaits it inside the poll's own catch, so an
+        // unanswered /sources would otherwise freeze both.
+        const result = await withRequestTimeout(
+          (signal) => loadDebugLogSources(signal),
+          REQUEST_TIMEOUT_MS,
+          options.signal,
+        );
         setSources(result.sources);
         setSourceId((current) =>
           options.reselect
@@ -135,33 +149,39 @@ export function DebuggingTab() {
 
   const poll = useCallback(
     async (signal?: AbortSignal) => {
-      if (inFlightRef.current) return;
-      inFlightRef.current = true;
+      const selection = selectionRef.current;
+      if (inFlightRef.current === selection) return;
+      inFlightRef.current = selection;
       // A request that never settles would otherwise pin inFlightRef forever:
       // the timer keeps firing, every poll returns at the guard above, and the
       // pane freezes with no error because the catch never runs. A suspended
-      // laptop or a dropped tunnel is enough. AbortSignal.any would be the tidy
-      // way to combine this with the caller's signal, but it is Safari 17.4,
-      // above this project's 16.4 floor, so the two are linked by hand.
-      const localAbort = new AbortController();
-      const timeout = window.setTimeout(
-        () => localAbort.abort(),
-        POLL_TIMEOUT_MS,
-      );
-      const relay = () => localAbort.abort();
-      signal?.addEventListener("abort", relay);
+      // laptop or a dropped tunnel is enough.
       try {
-        const page = await loadDebugLog({
-          sourceId,
-          cursor: cursorRef.current,
-          signal: localAbort.signal,
-        });
-        // A manual refresh in flight while the user switches source would
-        // otherwise land the old file's lines and path under the new pick.
-        if (sourceId && page.sourceId && page.sourceId !== sourceId) return;
+        const page = await withRequestTimeout(
+          (requestSignal) =>
+            loadDebugLog({
+              sourceId,
+              cursor: cursorRef.current,
+              signal: requestSignal,
+            }),
+          REQUEST_TIMEOUT_MS,
+          signal,
+        );
+        // A manual refresh carries no abort signal, so one still in flight when
+        // the user switches source would otherwise land the old file's lines,
+        // cursor and path under the new pick.
+        if (
+          isPageStale({
+            requestSelection: selection,
+            currentSelection: selectionRef.current,
+            requestSourceId: sourceId,
+            pageSourceId: page.sourceId,
+          })
+        )
+          return;
         cursorRef.current = page.cursor;
         if (page.realpath) setRealpath(page.realpath);
-        setDropped(page.droppedBytes > 0);
+        setDropped((previous) => nextDroppedState(previous, page));
         setNotice(
           page.status === "ok" || page.status === "empty"
             ? null
@@ -175,11 +195,11 @@ export function DebuggingTab() {
           }),
         );
       } catch (error) {
-        await onPollFailed(error, signal);
+        if (selection === selectionRef.current)
+          await onPollFailed(error, signal);
       } finally {
-        window.clearTimeout(timeout);
-        signal?.removeEventListener("abort", relay);
-        inFlightRef.current = false;
+        // Only if a poll for a newer selection has not taken the slot.
+        if (inFlightRef.current === selection) inFlightRef.current = null;
       }
     },
     [onPollFailed, sourceId, t],
@@ -187,9 +207,11 @@ export function DebuggingTab() {
 
   // Switching source starts a fresh read rather than appending to the old file.
   useEffect(() => {
+    selectionRef.current += 1;
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
     setRealpath(null);
+    setDropped(false);
   }, [sourceId]);
 
   useEffect(() => {

@@ -12,6 +12,10 @@ export type RefreshMode = "live" | "3s" | "manual";
 export const DEFAULT_REFRESH_MODE: RefreshMode = "3s";
 export const REFRESH_MODE_STORAGE_KEY = "unsloth_debug_log_refresh_mode";
 
+/** Generous next to a 1s poll: this is the "this request will never answer"
+ * backstop, not a latency budget. A remote tunnel can legitimately be slow. */
+export const REQUEST_TIMEOUT_MS = 20_000;
+
 /** Bounds on what the viewer holds. The server already caps a response; this
  * caps the accumulation across a long session. */
 export const MAX_CLIENT_LINES = 2000;
@@ -51,6 +55,76 @@ export function parseRefreshMode(value: unknown): RefreshMode {
   return value === "live" || value === "3s" || value === "manual"
     ? value
     : DEFAULT_REFRESH_MODE;
+}
+
+/** Run a request under the "this will never answer" backstop, linked to the
+ * caller's signal.
+ *
+ * EVERY request the viewer awaits needs this, not just the tail read: the auth
+ * client passes `init` straight to `fetch` and adds no timeout of its own, so a
+ * request that opens and never settles hangs whatever is awaiting it for good.
+ * The poll loop awaits the source rescan before the tail read, so an unanswered
+ * /sources froze the pane exactly the way the tail read's own backstop was
+ * added to prevent. `AbortSignal.any` would fold the two signals together, but
+ * it is Safari 17.4 against this project's 16.4 floor, so they are linked by
+ * hand.
+ */
+export async function withRequestTimeout<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  const local = new AbortController();
+  if (signal?.aborted) local.abort();
+  const relay = () => local.abort();
+  signal?.addEventListener("abort", relay);
+  const timer = setTimeout(() => local.abort(), timeoutMs);
+  try {
+    return await task(local.signal);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", relay);
+  }
+}
+
+/** Whether a response that has just landed still belongs on screen.
+ *
+ * `selection` counts source changes. A manual refresh carries no abort signal,
+ * so a slow read of source A can answer after the user has picked B, and
+ * comparing the page's own source id does not catch it: the answer really is
+ * A's, it is the view underneath that moved. Counting also covers A -> B -> A,
+ * where the id matches again but the cursor and the buffer have been reset in
+ * between, so the old page's cursor would rewind the new read.
+ */
+export function isPageStale(page: {
+  requestSelection: number;
+  currentSelection: number;
+  requestSourceId: string | null;
+  pageSourceId: string | null;
+}): boolean {
+  if (page.requestSelection !== page.currentSelection) return true;
+  // The server answers an unset source with its default, so only disagree when
+  // both ends named one.
+  return Boolean(
+    page.requestSourceId &&
+      page.pageSourceId &&
+      page.requestSourceId !== page.pageSourceId,
+  );
+}
+
+/** Whether the "some lines were skipped" warning shows after this response.
+ *
+ * Sticky, because the gap it reports stays in the buffer: recomputing it from
+ * the newest response alone cleared the warning on the next poll (one second in
+ * live mode) while the pane was still missing those lines. It clears when the
+ * buffer does, and a reset replaces everything on screen with a fresh tail.
+ */
+export function nextDroppedState(
+  previous: boolean,
+  page: { droppedBytes: number; reset: boolean },
+): boolean {
+  if (page.droppedBytes > 0) return true;
+  return page.reset ? false : previous;
 }
 
 /** Drop from the front until the buffer is within both caps. */
