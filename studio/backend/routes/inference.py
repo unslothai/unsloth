@@ -69,6 +69,7 @@ from core.inference.llama_admission import (
     llama_admission_config_from_env,
     peek_llama_admission_snapshot,
 )
+from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -5959,10 +5960,6 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        managed_kv_unified = bool(
-            slots > 1
-            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
-        )
         planned_cache_types = _planned_main_cache_types(
             cache_type_kv,
             llama_extra_args,
@@ -5997,6 +5994,25 @@ def _estimate_gguf_kv_gb(
                 n_batch = _emitted_n_batch(n_batch, slots),
                 n_ubatch = n_ubatch,
             )
+        )
+        # --embedding makes llama-server cap n_batch to n_ubatch. The loader
+        # therefore reduces slots to the same value before fitting; admission
+        # must price the process that will launch, not the original request.
+        if (
+            getattr(probe, "is_embedding_gguf", False)
+            and effective_ubatch is not None
+            and effective_ubatch < slots
+        ):
+            slots = max(1, effective_ubatch)
+            effective_ubatch = _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx,
+                n_batch = _emitted_n_batch(n_batch, slots),
+                n_ubatch = n_ubatch,
+            )
+        managed_kv_unified = bool(
+            slots > 1
+            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -6039,10 +6055,13 @@ def _estimate_gguf_kv_gb(
             ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
             act_scratch = 4 * n_embd * ub * 4
             out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
+            output_slots = (
+                slots if getattr(probe, "is_embedding_gguf", False) else max(0, slots - 1)
+            )
             raw = (
                 2 * act_scratch + out_buffer * slots
                 if per_device_tensor
-                else act_scratch + out_buffer * max(0, slots - 1)
+                else act_scratch + out_buffer * output_slots
             )
             return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
@@ -6080,6 +6099,96 @@ def _estimate_gguf_kv_gb(
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
         return 0.0
+
+
+def _remote_gguf_compute_reserve_gb(
+    llama_extra_args: Optional[list[str]] = None,
+    max_seq_length: int = 0,
+    n_parallel: int = 1,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
+    tensor_parallel: bool = False,
+    is_diffusion: bool = False,
+) -> float:
+    """Compute buffers a remote GGUF will reserve, in GB.
+
+    Split out of _estimate_gguf_required_gb so a caller that is pricing something
+    else, a drafter for instance, can hold it at zero the way it already holds
+    _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
+    """
+    # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
+    from core.inference.llama_server_args import parse_ctx_override
+
+    try:
+        ctx_override = parse_ctx_override(llama_extra_args) or 0
+    except Exception:
+        ctx_override = 0
+    ctx = max(max_seq_length or 0, ctx_override)
+    effective_ubatch = (
+        None
+        if is_diffusion
+        else _extra_args_n_ubatch(
+            llama_extra_args,
+            n_ctx = ctx if ctx > 0 else None,
+            # same floor raise the loader applies at launch
+            n_batch = _emitted_n_batch(n_batch, n_parallel),
+            n_ubatch = n_ubatch,
+        )
+    )
+    if effective_ubatch is None and not is_diffusion:
+        effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
+    if effective_ubatch:
+        # auto context: assume the native one fits at least a full micro-batch
+        budget_ctx = ctx if ctx > 0 else effective_ubatch
+        devices = max(1, int(n_devices))
+        # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
+        # times, the same step _compute_buffer_ctx_bytes applies locally; charging
+        # the single-copy rate under-reserved 4x. Tensor mode is already correct
+        # (measured at the single-device rate, replicated per device). n_layers is
+        # None here: the header is unread, so -ngl cannot be resolved, but -ot /
+        # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
+        # same model 409s while remote and loads once cached.
+        from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
+        split_mult = (
+            LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
+            if devices > 1
+            and not tensor_parallel
+            and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
+            else 1
+        )
+        mask_bytes = (
+            budget_ctx
+            * effective_ubatch
+            * 2
+            * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+            * devices
+            * split_mult
+        )
+        # The mask is only the context-linear half. The flat half needs the dims,
+        # which are unreadable remotely, but its dominant term needs just a vocab
+        # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
+        # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
+        # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
+        # an uncached load that then OOMs the training job it exists to protect.
+        # The activation scratch needs embedding_length and stays uncharged: it is
+        # the small half, and over-reserving here denies the load outright.
+        # Scaled per device only in tensor mode, mirroring the local branch: a
+        # layer split folds the flat buffer in once (_flat_buffer(False)), and
+        # only tensor mode replicates it on every card.
+        # The remote header is unknown, so reserve as if it enables embeddings.
+        _out_slots = max(1, n_parallel)
+        out_buffer_bytes = (
+            _ASSUMED_MAX_VOCAB
+            * effective_ubatch
+            * 4
+            * _out_slots
+            * (devices if tensor_parallel else 1)
+            * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        )
+        return (mask_bytes + out_buffer_bytes) / (1024**3)
+    return 0.0
 
 
 def _estimate_gguf_required_gb(
@@ -6336,74 +6445,16 @@ def _estimate_gguf_required_gb(
             # one: this repo's listing cannot see it, local or remote, and it is
             # resident next to these weights.
             total_gb = (main_bytes + companions + _extras_bytes) / (1024**3)
-            # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
-            from core.inference.llama_server_args import parse_ctx_override
-
-            try:
-                ctx_override = parse_ctx_override(llama_extra_args) or 0
-            except Exception:
-                ctx_override = 0
-            ctx = max(max_seq_length or 0, ctx_override)
-            effective_ubatch = (
-                None
-                if is_diffusion
-                else _extra_args_n_ubatch(
-                    llama_extra_args,
-                    n_ctx = ctx if ctx > 0 else None,
-                    # same floor raise the loader applies at launch
-                    n_batch = _emitted_n_batch(n_batch, n_parallel),
-                    n_ubatch = n_ubatch,
-                )
+            total_gb += _remote_gguf_compute_reserve_gb(
+                llama_extra_args = llama_extra_args,
+                max_seq_length = max_seq_length,
+                n_parallel = n_parallel,
+                n_batch = n_batch,
+                n_ubatch = n_ubatch,
+                n_devices = n_devices,
+                tensor_parallel = tensor_parallel,
+                is_diffusion = is_diffusion,
             )
-            if effective_ubatch:
-                # auto context: assume the native one fits at least a full micro-batch
-                budget_ctx = ctx if ctx > 0 else effective_ubatch
-                devices = max(1, int(n_devices))
-                # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
-                # times, the same step _compute_buffer_ctx_bytes applies locally; charging
-                # the single-copy rate under-reserved 4x. Tensor mode is already correct
-                # (measured at the single-device rate, replicated per device). n_layers is
-                # None here: the header is unread, so -ngl cannot be resolved, but -ot /
-                # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
-                # same model 409s while remote and loads once cached.
-                from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
-
-                split_mult = (
-                    LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
-                    if devices > 1
-                    and not tensor_parallel
-                    and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
-                    else 1
-                )
-                mask_bytes = (
-                    budget_ctx
-                    * effective_ubatch
-                    * 2
-                    * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-                    * devices
-                    * split_mult
-                )
-                # The mask is only the context-linear half. The flat half needs the dims,
-                # which are unreadable remotely, but its dominant term needs just a vocab
-                # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
-                # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
-                # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
-                # an uncached load that then OOMs the training job it exists to protect.
-                # The activation scratch needs embedding_length and stays uncharged: it is
-                # the small half, and over-reserving here denies the load outright.
-                # Scaled per device only in tensor mode, mirroring the local branch: a
-                # layer split folds the flat buffer in once (_flat_buffer(False)), and
-                # only tensor mode replicates it on every card.
-                _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
-                out_buffer_bytes = (
-                    _ASSUMED_MAX_VOCAB
-                    * effective_ubatch
-                    * 4
-                    * _out_slots
-                    * (devices if tensor_parallel else 1)
-                    * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-                )
-                total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)
             return total_gb
         return None
     except Exception as e:
@@ -8067,6 +8118,17 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
+        # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
+        # confirmation below cancels the running generations, both before load_model's own
+        # copy of this check runs. A header-sized read spares them. Fails open into that copy.
+        if config.is_gguf and gguf_intent is not None:
+            _non_chat = await asyncio.to_thread(
+                llama_backend.non_chat_gguf_refusal_for_intent, gguf_intent
+            )
+            if _non_chat:
+                logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
+                raise HTTPException(status_code = 400, detail = _non_chat)
+
         if chat_load_needs_gpu:
             await asyncio.to_thread(
                 acquire_for,
@@ -12903,6 +12965,7 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
+                    approval_flush_pending = False
 
                     def _flush_reasoning_extractor():
                         final_reasoning, final_visible = reasoning_extractor.finish()
@@ -12935,15 +12998,23 @@ async def openai_chat_completions(
                             # Stall-timeout wait: keepalive while the generator stays
                             # silent (e.g. prefill between tool iterations). asyncio.wait
                             # never cancels next_task, matching the finally-drain shield.
+                            wait_timeout = (
+                                TOOL_APPROVAL_FLUSH_DELAY_S
+                                if approval_flush_pending
+                                else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                            )
                             while True:
                                 done_tasks, _ = await asyncio.wait(
                                     {next_task},
-                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                    timeout = wait_timeout,
                                 )
                                 if done_tasks:
                                     break
                                 yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                approval_flush_pending = False
+                                wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             event = next_task.result()
+                            approval_flush_pending = False
                         finally:
                             if next_task.done():
                                 next_task = None
@@ -13001,6 +13072,7 @@ async def openai_chat_completions(
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                                 # Yielded just before the loop blocks on the user.
                                 await _park_admission(bool(event.get("awaiting_confirmation")))
+                                approval_flush_pending = bool(event.get("awaiting_confirmation"))
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -14355,6 +14427,7 @@ async def openai_chat_completions(
                 gen = sf_generate_with_tools()
                 prev_text = ""
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                approval_flush_pending = False
 
                 def _sf_flush_reasoning():
                     # Drain the extractor at turn/stream end (mirrors GGUF); only visible text hits the monitor.
@@ -14384,15 +14457,23 @@ async def openai_chat_completions(
                     _sf_next_task = asyncio.create_task(
                         asyncio.to_thread(next, gen, _sf_tool_sentinel)
                     )
+                    wait_timeout = (
+                        TOOL_APPROVAL_FLUSH_DELAY_S
+                        if approval_flush_pending
+                        else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    )
                     while True:
                         _sf_done, _ = await asyncio.wait(
                             {_sf_next_task},
-                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                            timeout = wait_timeout,
                         )
                         if _sf_done:
                             break
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        approval_flush_pending = False
+                        wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                     event = _sf_next_task.result()
+                    approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
                     _sf_next_task = None
                     if event is _sf_tool_sentinel:
@@ -14445,6 +14526,7 @@ async def openai_chat_completions(
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
+                            approval_flush_pending = bool(event.get("awaiting_confirmation"))
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
@@ -16066,11 +16148,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
-    # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
-    # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
-    # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
-    # a non-embedding target switches, then llama-server returns a no-pooling error.
+    # Auto-switch applies here too; the target launches embedding-enabled only if it pools.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(

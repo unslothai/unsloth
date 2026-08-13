@@ -1842,7 +1842,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *9070*|*9080*)                                                                                 _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9070*|*9080*|*"R9700"*)                                                                       _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
             *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)

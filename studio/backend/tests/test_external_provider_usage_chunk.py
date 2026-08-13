@@ -635,3 +635,76 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
     assert "tools" in search_body
     assert "tools" not in fallback_body
     assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
+    """Only the SSE ``event:`` line carries the type here, and a type-less frame is
+    skipped rather than fatal, so the usage would vanish silently. Built raw, since
+    _openai_sse always repeats the type in data."""
+    body = (
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    usages = _usage_chunks(_drive(run()))
+    assert len(usages) == 1, usages
+
+
+def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
+    """Held past its blank line, a stale ``response.failed`` would claim the next
+    type-less frame, emit a 502 and break the loop before the real usage."""
+    body = (
+        b"event: response.failed\n"
+        b"data:\n"
+        b"\n"
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+        b"\n"
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+        b"data: [DONE]\n"
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    lines = _drive(run())
+    assert not [line for line in lines if '"provider_error"' in line], lines
+    assert len(_usage_chunks(lines)) == 1, lines

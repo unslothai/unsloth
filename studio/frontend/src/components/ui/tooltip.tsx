@@ -24,13 +24,13 @@ const TooltipTriggerElementCtx = createContext<(element: HTMLElement | null) => 
 
 // Radix sets body pointer-events to none while a modal layer is up. That is also when a hovered
 // trigger stops receiving pointerleave, so a tooltip already on screen hangs over the dialog
-// with nothing able to close it. One observer serves every tooltip.
+// with nothing able to close it. Two shared observers serve every tooltip.
 let modalLayerUp = false;
 const modalLayerListeners = new Set<() => void>();
-let modalLayerObserver: MutationObserver | null = null;
+let bodyLayerObserver: MutationObserver | null = null;
+let stackedLayerObserver: MutationObserver | null = null;
 
-function readModalLayer(): void {
-  modalLayerUp = document.body.style.pointerEvents === "none";
+function notifyModalLayer(): void {
   for (const listener of modalLayerListeners) listener();
 }
 
@@ -41,7 +41,7 @@ function readPointerEvents(style: string | null): string {
   );
 }
 
-function readRelevantLayerMutations(records: MutationRecord[]): void {
+function readStackedLayerMutations(records: MutationRecord[]): void {
   const pointerEventsChanged = records.some(
     (record) =>
       readPointerEvents(record.oldValue) !==
@@ -49,18 +49,41 @@ function readRelevantLayerMutations(records: MutationRecord[]): void {
         (record.target as Element).getAttribute?.("style") ?? null,
       ),
   );
-  if (pointerEventsChanged) readModalLayer();
+  if (pointerEventsChanged) notifyModalLayer();
+}
+
+// stacking only matters while a modal is up; otherwise this fires on every animated inline style.
+function syncStackedLayerObserver(): void {
+  if (!modalLayerUp) {
+    stackedLayerObserver?.disconnect();
+    stackedLayerObserver = null;
+    return;
+  }
+  if (stackedLayerObserver) return;
+  stackedLayerObserver = new MutationObserver(readStackedLayerMutations);
+  stackedLayerObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ["style"],
+    attributeOldValue: true,
+    subtree: true,
+  });
+}
+
+function readModalLayer(): void {
+  const next = document.body.style.pointerEvents === "none";
+  if (next === modalLayerUp) return;
+  modalLayerUp = next;
+  syncStackedLayerObserver();
+  notifyModalLayer();
 }
 
 function subscribeModalLayer(listener: () => void): () => void {
   modalLayerListeners.add(listener);
-  if (!modalLayerObserver && typeof MutationObserver !== "undefined") {
-    modalLayerObserver = new MutationObserver(readRelevantLayerMutations);
-    modalLayerObserver.observe(document.body, {
+  if (!bodyLayerObserver && typeof MutationObserver !== "undefined") {
+    bodyLayerObserver = new MutationObserver(readModalLayer);
+    bodyLayerObserver.observe(document.body, {
       attributes: true,
       attributeFilter: ["style"],
-      attributeOldValue: true,
-      subtree: true,
     });
     readModalLayer();
   }
