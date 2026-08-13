@@ -25,6 +25,16 @@ export type LocaleChangeResult =
 export type SetLocaleOptions = {
   loadMessages?: (locale: Locale) => Promise<void> | undefined;
   signal?: AbortSignal;
+  /**
+   * Adopt the preference even when its catalog never loads, rendering English.
+   *
+   * For a user picking a language this would be wrong: the choice failed, so it
+   * must not be persisted. Hydration is the opposite case. The preference it is
+   * applying is already the stored truth on the server, so refusing to adopt it
+   * leaves the local preference disagreeing with the server, and the next
+   * outbound save would push the stale local value back over it.
+   */
+  adoptOnFailure?: boolean;
 };
 
 export const DEFAULT_LOCALE_PREFERENCE: LocalePreference = AUTO_LOCALE;
@@ -189,15 +199,25 @@ function applyPreference(
   persist = false,
   loadMessages: LocaleCatalogLoader = loadLocaleMessages,
   signal?: AbortSignal,
+  adoptOnFailure = false,
 ): LocaleChangeResult | Promise<LocaleChangeResult> {
   if (signal?.aborted) return "cancelled";
+  const previousPending = pendingPreference;
+  const previousPendingPersist = pendingPreferenceShouldPersist;
   const revision = ++preferenceRevision;
   const locale = resolvePreference(preference);
   let pending: Promise<void> | undefined;
   try {
     pending = loadMessages(locale);
   } catch {
-    failPreference(revision);
+    if (adoptOnFailure) {
+      commitFallbackLocale(preference, revision);
+      return "failed";
+    }
+    // This request never became the pending one, so failing it must not clear
+    // the marker an earlier request that is still in flight is relying on.
+    pendingPreference = previousPending;
+    pendingPreferenceShouldPersist = previousPendingPersist;
     return "failed";
   }
   if (!pending) {
@@ -218,7 +238,11 @@ function applyPreference(
       () => {
         if (signal?.aborted) return "cancelled";
         if (revision !== preferenceRevision) return "superseded";
-        failPreference(revision);
+        if (adoptOnFailure) {
+          commitFallbackLocale(preference, revision);
+        } else {
+          failPreference(revision);
+        }
         return "failed";
       },
     )
@@ -377,10 +401,17 @@ export function setLocale(
   {
     loadMessages = loadLocaleMessages,
     signal,
+    adoptOnFailure = false,
   }: SetLocaleOptions = {},
 ): LocaleChangeResult | Promise<LocaleChangeResult> {
   const requestedPreference = normalizePreference(preference);
-  return applyPreference(requestedPreference, true, loadMessages, signal);
+  // persist stays true on both paths: a successful change is still written, and
+  // the adopt-on-failure path routes through commitFallbackLocale, which never
+  // writes storage, so a preference whose catalog failed is adopted for this
+  // session without being recorded as a choice that worked.
+  return applyPreference(
+    requestedPreference, true, loadMessages, signal, adoptOnFailure,
+  );
 }
 
 export function useLocale(): Locale {

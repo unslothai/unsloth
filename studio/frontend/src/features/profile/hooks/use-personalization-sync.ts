@@ -299,11 +299,19 @@ export function usePersonalizationSync(enabled: boolean): void {
           if (nextLanguage !== latestLanguageRef.current) {
             const localeResult = await setLocale(nextLanguage, {
               signal: localeHydrationController.signal,
+              // A catalog that will not load must not decide whether the rest of
+              // personalization syncs. Adopting the preference and rendering
+              // English keeps the local preference equal to the server's, so the
+              // baseline below is honest and the debounced push cannot overwrite
+              // the remote language with a stale local one.
+              adoptOnFailure: true,
             });
             if (cancelled) return;
-            if (localeResult === "failed" || localeResult === "cancelled") {
-              // Keep outbound saves paused after a catalog failure. Otherwise
-              // the unchanged local preference would overwrite the remote one.
+            // "superseded" means a newer request took over, so this language is
+            // no longer the one in effect and must not be recorded as the
+            // synchronized baseline: the newer request may itself have failed,
+            // leaving the local preference on neither value.
+            if (localeResult === "cancelled" || localeResult === "superseded") {
               return;
             }
           }

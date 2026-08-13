@@ -307,3 +307,75 @@ test("a synchronous initial catalog failure preserves the preference", () => {
   assert.equal(localeStore.getPendingLocalePreference(), null);
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ko");
 });
+
+test("hydration adopts a preference whose catalog failed, rendering English", async () => {
+  await localeStore.setLocale("en");
+  store.delete(localeStore.LOCALE_STORAGE_KEY);
+
+  const result = await localeStore.setLocale("de", {
+    loadMessages: () => Promise.reject(new Error("chunk 404")),
+    adoptOnFailure: true,
+  });
+
+  // The preference hydration applies is already the server's stored truth, so
+  // refusing to adopt it would leave the local preference disagreeing with the
+  // server and the next outbound save would push the stale value back over it.
+  assert.equal(result, "failed");
+  assert.equal(localeStore.getLocalePreference(), "de");
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(localeStore.getPendingLocalePreference(), null);
+  // Not persisted: storage records choices that worked, and writing this one
+  // would reproduce the failure on every later load with nothing to tell it
+  // apart from a deliberate pick.
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), undefined);
+});
+
+test("a user-initiated failure is not adopted", async () => {
+  await localeStore.setLocale("en");
+
+  const result = await localeStore.setLocale("ru", {
+    loadMessages: () => Promise.reject(new Error("chunk 404")),
+  });
+
+  assert.equal(result, "failed");
+  assert.notEqual(localeStore.getLocalePreference(), "ru");
+  assert.equal(localeStore.getLocale(), "en");
+});
+
+test("adopt-on-failure still persists a change that succeeded", async () => {
+  await localeStore.setLocale("en");
+
+  const result = await localeStore.setLocale("es", {
+    loadMessages: () => Promise.resolve(),
+    adoptOnFailure: true,
+  });
+
+  assert.equal(result, "applied");
+  assert.equal(localeStore.getLocalePreference(), "es");
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "es");
+});
+
+test("a synchronous loader throw leaves an in-flight request pending", async () => {
+  await localeStore.setLocale("en");
+  let finishLoading!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    finishLoading = resolve;
+  });
+
+  const slow = localeStore.setLocale("fr", { loadMessages: () => loading });
+  assert.equal(localeStore.getPendingLocalePreference(), "fr");
+
+  // This request never becomes the pending one, so clearing the marker on its
+  // way out would blank the spinner the slow request is still relying on.
+  const thrown = await localeStore.setLocale("hi", {
+    loadMessages: () => {
+      throw new Error("sync boom");
+    },
+  });
+
+  assert.equal(thrown, "failed");
+  assert.equal(localeStore.getPendingLocalePreference(), "fr");
+
+  finishLoading();
+  await slow;
+});
