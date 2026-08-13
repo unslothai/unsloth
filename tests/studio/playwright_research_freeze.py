@@ -55,6 +55,8 @@ MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "45"))
 # of slack covers a settle check landing just inside the window; more means a loop that never let
 # go, which is what left the reporter's window unresponsive.
 MAX_IDLE_RAF_PER_2S = int(os.environ.get("SMOKE_MAX_IDLE_RAF", "4"))
+# A timer queued before publishing measures how long report work keeps input off the main thread.
+REPORT_INPUT_DELAY_BUDGET_MS = int(os.environ.get("SMOKE_REPORT_INPUT_BUDGET_MS", "500"))
 
 # A real deep research run's size, with the three costliest things to render: fenced code (shiki),
 # a table, and display math (KaTeX).
@@ -149,10 +151,8 @@ def delta(before: dict[str, float], after: dict[str, float], name: str) -> float
 def run() -> dict:
     results: dict = {"label": LABEL, "base": BASE}
     with sync_playwright() as p:
-        # Headed under Xvfb by default (SMOKE_HEADLESS=1 to override): with no compositor,
-        # headless Chromium throttles rAF to a few callbacks a second, flattening the per-frame
-        # loop this file exists to measure.
-        headless = os.environ.get("SMOKE_HEADLESS", "0") == "1"
+        # The timer-driven frame pump above makes headless runs deterministic without Xvfb.
+        headless = os.environ.get("SMOKE_HEADLESS", "1") == "1"
         browser = p.chromium.launch(headless = headless, args = chromium_launch_args())
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
         # Deliberately NOT installing the view-transition killer: it forces
@@ -176,6 +176,7 @@ def run() -> dict:
 
         page.evaluate("window.__research.seed()")
         page.wait_for_timeout(500)
+        activities_before_stream = page.evaluate("window.__research.state().activities")
 
         # 1. The streaming phase.
         before = metrics(cdp)
@@ -214,6 +215,7 @@ def run() -> dict:
             "recalc_style_ms": round(delta(before, after, "RecalcStyleDuration") * 1000, 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
             "activities": page.evaluate("window.__research.state().activities"),
+            "activities_before": activities_before_stream,
         }
 
         # 2. Idle after the stream: the follow loop must stop when the list goes quiet.
@@ -225,10 +227,29 @@ def run() -> dict:
         report = build_report(int(os.environ.get("SMOKE_REPORT_SECTIONS", "40")))
         before = metrics(cdp)
         page.evaluate("window.__longTasks.length = 0")
-        page.evaluate("md => window.__research.publishReport(md)", report)
-        # A click during the parse: if the main thread is blocked this lands late but must land.
-        page.click('[data-smoke="click-probe"]')
+        page.evaluate(
+            """md => {
+                window.__reportInputDelayMs = 0;
+                let previous = performance.now();
+                const probe = () => {
+                    const now = performance.now();
+                    window.__reportInputDelayMs = Math.max(
+                        window.__reportInputDelayMs,
+                        now - previous,
+                    );
+                    previous = now;
+                    window.__reportInputProbe = setTimeout(probe, 16);
+                };
+                window.__reportInputProbe = setTimeout(() => {
+                    document.querySelector('[data-smoke="click-probe"]').click();
+                    probe();
+                }, 16);
+                window.__research.publishReport(md);
+            }""",
+            report,
+        )
         page.wait_for_timeout(3000)
+        page.evaluate("clearTimeout(window.__reportInputProbe)")
         after = metrics(cdp)
         long_tasks = page.evaluate("window.__longTasks")
         results["report"] = {
@@ -236,6 +257,7 @@ def run() -> dict:
             "long_tasks": len(long_tasks),
             "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
+            "input_delay_ms": round(page.evaluate("window.__reportInputDelayMs"), 1),
             "clicks_registered": page.evaluate("window.__research.clicks()"),
             "rendered": page.evaluate(
                 "() => Boolean(document.querySelector('[data-smoke=\\\"report\\\"] h1'))"
@@ -327,9 +349,9 @@ def main() -> int:
     stream = results["stream"]
     # A list that ingested nothing has nothing to follow, so it measures zero frames and clears
     # both budgets below. Recorded and unread was false-green; assert it.
-    if stream["activities"] < 1:
+    if stream["activities"] <= stream["activities_before"]:
         failures.append(
-            "the run ingested no activities; the frame budgets below measured an empty list"
+            "the stream added no activities; the frame budgets below measured no workload"
         )
     # Without these two the file records the per-frame cost and passes regardless, which is how
     # the original loop shipped: the numbers were there, nothing read them.
@@ -367,6 +389,11 @@ def main() -> int:
     # one was swallowed. Responsiveness during the report parse is the reported symptom; assert it.
     if results["report"]["clicks_registered"] < 1:
         failures.append("the click during the report parse never reached its handler")
+    if results["report"]["input_delay_ms"] > REPORT_INPUT_DELAY_BUDGET_MS:
+        failures.append(
+            f"report rendering delayed input by {results['report']['input_delay_ms']}ms, over the "
+            f"{REPORT_INPUT_DELAY_BUDGET_MS}ms budget"
+        )
     detach = results["detach"]
     if not detach["overflowing"]:
         failures.append("the activity list never overflowed; the detach checks proved nothing")

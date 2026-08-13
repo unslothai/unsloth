@@ -19,6 +19,8 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_chat_autoscroll.py'
+      - 'tests/studio/playwright_research_freeze.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
@@ -149,7 +151,7 @@ jobs:
         run: npm test
 
 
-      - name: Install Chromium for tool-output smoke
+      - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
         run: |
           python3 -m pip install 'playwright>=1.45,<2'
@@ -160,6 +162,17 @@ jobs:
         env:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
+
+      - name: Browser smoke for research autoscroll
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm --prefix studio/frontend run dev -- --host 127.0.0.1 --port 5183 --strictPort &
+          VITE_PID=$!
+          trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT
+          curl --retry 60 --retry-delay 1 --retry-connrefused --fail --silent \
+            http://127.0.0.1:5183/smoke-research.html >/dev/null
+          SMOKE_BASE_URL=http://127.0.0.1:5183 python3 tests/studio/playwright_chat_autoscroll.py
+          SMOKE_BASE_URL=http://127.0.0.1:5183 python3 tests/studio/playwright_research_freeze.py
 
       - name: Build
         run: npm run build

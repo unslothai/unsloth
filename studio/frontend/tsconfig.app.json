@@ -28,5 +28,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "smoke-autoscroll-main.tsx", "smoke-research-main.tsx"]
 }

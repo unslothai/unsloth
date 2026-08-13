@@ -139,6 +139,7 @@ def run() -> dict:
 
         # 1. Streaming.
         before = metrics(cdp)
+        stream_started = page.evaluate("performance.now()")
         page.evaluate(
             """async ([count, gap]) => {
                 window.__longTasks.length = 0;
@@ -154,11 +155,12 @@ def run() -> dict:
             [TOKEN_COUNT, TOKEN_GAP_MS],
         )
         page.wait_for_timeout(1200)
+        stream_window_ms = page.evaluate("started => performance.now() - started", stream_started)
         after = metrics(cdp)
         long_tasks = page.evaluate("window.__longTasks")
         results["stream"] = {
             "tokens": TOKEN_COUNT,
-            "wall_ms": TOKEN_COUNT * TOKEN_GAP_MS,
+            "wall_ms": round(stream_window_ms, 1),
             "raf_callbacks": page.evaluate("window.__rafCount"),
             "long_tasks": len(long_tasks),
             "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
