@@ -270,9 +270,8 @@ def test_management_rejects_api_keys():
     assert exc.value.status_code == 403
     assert remote_access.remote_access_status(_state())["streaming_supported"] is True
     # Every /remote-access handler must carry the gate. Scoped to those routes
-    # rather than counting the whole file: a file-wide count is a tripwire that
-    # any unrelated endpoint adopting _require_ui_session breaks, which is what
-    # happened when the Settings > Debugging log endpoints adopted it.
+    # because a file-wide count breaks whenever an unrelated endpoint adopts
+    # _require_ui_session, as the Settings > Debugging log endpoints did.
     tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
     gated = {}
     for node in ast.walk(tree):

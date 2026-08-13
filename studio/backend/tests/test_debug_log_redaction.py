@@ -47,7 +47,7 @@ SECRETS = [
     ),
     ("password: hunter2hunter2", "hunter2hunter2"),
     # "_" is a word character, so a \b before the key name never fires inside an
-    # env-style name. Every one of these survived in the clear before.
+    # env-style name; all of these used to survive in the clear.
     ("OPENAI_API_KEY=opaquevalue123456", "opaquevalue123456"),
     ("TOGETHER_API_KEY=abc123def456ghi789", "abc123def456ghi789"),
     (
@@ -60,28 +60,25 @@ SECRETS = [
     # credential after it was never looked at.
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
-    # Studio's UI session cookie is the credential that gates these very
-    # endpoints.
+    # Studio's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),
     ("set-cookie: refresh=8f3c9d1ab77e4f0a9c2b; HttpOnly", "8f3c9d1ab77e4f0a9c2b"),
     ("CI token glpat-ABCDEFGHIJKLMNOPQRST", "glpat-ABCDEFGHIJKLMNOPQRST"),
-    # Assembled rather than written out: a literal in the shape of a real Slack
-    # token, even an invented one, trips GitHub push protection.
+    # Assembled, not written out: even an invented Slack-shaped literal trips
+    # GitHub push protection.
     ("posting with " + _SLACK_SHAPED, _SLACK_SHAPED),
     ("refreshed ya29.a0ARrdaM9xQZ1lKjHgFdSaQwErTyUiOp", "ya29.a0ARrdaM9xQZ1lKjHgFdSaQwErTyUiOp"),
-    # A numeric password is still a password, whatever the general rule says
-    # about numbers being counts and ids.
+    # A numeric password is still a password, unlike numbers elsewhere.
     ("password=1234567890123", "1234567890123"),
-    # A quoted value that contains spaces. A passphrase is the everyday shape
-    # here, and a value that stopped at the first space left every word but the
-    # first in the clear while still printing <redacted>, which reads as safe.
+    # A quoted passphrase with spaces: stopping at the first space left every
+    # word but the first in the clear while still printing <redacted>.
     (
         '{"event":"login_failed","password":"correct horse battery staple"}',
         "horse battery staple",
     ),
     ("password='correct horse battery staple'", "horse battery staple"),
-    # The flag rule's value class rejected a leading quote outright, so this
-    # whole line survived untouched.
+    # The flag rule's value class rejected a leading quote, so this line
+    # survived untouched.
     ('llama-server --api-key "abcdef ghijklmnop" --port 8080', "abcdef ghijklmnop"),
 ]
 
@@ -102,8 +99,8 @@ KEEP = [
     '  File "/opt/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1518 in _call_impl',
     "llama-server --port 8080 --n-gpu-layers 99 --ctx-size 32768",
     '{"timestamp":"2026-08-13T09:00:00Z","level":"error","event":"llama_start_failed"}',
-    # The words a credential rule is tempted by, in the places Studio actually
-    # writes them. Blanking any of these hides the failure being diagnosed.
+    # Words a credential rule is tempted by, as Studio actually writes them.
+    # Blanking any of these hides the failure being diagnosed.
     "provider rejected the request: Bearer credentials expired",
     "Authorization header missing, expected Bearer authentication",
     "manifest digest sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
@@ -150,8 +147,7 @@ QUOTED = [
     ),
     # An escaped quote inside the value does not end it early.
     ('password="corr\\"ect horse staple"', 'password="<redacted>"'),
-    # Quoting puts the scheme word inside the value; it stays readable, and the
-    # credential behind it does not.
+    # Quoting puts the scheme inside the value; it stays, the credential goes.
     ('password: "Basic dXNlcjpwdw=="', 'password: "Basic <redacted>"'),
 ]
 
@@ -203,14 +199,13 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
     assert secret not in redact_log_text(line)
 
 
-# A colorized writer puts an escape sequence between the key and its value.
-# Every rule here is anchored on a word boundary or a lookbehind, and the "m"
-# that ends "\x1b[36m" is a word character, so the anchor stopped matching and
-# the credential went out in the clear -- and the viewer's pane strips the
-# escapes before rendering, so the reader saw a clean, unmasked token.
+# A colorized writer puts an escape between the key and its value. Every rule is
+# anchored on a word boundary or lookbehind, and the "m" ending "\x1b[36m" is a
+# word character, so the anchor stopped matching and the credential went out in
+# the clear -- and the pane strips escapes, so the reader saw a clean token.
 ANSI_SECRETS = [
-    # structlog's ConsoleRenderer, verbatim: colors are on by default whether or
-    # not the sink is a terminal, so this is what lands in the session log.
+    # structlog's ConsoleRenderer verbatim: colors default on even off-terminal,
+    # so this is what lands in the session log.
     (
         "\x1b[36mapi_key\x1b[0m=\x1b[35msk_live_abcdef123456\x1b[0m",
         "sk_live_abcdef123456",

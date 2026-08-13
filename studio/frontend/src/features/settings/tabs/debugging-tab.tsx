@@ -33,9 +33,8 @@ import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
-// How often the picker rescans for log files that did not exist when the tab
-// was opened. Slower than the poll, since it is a directory walk rather than a
-// tail read.
+// Rescan cadence for log files that did not exist when the tab was opened.
+// Slower than the poll: a directory walk rather than a tail read.
 const SOURCE_RESCAN_MS = 10_000;
 
 function readStoredMode(): RefreshMode {
@@ -60,15 +59,14 @@ export function DebuggingTab() {
   const [dropped, setDropped] = useState(false);
   const { copied, copy } = useCopyFeedback();
 
-  // The buffer is read inside the poll loop, which must not restart whenever a
-  // line arrives, so the cursor lives in a ref as well as in state.
+  // In a ref as well as state: the poll loop must not restart per line arrived.
   const cursorRef = useRef<string | null>(null);
-  // Counts source changes, so a request that is already in flight can tell that
-  // the view it was started for has since been replaced.
+  // Counts source changes, so an in-flight request can tell its view was
+  // replaced.
   const selectionRef = useRef(0);
-  // The selection a request is in flight for, rather than a bare flag: a poll
-  // for the newly picked source must not be swallowed by a slow read of the one
-  // the user just left, or the new pane stays empty (in manual mode, for good).
+  // The selection in flight, not a bare flag: a poll for the newly picked source
+  // must not be swallowed by a slow read of the one the user just left, or the
+  // new pane stays empty (in manual mode, for good).
   const inFlightRef = useRef<number | null>(null);
   const paneRef = useRef<HTMLPreElement | null>(null);
   const pinnedRef = useRef(true);
@@ -85,9 +83,8 @@ export function DebuggingTab() {
   const refreshSources = useCallback(
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
       try {
-        // Bounded like the tail read: the poll loop awaits this before polling,
-        // and the failure recovery awaits it inside the poll's own catch, so an
-        // unanswered /sources would otherwise freeze both.
+        // Bounded like the tail read: the poll loop and its failure recovery
+        // both await this, so an unanswered /sources would freeze both.
         const result = await withRequestTimeout(
           (signal) => loadDebugLogSources(signal),
           REQUEST_TIMEOUT_MS,
@@ -100,8 +97,7 @@ export function DebuggingTab() {
             : (current ?? result.defaultSourceId),
         );
       } catch {
-        // The log read below reports the real reason; a failed source list just
-        // means the picker stays empty.
+        // The log read reports the real reason; this just leaves the picker empty.
       }
     },
     [],
@@ -117,13 +113,11 @@ export function DebuggingTab() {
     async (error: unknown, signal?: AbortSignal) => {
       if (isAbort(error)) return;
       if (isLogSourceGone(error)) {
-        // The id we hold is no longer enumerated: the file was removed, or a
-        // run of failed load attempts pushed it out of the per-family window.
-        // The backend sends 404 precisely so the picker rebuilds itself;
-        // without this the loop re-polls a dead id once a second forever.
-        // Reselecting the server's default also ends the loop, because that is
-        // recomputed from the same walk, and "nothing at all" is a 200 with a
-        // status rather than another 404.
+        // The id we hold is no longer enumerated (file removed, or pushed out of
+        // the per-family window). The backend sends 404 precisely so the picker
+        // rebuilds; without this the loop re-polls a dead id forever.
+        // Reselecting the server's default terminates: it comes from the same
+        // walk, and "nothing at all" is a 200 with a status, not another 404.
         cursorRef.current = null;
         await refreshSources({ signal, reselect: true });
         return;
@@ -133,11 +127,10 @@ export function DebuggingTab() {
     [refreshSources],
   );
 
-  // The llama runner writes a NEW file per load attempt, so a list fetched once
-  // at mount goes stale exactly when it matters: open the tab, then fail a
-  // load, and the log for that failure is not offered. Rescanning is three
-  // directory listings, so it runs on its own slower cadence than the tail
-  // poll.
+  // The llama runner writes a NEW file per load attempt, so a list fetched at
+  // mount goes stale exactly when it matters: fail a load with the tab open and
+  // that failure's log is not offered. It is three directory listings, hence the
+  // slower cadence than the tail poll.
   const rescanSourcesIfStale = useCallback(
     async (signal?: AbortSignal) => {
       if (Date.now() - lastSourceScanRef.current < SOURCE_RESCAN_MS) return;
@@ -152,10 +145,9 @@ export function DebuggingTab() {
       const selection = selectionRef.current;
       if (inFlightRef.current === selection) return;
       inFlightRef.current = selection;
-      // A request that never settles would otherwise pin inFlightRef forever:
-      // the timer keeps firing, every poll returns at the guard above, and the
-      // pane freezes with no error because the catch never runs. A suspended
-      // laptop or a dropped tunnel is enough.
+      // Without the timeout a request that never settles pins inFlightRef
+      // forever: every poll returns at the guard above and the pane freezes with
+      // no error, since the catch never runs. A dropped tunnel is enough.
       try {
         const page = await withRequestTimeout(
           (requestSignal) =>
@@ -167,9 +159,8 @@ export function DebuggingTab() {
           REQUEST_TIMEOUT_MS,
           signal,
         );
-        // A manual refresh carries no abort signal, so one still in flight when
-        // the user switches source would otherwise land the old file's lines,
-        // cursor and path under the new pick.
+        // A manual refresh carries no abort signal, so one in flight across a
+        // source switch would land the old file's lines under the new pick.
         if (
           isPageStale({
             requestSelection: selection,
@@ -219,9 +210,8 @@ export function DebuggingTab() {
     let timer: number | undefined;
     let stopped = false;
 
-    // A self-scheduling timeout, not setInterval: the next poll is only queued
-    // once the previous one has settled, so a slow link (a remote tunnel) can
-    // never build a backlog of overlapping requests.
+    // A self-scheduling timeout, not setInterval: the next poll is queued only
+    // once the previous settled, so a slow link builds no backlog.
     const tick = async () => {
       if (stopped) return;
       if (
@@ -257,8 +247,8 @@ export function DebuggingTab() {
   const onScroll = useCallback(() => {
     const pane = paneRef.current;
     if (!pane) return;
-    // Stop chasing the bottom once the user scrolls up: reading a traceback
-    // while the app is still logging was the whole complaint.
+    // Stop chasing the bottom once the user scrolls up, so a traceback stays
+    // readable while the app keeps logging.
     pinnedRef.current =
       pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   }, []);

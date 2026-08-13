@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Buffer and polling maths for the Settings > Debugging log viewer.
- *
- * Kept free of React so it can be tested: the tab component pulls in the
- * router, motion and hugeicons and cannot be imported under node:test.
+/** Buffer and polling maths for the Settings > Debugging log viewer. Kept free
+ * of React so it can be tested: the tab component pulls in the router, motion
+ * and hugeicons and cannot be imported under node:test.
  */
 
 export type RefreshMode = "live" | "3s" | "manual";
@@ -34,11 +33,9 @@ export interface LogBufferState {
 
 export const EMPTY_BUFFER: LogBufferState = { lines: [], cursor: null };
 
-/** Poll delay for a mode, or null when the user drives it by hand.
- *
- * "live" is a one second poll rather than a socket: this endpoint is the same
- * shape the export log had to fall back to because Cloudflare quick tunnels
- * buffer text/event-stream and only flush at close.
+/** Poll delay for a mode, or null when the user drives it by hand. "live" polls
+ * rather than opening a socket: Cloudflare quick tunnels buffer
+ * text/event-stream and only flush at close, which is why the export log polls too.
  */
 export function pollDelayMs(mode: RefreshMode): number | null {
   switch (mode) {
@@ -61,13 +58,10 @@ export function parseRefreshMode(value: unknown): RefreshMode {
  * caller's signal.
  *
  * EVERY request the viewer awaits needs this, not just the tail read: the auth
- * client passes `init` straight to `fetch` and adds no timeout of its own, so a
- * request that opens and never settles hangs whatever is awaiting it for good.
- * The poll loop awaits the source rescan before the tail read, so an unanswered
- * /sources froze the pane exactly the way the tail read's own backstop was
- * added to prevent. `AbortSignal.any` would fold the two signals together, but
- * it is Safari 17.4 against this project's 16.4 floor, so they are linked by
- * hand.
+ * client passes `init` straight to `fetch` and adds no timeout, so a request
+ * that opens and never settles hangs its awaiter for good. The poll loop awaits
+ * the source rescan first, so an unanswered /sources froze the pane. Signals are
+ * linked by hand because `AbortSignal.any` is Safari 17.4 against a 16.4 floor.
  */
 export async function withRequestTimeout<T>(
   task: (signal: AbortSignal) => Promise<T>,
@@ -90,11 +84,10 @@ export async function withRequestTimeout<T>(
 /** Whether a response that has just landed still belongs on screen.
  *
  * `selection` counts source changes. A manual refresh carries no abort signal,
- * so a slow read of source A can answer after the user has picked B, and
- * comparing the page's own source id does not catch it: the answer really is
- * A's, it is the view underneath that moved. Counting also covers A -> B -> A,
- * where the id matches again but the cursor and the buffer have been reset in
- * between, so the old page's cursor would rewind the new read.
+ * so a slow read of source A can answer after the user picked B; comparing
+ * source ids does not catch it, since the answer really is A's and it is the
+ * view underneath that moved. Counting also covers A -> B -> A, where the id
+ * matches again but the buffer was reset and A's old cursor would rewind it.
  */
 export function isPageStale(page: {
   requestSelection: number;
@@ -114,10 +107,10 @@ export function isPageStale(page: {
 
 /** Whether the "some lines were skipped" warning shows after this response.
  *
- * Sticky, because the gap it reports stays in the buffer: recomputing it from
- * the newest response alone cleared the warning on the next poll (one second in
- * live mode) while the pane was still missing those lines. It clears when the
- * buffer does, and a reset replaces everything on screen with a fresh tail.
+ * Sticky, because the gap it reports stays in the buffer: recomputing from the
+ * newest response alone cleared the warning on the next poll (1s in live mode)
+ * while the pane was still missing those lines. Only a reset clears it, since
+ * that replaces everything on screen with a fresh tail.
  */
 export function nextDroppedState(
   previous: boolean,
@@ -143,11 +136,9 @@ export function trimBuffer(lines: string[]): string[] {
   return trimmed;
 }
 
-/** Fold one response into the buffer.
- *
- * Returns the SAME object when the chunk carries nothing new, so the caller can
- * skip a re-render: at a one second poll on a quiet server, almost every tick
- * is empty.
+/** Fold one response into the buffer. Returns the SAME object when the chunk
+ * carries nothing new, so the caller can skip a re-render: at a 1s poll on a
+ * quiet server almost every tick is empty.
  */
 export function applyLogChunk(
   previous: LogBufferState,

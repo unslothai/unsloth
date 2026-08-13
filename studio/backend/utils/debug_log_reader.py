@@ -49,12 +49,11 @@ class ReadResult:
 
 
 def _file_key(stat: os.stat_result, name: str) -> str:
-    # Identity only: nothing in here may change when the file is appended to.
-    # st_ctime_ns does (on Linux it is the metadata change time, so it moves on
-    # every write), which made every poll look like a rotation and resend the
-    # whole tail. st_ino can be 0 on some Windows filesystems, so name and
-    # device carry the identity there; a truncation is caught separately by the
-    # offset > size check.
+    # Identity only: nothing here may change on append. st_ctime_ns does (on
+    # Linux it is the metadata change time), which made every poll look like a
+    # rotation and resend the whole tail. st_ino can be 0 on some Windows
+    # filesystems, so name and device carry the identity there; truncation is
+    # caught separately by the offset > size check.
     return f"{name}|{stat.st_dev}|{stat.st_ino}"
 
 
@@ -87,13 +86,12 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
         first = data.find(b"\n")
         remainder = b"" if first == -1 else data[first + 1 :]
         if not remainder:
-            # The whole bounded window sits inside ONE record: either it has no
-            # line break at all, or its only one is the terminator at the very
-            # end. Dropping the partial head then left nothing, so a single
-            # record bigger than the window (a native dump, a \r-only progress
-            # run, a giant JSON line) rendered an EMPTY pane on a log that was
-            # megabytes long, and the cursor still advanced past it. Keep the
-            # record's tail instead; that is the end everyone is reading for.
+            # The whole window sits inside ONE record (no line break, or only
+            # the terminator at the end), so dropping the partial head left
+            # nothing: a record bigger than the window (native dump, \r-only
+            # progress run, giant JSON line) rendered an EMPTY pane on a
+            # megabyte log while the cursor still advanced past it. Keep the
+            # record's tail, which is the end everyone is reading for.
             body = data if first == -1 else data[:first]
             remainder = body[-MAX_LINE_BYTES:]
         data = remainder
@@ -105,8 +103,7 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
     lines: list[str] = []
     for line in raw:
         line = line.rstrip("\r")
-        # A single enormous line (a native dump, a giant JSON record) is split
-        # rather than dropped, so the viewer never silently loses content.
+        # An enormous line is split rather than dropped, so nothing is lost.
         while len(line) > MAX_LINE_BYTES:
             lines.append(line[:MAX_LINE_BYTES])
             line = line[MAX_LINE_BYTES:]
@@ -195,10 +192,10 @@ def read_since(
         handle.seek(start)
         data = handle.read(size - start)
 
-    # Stop at the last newline and leave the cursor before the partial line, so
-    # a half-written record is never emitted twice. If an unterminated remainder
-    # grows past a line's worth, flush it, otherwise a writer that never emits a
-    # newline would stall the viewer for good.
+    # Stop at the last newline and leave the cursor before the partial line, so a
+    # half-written record is never emitted twice. An unterminated remainder past
+    # a line's worth is flushed, else a writer that never emits a newline stalls
+    # the viewer for good.
     last_newline = data.rfind(b"\n")
     if last_newline == -1:
         if len(data) < MAX_LINE_BYTES:
@@ -210,12 +207,11 @@ def read_since(
         consumed = last_newline + 1
         body = data[:consumed]
 
-    # Cap by BYTES, before decoding, so the cursor can stop where the response
-    # stops. Slicing the decoded lines instead threw away the oldest of a burst
-    # while still advancing the cursor past them, so a model load that logged
-    # more than MAX_LINES_PER_RESPONSE lines between two polls lost the head of
-    # its own failure, and the response said dropped_bytes = 0. The remainder is
-    # not lost now, it arrives on the next poll.
+    # Cap by BYTES, before decoding, so the cursor stops where the response
+    # stops. Slicing decoded lines instead threw away the oldest of a burst while
+    # advancing the cursor past them, so a model load logging more than
+    # MAX_LINES_PER_RESPONSE lines between polls lost the head of its own failure
+    # and still reported dropped_bytes = 0. The remainder now arrives next poll.
     newline_count = body.count(b"\n")
     if newline_count > MAX_LINES_PER_RESPONSE:
         cut = -1

@@ -113,7 +113,7 @@ test("appending past the cap still keeps the tail", () => {
   assert.ok(!state.lines.includes("first"));
 });
 
-// A request that opens and never answers is the failure the whole viewer has to
+// A request that opens and never answers is the failure the viewer has to
 // survive: the auth client hands `init` to fetch and adds no timeout, so every
 // awaited request needs the backstop, not just the tail read.
 function neverAnswers(signal: AbortSignal): Promise<never> {
@@ -139,10 +139,9 @@ test("a request that never answers is cut off by the backstop", async () => {
 });
 
 test("the source rescan cannot freeze the poll loop behind it", async () => {
-  // The loop awaits the rescan BEFORE the tail read, and the list request has
-  // no timeout of its own, so an unanswered /sources used to hang the whole
-  // tick: no poll, no reschedule, a pane that silently stops updating while
-  // still looking live.
+  // The loop awaits the rescan BEFORE the tail read, so an unanswered /sources
+  // used to hang the whole tick: no poll, no reschedule, a pane that stops
+  // updating while still looking live.
   let polls = 0;
   let ticks = 0;
   const rescan = async () => {
@@ -251,8 +250,7 @@ test("a response for the source the user just left is dropped", () => {
 test("the skipped-lines warning outlives the poll that raised it", () => {
   const dropped = nextDroppedState(false, { droppedBytes: 4096, reset: false });
   assert.equal(dropped, true);
-  // The next quiet poll, one second later in live mode: the gap is still in the
-  // buffer, so the warning stays.
+  // The next quiet poll: the gap is still in the buffer, so the warning stays.
   assert.equal(
     nextDroppedState(dropped, { droppedBytes: 0, reset: false }),
     true,

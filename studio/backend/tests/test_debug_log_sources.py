@@ -270,10 +270,8 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     monkeypatch.setattr(Path, "stat", _counting_stat)
     files = debug_log_sources._family_files("llama-server")
     assert len(files) == debug_log_sources.MAX_SOURCES_PER_FAMILY
-    # The cost must track the presort slice, not the directory. The slice is
-    # MAX * 3 candidates and each costs an is_file plus a stat, so the ceiling
-    # is that times two with room to spare; what matters is that it does not
-    # scale with the 400 files present.
+    # Cost must track the presort slice (MAX * 3 candidates, an is_file plus a
+    # stat each), not the 400 files present.
     ceiling = debug_log_sources.MAX_SOURCES_PER_FAMILY * 3 * 2 + 8
     assert (
         calls["n"] <= ceiling

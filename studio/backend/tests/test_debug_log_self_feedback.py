@@ -89,8 +89,7 @@ def test_the_viewer_only_ever_returns_content_it_did_not_write(session_log, clie
     assert first["lines"] == ["first"]
     for _ in range(10):
         body = client.get("/api/settings/debug/logs", params = {"cursor": first["cursor"]}).json()
-        # Every poll after the first has nothing to say. A line here would be
-        # the viewer reading its own access record.
+        # A line here would be the viewer reading its own access record.
         assert body["lines"] == []
 
 
@@ -110,8 +109,7 @@ def test_verbose_still_lifts_it_for_an_ordinary_quiet_path(monkeypatch):
 
 @pytest.mark.parametrize("path", POLL_PATHS)
 def test_a_failure_on_the_viewer_endpoints_still_logs(path):
-    # The whole point of the suppression is that a poll carries no signal. A
-    # 404 or a 500 does.
+    # A poll carries no signal; a 404 or a 500 does.
     assert _is_quiet_success("GET", path, 404, False) is False
     assert _is_quiet_success("GET", path, 500, False) is False
     assert _is_quiet_success("POST", path, 200, False) is False
@@ -122,8 +120,8 @@ def test_the_suppression_is_an_exact_path_match(session_log, client):
     for path in ("/api/settings", "/api/settings/debug", "/api/settings/debug/logs/x"):
         assert _is_quiet_success("GET", path, 200, False) is False
 
-    # A neighbouring settings GET that is not on any quiet list still logs, so
-    # the suppression cannot have widened to the router.
+    # A neighbouring settings GET still logs, so the suppression cannot have
+    # widened to the router.
     before = session_log.stat().st_size
     assert client.get("/api/settings/upload-limit").status_code == 200
     assert "/api/settings/upload-limit" in session_log.read_text()[before:]

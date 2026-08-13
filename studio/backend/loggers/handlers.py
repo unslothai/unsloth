@@ -131,8 +131,7 @@ _QUIET_SUCCESS_PATHS = {
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
-    # The Settings > Debugging viewer polls: see _SELF_READ_PATHS below, which
-    # is where they are actually suppressed.
+    # The Settings > Debugging viewer polls are suppressed in _SELF_READ_PATHS below.
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
@@ -168,18 +167,13 @@ _CHAT_LIST_PATHS = {
 }
 
 
-# The Settings > Debugging viewer polls these while it is open, and it is
-# reading the very file this middleware writes to. Without the suppression each
-# poll appends a request_completed record that the next poll reads back, so the
-# log grows forever and the viewer fills with itself. The _is_redundant_repeat
-# dedup does NOT cover it: that keys on the query string, and every poll carries
-# a fresh cursor.
-#
-# Separate from _QUIET_SUCCESS_PATHS because --verbose must NOT lift this one.
-# Everywhere else --verbose only means a noisier file; here the noise is fed
-# back to the reader, and --verbose is exactly what someone debugging turns on,
-# so lifting it buries the failure they opened the viewer to read (measured at
-# ~390 bytes/s of pure self-traffic at the 1 Hz Live poll rate).
+# The log viewer polls these while reading the very file this middleware writes,
+# so unsuppressed each poll appends a record the next poll reads back and the log
+# grows forever. _is_redundant_repeat does not cover it: it keys on the query
+# string, and every poll carries a fresh cursor.
+# Separate from _QUIET_SUCCESS_PATHS because --verbose must NOT lift this one:
+# --verbose is what someone debugging turns on, and here the extra noise (~390
+# bytes/s at the 1 Hz Live poll rate) buries the failure they opened the viewer for.
 _SELF_READ_PATHS = {
     "/api/settings/debug/logs",
     "/api/settings/debug/logs/sources",

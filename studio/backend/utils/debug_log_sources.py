@@ -19,18 +19,16 @@ from typing import Optional
 
 # (subdirectory under a studio home, filename glob).
 #
-# The Python writers are run.py:_setup_server_disk_logging and the llama /
-# diffusion runners in core/inference/llama_cpp.py.
+# Python writers: run.py:_setup_server_disk_logging and the llama / diffusion
+# runners in core/inference/llama_cpp.py.
 #
-# The desktop families below are written by the Tauri shell
+# The desktop families are written by the Tauri shell
 # (src-tauri/src/diagnostics/phase_log.rs) into the logs directory ITSELF, not a
-# subdirectory. They matter more than their position here suggests: backend-*
-# is the shell's capture of the backend's own stdout, and it is the only record
-# that exists when the backend dies BEFORE _setup_server_disk_logging runs. In
-# that case logs/server is empty, so without these the viewer would tell a user
-# whose app failed to start that nothing has been logged, which is the exact
-# dead end this tab was built to remove. tauri.log sits at the home root and
-# rotates to tauri.log.1.
+# subdirectory. backend-* is the shell's capture of the backend's stdout and the
+# only record that exists when the backend dies BEFORE
+# _setup_server_disk_logging runs; without it a user whose app failed to start
+# would be told nothing was logged. tauri.log sits at the home root and rotates
+# to tauri.log.1.
 FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
@@ -42,9 +40,9 @@ FAMILIES: dict[str, tuple[str, str]] = {
     "desktop-shell": ("", "tauri.log*"),
 }
 
-# Per family, so a busy host cannot make the picker unusable. The llama runner
-# writes one file per load ATTEMPT, and after a retry the interesting one is
-# often the second to last, so this has to be several, not one.
+# Per family, so a busy host cannot make the picker unusable. Several, not one:
+# the llama runner writes a file per load ATTEMPT, so after a retry the
+# interesting one is often the second to last.
 MAX_SOURCES_PER_FAMILY = 10
 
 _DIGEST_CHARS = 16
@@ -79,8 +77,8 @@ def candidate_roots() -> list[Path]:
             resolved = Path(os.path.realpath(path))
         except (OSError, ValueError):
             return
-        # Folded, so an UNSLOTH_STUDIO_HOME that differs from the inferred root
-        # only in case is not scanned twice on a case-insensitive volume.
+        # Folded, so a home differing from the inferred root only in case is not
+        # scanned twice on a case-insensitive volume.
         if not any(_identity(resolved) == _identity(known) for known in roots):
             roots.append(resolved)
 
@@ -90,9 +88,8 @@ def candidate_roots() -> list[Path]:
     except Exception:
         pass
 
-    # Mirror _swa_cache_path exactly: env override if set, otherwise the legacy
-    # home, never both. Adding the legacy home while an override is active would
-    # pull a DIFFERENT installation's logs into this one's viewer.
+    # Mirror _swa_cache_path exactly: env override if set, else the legacy home,
+    # never both. Both would pull a DIFFERENT installation's logs into this one.
     env_home = (
         os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
     ).strip()
@@ -160,22 +157,21 @@ def _family_files(family: str) -> list[Path]:
             entries = list(directory.glob(pattern))
         except OSError:
             continue
-        # Nothing prunes logs/llama-server, and one file is written per load
-        # ATTEMPT, so a real install reaches five figures: this host has 11,794.
-        # Calling realpath + stat on every one cost ~356ms, and this endpoint is
-        # polled once a second. Every family's filename embeds its creation time
-        # (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>, and the
-        # desktop ones a millisecond epoch), so name order tracks time order and
-        # a cheap presort leaves only a handful to interrogate. The survivors are
-        # still ordered by real mtime below, and the slice is wide enough that a
-        # file whose mtime moved after it was written is still considered.
+        # Nothing prunes logs/llama-server and one file is written per load
+        # ATTEMPT, so a real install reaches five figures (this host: 11,794).
+        # realpath + stat on every one cost ~356ms, at a 1 Hz poll. Every
+        # family's filename embeds its creation time (server-YYYYmmdd-HHMMSS,
+        # llama-<epoch>, diffusion-<epoch>, desktop ms epoch), so name order
+        # tracks time order and this presort leaves a handful to interrogate.
+        # Survivors are still ordered by real mtime below, and the slice is wide
+        # enough to keep a file whose mtime moved after it was written.
         entries.sort(key = lambda entry: entry.name, reverse = True)
         entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
-                # A symlink dropped into the log directory must not become a
-                # reader for ~/.ssh/id_rsa, so the TARGET has to stay inside.
+                # The TARGET must stay inside: a symlink dropped into the log
+                # directory must not become a reader for ~/.ssh/id_rsa.
                 if not _is_inside(real, real_dir):
                     continue
                 if not real.is_file():
@@ -186,8 +182,8 @@ def _family_files(family: str) -> list[Path]:
             except (OSError, ValueError):
                 continue
             # Keyed on the folded spelling so a case-insensitive volume cannot
-            # list the same file twice, but the first spelling seen is what is
-            # kept, so the id digest stays over the real path.
+            # list the same file twice; the first spelling seen is kept, so the
+            # id digest stays over the real path.
             found.setdefault(_identity(real), (real, stat.st_mtime))
     ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
     return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
@@ -195,12 +191,10 @@ def _family_files(family: str) -> list[Path]:
 
 def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     if family == "server":
-        # uvicorn runs single process here, so our own pid is the one in the
-        # active session's filename: an exact match, not a newest-file guess.
-        # Anchored on the suffix, because run.py writes server-{stamp}-pid{pid}
-        # and a substring test for "pid1234" also matches a retained
-        # ...-pid12345.log, which would mark two sources current and could open
-        # the wrong one by default.
+        # uvicorn runs single process here, so our own pid is in the active
+        # session's filename: an exact match, not a newest-file guess. Anchored
+        # on the suffix because run.py writes server-{stamp}-pid{pid}, and a
+        # substring test for "pid1234" also matches a retained ...-pid12345.log.
         return path.name.endswith(f"-pid{os.getpid()}.log")
     return newest is not None and path == newest
 

@@ -21,17 +21,14 @@ import re
 REDACTED = "<redacted>"
 
 # Terminal control sequences, stripped BEFORE anything is matched. A colorized
-# writer puts an escape between the key and its value (structlog's
-# ConsoleRenderer renders "\x1b[36mapi_key\x1b[0m=\x1b[35m<secret>\x1b[0m", and
-# its `colors` default is on whether or not the sink is a terminal), and every
-# rule here is anchored: the "m" that ends "\x1b[36m" is a word character, so
-# _KEY_START's lookbehind and the \b in front of \bhf_ both stop matching and
-# the credential goes out untouched. The viewer's own pane strips these before
-# it renders, so the escapes are never what the reader sees anyway.
+# writer puts an escape between the key and its value (structlog's ConsoleRenderer
+# renders "\x1b[36mapi_key\x1b[0m=\x1b[35m<secret>\x1b[0m", and colors default on
+# even off-terminal); the "m" ending "\x1b[36m" is a word character, so every
+# anchored rule below stops matching and the credential goes out untouched.
 #
-# Order matters: OSC (\x1b]) is listed before the single-character Fe class,
-# which covers 0x5C-0x5F and would otherwise swallow the "]" and leave the
-# payload behind. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
+# Order matters: OSC (\x1b]) comes before the single-character Fe class, which
+# covers 0x5C-0x5F and would otherwise swallow the "]" and leave the payload.
+# ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
 _ANSI_RE = re.compile(
     r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"  # OSC ... BEL / ST
     r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"  # DCS / PM / APC / SOS ... ST
@@ -51,18 +48,16 @@ _SECRET_KEYS = (
     "password|passwd|secret"
 )
 
-# The key name is matched WITHOUT a leading \b. "_" is a word character, so \b
-# never fires inside OPENAI_API_KEY / WANDB_API_KEY / db_password, which is the
-# exact shape an env dump or a subprocess argv line carries. The trailing \b
-# stays, so eos_token_id and secret_sauce_path are still left alone.
+# No leading \b: "_" is a word character, so \b never fires inside
+# OPENAI_API_KEY / db_password, the shape an env dump or argv line carries. The
+# trailing \b stays, so eos_token_id and secret_sauce_path are left alone.
 _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Hugging Face
     (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "hf_" + REDACTED),
-    # OpenAI and the sk- style keys (project, Anthropic, OpenRouter). Not \b:
-    # that also fires after a hyphen, so checkpoint-sk-9f8a... in a filename
-    # would be eaten.
+    # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not \b: that
+    # also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
         re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),
         "sk-" + REDACTED,
@@ -82,7 +77,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # user:password@host in a URL
     (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://" + REDACTED + "@"),
     # Presigned URL parameters. Bare "key" is deliberately absent: in an object
-    # storage URL that names the object, and blanking it hides WHICH download
+    # storage URL it names the object, and blanking it hides WHICH download
     # failed. Google's ?key=AIza... is caught by the AIza rule above.
     (
         re.compile(
@@ -95,19 +90,16 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 # key = value / "key": "value" / --api-key value
 #
-# The value has two branches and the QUOTED one wins whenever an opening quote
-# is there, so a credential the writer quoted is consumed to its CLOSING quote
-# instead of stopping at the first space. A value that stopped at whitespace
-# turned password="correct horse battery staple" into
-# password="<redacted> horse battery staple", which reads as masked while
-# leaking all but the first word, and left --api-key "abc defgh" untouched
-# because the value class rejected the leading quote outright. Passphrases with
-# spaces are the realistic shape here; a partially masked one is worse than an
-# unmasked one, because it invites the user to paste the line into a bug report.
+# The QUOTED branch wins whenever an opening quote is there, so a quoted
+# credential is consumed to its CLOSING quote instead of stopping at the first
+# space. Stopping at whitespace turned password="correct horse battery staple"
+# into password="<redacted> horse battery staple", which reads as masked while
+# leaking all but the first word. Passphrases with spaces are the realistic
+# shape, and a partially masked one invites pasting the line into a bug report.
 #
-# "[^\"'\\\n]|\\." rather than a lazy ".*?" so an escaped quote inside the value
-# does not end it early, and \n is excluded so an unterminated quote cannot run
-# the mask past the end of its own line.
+# "[^\"'\\\n]|\\." rather than a lazy ".*?" so an escaped quote does not end the
+# value early; \n is excluded so an unterminated quote cannot run the mask past
+# its own line.
 _QUOTED_VALUE = r"(?:[^\"'\\\n]|\\.){6,}"
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
@@ -120,15 +112,14 @@ _FLAG_RE = re.compile(
     r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\s\"']{6,}))"
 )
 
-# An Authorization value, whatever the scheme. The key/value rule alone cannot
-# reach it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is
-# "Basic", so the credential right after it survived untouched. Same for a
-# Cookie, which for Studio is the UI session that gates these very endpoints.
+# An Authorization value, whatever the scheme. The key/value rule cannot reach
+# it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is "Basic",
+# leaving the credential behind it. Same for a Cookie, which for Studio is the
+# UI session that gates these very endpoints.
 _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
-# The scheme word is only trusted to introduce a credential when an
-# Authorization header put it there. Bare "digest sha256:..." and "token
-# hf_..." are ordinary log content, and a rule that fired on the word alone
-# blanked the digest a user came here to read.
+# A scheme word only introduces a credential when an Authorization header put it
+# there. Bare "digest sha256:..." and "token hf_..." are ordinary log content,
+# and firing on the word alone blanked the digest a user came here to read.
 _AUTH_HEADER_RE = re.compile(
     r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
     r"(?:" + "|".join(_SCHEMES) + r"))(\s+)(\S+)"
@@ -163,17 +154,15 @@ def _looks_like_credential(value: str) -> bool:
 
 
 def _redact_kv(match: re.Match[str]) -> str:
-    # Named groups: the quoted/unquoted branch adds a group of its own, so the
-    # positional numbering these three used to carry is no longer stable.
+    # Named groups: the quoted/unquoted branch adds a group, so positional
+    # numbering is not stable.
     value = match.group("val")
     # A numeric value is a count or an id, never a credential.
     if value.isdigit() and not _NUMERIC_IS_STILL_SECRET.search(match.group("key")):
         return match.group(0)
-    # "Authorization: Bearer <redacted>": the scheme word is not the secret, and
-    # blanking it too would read as if the header itself were the credential.
-    # Quoting puts the scheme INSIDE the value ('authorization': 'Basic abc'),
-    # so the scheme is stepped over rather than the whole match abandoned: the
-    # rest of the value is still the credential.
+    # Quoting puts the scheme inside the value ('authorization': 'Basic abc').
+    # Step over it rather than abandon the match: the rest is still the
+    # credential, and blanking the scheme reads as if the header were the secret.
     scheme, sep, rest = value.partition(" ")
     if scheme.lower() in _SCHEMES:
         if not sep or not rest.strip():
@@ -188,10 +177,9 @@ def _redact_shaped(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{REDACTED}"
 
 
-# A cookie header is name=value pairs. _COOKIE_RE takes the whole rest of the
-# line, so without this "Cookie: not sent because the origin is cross-site" is
-# 20-odd characters and the length shortcut reads it as a token. That line is a
-# diagnosis, and masking it hides the thing being diagnosed.
+# A cookie header is name=value pairs. _COOKIE_RE takes the rest of the line, so
+# without this "Cookie: not sent because the origin is cross-site" is 20-odd
+# characters and the length shortcut reads it as a token, masking the diagnosis.
 _COOKIE_PAIR_RE = re.compile(r"^[A-Za-z0-9_.\-]+=\S")
 
 
@@ -205,16 +193,14 @@ def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
         return text
-    # Nothing anchored below survives an escape sequence sitting between a key
-    # and its value, so normalize first. Guarded by one scan for an introducer:
-    # ordinary log content carries none and is left exactly as it was.
+    # Nothing anchored below survives an escape between a key and its value, so
+    # strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _ANSI_RE.sub("", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
-    # Before the key/value rules: for "Authorization: Basic dXNlcjpwdw==" the
-    # value _KV_RE captures is the word "Basic", so running it first would mask
-    # the scheme and leave the credential behind it in the clear.
+    # Before the key/value rules: _KV_RE captures "Basic" from "Authorization:
+    # Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
     text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
     text = _SCHEME_RE.sub(_redact_shaped, text)
     text = _COOKIE_RE.sub(_redact_cookie, text)

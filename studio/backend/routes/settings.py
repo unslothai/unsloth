@@ -2057,10 +2057,8 @@ def update_personalization_settings(
 
 
 # ── Debugging: read the log files from inside the app ────────────────────────
-# Studio wrote a session log all along, but the only place its path appeared was
-# a print() on a console the desktop user never sees, so a failed model load or
-# a failed generation was a dead end. These two endpoints back the Settings >
-# Debugging tab.
+# Backs the Settings > Debugging tab. The session log always existed, but its
+# path was only printed to a console the desktop user never sees.
 
 
 class DebugLogSourceModel(BaseModel):
