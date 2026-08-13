@@ -4904,6 +4904,19 @@ class LlamaCppBackend:
         # the same reason as the booleans above: a failed probe must fall back to
         # "nothing known", not raise.
         blocks: dict[str, str] = {}
+        # Same reason, and the reason it lives out here rather than beside the parse
+        # loop: a probe that times out leaves the loop unrun, and the catalogue below
+        # is still built. Reading an unset local there turned a slow binary into an
+        # UnboundLocalError instead of "nothing known about this build".
+        takes_value: dict[str, bool] = {}
+
+        def _is_real(flag: str) -> bool:
+            """True if the flag exists AND is not a removal stub."""
+            desc = blocks.get(flag)
+            if desc is None:
+                return False
+            return "argument has been removed" not in desc
+
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             # Capability detection describes the binary, independently of the
@@ -4936,7 +4949,6 @@ class LlamaCppBackend:
             current_flags: list[str] = []
             current_desc: list[str] = []
             # Flag -> whether its declaration shows a value placeholder.
-            takes_value: dict[str, bool] = {}
             current_takes_value = False
             for line in help_text.splitlines():
                 stripped = line.strip()
@@ -4998,13 +5010,6 @@ class LlamaCppBackend:
                 for f in current_flags:
                     blocks[f] = desc
                     takes_value[f] = current_takes_value
-
-            def _is_real(flag: str) -> bool:
-                """True if the flag exists AND is not a removal stub."""
-                desc = blocks.get(flag)
-                if desc is None:
-                    return False
-                return "argument has been removed" not in desc
 
             # MTP token from the full --spec-type help block (decl + indented
             # continuation). First-line-only probing missed builds putting the

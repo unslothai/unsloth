@@ -1671,6 +1671,13 @@ export function ModelConfigPage({
         const stored = sanitizeStoredExtraArgs(
           resolvedArgs,
           managed?.managed ?? new Set<string>(),
+          // The host's bounds, not the constants: a Windows server takes 24 KiB and
+          // holds a quoted-command budget as well, so trimming to 32 KiB here sends a
+          // list /load answers 400 on.
+          {
+            maxBytes: managed?.maxBytes,
+            windowsCommandBudget: managed?.windowsCommandBudget,
+          },
         );
         // A list this build refuses can equally have come from local storage, saved
         // by a build that still allowed it. The server copy is sanitised above; this
@@ -1681,6 +1688,10 @@ export function ModelConfigPage({
           const cleaned = sanitizeStoredExtraArgs(
             local,
             managed?.managed ?? new Set<string>(),
+            {
+              maxBytes: managed?.maxBytes,
+              windowsCommandBudget: managed?.windowsCommandBudget,
+            },
           );
           if (cleaned.length !== local.length) {
             setConfig((current) =>

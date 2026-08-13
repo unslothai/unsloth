@@ -70,6 +70,9 @@ export const EXTRA_ARGS_MAX_BYTES = 32 * 1024;
 /** Mirrors MAX_EXTRA_ARG_TOKENS in llama_server_args.py. */
 export const EXTRA_ARGS_MAX_TOKENS = 256;
 
+/** The one option in llama-server's help that takes two values. */
+const TWO_VALUE_FLAGS = new Set(["--control-vector-layer-range"]);
+
 export type ExtraArgsParse = {
   tokens: string[];
   /** Set when a quote is left open, so the row can say so instead of silently dropping it. */
@@ -165,6 +168,7 @@ function takesNextToken(
 export function sanitizeStoredExtraArgs(
   tokens: readonly string[],
   managed: ReadonlySet<string>,
+  limits?: { maxBytes?: number; windowsCommandBudget?: number },
 ): string[] {
   const kept: string[] = [];
   let skipNext = false;
@@ -203,10 +207,18 @@ export function sanitizeStoredExtraArgs(
     kept.push(token);
   }
   // Then the bounds, shed from the tail, never leaving a flag without its value.
-  while (
+  //
+  // The host's own limits when the caller has them: a Windows install takes 24 KiB,
+  // not 32, and holds a quoted-command budget besides. Trimming to the wider constant
+  // and sending the result is a 400 on the load the hydration was meant to enable,
+  // which is the failure this sanitising exists to avoid.
+  const maxBytes = limits?.maxBytes || EXTRA_ARGS_MAX_BYTES;
+  const commandBudget = limits?.windowsCommandBudget ?? 0;
+  const overBounds = (): boolean =>
     kept.length > EXTRA_ARGS_MAX_TOKENS ||
-    TEXT_ENCODER.encode(kept.join("")).length > EXTRA_ARGS_MAX_BYTES
-  ) {
+    TEXT_ENCODER.encode(kept.join("")).length > maxBytes ||
+    (commandBudget > 0 && windowsCommandLength(kept) > commandBudget);
+  while (kept.length > 0 && overBounds()) {
     kept.pop();
     const last = kept[kept.length - 1];
     if (
@@ -215,6 +227,21 @@ export function sanitizeStoredExtraArgs(
       !last.includes("=")
     ) {
       kept.pop();
+    }
+    // A two-value flag goes whole or not at all, matching drop_managed_flags: one
+    // value left behind is a list the server refuses outright.
+    while (kept.length >= 2) {
+      const owner = extraArgFlagName(kept[kept.length - 2]);
+      if (
+        owner !== null &&
+        TWO_VALUE_FLAGS.has(owner) &&
+        extraArgFlagName(kept[kept.length - 1]) === null &&
+        !kept[kept.length - 2].includes("=")
+      ) {
+        kept.length -= 2;
+        continue;
+      }
+      break;
     }
   }
   return kept;
@@ -465,8 +492,6 @@ const INTEGER_VALUE_MINIMUM: Record<string, number> = {
   "-ngl": -1,
 };
 
-/** The one option in llama-server's help that takes two values. */
-const TWO_VALUE_FLAGS = new Set(["--control-vector-layer-range"]);
 
 /** Values the backend parses as integers, and refuses the load over. */
 /**
@@ -581,6 +606,8 @@ export function diagnoseExtraArgs(
   // is the difference between a red line under the box and a failed load. Two-value
   // flags are allowed for, as they are on the backend.
   let pendingValues = 0;
+  // The flag those values are owed to, for the end-of-input check below.
+  let pendingOwner: string | null = null;
   for (const token of tokens) {
     const flag = extraArgFlagName(token);
     if (flag === null) {
@@ -592,6 +619,9 @@ export function diagnoseExtraArgs(
         break;
       }
       pendingValues -= 1;
+      if (pendingValues <= 0) {
+        pendingOwner = null;
+      }
       continue;
     }
     pendingValues =
@@ -605,6 +635,7 @@ export function diagnoseExtraArgs(
           : TWO_VALUE_FLAGS.has(flag)
             ? 2
             : 1;
+    pendingOwner = pendingValues > 0 ? flag : null;
   }
 
   const seen = new Set<string>();
@@ -687,6 +718,30 @@ export function diagnoseExtraArgs(
     // not have every one of its flags called a typo.
     if (catalog?.probeOk && !(flag in catalog.flags)) {
       unknown.push(flag);
+    }
+  }
+
+  // A flag left waiting for a value at the end of the text. Reported only when the
+  // catalogue was read and lists it, because that is the only case where its arity is
+  // known: llama-server then exits during startup, which is a failed load rather than
+  // a red line under the box. An unverified flag keeps the benefit of the doubt, as
+  // it does above.
+  if (
+    pendingOwner !== null &&
+    pendingValues > 0 &&
+    (TWO_VALUE_FLAGS.has(pendingOwner) ||
+      (catalog?.probeOk === true &&
+        pendingOwner in catalog.flags &&
+        !catalog.switches.has(pendingOwner)))
+  ) {
+    const message = TWO_VALUE_FLAGS.has(pendingOwner)
+      ? `${pendingOwner} needs two values after it.`
+      : INTEGER_VALUE_FLAGS.has(pendingOwner)
+        ? `${pendingOwner} needs a number after it.`
+        : `${pendingOwner} needs a value after it.`;
+    if (!reportedValues.has(message)) {
+      reportedValues.add(message);
+      out.push({ level: "error", message });
     }
   }
 

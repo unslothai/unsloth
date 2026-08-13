@@ -310,6 +310,37 @@ def test_a_value_that_belongs_to_a_flag_is_still_fine():
     assert _lsa.validate_extra_args(["--control-vector-layer-range", "1", "10"])
 
 
+def test_a_two_value_flag_is_kept_whole():
+    # Half of this option is not a smaller version of it: llama-server refuses
+    # "--control-vector-layer-range 1" on the command line, so a list that carries it
+    # is a load that fails at spawn rather than a request that fails at the boundary.
+    for bad in (
+        ["--control-vector-layer-range"],
+        ["--control-vector-layer-range", "1"],
+        ["--control-vector-layer-range", "1", "--numa", "distribute"],
+        ["--top-k", "20", "--control-vector-layer-range", "1"],
+    ):
+        with pytest.raises(ValueError, match = "takes two values"):
+            _lsa.validate_extra_args(bad)
+
+
+def test_trimming_sheds_a_two_value_flag_whole():
+    # A list stored by an older build can exceed today's bound, and the trim walks in
+    # from the tail. Shedding END alone leaves START looking like an ordinary value,
+    # which nothing downstream would object to and llama-server would then reject.
+    kept, dropped = _lsa.drop_managed_flags(
+        ["--top-k", "20", "--control-vector-layer-range", "1", "10", "--grammar", "x" * 40000]
+    )
+    assert kept == ["--top-k", "20", "--control-vector-layer-range", "1", "10"]
+    kept, dropped = _lsa.drop_managed_flags(
+        ["--top-k", "20", "--control-vector-layer-range", "1", "x" * 40000]
+    )
+    assert kept == ["--top-k", "20"]
+    assert "--control-vector-layer-range" in dropped
+    # And whatever survives is a list the validator would take.
+    assert _lsa.validate_extra_args(kept) == kept
+
+
 def test_the_windows_check_measures_what_popen_would_write(monkeypatch):
     # list2cmdline is not a sum of lengths: backslashes before a quote double, so an
     # escape-heavy grammar can pass a byte cap and still blow CreateProcess's 32767

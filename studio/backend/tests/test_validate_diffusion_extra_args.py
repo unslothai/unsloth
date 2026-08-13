@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""/api/inference/validate must ignore pass-through arguments for a diffusion GGUF.
+
+/load already drops them: the visual runner builds its own command and appends none of
+them. /validate is the call that approves the load, and it reads a --ctx-size out of the
+same list to size the estimate, so leaving them in place approves a load against a
+command that will never carry them. The caller cannot decide this itself either, since
+its staged metadata is inconclusive for a GGUF it has not finished downloading, which is
+why the drop belongs after the authoritative classification rather than before it.
+"""
+
+import asyncio
+import importlib.util
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from models.inference import ValidateModelRequest
+
+
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_route_module(name: str):
+    spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes/inference.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _noop_gpu_ids(_config, gpu_ids, **_kwargs):
+    return gpu_ids, False
+
+
+class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
+    def _validate(self, route, *, diffusion_kind):
+        seen: list = []
+
+        def _capture(*_args, **kwargs):
+            seen.append(kwargs.get("llama_extra_args"))
+
+        request = ValidateModelRequest(
+            model_path = "someone/diffusion-gguf",
+            llama_extra_args = ["--ctx-size", "8192"],
+        )
+        config = SimpleNamespace(
+            identifier = "someone/diffusion-gguf",
+            display_name = "diffusion-gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("someone/diffusion-gguf", "someone/diffusion-gguf", False),
+            ),
+            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(
+                route,
+                "_resolve_inherited_extra_args",
+                return_value = ["--ctx-size", "8192"],
+            ),
+            patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+        ):
+            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+        return seen
+
+    def test_a_diffusion_gguf_is_estimated_without_them(self):
+        route = _load_route_module("inf_route_diffusion_extra_args_1")
+        self.assertEqual(self._validate(route, diffusion_kind = True), [[]])
+
+    def test_an_ordinary_gguf_still_estimates_with_them(self):
+        # The drop is narrow on purpose: this is the path the editor exists for, and
+        # a --ctx-size here has to reach the estimate that approves the load.
+        route = _load_route_module("inf_route_diffusion_extra_args_2")
+        self.assertEqual(
+            self._validate(route, diffusion_kind = False),
+            [["--ctx-size", "8192"]],
+        )
+
+    def test_an_inconclusive_gguf_keeps_them(self):
+        # None is "nothing to read yet", not "diffusion". Dropping on it would strip a
+        # working override from an ordinary model whose header has not arrived.
+        route = _load_route_module("inf_route_diffusion_extra_args_3")
+        self.assertEqual(
+            self._validate(route, diffusion_kind = None),
+            [["--ctx-size", "8192"]],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -214,6 +214,10 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     # How many following tokens the flag just seen may still claim as values. A
     # switch claims none, so the next bare token has no owner.
     pending_values = 0
+    # Values still owed to a two-value flag, tracked apart because it is the one
+    # arity this module knows for certain.
+    pending_two_value = 0
+    two_value_flag = ""
     for raw in args:
         token = str(raw)
         if len(out) >= MAX_EXTRA_ARG_TOKENS:
@@ -258,12 +262,22 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                     f"('{token[:64]}'); every value must follow its flag"
                 )
             pending_values -= 1
+            if pending_two_value > 0:
+                pending_two_value -= 1
         else:
             # Its own value when attached, otherwise the tokens that follow.
-            pending_values = (
-                0 if "=" in token or flag != token.strip() else 2 if flag in _TWO_VALUE_FLAGS else 1
-            )
+            attached = "=" in token or flag != token.strip()
+            if pending_two_value > 0:
+                raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
+            pending_values = 0 if attached else 2 if flag in _TWO_VALUE_FLAGS else 1
+            pending_two_value = 2 if not attached and flag in _TWO_VALUE_FLAGS else 0
+            two_value_flag = flag
         out.append(token)
+    if pending_two_value > 0:
+        # Only this shape is checkable: an ordinary flag's arity is unknown here, so
+        # a list ending in one is left to llama-server. START without END is a launch
+        # that fails on the command line rather than a request that fails here.
+        raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
     if sys.platform == "win32":
         # After the per-token walk, because this is a property of the whole list.
         serialized = windows_command_length(out)
@@ -380,6 +394,20 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
             if last_flag is not None and _takes_next(len(kept) - 1, kept[-1], last_flag, kept):
                 dropped.append(last_flag)
                 kept = kept[:-1]
+            # A two-value flag loses the whole option rather than half of it: one
+            # value left behind is a command llama-server refuses at startup, which
+            # is the failure this trimming exists to avoid.
+            while len(kept) >= 2:
+                owner = _flag_name(kept[-2])
+                if (
+                    owner in _TWO_VALUE_FLAGS
+                    and _flag_name(kept[-1]) is None
+                    and "=" not in kept[-2]
+                ):
+                    dropped.append(owner)
+                    kept = kept[:-2]
+                    continue
+                break
     return [], dropped
 
 

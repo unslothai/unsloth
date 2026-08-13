@@ -8734,6 +8734,17 @@ async def validate_model(
         # Apply the same placement policy as /load before the frontend unloads
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)
+        if placement.diffusion_kind is True and effective_extra_args:
+            # Same drop as /load, and for the same reason: the diffusion runner appends
+            # none of these, so an estimate that reads a --ctx-size out of them approves
+            # a load against a command that will never carry it. The classification here
+            # is the authoritative one, so this can only be decided after placement.
+            logger.info(
+                "Ignoring %d extra llama-server arg(s) for %s: the diffusion runner takes none.",
+                len(effective_extra_args),
+                model_log_label,
+            )
+            effective_extra_args = []
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

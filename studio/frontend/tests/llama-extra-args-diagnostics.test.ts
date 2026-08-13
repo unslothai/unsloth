@@ -385,6 +385,56 @@ test("the stored sanitizer removes everything this build would refuse", () => {
   assert.deepEqual(sanitizeStoredExtraArgs(clean, managed), clean);
 });
 
+test("the sanitizer trims to the HOST's bounds, not the constants", () => {
+  // A Windows server takes 24 KiB, not 32, and holds a quoted-command budget on top
+  // of it. Trimming to the wider constant leaves a list /load answers 400 on, which
+  // is the one outcome hydrating a stored override is supposed to prevent.
+  const managed = new Set<string>();
+  const stored = ["--grammar", "x".repeat(30000), "--top-k", "20"];
+  assert.deepEqual(sanitizeStoredExtraArgs(stored, managed), stored);
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(stored, managed, { maxBytes: 24 * 1024 }),
+    [],
+  );
+  // The quoted length, not the byte count: a token needing quotes doubles the
+  // backslash runs before its quotes, so this passes the byte bound and fails the
+  // command-line one.
+  const quoted = ["--grammar", `${"\\".repeat(10)}" `.repeat(400)];
+  assert.deepEqual(sanitizeStoredExtraArgs(quoted, managed), quoted);
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(quoted, managed, {
+      maxBytes: 24 * 1024,
+      windowsCommandBudget: 8192,
+    }),
+    [],
+  );
+  // Zero means "not known", not "nothing fits": an older server answers the
+  // catalogue without either field.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(stored, managed, {
+      maxBytes: 0,
+      windowsCommandBudget: 0,
+    }),
+    stored,
+  );
+});
+
+test("a two-value flag is shed whole when the bounds bite", () => {
+  // Mirrors drop_managed_flags: dropping END alone leaves START looking like an
+  // ordinary value, and llama-server refuses the option outright.
+  const managed = new Set<string>();
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(
+      ["--top-k", "20", "--control-vector-layer-range", "1", "x".repeat(40000)],
+      managed,
+    ),
+    ["--top-k", "20"],
+  );
+  // Intact, it survives.
+  const whole = ["--control-vector-layer-range", "1", "10"];
+  assert.deepEqual(sanitizeStoredExtraArgs(whole, managed), whole);
+});
+
 test("a whole surrogate pair is a character, not a fault", () => {
   // The class-based check matched both units of every emoji, so a chat template or
   // grammar carrying one was dropped on hydration even though Python encodes it
@@ -808,5 +858,63 @@ test("a catalogue read from the previous binary is discarded", () => {
   assert.match(
     flagsApi,
     /if \(generation !== catalogGeneration\) \{ .*return null; \}/,
+  );
+});
+
+test("a catalogued flag left without its value is refused", () => {
+  // The catalogue is the only place a flag's arity is known: the backend validator
+  // cannot ask the binary, so a text ending in "--rope-scaling" used to leave Load
+  // enabled and llama-server then exited during startup, which is a failed load
+  // instead of a red line under the box.
+  assert.ok(levels("--rope-scaling").includes("error"));
+  assert.ok(levels("--top-k 20 --numa").includes("error"));
+  assert.deepEqual(
+    diagnoseExtraArgs("--numa", CATALOG).map((d) => d.message),
+    ["--numa needs a value after it."],
+  );
+  // Given its value, it is fine, and so is a switch on its own.
+  assert.deepEqual(diagnoseExtraArgs("--numa distribute", CATALOG), []);
+  // A switch on its own owes nothing (this fixture's help lists it as a switch
+  // without describing it, hence the unrelated unknown-flag warning).
+  assert.ok(!levels("--verbose").includes("error"));
+  // Attached forms carry their own value.
+  assert.deepEqual(diagnoseExtraArgs("--numa=distribute", CATALOG), []);
+});
+
+test("an unverified flag keeps the benefit of the doubt at the end", () => {
+  // A build this Studio could not probe, or a flag newer than the help it read:
+  // calling either a missing value would disable Load over a launch that works.
+  const unverified: LlamaFlagCatalog = {
+    flags: {},
+    managed: new Set<string>(),
+    switches: new Set<string>(),
+    maxBytes: 0,
+    windowsCommandBudget: 0,
+    probeOk: false,
+  };
+  assert.deepEqual(diagnoseExtraArgs("--rope-scaling", unverified), []);
+  assert.deepEqual(diagnoseExtraArgs("--rope-scaling", null), []);
+  // Catalogued build, flag it has never heard of: warned about as unknown, not
+  // refused for a value it may not even take.
+  assert.deepEqual(levels("--tempp"), ["warning"]);
+  assert.ok(!levels("--tempp").includes("error"));
+});
+
+test("a two-value flag left short is refused whatever the catalogue says", () => {
+  // Its arity is known without a probe, and it is the one the backend validator
+  // checks itself, so the two ends agree.
+  const unverified: LlamaFlagCatalog = {
+    flags: {},
+    managed: new Set<string>(),
+    switches: new Set<string>(),
+    maxBytes: 0,
+    windowsCommandBudget: 0,
+    probeOk: false,
+  };
+  assert.equal(levels("--control-vector-layer-range 1", unverified)[0], "error");
+  assert.equal(levels("--control-vector-layer-range", unverified)[0], "error");
+  assert.deepEqual(
+    diagnoseExtraArgs("--control-vector-layer-range 1 10", unverified),
+    [],
   );
 });

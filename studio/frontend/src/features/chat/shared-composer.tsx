@@ -95,7 +95,9 @@ import {
   resolveInitialConfig,
   type PerModelConfig,
 } from "@/features/model-picker";
+import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -1284,8 +1286,23 @@ export function SharedComposer({
               sel.id,
               sel.ggufVariant ?? null,
             );
-            if (resolvedArgs.length > 0) {
-              ownConfig.llamaExtraArgs = resolvedArgs;
+            // Sanitised for the same reason the panel sanitises what it hydrates:
+            // this turns a stored list into an EXPLICIT /load argument, which is
+            // validated strictly rather than going through the carry-over paths
+            // that drop a newly denied flag quietly. A pane on an install upgraded
+            // across a denylist change would otherwise answer 400 on a comparison
+            // that ran the day before.
+            const managed = await loadManagedLlamaFlags();
+            const cleaned = sanitizeStoredExtraArgs(
+              resolvedArgs,
+              managed?.managed ?? new Set<string>(),
+              {
+                maxBytes: managed?.maxBytes,
+                windowsCommandBudget: managed?.windowsCommandBudget,
+              },
+            );
+            if (cleaned.length > 0) {
+              ownConfig.llamaExtraArgs = cleaned;
             }
           } catch {
             // The load still works; a real overrides outage surfaces there.
