@@ -2983,3 +2983,56 @@ def test_closed_rebinding_spans_do_not_cost_a_call_site_each():
 
     # And the detection survives: every call is past its rebinding's block.
     assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_a_parenthesized_or_destructured_target_still_binds_the_alias():
+    # `(b) = builtins` and `[b] = [builtins]` bind `b` exactly as `b = builtins`
+    # does. Requiring the target to be one NAME token read both as a tuple or
+    # subscript target, dropped the alias, and left the call below unflagged.
+    prelude = "import builtins\nimport marshal\nmod = __import__('os')\n"
+    for target in ("(b) = builtins", "((b)) = builtins", "(b) = (builtins)", "[b] = [builtins]"):
+        payload = f"{prelude}{target}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"{target} must be flagged"
+
+    # A one-element sequence on ONE side is not a destructuring of the module.
+    for benign in ("b = [builtins]", "[b] = xs", "[a, b] = [x, builtins]"):
+        payload = f"{prelude}{benign}\nb.eval(y)\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"{benign} must stay clean"
+
+
+def test_a_comprehension_target_does_not_rebind_the_surrounding_alias():
+    # A comprehension's target is scoped to the comprehension on every supported
+    # Python 3, so `[x for b in xs]` leaves the module alias exactly as it was.
+    # Reading it as an ordinary `for` cancelled `b` at the call below.
+    prelude = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+    for comprehension in ("ys = [x for b in xs]", "ys = sum(x for b in xs)", "ys = {k: v for b in xs}"):
+        payload = f"{prelude}{comprehension}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"{comprehension} must not cancel the alias"
+
+    # A real `for` statement does rebind, and still cancels.
+    statement = f"{prelude}for b in xs:\n    pass\nb.eval(y)\n"
+    assert _high(statement, "pkg/_infer.py") == [], "a `for` statement still rebinds"
+
+
+def test_an_exception_alias_does_not_outlive_its_handler():
+    # `except E as b` binds nothing when no exception is raised, and when one is
+    # Python deletes the name at the end of the handler. Either way no code below
+    # sees the exception. Recording the header as a rebinding cancelled the alias
+    # for the rest of the file, and because the header sits at the same indent as
+    # the code below it, nothing ever closed that span.
+    prelude = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+    payload = (
+        f"{prelude}try:\n    f()\nexcept Exception as b:\n    pass\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload), "a call after the handler must still be flagged"
+
+    indented = (
+        f"{prelude}def g():\n    try:\n        f()\n    except Exception as b:\n"
+        "        pass\n    b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(indented), "the same inside a function"
+
+    # `with ... as b` really does bind past its block, and still cancels.
+    with_stmt = f"{prelude}with open(f) as b:\n    pass\nb.eval(y)\n"
+    assert _high(with_stmt, "pkg/_infer.py") == [], "`with ... as` still rebinds"

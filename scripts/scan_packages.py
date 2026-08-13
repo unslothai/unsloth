@@ -627,6 +627,56 @@ def _loads_builtins(value: list, loaders: _Loaders) -> bool:
     )
 
 
+def _sequence_element(toks: list) -> "list | None":
+    """The sole element of a one-element `[...]` or `(...)`, or None.
+
+    Nothing is stripped unless the brackets really enclose the whole expression
+    and hold exactly one item: `[builtins] + rest` is not a sequence display,
+    and `[a, builtins]` does not put the module anywhere `[b] = ...` would find
+    it.
+    """
+    if len(toks) < 3 or toks[0].type != tokenize.OP or toks[-1].type != tokenize.OP:
+        return None
+    if (toks[0].string, toks[-1].string) not in (("[", "]"), ("(", ")")):
+        return None
+    depth = 0
+    for i, tok in enumerate(toks):
+        if tok.type != tokenize.OP:
+            continue
+        if tok.string in _OPENERS:
+            depth += 1
+        elif tok.string in _CLOSERS:
+            depth -= 1
+            if depth == 0 and i != len(toks) - 1:
+                return None  # the opener closed early: not the outermost bracket
+        elif tok.string == "," and depth == 1:
+            return None
+    return toks[1:-1]
+
+
+def _unwrapped_target(group: list) -> tuple:
+    """`(name, came from a one-element sequence)` for an assignment target.
+
+    `(b) = builtins` and `[b] = [builtins]` bind `b` exactly as `b = builtins`
+    does; requiring the target to be a single NAME token read both as a tuple or
+    subscript target and dropped the alias, so the `b.exec(...)` below went
+    unflagged. `(name, False)` for the plain form, `(None, False)` for a target
+    this pass cannot reduce to one name.
+    """
+    unpacked = False
+    while len(group) == 1 and group[0].type == tokenize.NAME:
+        return group[0].string, unpacked
+    inner = _sequence_element(group)
+    while inner is not None:
+        if group[0].string == "[":
+            unpacked = True  # a real destructuring, so the value is a sequence too
+        group = inner
+        if len(group) == 1 and group[0].type == tokenize.NAME:
+            return group[0].string, unpacked
+        inner = _sequence_element(group)
+    return None, False
+
+
 def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     """The names `stmt` assigns the `builtins` module to, in source order.
 
@@ -646,7 +696,7 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     if last.type == tokenize.NAME:
         if last.string not in _BUILTINS_NAMES:
             return []
-    elif not (last.type == tokenize.OP and last.string == ")"):
+    elif not (last.type == tokenize.OP and last.string in (")", "]")):
         # A loader call may carry optional arguments after the module name
         # (`__import__('builtins', fromlist=[])`), so the closing parenthesis is
         # all that is fixed about it; the marker pass below is what rejects
@@ -675,16 +725,30 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     else:
         return []
     groups = _split_top(stmt, "=")
-    if len(groups) < 2 or not _loads_builtins(groups[-1], loaders):
+    if len(groups) < 2:
         return []
+    value = groups[-1]
     names = []
+    unpacked = False
     for group in groups[:-1]:
         colon_at = _name_index_op(group, ":")  # annotated target: `b: Any = value`
         if colon_at is not None:
             group = group[:colon_at]
-        if len(group) != 1 or group[0].type != tokenize.NAME:
+        name, from_sequence = _unwrapped_target(group)
+        if name is None:
             return []  # a tuple, attribute or subscript target: not a plain alias
-        names.append(group[0].string)
+        names.append(name)
+        unpacked = unpacked or from_sequence
+    if unpacked:
+        # `[b] = [builtins]` binds exactly what `b = builtins` binds. It takes a
+        # one-element sequence on BOTH sides to be that: `b = [builtins]` binds
+        # the list itself, and `[b] = xs` takes an element out of something this
+        # pass never read.
+        value = _sequence_element(value)
+        if value is None:
+            return []
+    if not _loads_builtins(value, loaders):
+        return []
     return names
 
 
@@ -785,25 +849,41 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
         and stmt[head + 1].type == tokenize.NAME
     ):
         rebound.add(stmt[head + 1].string)
+    # `except E as b` is not a rebinding that outlives anything: with no
+    # exception the name is never bound, and with one Python deletes it at the
+    # end of the handler. Recording the header cancelled the alias to the end of
+    # the file - and the header sits at the same indent as the code below it, so
+    # nothing ever closed the span.
+    handler = stmt[head].type == tokenize.NAME and stmt[head].string == "except"
+    depth = 0
     for j, tok in enumerate(stmt):
-        if tok.type == tokenize.NAME:
-            if tok.string == "for":  # also comprehension targets, at any depth
-                k = j + 1
-                while k < len(stmt) and not (
-                    stmt[k].type == tokenize.NAME and stmt[k].string == "in"
-                ):
-                    k += 1
-                # The target binds what an ordinary assignment would: `for a, b
-                # in ...` rebinds both, `for holder.b in ...` rebinds neither -
-                # taking every name in between would let that no-op loop cancel
-                # a live alias.
-                _add_assignment_targets(stmt[j + 1 : k], rebound)
-            elif tok.string == "as":  # `with ... as x`, `except ... as x`
-                if j + 1 < len(stmt) and stmt[j + 1].type == tokenize.NAME:
-                    rebound.add(stmt[j + 1].string)
-        elif tok.type == tokenize.OP and tok.string == ":=":
-            if j and stmt[j - 1].type == tokenize.NAME:
-                rebound.add(stmt[j - 1].string)
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                depth += 1
+            elif tok.string in _CLOSERS:
+                depth -= 1
+            elif tok.string == ":=":
+                if j and stmt[j - 1].type == tokenize.NAME:
+                    rebound.add(stmt[j - 1].string)
+            continue
+        if tok.type != tokenize.NAME:
+            continue
+        if tok.string == "for":
+            if depth:
+                continue  # a comprehension: its target is scoped to the comprehension
+            k = j + 1
+            while k < len(stmt) and not (
+                stmt[k].type == tokenize.NAME and stmt[k].string == "in"
+            ):
+                k += 1
+            # The target binds what an ordinary assignment would: `for a, b
+            # in ...` rebinds both, `for holder.b in ...` rebinds neither -
+            # taking every name in between would let that no-op loop cancel
+            # a live alias.
+            _add_assignment_targets(stmt[j + 1 : k], rebound)
+        elif tok.string == "as" and not handler:  # `with ... as x`, `import x as y`
+            if j + 1 < len(stmt) and stmt[j + 1].type == tokenize.NAME:
+                rebound.add(stmt[j + 1].string)
     groups: list = []
     cur: list = []
     depth = 0
