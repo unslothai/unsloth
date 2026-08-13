@@ -1333,9 +1333,7 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
         )
         assert token, f"{rel}: no PickRevert rollback token"
         for field in ("prev: string | null", "steps: number", "guidance: number"):
-            assert (
-                field in token.group(1)
-            ), f"{rel}: the rollback token does not carry {field}"
+            assert field in token.group(1), f"{rel}: the rollback token does not carry {field}"
         revert = re.search(
             r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S
         )
