@@ -716,14 +716,10 @@ def test_an_untyped_error_frame_is_surfaced_rather_than_skipped(monkeypatch):
     ``{"error": {...}}`` with no ``type`` and no SSE event name either. Skipping that ended
     the generation with zero chunks and nothing to explain it: a blank answer where the
     endpoint had said "rate limited". Before the skip existed this at least raised."""
-    body = (
-        b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
-    )
+    body = b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content = body, headers = {"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
@@ -755,9 +751,7 @@ def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeyp
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content = body, headers = {"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
