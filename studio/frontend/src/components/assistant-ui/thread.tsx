@@ -100,7 +100,10 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
-import { parseExternalModelId } from "@/features/chat/external-providers";
+import {
+  parseExternalModelId,
+  providerModelSupportsStudioTools,
+} from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import {
   CONTINUATION_RUN_CONFIG_KEY,

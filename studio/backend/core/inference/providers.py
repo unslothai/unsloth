@@ -576,17 +576,24 @@ def validate_provider_base_url(base_url: str) -> str:
     return raw.rstrip("/")
 
 
-def list_available_providers() -> list[dict[str, Any]]:
-    """Return all registered providers (for the /registry endpoint).
+def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any]]:
+    """Return registered providers (for the /registry endpoint).
 
-    Hidden entries are included so their capabilities reach the frontend: the
-    self-hosted presets (custom / vLLM / Ollama / llama.cpp) are all hidden, and
-    filtering them here is why the UI could never learn they run Studio tools.
-    They stay out of the dropdown -- the UI filters on ``hidden`` and surfaces
-    them via ``CUSTOM_PROVIDER_PRESETS`` instead.
+    Hidden entries exist only for backend lookups and are surfaced by the UI via
+    ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown, so they stay filtered
+    out by default. That default is load-bearing for upgrades: a browser holding
+    a cached bundle from before this capability existed has no idea to filter on
+    ``hidden``, and would render the self-hosted presets as duplicate dropdown
+    entries.
+
+    ``include_hidden`` is how a client that does know says so. The self-hosted
+    presets are exactly the ones that run Studio's tools, so their capability
+    has to reach a frontend that asks for it, and asking is opt-in.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
+        if info.get("hidden") and not include_hidden:
+            continue
         result.append(
             {
                 "provider_type": provider_type,

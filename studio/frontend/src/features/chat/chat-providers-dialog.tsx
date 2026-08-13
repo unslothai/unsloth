@@ -334,7 +334,9 @@ export function ChatProvidersSettings({
         ]);
         if (!isMounted) return;
         syncSucceeded = true;
-        setRegistry(registryRows);
+        // Hidden entries are fetched for their capabilities only; the dropdown
+        // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
+        setRegistry(registryRows.filter((entry) => !entry.hidden));
         setProviderType((current) => {
           if (
             current &&

@@ -134,7 +134,11 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  const response = await authFetch("/api/providers/registry");
+  // include_hidden asks for the backend-only entries (the self-hosted presets),
+  // which carry the studio-tools capability the composer gates on. An older
+  // backend ignores the parameter and returns the visible entries, so the
+  // capability simply reads as unknown and the pills stay closed.
+  const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
 

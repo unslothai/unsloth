@@ -102,7 +102,6 @@ def executed(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
     monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
     monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
-    monkeypatch.setattr(loop_mod, "strip_result_for_model", lambda result, name = None: result)
     return calls
 
 
@@ -606,3 +605,209 @@ def test_forced_choice_is_cleared_after_the_first_execution(executed):
     assert transport.requests[0]["tool_choice"] == "required"
     # The result follow-up must be free to answer in prose.
     assert transport.requests[1]["tool_choice"] == "auto"
+
+
+# ── Behaviours carried over from the local loops (PR #8630) ───────
+
+
+def test_usage_is_summed_into_one_chunk(executed):
+    """A multi-turn answer reports the shape a single-turn one does."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                "data: " + json.dumps(
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 5,
+                            "total_tokens": 15,
+                            "prompt_tokens_details": {"cached_tokens": 4},
+                        },
+                    }
+                ),
+                _DONE,
+            ],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                "data: " + json.dumps(
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 20,
+                            "completion_tokens": 7,
+                            "total_tokens": 27,
+                            "prompt_tokens_details": {"cached_tokens": 6},
+                        },
+                    }
+                ),
+                _DONE,
+            ],
+        ]
+    )
+    lines = _run(transport)
+
+    usages = []
+    for line in lines:
+        raw = line[6:] if line.startswith("data: ") else ""
+        if not raw or raw == "[DONE]":
+            continue
+        payload = json.loads(raw)
+        if "usage" in payload:
+            usages.append(payload["usage"])
+
+    # One chunk, carrying the sum, including the detail slices pricing reads.
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 30
+    assert usages[0]["completion_tokens"] == 12
+    assert usages[0]["total_tokens"] == 42
+    assert usages[0]["prompt_tokens_details"]["cached_tokens"] == 10
+
+
+def test_a_repeated_identical_call_does_not_re_execute(executed):
+    """The controller's dedup stops a model spending the budget on one call."""
+    call = {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"query":"x"}'}}
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"tool_calls": [dict(call, id = "c2")]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+
+
+def test_a_stalled_model_is_nudged_to_act(executed):
+    """Small models often say what they will do instead of doing it."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+    # The nudge is a user turn appended after the stall.
+    second = transport.requests[1]["messages"]
+    assert second[-1]["role"] == "user"
+
+
+def test_a_finished_answer_is_not_nudged(executed):
+    """A real answer must never be re-prompted into calling a tool."""
+    answer = (
+        "The capital of France is Paris, which has been the seat of government "
+        "since the tenth century and remains the largest city in the country."
+    )
+    transport = FakeTransport([[_sse({"content": answer}), _sse(finish = "stop"), _DONE]])
+    _run(transport)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+
+def test_the_loop_terminates_against_an_endlessly_calling_model(executed):
+    """A provider that always asks for a tool must still stop."""
+    class Endless:
+        heals_text_tool_calls = True
+
+        def __init__(self):
+            self.turns = 0
+
+        def stream(self, *, messages, tools, tool_choice, cancel_event):
+            self.turns += 1
+            n = self.turns
+
+            async def _gen():
+                yield _sse(
+                    {"tool_calls": [{"index": 0, "id": f"c{n}", "function": {"name": "web_search", "arguments": json.dumps({"query": f"q{n}"})}}]}
+                )
+                yield _sse(finish = "tool_calls")
+                yield _DONE
+
+            return _gen()
+
+    transport = Endless()
+    _run(transport, max_calls = 3)
+
+    # Budget spent, catalog withdrawn, then one final no-tools pass.
+    assert len(executed) == 3
+    assert transport.turns <= 5
+
+
+def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
+    """A long call must emit progress rather than going silent."""
+    def _execute(name, arguments, output_callback = None, **kwargs):
+        if output_callback:
+            output_callback("partial line 1\n")
+            output_callback("partial line 2\n")
+        return "final"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, tools = [PY])
+
+    progress = [
+        line for line in lines
+        if line.startswith("data: ") and "partial line" in line
+    ]
+    assert progress, "no live tool output reached the client"
+
+
+def test_replayed_assistant_content_carries_no_markup(executed):
+    """Markup must not go back to the provider: the call replays structurally."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": 'Sure. <tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    replayed = transport.requests[1]["messages"]
+    assistant = [m for m in replayed if m.get("role") == "assistant"][-1]
+    assert "<tool_call>" not in (assistant.get("content") or "")
+    assert assistant.get("tool_calls")
+
+
+def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
+    """A no-op only turn must not leave two user turns in a row."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "not_a_tool", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    roles = [m["role"] for m in transport.requests[1]["messages"]]
+    assert all(
+        not (a == "user" and b == "user") for a, b in zip(roles, roles[1:])
+    ), roles
