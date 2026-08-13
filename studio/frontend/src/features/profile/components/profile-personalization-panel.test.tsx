@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setLocale } from "@/i18n";
 import { useUserProfileStore } from "../stores/user-profile-store";
 import { ProfilePersonalizationPanel } from "./profile-personalization-panel";
 
-const CREATED_LABEL = /Oluşturuldu/;
-const UPDATED_LABEL = /Güncellendi/;
+const CREATED_LABEL = /Created/;
+const UPDATED_LABEL = /Updated/;
 
 const platform = vi.hoisted(() => ({
   updateProfile: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("@/shared/toast", () => ({
 
 describe("ProfilePersonalizationPanel platform profile", () => {
   beforeEach(() => {
+    setLocale("en");
     useUserProfileStore.setState({
       avatarDataUrl: null,
       displayName: "Backend Profile",
@@ -77,10 +79,8 @@ describe("ProfilePersonalizationPanel platform profile", () => {
     }
     expect(displayName).toHaveValue("Backend Profile");
     expect(container.querySelector("#profile-nickname")).toBeNull();
-    expect(screen.getByLabelText("E-posta")).toHaveValue(
-      "profile@example.test",
-    );
-    expect(screen.getByLabelText("E-posta")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("Email")).toHaveValue("profile@example.test");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("readonly");
     expect(screen.getByText(CREATED_LABEL)).toBeVisible();
     expect(screen.getByText(UPDATED_LABEL)).toBeVisible();
     expect(container.querySelectorAll("time")).toHaveLength(2);
@@ -105,5 +105,18 @@ describe("ProfilePersonalizationPanel platform profile", () => {
         nickname: "Updated Profile",
       }),
     );
+  });
+
+  it("localizes backend profile metadata in Turkish", () => {
+    setLocale("tr");
+
+    const { container } = render(<ProfilePersonalizationPanel />);
+
+    expect(screen.getByLabelText("E-posta")).toHaveValue(
+      "profile@example.test",
+    );
+    expect(screen.getByText(/Oluşturuldu/)).toBeVisible();
+    expect(screen.getByText(/Güncellendi/)).toBeVisible();
+    expect(container.querySelectorAll("time")).toHaveLength(2);
   });
 });

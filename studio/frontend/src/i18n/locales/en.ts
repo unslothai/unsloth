@@ -1,6 +1,3 @@
-
-
-
 // Relative with an explicit extension: `pnpm i18n:check` runs this tree under
 // `node --experimental-strip-types`, which has no Vite path aliases.
 import {
@@ -51,6 +48,67 @@ export const en = {
     saving: "Saving...",
     search: "Search",
     shutdown: "Shutdown",
+  },
+  platformAuth: {
+    titleLogin: "Welcome back",
+    titleRegister: "Create your account",
+    titleForgot: "Reset your password",
+    descriptionForgot: "Complete the verification steps securely.",
+    descriptionDefault: "Sign in securely with your email address.",
+    capabilitiesLoading: "Loading sign-in options…",
+    retry: "Retry",
+    email: "Email",
+    displayName: "Display name",
+    password: "Password",
+    newPassword: "New password",
+    confirmPassword: "Confirm password",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
+    passwordMismatch: "Passwords do not match.",
+    otpSent: "A verification code was sent to your email address.",
+    otpVerified: "Code verified. Choose your new password.",
+    captchaAlt: "Security code",
+    newCaptcha: "New security code",
+    captcha: "Security code",
+    otp: "Email verification code",
+    pleaseWait: "Please wait…",
+    signIn: "Sign in",
+    createAccount: "Create account",
+    getCaptcha: "Get security code",
+    sendOtp: "Send verification code",
+    verifyOtp: "Verify code",
+    resetPassword: "Reset password",
+    enterpriseSignIn: "Enterprise sign-in",
+    continueWith: "Continue with {provider}",
+    forgotPassword: "Forgot password",
+    backToLogin: "Back to sign in",
+    errors: {
+      generic: "The operation could not be completed. Please try again.",
+      timeout: "The request timed out. Please try again.",
+      network: "Could not connect to Rag Platform.",
+      missingSession: "Could not start a secure session. Please sign in again.",
+      invalidCredentials: "The email or password is incorrect.",
+      alreadyRegistered: "An account already exists with this email address.",
+      invalidEmail: "Enter a valid email address.",
+      disabled: "This account is disabled. Contact your administrator.",
+      captcha: "The security code is incorrect or expired.",
+      verification: "The verification code is incorrect or expired.",
+      invalidPassword: "The current password is incorrect.",
+      forbidden: "You do not have permission to perform this operation.",
+      invalidInput: "Check your information and try again.",
+      oauth: {
+        invalidState: "Sign-in verification failed its security check.",
+        missingCode:
+          "The sign-in provider did not return an authorization code.",
+        tokenFailed:
+          "A secure session could not be created with the sign-in provider.",
+        emailMissing:
+          "The sign-in provider did not return a verified email address.",
+        inactive: "This account is disabled.",
+        sessionMissing: "The sign-in session was not found or has expired.",
+        generic: "External sign-in could not be completed.",
+      },
+    },
   },
   shell: {
     beta: "BETA",
@@ -217,8 +275,7 @@ export const en = {
           "Used for dictation. Falls back to the system default if the browser speech engine cannot use this device",
         microphoneGrantDescription: "Allow mic access to show device names",
         allowMicrophone: "Allow microphone",
-        micAccessBlocked:
-          `Microphone access was blocked. Allow microphone access for this ${PRODUCT_NAME} page, then try again.`,
+        micAccessBlocked: `Microphone access was blocked. Allow microphone access for this ${PRODUCT_NAME} page, then try again.`,
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
         systemDefault: "System default",
@@ -347,6 +404,7 @@ export const en = {
         update: "Update password",
         updating: "Updating...",
         updated: "Password updated.",
+        platformUpdated: "Password updated. Sign in again.",
         updateFailed: "Password update failed.",
       },
       chatDefaults: "Chat defaults",
@@ -406,8 +464,7 @@ export const en = {
       permissions: {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",
-        bypassDescription:
-          `How ${PRODUCT_NAME} approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.`,
+        bypassDescription: `How ${PRODUCT_NAME} approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.`,
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -421,8 +478,7 @@ export const en = {
       startup: {
         sectionTitle: "Startup",
         launchAtLogin: `Run ${PRODUCT_NAME} at login`,
-        launchAtLoginDescription:
-          `Start ${PRODUCT_NAME} in the background when you log in. It stays in the menu bar or system tray until you open it.`,
+        launchAtLoginDescription: `Start ${PRODUCT_NAME} in the background when you log in. It stays in the menu bar or system tray until you open it.`,
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -467,8 +523,7 @@ export const en = {
           "Clears local-only preferences. Chats, API access, and DB-backed settings are kept.",
         action: "Reset preferences",
         confirmTitle: "Reset all local preferences?",
-        confirmDescription:
-          `Clears local-only preferences and reloads ${PRODUCT_NAME}. Chats, API access, and DB-backed settings are kept.`,
+        confirmDescription: `Clears local-only preferences and reloads ${PRODUCT_NAME}. Chats, API access, and DB-backed settings are kept.`,
         confirmAction: "Reset and reload",
       },
     },
@@ -480,6 +535,9 @@ export const en = {
       removePhoto: "Remove",
       pictureOptions: "Profile picture options",
       displayName: "Display name",
+      email: "Email",
+      createdAt: "Created",
+      updatedAt: "Updated",
       nickname: `What should ${PRODUCT_NAME} call you?`,
       nicknamePlaceholder: "Nickname",
       nicknameSaved: "Preferred name saved",
@@ -503,11 +561,9 @@ export const en = {
       imageUseError: "Could not use this image.",
       stats: {
         title: "Your stats",
-        subtitle:
-          `Everything below is counted from your own history. Nothing is collected or sent to ${PRODUCT_NAME}.`,
+        subtitle: `Everything below is counted from your own history. Nothing is collected or sent to ${PRODUCT_NAME}.`,
         retry: "Try again",
-        privacyNote:
-          `Stats are computed from the chat and training history held by your ${PRODUCT_NAME} install. Nothing is collected, and nothing is sent to ${PRODUCT_NAME} or any third party.`,
+        privacyNote: `Stats are computed from the chat and training history held by your ${PRODUCT_NAME} install. Nothing is collected, and nothing is sent to ${PRODUCT_NAME} or any third party.`,
         emptyChats:
           "No chats yet. Start a conversation and your stats will fill in here.",
         lifetimeTokens: "Lifetime tokens",
@@ -723,12 +779,16 @@ export const en = {
         title: "Model memory",
         keepResident: "Keep model in GPU memory",
         keepResidentDescription: "Stay in VRAM between prompts.",
-        keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
+        keepResidentHint:
+          "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
         noRamReserve: "Don't reserve system RAM for the model",
         noRamReserveDescription: "Keep no full copy in RAM.",
-        noRamReserveHint: "Stream the weights into VRAM instead of keeping a full copy in RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock.",
-        mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
-        memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
+        noRamReserveHint:
+          "Stream the weights into VRAM instead of keeping a full copy in RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock.",
+        mlockVetoed:
+          "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
+        memlockCapped:
+          "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",
         saveError: "Failed to save model memory settings",
@@ -743,7 +803,8 @@ export const en = {
         diskFree: "{free} free",
         modelsFolder: "Models folder",
         modelsFolderDescription: "Where downloaded models are stored.",
-        modelsFolderHint: "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. Models you already have stay where they are.",
+        modelsFolderHint:
+          "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. Models you already have stay where they are.",
         // Not rendered: extra terms the settings search matches this row on.
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
@@ -779,8 +840,7 @@ export const en = {
       title: "Agents",
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
-      intro:
-        `connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by ${PRODUCT_NAME}, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.`,
+      intro: `connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by ${PRODUCT_NAME}, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.`,
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -802,12 +862,10 @@ export const en = {
       docs: "Docs",
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
-      modelNote:
-        `Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in ${PRODUCT_NAME}.`,
+      modelNote: `Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in ${PRODUCT_NAME}.`,
       subagent: {
         title: "Use a local model as a subagent",
-        description:
-          `Keep {agent} on its current model and delegate selected tasks to this local ${PRODUCT_NAME} model.`,
+        description: `Keep {agent} on its current model and delegate selected tasks to this local ${PRODUCT_NAME} model.`,
         setupCommand: "Setup command",
         copySetupCommand: "Copy subagent setup command",
         usagePrompt: "Then in {agent}, type:",
@@ -836,8 +894,7 @@ export const en = {
       },
       options: {
         title: "Common options",
-        description:
-          `${PRODUCT_NAME} flags are parsed first; anything it doesn't recognize is passed straight through to the agent.`,
+        description: `${PRODUCT_NAME} flags are parsed first; anything it doesn't recognize is passed straight through to the agent.`,
         model:
           "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
         contextLength:
@@ -848,8 +905,7 @@ export const en = {
         serve: "Enable or disable the automatic local server.",
         launch: "Launch the agent, or just print the command and environment.",
         persist: `Keep ${PRODUCT_NAME}-managed agent storage between runs.`,
-        asSubagent:
-          `Keep the parent on its current model and register ${PRODUCT_NAME} as a local subagent (Claude Code, Codex, and OpenCode).`,
+        asSubagent: `Keep the parent on its current model and register ${PRODUCT_NAME} as a local subagent (Claude Code, Codex, and OpenCode).`,
         // UNSLOTH_API_KEY is the literal environment variable name the CLI reads.
         // Renaming it in copy would tell users to set a variable nothing consumes.
         apiKey: `Provide your ${PRODUCT_NAME} API key (or set UNSLOTH_API_KEY).`,
@@ -862,8 +918,7 @@ export const en = {
       },
       passthrough: {
         title: "Passing agent arguments",
-        description:
-          `Arguments after the ${PRODUCT_NAME} flags are forwarded to the agent itself, so native commands like resume still work:`,
+        description: `Arguments after the ${PRODUCT_NAME} flags are forwarded to the agent itself, so native commands like resume still work:`,
       },
       dryRun: {
         title: "Preview without launching",
@@ -1051,8 +1106,7 @@ export const en = {
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "Secure HTTPS",
-      secureHttpsHint:
-        `The 0.0.0.0 port is still reachable globally. For full security, launch ${PRODUCT_NAME} with --secure to expose only this HTTPS link.`,
+      secureHttpsHint: `The 0.0.0.0 port is still reachable globally. For full security, launch ${PRODUCT_NAME} with --secure to expose only this HTTPS link.`,
       copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
@@ -1115,8 +1169,7 @@ export const en = {
       },
       dangerZone: "Danger zone",
       shutDownStudio: `Shut down ${PRODUCT_NAME}`,
-      shutDownStudioDescription:
-        `Stops the ${PRODUCT_NAME} server and ends your session.`,
+      shutDownStudioDescription: `Stops the ${PRODUCT_NAME} server and ends your session.`,
       shutDown: "Shut down",
       update: {
         title: `Update ${PRODUCT_NAME}`,
@@ -1158,16 +1211,14 @@ export const en = {
         desktopCheckFailed: "Could not check for updates",
         desktopCheckFailedDescription: "Check your connection and try again.",
         desktopCurrent: "Desktop app is up to date",
-        desktopCurrentDescription:
-          `${PRODUCT_NAME} will continue checking automatically.`,
+        desktopCurrentDescription: `${PRODUCT_NAME} will continue checking automatically.`,
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
         updateNow: "Update now",
         openReleasePage: "Open release page",
-        unknownInstall:
-          `Could not detect how ${PRODUCT_NAME} was installed. For installer or PyPI installs, use the commands above.`,
+        unknownInstall: `Could not detect how ${PRODUCT_NAME} was installed. For installer or PyPI installs, use the commands above.`,
         localCheckout:
           "For local checkout installs, run the local installer from that checkout:",
         docs: "Install docs:",
@@ -1684,8 +1735,7 @@ export const en = {
         unsupportedDatasetSource: "Unsupported dataset source.",
       },
       startFailed: "Failed to start training",
-      startUnconfirmed:
-        `${PRODUCT_NAME} couldn't confirm whether training started. Checking status in the background.`,
+      startUnconfirmed: `${PRODUCT_NAME} couldn't confirm whether training started. Checking status in the background.`,
       stopFailed: "Failed to stop training",
       trainingStillActiveTitle: "Training still active",
       stopBeforeConfig: "Stop training first, then return to configuration.",

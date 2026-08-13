@@ -1,6 +1,3 @@
-
-
-
 /**
  * Formatting helpers for the profile stats panel.
  *
@@ -72,7 +69,8 @@ export function formatCompactNumber(value: number, locale: Locale): string {
   // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
   // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
   // en and hi compact at 1K, ja and de not until 万 and Mio.
-  if (!hasCompactUnit(locale, value)) return compactFormatter(locale, 0).format(value);
+  if (!hasCompactUnit(locale, value))
+    return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
     ? compactFormatter(locale, 1).format(value)
     : compactFormatter(locale, 0).format(value);
@@ -141,6 +139,11 @@ const PROFILE_COUNT_TEMPLATES = {
     token: { one: "{value} token", other: "{value} tokens" },
     message: { one: "{value} message", other: "{value} messages" },
     step: { one: "{value} step", other: "{value} steps" },
+  },
+  tr: {
+    token: { other: "{value} token" },
+    message: { other: "{value} mesaj" },
+    step: { other: "{value} adım" },
   },
   "zh-CN": {
     token: { other: "{value} 个 token" },

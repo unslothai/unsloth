@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   platformAuthErrorMessage,
   platformOAuthErrorMessage,
 } from "@/features/auth/platform-auth-errors";
+import { setLocale } from "@/i18n";
 import { PlatformApiError } from "../errors";
 
 describe("safe Turkish auth errors", () => {
+  beforeEach(() => setLocale("tr"));
+
   it("maps duplicate users, wrong passwords, permissions, and timeouts", () => {
     expect(
       platformAuthErrorMessage(
@@ -52,6 +55,26 @@ describe("safe Turkish auth errors", () => {
     );
     expect(platformOAuthErrorMessage("provider-secret-error")).toBe(
       "Harici giriş tamamlanamadı.",
+    );
+  });
+
+  it("provides the same safe error surface in English", () => {
+    setLocale("en");
+
+    expect(
+      platformAuthErrorMessage(
+        new PlatformApiError("password error", {
+          code: 100,
+          endpoint: "/auth/login",
+          httpStatus: 200,
+        }),
+      ),
+    ).toMatch(/current password/i);
+    expect(platformOAuthErrorMessage("invalid_state")).toContain(
+      "security check",
+    );
+    expect(platformOAuthErrorMessage("provider-secret-error")).toBe(
+      "External sign-in could not be completed.",
     );
   });
 });

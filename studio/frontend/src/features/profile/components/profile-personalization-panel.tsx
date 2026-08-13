@@ -16,7 +16,7 @@ import {
   usePlatformSessionStore,
 } from "@/integrations/platform-backend";
 import { cn } from "@/lib/utils";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
 import {
   Delete02Icon,
@@ -39,21 +39,21 @@ const PROFILE_STORAGE_KEY = "unsloth_user_profile";
 const SLOTH_NAME = /^large\s+/i;
 const PNG_SUFFIX = /\.png$/i;
 
-const compactDateFormatter = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
-
 function ProfileDate({ value }: { value: number | null }) {
+  const locale = useLocale();
   if (value === null) {
     return <span>—</span>;
   }
 
   const date = new Date(value);
+  const formatted = new Intl.DateTimeFormat(locale, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(date);
   return (
-    <time dateTime={date.toISOString()} title={date.toLocaleString()}>
-      {compactDateFormatter.format(date)}
+    <time dateTime={date.toISOString()} title={date.toLocaleString(locale)}>
+      {formatted}
     </time>
   );
 }
@@ -493,14 +493,14 @@ export function ProfilePersonalizationPanel() {
 
           {platformProfileEnabled && platformUser ? (
             <div
-              data-settings-label="E-posta"
+              data-settings-label={t("settings.profile.email")}
               className="flex min-w-0 flex-col gap-1.5"
             >
               <Label
                 htmlFor="profile-email"
                 className="text-xs font-medium text-muted-foreground"
               >
-                E-posta
+                {t("settings.profile.email")}
               </Label>
               <Input
                 id="profile-email"
@@ -513,11 +513,13 @@ export function ProfilePersonalizationPanel() {
               />
               <p className="flex flex-wrap items-center gap-x-1.5 px-1 text-ui-11 text-muted-foreground/65 tabular-nums">
                 <span className="whitespace-nowrap">
-                  Oluşturuldu <ProfileDate value={platformUser.createdAt} />
+                  {t("settings.profile.createdAt")}{" "}
+                  <ProfileDate value={platformUser.createdAt} />
                 </span>
                 <span aria-hidden="true">·</span>
                 <span className="whitespace-nowrap">
-                  Güncellendi <ProfileDate value={platformUser.updatedAt} />
+                  {t("settings.profile.updatedAt")}{" "}
+                  <ProfileDate value={platformUser.updatedAt} />
                 </span>
               </p>
             </div>

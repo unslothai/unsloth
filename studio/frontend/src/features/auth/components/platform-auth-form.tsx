@@ -14,6 +14,7 @@ import {
   verifyForgotPasswordOtp,
   type PlatformAuthCapabilities,
 } from "@/integrations/platform-backend";
+import { useT } from "@/i18n";
 import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import {
@@ -38,6 +39,7 @@ function PasswordInput(props: {
   onChange: (value: string) => void;
   value: string;
 }) {
+  const t = useT();
   const [visible, setVisible] = useState(false);
   return (
     <div className="space-y-2">
@@ -59,7 +61,9 @@ function PasswordInput(props: {
           size="icon"
           className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
           onClick={() => setVisible((current) => !current)}
-          aria-label={visible ? "Parolayı gizle" : "Parolayı göster"}
+          aria-label={t(
+            visible ? "platformAuth.hidePassword" : "platformAuth.showPassword",
+          )}
         >
           {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
         </Button>
@@ -69,6 +73,7 @@ function PasswordInput(props: {
 }
 
 export function PlatformAuthForm(): ReactElement {
+  const t = useT();
   const navigate = useNavigate();
   const authConfig = getPlatformAuthConfig();
   const [view, setView] = useState<AuthView>("login");
@@ -104,7 +109,8 @@ export function PlatformAuthForm(): ReactElement {
     void getPlatformAuthCapabilities(controller.signal)
       .then(setCapabilities)
       .catch((caught: unknown) => {
-        if (!controller.signal.aborted) setError(platformAuthErrorMessage(caught));
+        if (!controller.signal.aborted)
+          setError(platformAuthErrorMessage(caught));
       })
       .finally(() => {
         if (requestRef.current === controller) {
@@ -155,7 +161,8 @@ export function PlatformAuthForm(): ReactElement {
     try {
       await action(controller.signal);
     } catch (caught) {
-      if (!controller.signal.aborted) setError(platformAuthErrorMessage(caught));
+      if (!controller.signal.aborted)
+        setError(platformAuthErrorMessage(caught));
     } finally {
       if (requestRef.current === controller) {
         requestRef.current = null;
@@ -176,7 +183,7 @@ export function PlatformAuthForm(): ReactElement {
 
   async function submitRegistration() {
     if (password !== confirmPassword) {
-      setError("Parolalar eşleşmiyor.");
+      setError(t("platformAuth.passwordMismatch"));
       return;
     }
     await runRequest(async (signal) => {
@@ -200,16 +207,16 @@ export function PlatformAuthForm(): ReactElement {
         await sendForgotPasswordOtp(email, captcha, signal);
         replaceCaptchaUrl(null);
         setRecoveryStep("otp");
-        setNotice("Doğrulama kodu e-posta adresinize gönderildi.");
+        setNotice(t("platformAuth.otpSent"));
       });
     } else if (recoveryStep === "otp") {
       await runRequest(async (signal) => {
         await verifyForgotPasswordOtp(email, otp, signal);
         setRecoveryStep("reset");
-        setNotice("Kod doğrulandı. Yeni parolanızı belirleyin.");
+        setNotice(t("platformAuth.otpVerified"));
       });
     } else if (password !== confirmPassword) {
-      setError("Parolalar eşleşmiyor.");
+      setError(t("platformAuth.passwordMismatch"));
     } else {
       await runRequest(async (signal) => {
         await resetForgottenPlatformPassword(
@@ -237,7 +244,8 @@ export function PlatformAuthForm(): ReactElement {
   }
 
   const registrationAvailable =
-    authConfig.registrationEnabled && capabilities?.registrationEnabled === true;
+    authConfig.registrationEnabled &&
+    capabilities?.registrationEnabled === true;
   const oauthChannels = authConfig.oauthEnabled
     ? (capabilities?.loginChannels ?? [])
     : [];
@@ -247,31 +255,31 @@ export function PlatformAuthForm(): ReactElement {
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
-          Rag Platform
+          {t("shell.product")}
         </p>
         <h2 className="text-2xl font-semibold text-foreground">
           {view === "login"
-            ? "Tekrar hoş geldiniz"
+            ? t("platformAuth.titleLogin")
             : view === "register"
-              ? "Hesap oluşturun"
-              : "Parolanızı yenileyin"}
+              ? t("platformAuth.titleRegister")
+              : t("platformAuth.titleForgot")}
         </h2>
         <p className="text-sm text-muted-foreground">
           {view === "forgot"
-            ? "Doğrulama adımlarını güvenle tamamlayın."
-            : "E-posta adresinizle güvenli oturum açın."}
+            ? t("platformAuth.descriptionForgot")
+            : t("platformAuth.descriptionDefault")}
         </p>
       </div>
 
       {capabilityLoading ? (
         <p className="text-center text-sm text-muted-foreground" role="status">
-          Giriş seçenekleri yükleniyor…
+          {t("platformAuth.capabilitiesLoading")}
         </p>
       ) : capabilities === null ? (
         <div className="space-y-3 text-center">
           <p className="text-sm text-destructive">{error}</p>
           <Button type="button" variant="outline" onClick={loadCapabilities}>
-            <RefreshCw className="mr-2 size-4" /> Yeniden dene
+            <RefreshCw className="mr-2 size-4" /> {t("platformAuth.retry")}
           </Button>
         </div>
       ) : (
@@ -279,7 +287,9 @@ export function PlatformAuthForm(): ReactElement {
           <form className="space-y-4" onSubmit={submit}>
             {(view !== "forgot" || recoveryStep === "email") && (
               <div className="space-y-2">
-                <Label htmlFor="platform-email">E-posta</Label>
+                <Label htmlFor="platform-email">
+                  {t("platformAuth.email")}
+                </Label>
                 <Input
                   id="platform-email"
                   type="email"
@@ -292,7 +302,9 @@ export function PlatformAuthForm(): ReactElement {
             )}
             {view === "register" && (
               <div className="space-y-2">
-                <Label htmlFor="platform-nickname">Görünen ad</Label>
+                <Label htmlFor="platform-nickname">
+                  {t("platformAuth.displayName")}
+                </Label>
                 <Input
                   id="platform-nickname"
                   value={nickname}
@@ -305,19 +317,25 @@ export function PlatformAuthForm(): ReactElement {
             {((view === "login" && passwordLoginAvailable) ||
               view === "register" ||
               (view === "forgot" && recoveryStep === "reset")) && (
-                <PasswordInput
-                  id="platform-password"
-                  label={recoveryStep === "reset" ? "Yeni parola" : "Parola"}
-                  value={password}
-                  onChange={setPassword}
-                  autoComplete={view === "login" ? "current-password" : "new-password"}
-                />
-              )}
+              <PasswordInput
+                id="platform-password"
+                label={
+                  recoveryStep === "reset"
+                    ? t("platformAuth.newPassword")
+                    : t("platformAuth.password")
+                }
+                value={password}
+                onChange={setPassword}
+                autoComplete={
+                  view === "login" ? "current-password" : "new-password"
+                }
+              />
+            )}
             {(view === "register" ||
               (view === "forgot" && recoveryStep === "reset")) && (
               <PasswordInput
                 id="platform-confirm-password"
-                label="Parolayı doğrula"
+                label={t("platformAuth.confirmPassword")}
                 value={confirmPassword}
                 onChange={setConfirmPassword}
                 autoComplete="new-password"
@@ -333,7 +351,7 @@ export function PlatformAuthForm(): ReactElement {
                 {captchaUrl ? (
                   <img
                     src={captchaUrl}
-                    alt="Güvenlik kodu"
+                    alt={t("platformAuth.captchaAlt")}
                     className="h-24 w-full rounded-lg border bg-white object-contain"
                   />
                 ) : null}
@@ -344,10 +362,13 @@ export function PlatformAuthForm(): ReactElement {
                   onClick={refreshCaptcha}
                   disabled={loading}
                 >
-                  <RefreshCw className="mr-2 size-3.5" /> Yeni güvenlik kodu
+                  <RefreshCw className="mr-2 size-3.5" />
+                  {t("platformAuth.newCaptcha")}
                 </Button>
                 <div className="space-y-2">
-                  <Label htmlFor="platform-captcha">Güvenlik kodu</Label>
+                  <Label htmlFor="platform-captcha">
+                    {t("platformAuth.captcha")}
+                  </Label>
                   <Input
                     id="platform-captcha"
                     value={captcha}
@@ -360,7 +381,7 @@ export function PlatformAuthForm(): ReactElement {
             )}
             {view === "forgot" && recoveryStep === "otp" && (
               <div className="space-y-2">
-                <Label htmlFor="platform-otp">E-posta doğrulama kodu</Label>
+                <Label htmlFor="platform-otp">{t("platformAuth.otp")}</Label>
                 <Input
                   id="platform-otp"
                   value={otp}
@@ -383,28 +404,37 @@ export function PlatformAuthForm(): ReactElement {
             {view !== "login" || passwordLoginAvailable ? (
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading
-                  ? "Lütfen bekleyin…"
+                  ? t("platformAuth.pleaseWait")
                   : view === "login"
-                    ? "Giriş yap"
+                    ? t("platformAuth.signIn")
                     : view === "register"
-                      ? "Hesap oluştur"
+                      ? t("platformAuth.createAccount")
                       : recoveryStep === "email"
-                        ? "Güvenlik kodunu getir"
+                        ? t("platformAuth.getCaptcha")
                         : recoveryStep === "captcha"
-                          ? "Doğrulama kodu gönder"
+                          ? t("platformAuth.sendOtp")
                           : recoveryStep === "otp"
-                            ? "Kodu doğrula"
-                            : "Parolayı yenile"}
+                            ? t("platformAuth.verifyOtp")
+                            : t("platformAuth.resetPassword")}
               </Button>
             ) : null}
           </form>
           {view === "login" && oauthChannels.length > 0 ? (
             <div className="space-y-2 border-t pt-4">
-              <p className="text-center text-xs text-muted-foreground">Kurumsal giriş</p>
+              <p className="text-center text-xs text-muted-foreground">
+                {t("platformAuth.enterpriseSignIn")}
+              </p>
               {oauthChannels.map((channel) => (
-                <Button key={channel.channel} asChild variant="outline" className="w-full">
+                <Button
+                  key={channel.channel}
+                  asChild
+                  variant="outline"
+                  className="w-full"
+                >
                   <a href={getPlatformOAuthLoginUrl(channel.channel)}>
-                    {channel.displayName} ile devam et
+                    {t("platformAuth.continueWith", {
+                      provider: channel.displayName,
+                    })}
                   </a>
                 </Button>
               ))}
@@ -417,7 +447,7 @@ export function PlatformAuthForm(): ReactElement {
                 className="text-primary hover:underline"
                 onClick={() => switchView("register")}
               >
-                Hesap oluştur
+                {t("platformAuth.createAccount")}
               </button>
             ) : null}
             {view === "login" && authConfig.passwordRecoveryEnabled ? (
@@ -426,7 +456,7 @@ export function PlatformAuthForm(): ReactElement {
                 className="text-primary hover:underline"
                 onClick={() => switchView("forgot")}
               >
-                Parolamı unuttum
+                {t("platformAuth.forgotPassword")}
               </button>
             ) : null}
             {view !== "login" ? (
@@ -435,7 +465,7 @@ export function PlatformAuthForm(): ReactElement {
                 className="text-primary hover:underline"
                 onClick={() => switchView("login")}
               >
-                Girişe dön
+                {t("platformAuth.backToLogin")}
               </button>
             ) : null}
           </div>

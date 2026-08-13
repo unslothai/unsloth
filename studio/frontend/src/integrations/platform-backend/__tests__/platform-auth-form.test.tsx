@@ -4,20 +4,24 @@ import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PlatformAuthForm } from "@/features/auth/components/platform-auth-form";
+import { setLocale } from "@/i18n";
 import { platformTestServer } from "./test-server";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  const actual =
+    await importOriginal<typeof import("@tanstack/react-router")>();
   return { ...actual, useNavigate: () => navigate };
 });
 
-function capabilities(options: {
-  channels?: Array<Record<string, unknown>>;
-  password?: boolean;
-  registration?: boolean;
-} = {}) {
+function capabilities(
+  options: {
+    channels?: Array<Record<string, unknown>>;
+    password?: boolean;
+    registration?: boolean;
+  } = {},
+) {
   platformTestServer.use(
     http.get("http://platform.test/api/v1/system/config", () =>
       HttpResponse.json({
@@ -36,6 +40,7 @@ function capabilities(options: {
 
 describe("PlatformAuthForm", () => {
   beforeEach(() => {
+    setLocale("tr");
     vi.stubEnv("VITE_RAG_PLATFORM_BASE_URL", "http://platform.test");
     vi.stubEnv("VITE_RAG_PLATFORM_API_PREFIX", "/api/v1");
     localStorage.clear();
@@ -43,11 +48,24 @@ describe("PlatformAuthForm", () => {
 
   afterEach(() => vi.unstubAllEnvs());
 
+  it("renders the complete sign-in surface in English", async () => {
+    setLocale("en");
+    capabilities();
+    render(<PlatformAuthForm />);
+
+    expect(screen.getByText("Loading sign-in options…")).toBeInTheDocument();
+    await screen.findByRole("button", { name: "Sign in" });
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  });
+
   it("waits for runtime capabilities and hides unavailable registration/OAuth choices", async () => {
     capabilities({ registration: false });
     render(<PlatformAuthForm />);
 
-    expect(screen.getByText("Giriş seçenekleri yükleniyor…")).toBeInTheDocument();
+    expect(
+      screen.getByText("Giriş seçenekleri yükleniyor…"),
+    ).toBeInTheDocument();
     await screen.findByRole("button", { name: "Giriş yap" });
     expect(
       screen.queryByRole("button", { name: "Hesap oluştur" }),
@@ -63,9 +81,7 @@ describe("PlatformAuthForm", () => {
       btoa(forge.pki.publicKeyToPem(pair.publicKey)),
     );
     capabilities({
-      channels: [
-        { channel: "github", display_name: "GitHub", icon: "github" },
-      ],
+      channels: [{ channel: "github", display_name: "GitHub", icon: "github" }],
     });
     platformTestServer.use(
       http.post("http://platform.test/api/v1/auth/login", () =>
@@ -99,9 +115,7 @@ describe("PlatformAuthForm", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Giriş yap" }));
 
-    await waitFor(() =>
-      expect(navigate).toHaveBeenCalledWith({ to: "/chat" }),
-    );
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: "/chat" }));
     expect(localStorage.getItem("rag-platform.auth-token")).toBe(
       "opaque-ui-token",
     );
@@ -116,9 +130,7 @@ describe("PlatformAuthForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hesap oluştur" }));
 
     expect(screen.getByLabelText("Parola")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Hesap oluştur" }),
-    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Hesap oluştur" })).toBeEnabled();
   });
 
   it("clears loading state when an in-flight login is aborted by changing view", async () => {
@@ -149,8 +161,6 @@ describe("PlatformAuthForm", () => {
     ).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Hesap oluştur" }));
-    expect(
-      screen.getByRole("button", { name: "Hesap oluştur" }),
-    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Hesap oluştur" })).toBeEnabled();
   });
 });

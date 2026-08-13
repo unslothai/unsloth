@@ -48,7 +48,7 @@ KEEP_PREFIX="${KEEP_PREFIX:-studio/frontend/}"
 KEEP_FILES=".gitignore README.md scripts/sync-upstream.sh"
 # Locales this fork ships. src/i18n/messages.ts declares only these, so a new
 # upstream locale file would merge cleanly and then fail i18n:check.
-KEEP_LOCALES="${KEEP_LOCALES:-en.ts}"
+KEEP_LOCALES="${KEEP_LOCALES:-en.ts tr.ts}"
 LOCALES_DIR="studio/frontend/src/i18n/locales/"
 
 DRY_RUN=0

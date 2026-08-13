@@ -1,6 +1,3 @@
-
-
-
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -254,7 +251,7 @@ export function ChangePasswordDialog({
         await changePlatformPassword(current, next, {
           publicKeyPem: getPlatformAuthConfig().publicKeyPem,
         });
-        toast.success("Parolanız güncellendi. Yeniden giriş yapın.");
+        toast.success(t("settings.general.passwordDialog.platformUpdated"));
         reset();
         setOpen(false);
         onDone?.();
@@ -279,8 +276,8 @@ export function ChangePasswordDialog({
         platformAuth
           ? platformAuthErrorMessage(err)
           : err instanceof Error && err.message
-          ? err.message
-          : t("settings.general.passwordDialog.updateFailed"),
+            ? err.message
+            : t("settings.general.passwordDialog.updateFailed"),
       );
     } finally {
       setSubmitting(false);

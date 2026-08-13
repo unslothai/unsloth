@@ -1,19 +1,19 @@
-
-
-
 import { getLocale } from "./locale-store";
 import { en } from "./locales/en";
+import { tr } from "./locales/tr";
 import type { InterpolationValues, MessageKey } from "./types";
 
 export const LOCALES = {
-  en: { label: "English", nativeLabel: "English" }
+  en: { label: "English", nativeLabel: "English" },
+  tr: { label: "Turkish", nativeLabel: "Türkçe" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;
 export type TranslationKey = MessageKey<typeof en>;
 
 export const messages = {
-  en
+  en,
+  tr,
 } as const;
 
 const PLACEHOLDER_PATTERN = /\{([a-zA-Z0-9_]+)\}/g;

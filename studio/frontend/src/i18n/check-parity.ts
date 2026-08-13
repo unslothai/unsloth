@@ -1,6 +1,3 @@
-
-
-
 // Parity check between en.ts and every non-English locale:
 // - Locale files may be partial; required release surfaces must be translated.
 // - All non-English keys must exist in en (no extras).
@@ -9,6 +6,7 @@
 // Run: npm run i18n:check   (or: npx tsx src/i18n/check-parity.ts [--strict])
 
 import { en } from "./locales/en.ts";
+import { tr } from "./locales/tr.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -94,7 +92,7 @@ function checkExtras(
   }
 }
 
-const overlays: Record<string, Tree> = {};
+const overlays: Record<string, Tree> = { tr };
 
 const requiredOverlayPrefixes = ["picker.", "studio."] as const;
 

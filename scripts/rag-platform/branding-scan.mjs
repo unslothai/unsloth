@@ -51,7 +51,8 @@ const ALLOWLIST = [
     reason: "licence/attribution label in the About screen",
     test: (value, file) =>
       (file.endsWith("/features/settings/tabs/about-tab.tsx") ||
-        file.endsWith("/i18n/locales/en.ts")) &&
+        file.endsWith("/i18n/locales/en.ts") ||
+        file.endsWith("/i18n/locales/tr.ts")) &&
       /^(?:Unsloth|Unsloth Studio|Unsloth AI(?: Inc\.)?|.*Unsloth.*(?:AGPL|Apache|licen[cs]e|copyright|upstream).*)$/i.test(
         value.trim(),
       ),
@@ -60,7 +61,8 @@ const ALLOWLIST = [
     reason: "fixed backend/login protocol value documented by ADR 0000",
     test: (value, file) =>
       (file.endsWith("/features/auth/components/auth-form.tsx") ||
-        file.endsWith("/i18n/locales/en.ts")) &&
+        file.endsWith("/i18n/locales/en.ts") ||
+        file.endsWith("/i18n/locales/tr.ts")) &&
       /^unsloth$/i.test(value.trim()),
   },
   {
