@@ -550,23 +550,80 @@ with sync_playwright() as p:
                 page.get_by_test_id("stt-model-trigger").click()
                 page.get_by_test_id("stt-model-search").fill("whisper")
                 results = page.get_by_test_id("stt-model-results")
-                page.wait_for_function(
-                    """() => {
-                        const node = document.querySelector('[data-testid="stt-model-results"]');
-                        return !!node && node.scrollHeight > node.clientHeight;
-                    }""",
-                    timeout = 30_000,
-                )
-                results.hover()
-                page.mouse.wheel(0, 700)
-                page.wait_for_function(
-                    """() => {
-                        const node = document.querySelector('[data-testid="stt-model-results"]');
-                        return !!node && node.scrollTop > 0;
-                    }""",
-                    timeout = 5_000,
-                )
-                info("OK Voice model picker mouse wheel changed scrollTop")
+                # Wheel at the searched rows, not at whatever overflows first. The query is
+                # debounced 300ms and the list is then replaced by a one-line spinner for as
+                # long as the Hugging Face search takes, so the first paint that overflows is
+                # the pre-search default list: on macos-15 the hover + wheel lands after the
+                # swap, on a container that is one spinner row tall and has nothing to scroll.
+                # Requiring rendered model rows (the loading and empty states are plain divs,
+                # every row is a button) pins the assertion to the state a user scrolls, and
+                # re-wheeling until the deadline absorbs a swap that lands mid-wheel.
+                rows_overflow = """() => {
+                    const node = document.querySelector('[data-testid="stt-model-results"]');
+                    return !!node
+                        && node.querySelectorAll('button').length > 0
+                        && node.scrollHeight > node.clientHeight;
+                }"""
+                scrolled_js = """() => {
+                    const node = document.querySelector('[data-testid="stt-model-results"]');
+                    return !!node && node.scrollTop > 0;
+                }"""
+                wheel_deadline = time.monotonic() + 30.0
+                wheel_scrolled = False
+                cleared_search = False
+                while not wheel_scrolled:
+                    remaining_ms = (wheel_deadline - time.monotonic()) * 1000
+                    if remaining_ms <= 0:
+                        break
+                    try:
+                        page.wait_for_function(
+                            rows_overflow,
+                            timeout = min(remaining_ms, 15_000),
+                        )
+                    except Exception:
+                        if cleared_search:
+                            break  # never overflowed with rows; geometry is reported below
+                        # A runner that cannot reach Hugging Face has no rows to search for,
+                        # and wheel scrolling is not what that would be evidence of. Clear the
+                        # query: the built-in model list ships in the bundle and overflows the
+                        # 16rem container on every platform, so the wheel is still asserted.
+                        info("WARN no 'whisper' search rows; wheeling the built-in list instead")
+                        cleared_search = True
+                        page.get_by_test_id("stt-model-search").fill("")
+                        continue
+                    results.hover()
+                    page.mouse.wheel(0, 700)
+                    try:
+                        page.wait_for_function(scrolled_js, timeout = 2_000)
+                    except Exception as wheel_err:
+                        # A dead renderer must still reach the crash handler below, not be
+                        # retried until the deadline and reported as a scroll failure.
+                        if page_crashed(page, wheel_err):
+                            raise
+                        continue
+                    wheel_scrolled = True
+                if wheel_scrolled:
+                    info("OK Voice model picker mouse wheel changed scrollTop")
+                else:
+                    # Geometry in the message: the next failure says whether the list was
+                    # short, empty or scrollable-but-unscrolled without a second CI run.
+                    try:
+                        geom = robust_evaluate(
+                            page,
+                            """() => {
+                                const node = document.querySelector('[data-testid="stt-model-results"]');
+                                if (!node) return null;
+                                return {
+                                    scrollTop: node.scrollTop,
+                                    scrollHeight: node.scrollHeight,
+                                    clientHeight: node.clientHeight,
+                                    rows: node.querySelectorAll('button').length,
+                                };
+                            }""",
+                        )
+                    except Exception as geom_err:
+                        geom = f"<unreadable: {geom_err!r}>"
+                    fail(f"Voice model picker did not wheel-scroll: {geom}")
             except Exception as exc:
                 if page_crashed(page, exc) and MACOS_RUNNER:
                     runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
