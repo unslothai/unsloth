@@ -2027,6 +2027,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           return;
         }
         setStatusIfNewest(ticket, loaded);
+        const d = defaultsFor(loaded.base_repo ?? loaded.repo_id ?? "", loaded.family);
+        setSteps(d.steps);
+        setGuidance(d.guidance);
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
@@ -2190,7 +2193,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
     // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
-    const d = defaultsFor(status?.base_repo ?? repoId);
+    const d = defaultsFor(status?.base_repo ?? status?.family ?? repoId, status?.family);
     setSteps(d.steps);
     setGuidance(d.guidance);
     // Wire "Reapply" to the resident model too, so an advanced-option reload works without re-picking. Only a full pipeline
@@ -2199,7 +2202,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (kind === "pipeline") {
       lastLoad.current = { repoId, kind };
     }
-  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.family, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -2230,6 +2233,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const famOverride = resolvedSelectValue(record.family_override, (v) =>
+      ([
+        "auto",
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.1-kontext",
+        "qwen-image",
+        "qwen-image-edit",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "hunyuanimage-2.1",
+        "hidream-i1",
+        "ideogram-4",
+        "sdxl",
+      ] as const).find((o) => o === v) ?? null,
+    );
+    if (famOverride) setFamilyOverride(famOverride);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2702,19 +2724,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
   }, [handleLoad]);
 
-  // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
-  // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
-  // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
-  // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
-  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
-  // nothing will load and nothing else will restore the label. Hand the resident state back here or
-  // the selector keeps showing the abandoned pick's quant and recipe for good.
   const abandonPick = useCallback(() => {
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [revertPick]);
+    pickGuard.release();
+    pickSeq.current += 1;
+    pendingStagedLoad.current = null;
+    stagedLoadDeferred.current = false;
+    stagedQuantRevert.current = null;
+  }, []);
 
   const beginPick = useCallback(() => {
     pickSeq.current += 1;
@@ -2744,7 +2764,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
-        const d = defaultsFor(id);
+        const d = defaultsFor(id, familyOverride);
         setSteps(d.steps);
         setGuidance(d.guidance);
         void loadOrStage(
@@ -2766,7 +2786,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
-        const dq = defaultsFor(id);
+        const dq = defaultsFor(id, familyOverride);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
         void loadOrStage(
@@ -2805,7 +2825,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dq2 = defaultsFor(id);
+        const dq2 = defaultsFor(id, familyOverride);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
@@ -2826,7 +2846,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dsf = defaultsFor(id);
+        const dsf = defaultsFor(id, familyOverride);
         setSteps(dsf.steps);
         setGuidance(dsf.guidance);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
@@ -2859,7 +2879,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(id);
+      const d = defaultsFor(id, familyOverride);
       setSteps(d.steps);
       setGuidance(d.guidance);
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
@@ -2873,6 +2893,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       abandonPick,
       beginPick,
       busy,
+      familyOverride,
       guidance,
       handleLoad,
       loadGgufRepoPick,
@@ -3336,7 +3357,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         hint="Diffusion model architecture family. Auto detects from the repository name and metadata. Specify an override if loading a custom fine-tune or merge whose name does not contain the standard family keywords."
         badge={<ResolvedBadge status={status} controlKey="family_override" />}
         value={familyOverride}
-        onValueChange={(v) => setFamilyOverride(v)}
+        onValueChange={(v) => {
+          setFamilyOverride(v);
+          if (v !== "auto") {
+            const d = defaultsFor("", v);
+            setSteps(d.steps);
+            setGuidance(d.guidance);
+          }
+        }}
         options={DIFFUSION_FAMILY_OPTIONS}
       />
       <AdvancedSelect

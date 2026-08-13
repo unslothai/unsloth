@@ -155,12 +155,23 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // Wan2.2 pipelines default to 50 steps at CFG 5.0 (verified in diffusers 0.39). The backend supplies the fps per family.
   { match: "wan", steps: 50, guidance: 5 },
   // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships (there is no pipeline kwarg).
+  { match: "hunyuanvideo-1.5-720p", steps: 50, guidance: 6 },
   { match: "hunyuanvideo", steps: 50, guidance: 6 },
 ];
 
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
+function defaultsFor(
+  repoId: string,
+  familyOverride?: string | null,
+): { steps: number; guidance: number } {
   const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+  const matched = MODEL_DEFAULTS.find((d) => id.includes(d.match));
+  if (matched) return matched;
+  if (familyOverride && familyOverride !== "auto") {
+    const fam = familyOverride.toLowerCase();
+    const famMatch = MODEL_DEFAULTS.find((d) => fam.includes(d.match) || d.match.includes(fam));
+    if (famMatch) return famMatch;
+  }
+  return DEFAULT_GEN;
 }
 
 // Resolution presets offered before a model is loaded. Once loaded, status.defaults.resolution_presets replaces these.
@@ -719,8 +730,13 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
  *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
  *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
  *  is read off its filename elsewhere. */
-function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+function isH3PipelinePick(
+  repoId: string,
+  kind: VideoLoadOptions["kind"],
+  familyOverride?: string | null,
+): boolean {
   if (kind !== "pipeline") return false;
+  if (familyOverride === "minimax-h3" || familyOverride === "h3") return true;
   const id = repoId.toLowerCase();
   if (id === H3_BF16_REPO.toLowerCase()) return true;
   const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
@@ -1165,6 +1181,18 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const famOverride = resolvedSelectValue(record.family_override, (v) =>
+      ([
+        "auto",
+        "minimax-h3",
+        "ltx-2",
+        "wan2.2-ti2v-5b",
+        "wan2.2-t2v-a14b",
+        "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
+      ] as const).find((o) => o === v) ?? null,
+    );
+    if (famOverride) setFamilyOverride(famOverride);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -1875,6 +1903,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
   });
   loadControlsRef.current = {
     memoryMode,
@@ -2317,7 +2346,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       return;
     }
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
-    if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
+    if (isH3PipelinePick(pick.repoId, pick.opts.kind, familyOverride)) {
       setPendingH3Load({
         repoId: pick.repoId,
         opts: pick.opts,
@@ -2329,6 +2358,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     void loadOrStage(pick.repoId, pick.opts, "hub", token);
   }, [
     active,
+    familyOverride,
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
@@ -2416,10 +2446,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
-        const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
+        const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id, familyOverride);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        if (isH3PipelinePick(id, spec.kind)) {
+        if (isH3PipelinePick(id, spec.kind, familyOverride)) {
           setPendingH3Load({
             repoId: id,
             opts: { kind: spec.kind, filename: spec.filename },
@@ -2447,7 +2477,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
-        const dq = defaultsFor(`${id}/${meta.ggufFilename}`);
+        const dq = defaultsFor(`${id}/${meta.ggufFilename}`, familyOverride);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
         void loadOrStage(
@@ -2484,7 +2514,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dq2 = defaultsFor(id);
+        const dq2 = defaultsFor(id, familyOverride);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
@@ -2504,7 +2534,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dsf = defaultsFor(id);
+        const dsf = defaultsFor(id, familyOverride);
         setSteps(dsf.steps);
         setGuidance(dsf.guidance);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
@@ -2538,12 +2568,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(id);
+      const d = defaultsFor(id, familyOverride);
       setSteps(d.steps);
       setGuidance(d.guidance);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // it needs the same partition question: without it the load silently takes fl2va.
-      if (isH3PipelinePick(id, "pipeline")) {
+      if (isH3PipelinePick(id, "pipeline", familyOverride)) {
         setPendingH3Load({
           repoId: id,
           opts: { kind: "pipeline" },
@@ -2563,6 +2593,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       abandonPick,
       beginPick,
       busy,
+      familyOverride,
       guidance,
       handleLoad,
       loadGgufRepoPick,
@@ -2761,7 +2792,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     ["ltx-2", "LTX-2"],
     ["wan2.2-ti2v-5b", "Wan2.2-TI2V-5B"],
     ["wan2.2-t2v-a14b", "Wan2.2-T2V-A14B"],
-    ["hunyuanvideo-1.5", "HunyuanVideo-1.5"],
+    ["hunyuanvideo-1.5", "HunyuanVideo-1.5 (480p)"],
+    ["hunyuanvideo-1.5-720p", "HunyuanVideo-1.5 (720p)"],
   ];
 
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
@@ -2772,7 +2804,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         hint="Video model architecture family. Auto detects from the repository name and metadata. Specify an override if loading a custom fine-tune whose name does not contain the standard family keywords."
         badge={<ResolvedBadge status={status} controlKey="family_override" />}
         value={familyOverride}
-        onValueChange={(v) => setFamilyOverride(v)}
+        onValueChange={(v) => {
+          setFamilyOverride(v);
+          if (v !== "auto") {
+            const d = defaultsFor("", v);
+            setSteps(d.steps);
+            setGuidance(d.guidance);
+          }
+        }}
         options={VIDEO_FAMILY_OPTIONS}
       />
       <AdvancedSelect
