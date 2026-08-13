@@ -454,6 +454,10 @@ def _installed_distribution_groups():
     named after, and still makes that distribution ambiguous -- which is what
     install_manifest.installed_versions() reports for the same directory. It
     is never file-checkable, so it is marked unreadable rather than trusted.
+
+    Readable means a name AND a version: install_manifest.metadata_conflict()
+    counts an empty version as inconsistent, so trusting such a record here
+    would leave the two checks disagreeing about the same directory.
     """
     from importlib.metadata import distributions
 
@@ -464,7 +468,11 @@ def _installed_distribution_groups():
         except Exception:
             name = None
         if name:
-            groups.setdefault(_canonical(name), []).append((dist, name, True))
+            try:
+                version = dist.version
+            except Exception:
+                version = None
+            groups.setdefault(_canonical(name), []).append((dist, name, bool(version)))
             continue
         # Wheel metadata directory names escape name separators as underscores,
         # so splitting off the final version is unambiguous.
@@ -513,7 +521,8 @@ def installed_metadata_conflicts(
             location = Path(str(metadata_path)).name if metadata_path else "unknown metadata path"
             details.append(f"{version} at {location}")
         detail = ", ".join(sorted(details))
-        found.append(f"{canonical}: multiple metadata records ({detail})")
+        problem = "multiple metadata records" if len(records) > 1 else "unreadable metadata"
+        found.append(f"{canonical}: {problem} ({detail})")
         if len(found) >= limit:
             break
     return found

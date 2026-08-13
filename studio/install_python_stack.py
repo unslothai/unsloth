@@ -3591,6 +3591,20 @@ def _is_overlayable_core_package(name: str) -> bool:
     return re.sub(r"[-_.]+", "-", name).lower() in ("unsloth", "unsloth-zoo")
 
 
+def _overlay_source_spec(name: str, local_repo: str) -> str:
+    """What pip would be asked to build for this overlay.
+
+    unsloth-zoo comes from git, so an overlay is a network fetch just as much as
+    an index install is: it has to be staged before anything is uninstalled.
+    """
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
+    if canonical == "unsloth":
+        return local_repo
+    if canonical == "unsloth-zoo":
+        return "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+    return ""
+
+
 class _QuarantinedMetadata:
     """Invalid metadata directories moved aside, restorable until committed.
 
@@ -3631,6 +3645,33 @@ class _QuarantinedMetadata:
             shutil.rmtree(self._holding, ignore_errors = True)
             self._holding = ""
         self._moved.clear()
+
+
+def _restore_from_staged(name: str, staged: str, removed_any: bool) -> None:
+    """Put the payload back when the uninstall loop stops part way through.
+
+    An earlier successful uninstall has already deleted the package tree, so
+    returning here without this leaves a surviving dist-info claiming an
+    installed core package whose files are gone.
+    """
+    if not (removed_any and staged):
+        return
+    if pip_install_try(
+        f"Restoring {name} after an incomplete metadata repair",
+        "--no-cache-dir",
+        "--no-deps",
+        "--force-reinstall",
+        "--no-index",
+        "--find-links",
+        staged,
+        name,
+    ):
+        _safe_print(_red(f"   restored {name} from the staged replacement"), file = sys.stderr)
+    else:
+        _safe_print(
+            _red(f"   {name} is no longer installed. Re-run the installer to restore it."),
+            file = sys.stderr,
+        )
 
 
 def _stage_replacement(name: str):
@@ -3720,20 +3761,24 @@ def _repair_duplicate_core_metadata(
             # nothing to stage; anything else comes off an index, which has to
             # be proven reachable while the current install is still intact.
             overlaid = bool(source_repo) and _is_overlayable_core_package(name)
-            staged = ""
-            if not overlaid:
-                staged = _stage_replacement(name)
-                if staged is None:
-                    _safe_print(
-                        _red(
-                            f"   could not fetch a replacement for {name}; leaving "
-                            "the existing install in place"
-                        ),
-                        file = sys.stderr,
-                    )
-                    return False
-                staging_dirs.append(staged)
+            # Stage whichever source will be installed, overlay included: an
+            # overlay is a git fetch or a build, either of which can fail after
+            # the uninstall loop has already removed every record.
+            staged = _stage_replacement(
+                _overlay_source_spec(name, source_repo) if overlaid else name
+            )
+            if staged is None:
+                _safe_print(
+                    _red(
+                        f"   could not fetch a replacement for {name}; leaving "
+                        "the existing install in place"
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+            staging_dirs.append(staged)
 
+            removed_any = False
             while record_count:
                 if not _run_ok(
                     f"Removing an installed metadata record for {name}",
@@ -3743,6 +3788,7 @@ def _repair_duplicate_core_metadata(
                         _red(f"   could not uninstall a metadata record for {name}"),
                         file = sys.stderr,
                     )
+                    _restore_from_staged(name, staged, removed_any)
                     return False
                 importlib.invalidate_caches()
                 remaining = len(install_manifest.installed_versions(name))
@@ -3751,14 +3797,18 @@ def _repair_duplicate_core_metadata(
                         _red(f"   could not remove every metadata record for {name}"),
                         file = sys.stderr,
                     )
+                    _restore_from_staged(name, staged, removed_any)
                     return False
+                removed_any = True
                 record_count = remaining
 
             # Installer handoffs may already have applied a local or CI source.
             # Restore that provenance now that no ambiguous record remains.
-            if overlaid:
-                restored = _overlay_local_core_package(name, source_repo, strict = False)
-            else:
+            restored = overlaid and _overlay_local_core_package(name, source_repo, strict = False)
+            if not restored:
+                # The overlay install is preferred because it keeps the editable
+                # or git provenance, but the staged wheel was built from that
+                # same source, so falling back to it never substitutes a release.
                 restored = pip_install_try(
                     f"Repairing duplicate metadata for {name}",
                     "--no-cache-dir",

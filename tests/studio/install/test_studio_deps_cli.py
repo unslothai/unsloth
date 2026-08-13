@@ -542,3 +542,22 @@ def test_one_readable_record_is_not_a_conflict(tmp_path, monkeypatch, deps):
     monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
 
     assert deps.installed_metadata_conflicts(names = ("unsloth",)) == []
+
+
+def test_a_versionless_local_record_is_reported_as_a_conflict(tmp_path, monkeypatch, deps):
+    """install_manifest.metadata_conflict() counts an empty version as a
+    conflict, so trusting the same record here would leave the two checks
+    disagreeing about one directory, and would let the file-damage scan treat an
+    unparseable record as authoritative."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    entry = site / "unsloth-2026.8.15.dist-info"
+    entry.mkdir()
+    (entry / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\n", encoding = "utf-8")
+
+    monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
+
+    conflicts = deps.installed_metadata_conflicts(names = ("unsloth",))
+
+    assert len(conflicts) == 1
+    assert "unreadable metadata" in conflicts[0]

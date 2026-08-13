@@ -912,6 +912,106 @@ class TestDuplicateCoreMetadataRepair:
         assert '"download"' not in source
         assert 'glob.glob(os.path.join(staging,"*.whl"))' in source
 
+    def test_a_git_overlay_is_staged_before_the_uninstall_loop(self, monkeypatch):
+        """--local pulls unsloth-zoo from git, so an overlay is a network fetch
+        too. Skipping staging for it meant an unreachable GitHub left the
+        package uninstalled."""
+        probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
+        order = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
+        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(
+            ips, "_stage_replacement", lambda spec: order.append(("stage", spec)) or "/staged"
+        )
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: order.append(("uninstall",)) or True)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda label, *a, **k: order.append(("install",)) or True
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth-zoo",), local_repo = "/src/unsloth")
+        assert order[0] == ("stage", "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo")
+        assert order[1] == ("uninstall",)
+
+    def test_an_editable_overlay_stages_the_checkout(self, monkeypatch):
+        probes = {"unsloth": iter((["old", "new"], ["new"], [], ["new"]))}
+        staged_for = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
+        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(
+            ips, "_stage_replacement", lambda spec: staged_for.append(spec) or "/staged"
+        )
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",), local_repo = "/src/unsloth")
+        assert staged_for == ["/src/unsloth"]
+
+    def test_a_failed_overlay_falls_back_to_the_staged_source(self, monkeypatch):
+        probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
+        installs = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
+        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _spec: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_overlay_local_core_package", lambda *a, **k: False)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda label, *a, **k: installs.append(a) or True
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth-zoo",), local_repo = "/src/unsloth")
+        assert installs and "--find-links" in installs[0]
+
+    def test_a_partial_uninstall_restores_the_payload(self, monkeypatch, capsys):
+        """The first uninstall deletes the package tree. Returning after a later
+        one fails would leave a dist-info claiming an install whose files are
+        gone."""
+        probes = iter((["a", "b", "c"], ["b", "c"]))
+        uninstalls = iter([True, False])
+        installs = []
+
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _spec: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: next(uninstalls))
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda label, *a, **k: installs.append(a) or True
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert installs and "--find-links" in installs[0]
+        assert "restored unsloth from the staged replacement" in capsys.readouterr().err
+
+    def test_nothing_is_restored_when_no_record_was_removed(self, monkeypatch):
+        probes = iter((["a", "b"],))
+        installs = []
+
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _spec: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: False)
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *a, **k: installs.append(a))
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert installs == []
+
     def test_staging_directories_are_cleaned_up(self, monkeypatch, tmp_path):
         staged = tmp_path / "staged"
         staged.mkdir()
