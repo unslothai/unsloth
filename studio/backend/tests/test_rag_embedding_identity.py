@@ -8,10 +8,17 @@ with its own pooling, so the same name can mean two vector spaces on one machine
 index written by one backend must not silently answer the other's queries.
 """
 
+import math
+
 from core.rag import config, embeddings, ingestion, retrieval, store
+from core.rag.chunking import Chunk
 from storage import rag_db
 
 MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# A model may also be a local path, and on Windows that carries the separator.
+WINDOWS_MODEL = r"C:\models\bge-small-en-v1.5"
+
+_VOCAB = ["alpha", "bravo", "charlie", "delta"]
 
 
 def _write(tmp_path, name, text):
@@ -185,3 +192,151 @@ def test_untagged_values_match_on_the_model_name_alone():
         )
         is False
     )
+
+
+def _vector(text):
+    v = [float(text.lower().count(w)) for w in _VOCAB]
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
+
+
+def _put(conn, scope, document_id, texts, embedding_model):
+    """Index one document's chunks directly, under a chosen identity."""
+    chunks = [
+        Chunk(
+            text = t,
+            token_count = len(t.split()),
+            page_number = None,
+            source_page_index = 0,
+            chunk_index = i,
+            page_char_start = 0,
+            page_char_end = len(t),
+        )
+        for i, t in enumerate(texts)
+    ]
+    store.create_document(
+        conn,
+        scope = scope,
+        filename = f"{document_id}.txt",
+        sha256 = document_id,
+        status = "completed",
+        document_id = document_id,
+        embedding_model = embedding_model,
+    )
+    store.add_chunks(conn, scope, document_id, chunks, [_vector(t) for t in texts])
+
+
+def test_a_local_model_path_survives_the_identity_round_trip():
+    """Colons separate the identity's segments and a Windows path carries one, so the
+    model used to read back as ``C``."""
+    st = config.embedding_identity("sentence-transformers", WINDOWS_MODEL)
+    llama = config.embedding_identity(
+        "llama-server", WINDOWS_MODEL, gguf_repo = WINDOWS_MODEL + "-GGUF"
+    )
+    assert st != llama
+    assert config.embedding_identity_model(st) == WINDOWS_MODEL
+    assert config.embedding_identity_model(llama) == WINDOWS_MODEL
+    # The pre-tag spelling of such a row is the bare path, and it still has to match.
+    assert config.embedding_identity_matches(WINDOWS_MODEL, st) is True
+    assert config.embedding_identity_matches(r"C:\models\other", st) is False
+
+
+def test_a_local_path_model_keeps_answering_its_legacy_rows(rag_conn):
+    """The upgrade must not empty dense search for a corpus indexed under a path."""
+    _put(rag_conn, "kb_w", "d1", ["alpha bravo"], WINDOWS_MODEL)
+    hits = store.search_dense(
+        rag_conn,
+        "kb_w",
+        _vector("alpha bravo"),
+        5,
+        embedding_model = config.embedding_identity("sentence-transformers", WINDOWS_MODEL),
+    )
+    assert [cid for cid, _ in hits] == ["d1:0"]
+
+
+def test_stale_backend_chunks_do_not_starve_the_current_backend(rag_conn):
+    """What a partial reindex leaves: both backends in one scope. The other one's
+    distances come from another space, so they can fill every fetched candidate slot
+    while the compatible chunks sit further down the KNN list."""
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    current = config.embedding_identity("sentence-transformers", MODEL)
+    for i in range(40):
+        _put(rag_conn, "kb_s", f"old{i}", ["alpha"], stale)
+    _put(rag_conn, "kb_s", "new", ["alpha bravo"], current)
+    hits = store.search_dense(rag_conn, "kb_s", _vector("alpha"), 5, embedding_model = current)
+    assert [cid for cid, _ in hits] == ["new:0"]
+
+
+def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(
+    rag_conn, monkeypatch
+):
+    """A concurrent ST failure swaps the process embedder for the rest of its life. A
+    query sentence-transformers had already encoded must still be answered by the
+    sentence-transformers half of the index, not by the backend that took over."""
+    _put(
+        rag_conn,
+        "kb_r",
+        "d1",
+        ["alpha bravo"],
+        config.embedding_identity("sentence-transformers", MODEL),
+    )
+
+    class _SwapsMidEncode:
+        def encode(self, texts, *, model_name = None, normalize = True):
+            vectors = [_vector(t) for t in texts]
+            monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+            return vectors
+
+    monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
+    monkeypatch.setattr(embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower())
+    hits = retrieval.retrieve_dense(rag_conn, "kb_r", "alpha bravo", k = 5, model_name = MODEL)
+    assert [h.chunk_id for h in hits] == ["d1:0"]
+
+
+def test_a_swap_between_batches_re_embeds_the_document(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """A document whose batches straddle the swap would hold vectors from two spaces
+    under one identity, so it restarts under the backend that took over."""
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(ingestion, "_EMBED_BATCH", 1)
+    monkeypatch.setattr(config, "CHUNK_TOKENS", 3)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    passes = {"n": 0}
+    real_pass = ingestion._embed_pass
+
+    def swap_during_the_first_pass(texts, model_name):
+        passes["n"] += 1
+        if passes["n"] == 1:
+            calls = {"n": 0}
+            real_encode = embeddings.encode_with_identity
+
+            def swap_after_one_batch(batch, **kwargs):
+                calls["n"] += 1
+                out = real_encode(batch, **kwargs)
+                if calls["n"] == 1:
+                    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+                return out
+
+            monkeypatch.setattr(embeddings, "encode_with_identity", swap_after_one_batch)
+        return real_pass(texts, model_name)
+
+    monkeypatch.setattr(ingestion, "_embed_pass", swap_during_the_first_pass)
+    scope = store.kb_scope("K8")
+    document_id = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie delta echo foxtrot")
+    assert passes["n"] == 2
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, document_id)["embedding_model"].startswith("llama-server:")
+    finally:
+        conn.close()
+
+
+def test_widening_survives_a_scope_larger_than_one_parameter_batch(rag_conn):
+    """The widened candidate set outgrows a single bound-parameter batch."""
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    current = config.embedding_identity("sentence-transformers", MODEL)
+    _put(rag_conn, "kb_b", "old", ["alpha"] * 2000, stale)
+    _put(rag_conn, "kb_b", "new", ["alpha bravo"], current)
+    hits = store.search_dense(rag_conn, "kb_b", _vector("alpha"), 5, embedding_model = current)
+    assert [cid for cid, _ in hits] == ["new:0"]

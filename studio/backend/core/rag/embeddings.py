@@ -47,6 +47,11 @@ _lock = threading.Lock()
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
+# The backend that served this thread's most recent encode. The process embedder can
+# swap between an encode returning and the caller asking what produced the vectors,
+# and the answer has to be the backend that was actually used. See
+# ``encode_with_identity``.
+_served_by = threading.local()
 
 
 # Unsloth device -> torch device string. Apple has no torch device -> CPU.
@@ -540,6 +545,7 @@ class _SentenceTransformersBackend:
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise
+            _served_by.backend = fallback
             return fallback.encode(texts, model_name = model_name, normalize = normalize)
 
     def token_counter(self, *, model_name = None):
@@ -702,6 +708,14 @@ def active_backend_is_llama() -> bool:
         return False
 
 
+def _identity(is_llama: bool, name: str) -> str:
+    if is_llama:
+        return config.embedding_identity(
+            "llama-server", name, gguf_repo = config.gguf_repo_for_embedding_model(name)
+        )
+    return config.embedding_identity("sentence-transformers", name)
+
+
 def embedding_identity(model_name: str | None = None) -> str:
     """Identity of the vectors this process produces right now.
 
@@ -710,12 +724,37 @@ def embedding_identity(model_name: str | None = None) -> str:
     companion with its own pooling, and this process can switch to it at runtime. Two
     spaces under one label is an index that answers with the wrong documents and says
     nothing about it."""
+    return _identity(active_backend_is_llama(), model_name or config.effective_embedding_model())
+
+
+def _is_llama_backend(backend) -> bool:
+    """Whether a concrete backend object embeds through llama-server."""
+    try:
+        from .embed_llama_server import LlamaServerBackend
+    except Exception:  # noqa: BLE001 - llama plumbing import must never block
+        return False
+    return isinstance(backend, LlamaServerBackend)
+
+
+def encode_with_identity(
+    texts: list[str],
+    *,
+    model_name: str | None = None,
+    normalize: bool = True,
+):
+    """``(vectors, identity)``, the identity taken from the encode that produced them.
+
+    Not from the process embedder read afterwards: a concurrent ST encode failure
+    swaps that between the two, so the vectors would be labelled with a space they
+    were never in, and a query then searches (or a document is stored against) the
+    wrong half of the index."""
+    _served_by.backend = None
+    vectors = encode(texts, model_name = model_name, normalize = normalize)
+    served = getattr(_served_by, "backend", None)
     name = model_name or config.effective_embedding_model()
-    if active_backend_is_llama():
-        return config.embedding_identity(
-            "llama-server", name, gguf_repo = config.gguf_repo_for_embedding_model(name)
-        )
-    return config.embedding_identity("sentence-transformers", name)
+    if served is None:  # a stubbed encode never reached a backend
+        return vectors, embedding_identity(name)
+    return vectors, _identity(_is_llama_backend(served), name)
 
 
 def warm(model_name: str | None = None) -> None:
@@ -730,7 +769,9 @@ def encode(
     normalize: bool = True,
 ):
     """Embed texts into an (N, dim) float32 numpy array."""
-    return _get_backend().encode(texts, model_name = model_name, normalize = normalize)
+    backend = _get_backend()
+    _served_by.backend = backend
+    return backend.encode(texts, model_name = model_name, normalize = normalize)
 
 
 def dim(model_name: str | None = None) -> int:

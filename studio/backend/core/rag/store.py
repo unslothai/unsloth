@@ -406,24 +406,59 @@ def search_dense(
     # The pre-tag spelling of the same request, kept acceptable so an existing index
     # keeps answering after an upgrade.
     untagged = config.embedding_identity_model(embedding_model) or embedding_model
-    # Over-fetch when filtering so stale-model hits don't starve the top-k.
+    scopes = [
+        s
+        for s in _scopes(scope)
+        if not conn.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (s,)
+        ).fetchone()
+    ]
+    # Over-fetch when filtering so stale-model hits don't starve the top-k. Their
+    # distances come from another space, so they can fill every fetched slot while
+    # compatible chunks sit further down the KNN list: widen until k of them survive
+    # the filter or the scopes have nothing left to give.
     fetch = max(k * 3, k + 10)
     out: list[tuple[str, float]] = []
-    for s in _scopes(scope):
-        if conn.execute(
-            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (s,)
-        ).fetchone():
-            continue
-        rows = conn.execute(
-            "SELECT chunk_id, distance FROM chunks_vec "
-            "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
-            (s, _f32(vector), fetch),
-        ).fetchall()
-        out.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
-    if out:
-        ids = [cid for cid, _ in out]
-        placeholders = ",".join("?" * len(ids))
-        valid = {
+    while True:
+        candidates: list[tuple[str, float]] = []
+        saturated = False
+        for s in scopes:
+            rows = conn.execute(
+                "SELECT chunk_id, distance FROM chunks_vec "
+                "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
+                (s, _f32(vector), fetch),
+            ).fetchall()
+            saturated = saturated or len(rows) >= fetch
+            candidates.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
+        out = _drop_incompatible(conn, candidates, embedding_model, untagged)
+        if len(out) >= k or not saturated or fetch >= _MAX_DENSE_FETCH:
+            break
+        fetch = min(fetch * 4, _MAX_DENSE_FETCH)
+    out.sort(key = lambda t: t[1], reverse = True)
+    return out[:k]
+
+
+# Widening is bounded: past this many nearest neighbours per scope the scope is
+# effectively another embedder's, and a re-upload is the answer, not a longer scan.
+_MAX_DENSE_FETCH = 4096
+# One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
+_ID_BATCH = 900
+
+
+def _drop_incompatible(
+    conn: sqlite3.Connection,
+    candidates: list[tuple[str, float]],
+    embedding_model: str | None,
+    untagged: str | None,
+) -> list[tuple[str, float]]:
+    """Keep the KNN candidates whose document is still live and whose vectors this
+    query can be compared against."""
+    valid: set[str] = set()
+    ids = [cid for cid, _ in candidates]
+    for start in range(0, len(ids), _ID_BATCH):
+        batch = ids[start : start + _ID_BATCH]
+        placeholders = ",".join("?" * len(batch))
+        valid.update(
             r["id"]
             for r in conn.execute(
                 f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
@@ -433,12 +468,10 @@ def search_dense(
                 f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
                 f"AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
                 f"OR d.embedding_model=?)",
-                (*ids, embedding_model, embedding_model, untagged),
+                (*batch, embedding_model, embedding_model, untagged),
             ).fetchall()
-        }
-        out = [t for t in out if t[0] in valid]
-    out.sort(key = lambda t: t[1], reverse = True)
-    return out[:k]
+        )
+    return [t for t in candidates if t[0] in valid]
 
 
 def count_untagged_documents(conn: sqlite3.Connection) -> int:

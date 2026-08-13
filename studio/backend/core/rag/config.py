@@ -83,6 +83,17 @@ EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server")
 
 
+def _escape_identity_segment(value: str) -> str:
+    """Colons separate the segments, and a model can be a local path that contains one
+    (``C:\\models\\bge``), which would otherwise read back as ``C``. A repo id contains
+    neither character, so the identity of a normal model is unchanged."""
+    return value.replace("%", "%25").replace(":", "%3A")
+
+
+def _unescape_identity_segment(value: str) -> str:
+    return value.replace("%3A", ":").replace("%25", "%")
+
+
 def embedding_identity(
     backend: str,
     model: str,
@@ -94,14 +105,17 @@ def embedding_identity(
     The configured model comes first so a row written before identities carried a tag
     still compares equal on it. llama-server appends the GGUF repo it actually embeds
     through, which is the part that can differ from the model's ST form."""
-    return f"{backend}:{model}" if gguf_repo is None else f"{backend}:{model}:{gguf_repo}"
+    model = _escape_identity_segment(model)
+    if gguf_repo is None:
+        return f"{backend}:{model}"
+    return f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
 
 
 def embedding_identity_model(identity: str | None) -> str | None:
     """The configured model inside a tagged identity, or None when untagged."""
     for tag in EMBEDDING_IDENTITY_TAGS:
         if identity and identity.startswith(f"{tag}:"):
-            return identity[len(tag) + 1 :].split(":", 1)[0]
+            return _unescape_identity_segment(identity[len(tag) + 1 :].split(":", 1)[0])
     return None
 
 
