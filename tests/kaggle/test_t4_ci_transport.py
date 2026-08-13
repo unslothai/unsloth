@@ -429,7 +429,14 @@ def test_every_push_attempt_gets_its_own_slug(monkeypatch):
     assert pushed["attempts"] == slugs
 
 
-def _drive_main(monkeypatch, tmp_path, *, push_seconds, pushes, extra_argv = ()):
+def _drive_main(
+    monkeypatch,
+    tmp_path,
+    *,
+    push_seconds,
+    pushes,
+    extra_argv = (),
+):
     """Run `launch.main()` end to end with Kaggle replaced by stubs.
 
     Returns the per-kernel wait budgets, the slugs deleted on the way out and
@@ -443,7 +450,12 @@ def _drive_main(monkeypatch, tmp_path, *, push_seconds, pushes, extra_argv = ())
 
     outcomes = list(pushes)
 
-    def fake_push(notebook, user, kernel_timeout_sec, accelerator = "NvidiaTeslaT4"):
+    def fake_push(
+        notebook,
+        user,
+        kernel_timeout_sec,
+        accelerator = "NvidiaTeslaT4",
+    ):
         clock["t"] += push_seconds
         return outcomes.pop(0)
 
@@ -508,8 +520,16 @@ def test_the_deletion_deadline_covers_the_time_spent_pushing(monkeypatch, tmp_pa
         tmp_path,
         push_seconds = 1800.0,
         pushes = [
-            {"ok": True, "slug": "someuser/unsloth-t4-ci-aaaa", "attempts": ["someuser/unsloth-t4-ci-aaaa"]},
-            {"ok": True, "slug": "someuser/unsloth-t4-ci-bbbb", "attempts": ["someuser/unsloth-t4-ci-bbbb"]},
+            {
+                "ok": True,
+                "slug": "someuser/unsloth-t4-ci-aaaa",
+                "attempts": ["someuser/unsloth-t4-ci-aaaa"],
+            },
+            {
+                "ok": True,
+                "slug": "someuser/unsloth-t4-ci-bbbb",
+                "attempts": ["someuser/unsloth-t4-ci-bbbb"],
+            },
         ],
     )
     # 5400s of invocation deadline, 3600s of it spent pushing.

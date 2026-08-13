@@ -1793,9 +1793,9 @@ def test_the_reserved_budget_covers_the_launchers_own_bound():
     assert len(budgets) == 1 and len(kernels) == 1, (budgets, kernels)
     budget_s = budgets.pop() * 3600
     worst = kernels.pop() * max_wait
-    assert budget_s >= worst, (
-        f"the gate reserves {budget_s}s of quota and the launcher can spend {worst}s"
-    )
+    assert (
+        budget_s >= worst
+    ), f"the gate reserves {budget_s}s of quota and the launcher can spend {worst}s"
 
 
 def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():

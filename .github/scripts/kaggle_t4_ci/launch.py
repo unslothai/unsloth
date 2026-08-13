@@ -528,8 +528,7 @@ def main() -> int:
         "--max-wait",
         type = int,
         default = 4200,
-        help = "wall clock this invocation gives the kernels, measured from "
-        "BEFORE the first push",
+        help = "wall clock this invocation gives the kernels, measured from BEFORE the first push",
     )
     ap.add_argument("--poll-every", type = int, default = 60)
     ap.add_argument(
