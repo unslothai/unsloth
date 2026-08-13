@@ -71,7 +71,9 @@ from core.inference.sd_cpp_engine import (
     SdCppEngine,
     find_sd_cpp_binary,
     find_sd_server_binary,
+    help_text_identifies_sd_cpp,
     is_managed_binary,
+    legacy_sibling_install_root,
     managed_install_root,
     owning_managed_root,
     runtime_env,
@@ -293,7 +295,29 @@ def sd_cpp_supports_minimax_h3(binary: str) -> bool:
     text = _sd_cpp_probe_output(binary, "--help")
     if text is None:
         return True
-    return _H3_HELP_MARKER in text
+    return help_text_supports_minimax_h3(text)
+
+
+def help_text_supports_minimax_h3(help_text: str) -> bool:
+    """``sd_cpp_supports_minimax_h3``'s verdict on ``--help`` output that is already in hand."""
+    return _H3_HELP_MARKER in help_text
+
+
+def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
+    """Both of ``ensure_h3_sd_cpp_binary``'s questions against a live binary, on ONE ``--help``.
+
+    The capability marker cannot stand alone here. ``--ref-video`` is a plain option name that
+    unrelated reference-video tools expose too, so a caller re-checking only capability would
+    accept a program the gate itself would have refused on identity -- the difference between
+    "an sd.cpp build too old for H3" and "not sd.cpp at all" (#8507).
+
+    Same conservative default as ``sd_cpp_supports_minimax_h3``: an unreadable ``--help`` is
+    "could not tell", and the caller's own ``version()`` gate already refuses a binary that will
+    not run."""
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return True
+    return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
 
 
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
@@ -310,13 +334,53 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     is nothing to run on the GPU at all."""
     if not binary:
         return False
+    verdict = sd_cpp_accelerator_device_verdict(binary)
+    return True if verdict is None else verdict
+
+
+def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
+    """``sd_cpp_lists_accelerator_device`` without the conservative default: None means the probe
+    said nothing usable, rather than being folded into "assume it has one".
+
+    A caller COMPARING two readings needs that apart. Against a recorded decision, the collapsed
+    True is indistinguishable from a real accelerator, so an unreadable re-probe would read as a
+    build that changed underneath the load and refuse it."""
     text = _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
-        return True
+        return None
     names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
     if not names:
-        return True
+        return None
     return any(name.upper() != "CPU" for name in names)
+
+
+def _h3_replacement_hint(binary: str) -> str:
+    """The trailing "or delete it" clause of the H3 refusal, or "" when there is nothing to delete.
+
+    Only a binary in a layout the installer writes to can be recovered by clearing that layout:
+    ``install()`` refuses a non-empty unmarked target, so an empty one is what lets the next load
+    put the pinned prebuilt there. Anything PATH or an env var named is elsewhere entirely. The
+    refusal used to end with "or remove that directory" whatever the binary was, which for the
+    ``/usr/bin/sd`` PATH discovery picks up read as "remove /usr/bin".
+
+    MOVE, never remove. Only the caller's unowned branch reaches this, so a root that matches here
+    necessarily carries no ownership marker -- it is the user's own build sitting at the path the
+    installer would use, which ``is_managed_binary`` documents as a supported thing to do, and
+    which a ``git clone`` of leejet's repo produces verbatim. Moving it aside frees the path
+    without destroying anything, and the user can put it back.
+
+    ``in_tree_install_root`` is not consulted at all: the installer never writes to
+    ``<repo_root>/stable-diffusion.cpp``, so clearing it would buy nothing."""
+    roots = [managed_install_root(), legacy_sibling_install_root()]
+    for root in roots:
+        if root is None:
+            continue
+        try:
+            Path(binary).resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        return f", or move {root} aside so Studio can install the pinned prebuilt there"
+    return ""
 
 
 def ensure_h3_sd_cpp_binary(
@@ -327,28 +391,69 @@ def ensure_h3_sd_cpp_binary(
 
     ``ensure_sd_cpp_binary`` hands back whatever ``find_sd_cpp_binary`` locates and only probes
     runnability, so an install that predates H3 (an upgraded Studio still carrying an older managed
-    sd-cli) is returned unchanged, the H3 load reports ready on it, and the first generation fails
-    only AFTER the multi-tens-of-GB bundle has downloaded. Only this path is stricter: image
-    generation must keep working on any user-supplied build.
+    sd-cli) is returned unchanged, the H3 load reports ready on it, and the first generation fails.
+    Only this path is stricter: image generation must keep working on any user-supplied build. Its
+    caller runs it BEFORE resolving the H3 assets, so a refusal costs no download.
 
     A stale copy we own is deleted so the installer puts the pinned prebuilt back; a user's own
     build is left alone and the load fails with a message naming it, the same ownership split
     ``_usable_or_discard_managed`` makes. Returns None when no H3-capable binary can be produced.
+
+    A user-supplied binary that is not stable-diffusion.cpp AT ALL gets its own message: "no H3
+    options" is true of every unrelated program, and reporting it as an outdated build is what sent
+    #8507 looking for a newer stable-diffusion.cpp that was never installed.
     """
     binary = ensure_sd_cpp_binary(allow_install = allow_install, accelerator = accelerator)
-    if not binary or sd_cpp_supports_minimax_h3(binary):
+    if not binary:
         return binary
+    # ONE --help, two questions: is this stable-diffusion.cpp, and does this build carry H3. A
+    # second spawn would double the cost of the refusal path and could read a different build than
+    # the one just judged. None is "could not tell", which stays conservative on both counts.
+    #
+    # Conservative HERE means keeping the binary, the opposite of the engine's identity probe, which
+    # rejects on an unreadable one. Not an inconsistency to iron out: this decides whether to refuse
+    # a binary the user chose, where a probe failure must not take native video away from a working
+    # build, while the engine decides whether to ADOPT an ambiguously named PATH candidate on no
+    # evidence at all. Opposite questions, so opposite safe defaults.
+    help_text = _sd_cpp_probe_output(binary, "--help")
+    if help_text is None:
+        return binary
+    # Identity BEFORE capability, never the marker alone. --ref-video is a plain option name that
+    # unrelated reference-video tools also expose, so returning early on it would readmit exactly
+    # the class of program #8507 was about -- through SD_CLI_PATH instead of PATH. Upstream added
+    # H3 eight months after print_usage started with the project banner, so a genuine H3 build
+    # always answers both.
+    identified = help_text_identifies_sd_cpp(help_text)
+    if identified and help_text_supports_minimax_h3(help_text):
+        return binary
+    # What is wrong with it, for the log lines on the managed path below: a managed copy that is not
+    # sd.cpp at all is still deleted and reinstalled, but calling it an old build would be false.
+    fault = "does not advertise MiniMax-H3 support" if identified else "is not stable-diffusion.cpp"
     if not is_managed_binary(binary):
+        # Not an old sd.cpp -- not sd.cpp at all. Worth its own message: the H3 marker is missing
+        # from EVERY program that is not stable-diffusion.cpp, so reporting the capability verdict
+        # here sent users hunting for a newer build of something they never installed (#8507, where
+        # the binary was Debian/Ubuntu's `sd` find-and-replace tool). Discovery already skips an
+        # unrelated PATH `sd`, so what reaches this line came from somewhere the identity gate does
+        # not cover -- an SD_CLI_PATH / UNSLOTH_SD_CPP_PATH override, an in-tree developer build, or
+        # a PATH `sd-cli`. None of them is ours to overwrite, so all four say so and stop.
+        if not identified:
+            raise RuntimeError(
+                f"The executable at {binary} is not stable-diffusion.cpp: its --help output does "
+                f"not identify the project. Point SD_CLI_PATH at a stable-diffusion.cpp build from "
+                f"master-812-ea7f0c8 or newer, or UNSLOTH_SD_CPP_PATH at the directory holding one"
+                f"{_h3_replacement_hint(binary)}."
+            )
         raise RuntimeError(
-            f"The stable-diffusion.cpp build at {binary} predates MiniMax-H3 support (its --help "
-            f"does not list the H3 options), so generation would fail after the whole H3 bundle "
-            f"has downloaded. Point SD_CLI_PATH / UNSLOTH_SD_CPP_PATH at a build from "
-            f"master-812-ea7f0c8 or newer, or remove that directory so Studio installs the "
-            f"pinned prebuilt."
+            f"The stable-diffusion.cpp binary at {binary} does not advertise MiniMax-H3 support "
+            f"(its --help does not list the H3 options), so generation would fail on it. "
+            f"Point SD_CLI_PATH at a build from master-812-ea7f0c8 or "
+            f"newer, or UNSLOTH_SD_CPP_PATH at the directory holding one"
+            f"{_h3_replacement_hint(binary)}."
         )
     if not allow_install:
         # Ours, but replacing it is exactly what auto-install is switched off for.
-        logger.warning("managed sd.cpp binary %s predates MiniMax-H3 support", binary)
+        logger.warning("managed sd.cpp binary %s %s", binary, fault)
         return None
     # Deleting it is a WRITE to the managed tree, so it takes the same admission an install does.
     # An image one-shot may be executing this very file: on Linux the running child survives the
@@ -358,14 +463,16 @@ def ensure_h3_sd_cpp_binary(
     with _tree_claimed_for_install() as claimed:
         if not claimed:
             logger.warning(
-                "managed sd.cpp binary %s predates MiniMax-H3 support, but something is still "
-                "running out of the managed install; retrying on a later load",
+                "managed sd.cpp binary %s %s, but something is still running out of the "
+                "managed install; retrying on a later load",
                 binary,
+                fault,
             )
             return None
         logger.warning(
-            "managed sd.cpp binary %s predates MiniMax-H3 support; removing it so it reinstalls",
+            "managed sd.cpp binary %s %s; removing it so it reinstalls",
             binary,
+            fault,
         )
         try:
             Path(binary).unlink()
