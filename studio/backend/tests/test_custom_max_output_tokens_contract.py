@@ -155,9 +155,16 @@ def _write_pre_pr_database(db_path: Path) -> None:
                 "INSERT INTO llm_providers (id, provider_type, display_name, base_url, "
                 "is_enabled, models_json, available_models_json, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
-                (provider_id, provider_type, name, "https://example.com/v1",
-                 '["vendor/model"]', '["vendor/model", "vendor/other"]',
-                 "2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00"),
+                (
+                    provider_id,
+                    provider_type,
+                    name,
+                    "https://example.com/v1",
+                    '["vendor/model"]',
+                    '["vendor/model", "vendor/other"]',
+                    "2020-01-01T00:00:00+00:00",
+                    "2020-01-01T00:00:00+00:00",
+                ),
             )
         conn.commit()
     finally:
@@ -209,8 +216,11 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     """The revert case. The old code selects * and inserts without naming the column,
     so a migrated file must stay readable and writable by it."""
     providers_db.create_provider(
-        id = "new-custom", provider_type = "custom", display_name = "New Custom",
-        base_url = "https://example.com/v1", models = ["vendor/model"],
+        id = "new-custom",
+        provider_type = "custom",
+        display_name = "New Custom",
+        base_url = "https://example.com/v1",
+        models = ["vendor/model"],
         max_output_tokens = 384000,
     )
 
@@ -218,8 +228,9 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     conn.row_factory = sqlite3.Row
     try:
         # Exactly what the previous release's get_provider does.
-        row = dict(conn.execute(
-            "SELECT * FROM llm_providers WHERE id = ?", ("new-custom",)).fetchone())
+        row = dict(
+            conn.execute("SELECT * FROM llm_providers WHERE id = ?", ("new-custom",)).fetchone()
+        )
         assert row["display_name"] == "New Custom"
         assert row["models_json"] == '["vendor/model"]'
         # An INSERT that never mentions the column, as the old code writes.
@@ -227,9 +238,14 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
             "INSERT INTO llm_providers (id, provider_type, display_name, base_url, "
             "is_enabled, models_json, available_models_json, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, 1, '[]', '[]', ?, ?)",
-            ("downgrade-written", "openai", "Written By Old Code",
-             "https://api.openai.com/v1", "2020-01-01T00:00:00+00:00",
-             "2020-01-01T00:00:00+00:00"),
+            (
+                "downgrade-written",
+                "openai",
+                "Written By Old Code",
+                "https://api.openai.com/v1",
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+            ),
         )
         conn.commit()
     finally:
@@ -244,13 +260,17 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
 
 
 def _create(payload: ProviderCreate):
-    return asyncio.run(providers_route.create_provider_config(
-        payload, credential = CREDENTIAL, via_api_key = False))
+    return asyncio.run(
+        providers_route.create_provider_config(payload, credential = CREDENTIAL, via_api_key = False)
+    )
 
 
 def _update(provider_id: str, payload: ProviderUpdate):
-    return asyncio.run(providers_route.update_provider_config(
-        provider_id, payload, credential = CREDENTIAL, via_api_key = False))
+    return asyncio.run(
+        providers_route.update_provider_config(
+            provider_id, payload, credential = CREDENTIAL, via_api_key = False
+        )
+    )
 
 
 @pytest.mark.parametrize("provider_type", NON_CUSTOM_PROVIDER_TYPES)
@@ -267,11 +287,14 @@ def test_a_non_custom_provider_accepts_an_explicit_null_override(
     user never touched. Clearing an override that cannot exist is a no-op.
     """
     providers_db.create_provider(
-        id = f"{provider_type}-1", provider_type = provider_type,
-        display_name = provider_type, base_url = "https://example.com/v1",
+        id = f"{provider_type}-1",
+        provider_type = provider_type,
+        display_name = provider_type,
+        base_url = "https://example.com/v1",
     )
-    updated = _update(f"{provider_type}-1",
-                      ProviderUpdate(display_name = "Renamed", max_output_tokens = None))
+    updated = _update(
+        f"{provider_type}-1", ProviderUpdate(display_name = "Renamed", max_output_tokens = None)
+    )
     assert updated.display_name == "Renamed"
     assert updated.max_output_tokens is None
     assert _raw_override(provider_routes, f"{provider_type}-1") is None
@@ -284,8 +307,10 @@ def test_a_non_custom_provider_still_rejects_a_real_override(
     """The half of the contract that must NOT be relaxed: providers with documented
     caps of their own do not take a hand-written one."""
     providers_db.create_provider(
-        id = f"{provider_type}-1", provider_type = provider_type,
-        display_name = provider_type, base_url = "https://example.com/v1",
+        id = f"{provider_type}-1",
+        provider_type = provider_type,
+        display_name = provider_type,
+        base_url = "https://example.com/v1",
     )
     with pytest.raises(HTTPException) as error:
         _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens = 65536))
@@ -295,11 +320,15 @@ def test_a_non_custom_provider_still_rejects_a_real_override(
 
 def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_routes: Path):
     """The whole lifecycle, asserted against the stored row rather than the response."""
-    created = _create(ProviderCreate(
-        provider_type = "custom", display_name = "Custom",
-        base_url = "https://example.com/v1", models = ["vendor/model"],
-        max_output_tokens = 131072,
-    ))
+    created = _create(
+        ProviderCreate(
+            provider_type = "custom",
+            display_name = "Custom",
+            base_url = "https://example.com/v1",
+            models = ["vendor/model"],
+            max_output_tokens = 131072,
+        )
+    )
     assert _raw_override(provider_routes, created.id) == 131072
 
     assert _update(created.id, ProviderUpdate(max_output_tokens = 65536)).max_output_tokens == 65536
@@ -316,10 +345,14 @@ def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_ro
 def test_an_override_only_update_is_recognised_as_a_metadata_request(provider_routes: Path):
     """A request carrying nothing but the override must not be turned away as
     "No fields to update"."""
-    created = _create(ProviderCreate(
-        provider_type = "custom", display_name = "Custom",
-        base_url = "https://example.com/v1", models = ["vendor/model"],
-    ))
+    created = _create(
+        ProviderCreate(
+            provider_type = "custom",
+            display_name = "Custom",
+            base_url = "https://example.com/v1",
+            models = ["vendor/model"],
+        )
+    )
     assert _update(created.id, ProviderUpdate(max_output_tokens = 200000)).max_output_tokens == 200000
 
 
@@ -327,11 +360,15 @@ def test_the_largest_accepted_value_round_trips_exactly(provider_routes: Path):
     """SQLite INTEGER is 8 bytes, so the top of the accepted range must come back
     identical rather than as a float."""
     value = 9007199254740991
-    created = _create(ProviderCreate(
-        provider_type = "custom", display_name = "Custom",
-        base_url = "https://example.com/v1", models = ["vendor/model"],
-        max_output_tokens = value,
-    ))
+    created = _create(
+        ProviderCreate(
+            provider_type = "custom",
+            display_name = "Custom",
+            base_url = "https://example.com/v1",
+            models = ["vendor/model"],
+            max_output_tokens = value,
+        )
+    )
     stored = _raw_override(provider_routes, created.id)
     assert stored == value and isinstance(stored, int)
 
@@ -340,11 +377,15 @@ def test_a_failed_credential_write_restores_the_previous_override(
     provider_routes: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Metadata is written before the key, so the rollback has to carry the column."""
-    created = _create(ProviderCreate(
-        provider_type = "custom", display_name = "Custom",
-        base_url = "https://example.com/v1", models = ["vendor/model"],
-        max_output_tokens = 131072,
-    ))
+    created = _create(
+        ProviderCreate(
+            provider_type = "custom",
+            display_name = "Custom",
+            base_url = "https://example.com/v1",
+            models = ["vendor/model"],
+            max_output_tokens = 131072,
+        )
+    )
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("keyring is unavailable")
