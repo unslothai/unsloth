@@ -2785,8 +2785,10 @@ def _local_tool_loop_opted_out(payload, provider_type: str) -> bool:
     """Whether a self-hosted request disabled the local loop rather than lacking it.
 
     ``tool_choice="none"`` and a zero call budget both empty the catalog on a provider
-    that could otherwise run it. No call can happen, so the confirm-gate guard has
-    nothing to reject and the request should proceed as an ordinary completion.
+    that could otherwise run it, so the confirm-gate guard has nothing to reject and
+    the request proceeds as an ordinary completion. A zero budget is not an opt-out
+    when the request carries its own ``tools``: the passthrough still forwards those
+    schemas, and Studio cannot confirm provider-emitted calls against them.
     """
     from core.inference.external_tool_loop import local_tool_loop_supported
 
@@ -2794,6 +2796,11 @@ def _local_tool_loop_opted_out(payload, provider_type: str) -> bool:
         return False
     if isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none":
         return True
+    if payload.tools:
+        # client-supplied schemas are still forwarded by the passthrough, and Studio
+        # cannot confirm provider-emitted calls against them, so a zero local budget
+        # must not opt out of the confirm gate for these requests.
+        return False
     return (
         payload.max_tool_calls_per_message is not None and payload.max_tool_calls_per_message <= 0
     )

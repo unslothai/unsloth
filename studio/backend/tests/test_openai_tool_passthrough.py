@@ -555,6 +555,41 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
 
+    def test_confirm_tool_calls_zero_budget_does_not_bypass_client_tools(self, monkeypatch):
+        # A zero local budget empties Studio's catalog, but client-supplied tools are
+        # still forwarded by the passthrough. Studio cannot confirm those provider-emitted
+        # calls, so confirm_tool_calls must still be rejected rather than let the request
+        # proceed with unconfirmed tool calls.
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "llama_cpp",
+                "external_model": "m",
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "my_tool",
+                            "description": "x",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "max_tool_calls_per_message": 0,
+                "confirm_tool_calls": True,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert "only supported for local streaming tools" in body["error"]["message"]
+
     def test_confirm_tool_calls_allowed_for_codex_studio_tools(self, monkeypatch):
         from routes import inference as inference_route
 
