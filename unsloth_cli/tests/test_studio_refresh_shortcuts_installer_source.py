@@ -354,3 +354,61 @@ def test_markers_do_not_pin_internal_function_names():
     assert studio._looks_like_installer(renamed, "install.sh")
     for markers in studio._INSTALLER_MARKERS.values():
         assert markers == (b"--shortcuts-only",)
+
+
+def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(monkeypatch, tmp_path):
+    """Pre-refactor the candidate loop caught the exec OSError and carried on.
+
+    A machine that cannot spawn bash for the checkout must still reach the fetch, or a
+    refactor that only reorganised the code would have stopped refreshing launchers.
+    """
+    studio = _studio()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "install.sh").write_text("#!/bin/sh\n")
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+
+    seen = []
+
+    def _run(argv, **kwargs):
+        seen.append(list(argv))
+        if str(checkout / "install.sh") in argv:
+            raise OSError(8, "Exec format error")
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(studio.subprocess, "run", _run)
+    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: _SH)
+    studio._refresh_desktop_shortcuts()
+
+    assert len(seen) == 2, seen
+    assert str(checkout / "install.sh") in seen[0]
+    assert seen[1][:3] == ["bash", "-s", "--"], seen[1]
+
+
+def test_a_site_installed_opener_is_still_honoured(monkeypatch):
+    """urlopen() used whatever install_opener() set. Dropping it would strand any
+    machine whose proxy auth or corporate CA lives in a site-wide handler."""
+    studio = _studio()
+    import urllib.request
+
+    # A handler with no recognised *_open/*_request method is never registered by
+    # add_handler at all, so use the shape a corporate site actually installs.
+    marker = urllib.request.ProxyHandler({"https": "http://proxy.example:3128"})
+    installed = urllib.request.build_opener(marker)
+    monkeypatch.setattr(urllib.request, "_opener", installed, raising = False)
+
+    opener = studio._build_installer_opener()
+    assert any(h is marker for h in opener.handlers), "site handler was dropped"
+    assert any(
+        isinstance(h, studio._InstallerRedirectHandler) for h in opener.handlers
+    ), "redirect validation was lost"
+
+    # A private attribute of an unexpected shape must not cost anyone a refresh.
+    monkeypatch.setattr(urllib.request, "_opener", object(), raising = False)
+    fallback = studio._build_installer_opener()
+    assert any(isinstance(h, studio._InstallerRedirectHandler) for h in fallback.handlers)

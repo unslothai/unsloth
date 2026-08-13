@@ -3432,6 +3432,31 @@ class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _build_installer_opener() -> urllib.request.OpenerDirector:
+    """An opener that validates redirects but still honours a site-wide urllib setup.
+
+    The refresh used to call urlopen(), which uses whatever install_opener() put in
+    place, so a corporate sitecustomize supplying a proxy-auth or custom-CA handler
+    reached the network through it. Validating the redirect chain needs our own
+    handler, so carry the installed handlers across rather than dropping them and
+    silently ending the launcher refresh for those machines.
+    """
+    opener = urllib.request.build_opener(_InstallerRedirectHandler)
+    installed = getattr(urllib.request, "_opener", None)
+    if installed is None:
+        return opener
+    try:
+        for handler in installed.handlers:
+            # Ours is the whole point, so it is never displaced by the installed one.
+            if isinstance(handler, urllib.request.HTTPRedirectHandler):
+                continue
+            opener.add_handler(handler)
+    except Exception:
+        # A private attribute of an unexpected shape must not cost anyone a refresh.
+        return urllib.request.build_opener(_InstallerRedirectHandler)
+    return opener
+
+
 def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
     """Cheap shape check before a fetched installer is executed.
 
@@ -3459,7 +3484,7 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         typer.echo(f"  refresh-launcher  refusing to fetch {installer_name} from {url}")
         return None
     try:
-        opener = urllib.request.build_opener(_InstallerRedirectHandler)
+        opener = _build_installer_opener()
         request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
         with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
             body = response.read(_INSTALLER_MAX_BYTES + 1)
@@ -3539,30 +3564,35 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         if _should_hide_windows_subprocesses():
             ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
-        if checkout is not None:
-            _run_installer_ps1(checkout, args, ps_argv, env)
+        if checkout is not None and _run_installer_ps1(checkout, args, ps_argv, env):
             return
         fetched = _fetch_installer(installer_name, verbose = verbose)
         if fetched is not None:
             _run_fetched_installer_ps1(fetched, args, ps_argv, env)
         return
 
-    if checkout is not None:
-        _run_installer_bash(checkout, args, env)
+    if checkout is not None and _run_installer_bash(checkout, args, env):
         return
     fetched = _fetch_installer(installer_name, verbose = verbose)
     if fetched is not None:
         _run_fetched_installer_bash(fetched, args, env)
 
 
-def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> None:
+def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
+    """False when the interpreter could not be launched, so the caller can fall back.
+
+    The pre-refactor candidate loop caught that OSError and carried on to the next
+    candidate and then to the network, silently. Returning False keeps a machine that
+    cannot spawn bash for the checkout on exactly that path instead of ending the
+    refresh early.
+    """
     try:
         result = subprocess.run(["bash", str(script), *args], env = env, check = False)
-    except OSError as exc:
-        typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
-        return
+    except OSError:
+        return False
     if result.returncode != 0:
         typer.echo(f"  refresh-launcher  {script.name} exited {result.returncode}")
+    return True
 
 
 def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> None:
@@ -3577,17 +3607,18 @@ def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict
 
 def _run_installer_ps1(
     script: Path, args: Sequence[str], ps_argv: Sequence[str], env: dict
-) -> None:
+) -> bool:
+    """False when powershell.exe could not be launched. See _run_installer_bash."""
     quoted = str(script).replace("'", "''")
     argv = list(ps_argv)
     argv.extend(["-ExecutionPolicy", "Bypass", "-Command", f"& '{quoted}' {' '.join(args)} *>&1"])
     try:
         result = subprocess.run(argv, env = env, check = False, **_windows_hidden_subprocess_kwargs())
-    except OSError as exc:
-        typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
-        return
+    except OSError:
+        return False
     if result.returncode != 0:
         typer.echo(f"  refresh-launcher  {script.name} exited {result.returncode}")
+    return True
 
 
 def _run_fetched_installer_ps1(
