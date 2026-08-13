@@ -858,30 +858,50 @@ export GIO_MODULE_DIR="$libdir/gio-modules"
 export GSETTINGS_SCHEMA_DIR="$appdir/usr/share/glib-2.0/schemas"
 # WebKitGTK has its helper directory compiled in (WEBKIT_EXEC_PATH is gone), and
 # the build rewrote that string to the fixed path below. Point it at this mount.
-# Re-created every launch: the mount point changes each run, and a stale link
-# from a previous version would silently spawn the wrong helpers.
 #
-# The path is fixed and /tmp is world-writable, so another user can pre-create it. The
-# sticky bit then stops us replacing it, and a swallowed failure would leave WebKit
-# spawning THEIR WebKitNetworkProcess/WebKitWebProcess and loading their injected
-# bundle, in this session. So never continue with a link we do not control: the target
-# must be owned by us and hold the helpers. Concurrent launches of the same app race
-# here harmlessly, since either mount satisfies both checks.
-WEBKIT_LINK="__WEBKIT_LINK_PATH__"
-webkit_src="$appdir/usr/libexec/unsloth-webkit"
-rm -f -- "$WEBKIT_LINK" 2>/dev/null || true
-ln -sn "$webkit_src" "$WEBKIT_LINK" 2>/dev/null || true
+# What counts as a usable link, in one place, because it is asked twice.
+#
 # Ownership of the LINK, not of what it points at. `test -O` dereferences, and
 # appimagetool normalises the payload to root:root, so on a mounted AppImage it
 # asked "is the bundle owned by me?" -- false for every non-root user, and every
 # launch died here with exit 126. `stat` without -L reports the symlink itself,
 # which is the thing the security check actually cares about: a link we created in
 # a world-writable directory is ours, one an attacker pre-created is theirs.
-# The -x test below still follows the link, which is what proves it reaches a real
-# bundle rather than a dangling or hostile target.
-if [ ! -L "$WEBKIT_LINK" ] \
-   || [ "$(stat -c %u "$WEBKIT_LINK" 2>/dev/null)" != "$(id -u)" ] \
-   || [ ! -x "$WEBKIT_LINK/WebKitNetworkProcess" ]; then
+# The -x test still follows the link, which is what proves it reaches a real
+# bundle rather than a dangling or hostile target -- and, below, that the mount it
+# names is still there.
+WEBKIT_LINK="__WEBKIT_LINK_PATH__"
+webkit_src="$appdir/usr/libexec/unsloth-webkit"
+_webkit_link_ok() {
+  [ -L "$WEBKIT_LINK" ] || return 1
+  [ "$(stat -c %u "$WEBKIT_LINK" 2>/dev/null)" = "$(id -u)" ] || return 1
+  [ -x "$WEBKIT_LINK/WebKitNetworkProcess" ]
+}
+# Take the link over only when it is not already a working one of ours.
+#
+# It used to be re-created unconditionally, which breaks an instance that is ALREADY
+# RUNNING. The link is UID-global while each mount is per-process: a second launch
+# repoints it at its own /tmp/.mount_XXXXXX, tauri-plugin-single-instance then rejects
+# that launch, and the AppImage runtime unmounts as it exits -- leaving the first
+# process pointed at a directory that no longer exists. WebKit reads the compiled-in
+# path on every helper spawn and g_error()s when the spawn fails, so the running app
+# aborts: at startup if it had not built its webview yet (double-clicking a launcher
+# that shows no window until ready), later on a web-process respawn otherwise.
+#
+# A link left behind by a previous run names an unmounted path, so the -x test fails
+# and it is replaced. A link naming a mount that is still live belongs to an instance
+# of this same app, whose helpers are interchangeable with ours -- and the launch that
+# finds it is the duplicate, which exits before spawning any.
+_webkit_link_ok || {
+  rm -f -- "$WEBKIT_LINK" 2>/dev/null || true
+  ln -sn "$webkit_src" "$WEBKIT_LINK" 2>/dev/null || true
+}
+# Never continue with a link we do not control. The path is fixed and /tmp is
+# world-writable, so another user can pre-create it; the sticky bit then stops us
+# replacing it, and a swallowed failure would leave WebKit spawning THEIR
+# WebKitNetworkProcess/WebKitWebProcess and loading their injected bundle, in this
+# session.
+if ! _webkit_link_ok; then
   printf '%s\n' \
     "Unsloth cannot start: $WEBKIT_LINK is not a link this session controls." \
     "WebKit's helper path is compiled in, so continuing would run another user's" \

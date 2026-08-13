@@ -437,6 +437,35 @@ assert_eq "a target with no helpers is refused" "refused" "$(_run_guard "$_TMP/e
 assert_eq "the failure is never swallowed" "no" \
     "$(grep -q 'ln -sfn .*unsloth-webkit.* || true' "$BUILD_SH" && echo yes || echo no)"
 
+echo "=== behavioural: a second launch must not steal a running instance's link ==="
+# The link is UID-global, each mount is per-process. Re-creating it unconditionally
+# meant a second launch repointed it at its own /tmp/.mount_XXXXXX, single-instance
+# then rejected that launch, and the AppImage runtime unmounted as it exited --
+# leaving the FIRST, still-running process pointed at nothing. WebKit reads the
+# compiled-in path on every helper spawn and g_error()s when the spawn fails, so the
+# running app aborts. A link naming a mount that is GONE must still be replaced,
+# otherwise the next launch inherits a dangling one.
+_run_guard_at() {  # appdir, link -> ok/refused
+    sed "s|__WEBKIT_LINK_PATH__|$2|" "$_GUARD" > "$_TMP/gshared.sh"
+    if (appdir="$1"; . "$_TMP/gshared.sh") 2>/dev/null; then echo ok; else echo refused; fi
+}
+_LINK="$_TMP/link-shared"
+for _inst in A B; do
+    mkdir -p "$_TMP/inst$_inst/usr/libexec/unsloth-webkit"
+    : > "$_TMP/inst$_inst/usr/libexec/unsloth-webkit/WebKitNetworkProcess"
+    chmod +x "$_TMP/inst$_inst/usr/libexec/unsloth-webkit/WebKitNetworkProcess"
+done
+assert_eq "first launch takes the link" "ok" "$(_run_guard_at "$_TMP/instA" "$_LINK")"
+assert_eq "the link names the first instance" "$_TMP/instA/usr/libexec/unsloth-webkit" \
+    "$(readlink "$_LINK")"
+assert_eq "a second launch is still accepted" "ok" "$(_run_guard_at "$_TMP/instB" "$_LINK")"
+assert_eq "the second launch left the link alone" "$_TMP/instA/usr/libexec/unsloth-webkit" \
+    "$(readlink "$_LINK")"
+rm -rf "$_TMP/instA"   # the first instance exited; its mount is gone
+assert_eq "a stale link is replaced" "ok" "$(_run_guard_at "$_TMP/instB" "$_LINK")"
+assert_eq "the link now names the live instance" "$_TMP/instB/usr/libexec/unsloth-webkit" \
+    "$(readlink "$_LINK")"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
