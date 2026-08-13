@@ -782,6 +782,57 @@ def test_tool_call_turn_with_blank_reasoning_adds_no_reasoning_content(monkeypat
     assert "reasoning_content" not in first_assistant
 
 
+def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
+    """A blank trace on a suppressed call must not open an empty model turn."""
+    tool_stream = [
+        _sse({"reasoning_content": "\n\n"}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_blank_noop",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print(1)"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert not [
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "assistant"
+        and not message.get("tool_calls")
+        and not str(message.get("content") or "").strip()
+    ]
+    assert any(
+        message.get("role") == "user" and "not enabled" in message.get("content", "")
+        for message in payloads[1]["messages"]
+    )
+
+
 def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     tool_stream = [
         _sse({"reasoning_content": "Need a render."}),

@@ -95,6 +95,7 @@ from utils.subprocess_compat import (
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
@@ -107,6 +108,7 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
+    deferred_nudge_text,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -17816,13 +17818,17 @@ class LlamaCppBackend:
                     # Keep the controller feedback with that result instead of
                     # appending a newer user turn, which can make templates hide
                     # this turn's structured reasoning.
-                    feedback = "\n\n".join(
-                        dict.fromkeys(message["content"] for message in deferred_noop_msgs)
-                    )
-                    if not _attach_internal_feedback_to_tool_result(feedback):
+                    if not _attach_internal_feedback_to_tool_result(
+                        deferred_nudge_text(deferred_noop_msgs)
+                    ):
                         append_deferred_nudges(conversation, deferred_noop_msgs)
                 else:
-                    if not assistant_appended and (content_text or reasoning_accum):
+                    # A blank trace is not a turn: reuse the same emptiness test as
+                    # the field above so a whitespace-only split never appends an
+                    # empty assistant message.
+                    if not assistant_appended and (
+                        content_text or assistant_msg.get("reasoning_content")
+                    ):
                         if assistant_msg.get("reasoning_content"):
                             assistant_msg["content"] = neutralize_control_markup(
                                 reasoning_accum,
@@ -17900,13 +17906,8 @@ class LlamaCppBackend:
         # the final streaming pass to produce a useful answer instead of
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
-            budget_feedback = (
-                "You have used all available tool calls. Based on "
-                "everything you have found so far, provide your final "
-                "answer now. Do not call any more tools."
-            )
-            if not _attach_internal_feedback_to_tool_result(budget_feedback):
-                conversation.append({"role": "user", "content": budget_feedback})
+            if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
+                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
         # Clear status.
         yield {"type": "status", "text": ""}
