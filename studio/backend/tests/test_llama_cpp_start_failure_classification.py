@@ -1193,6 +1193,77 @@ class TestOutputIsNeverTrustedForBeingOurOwnFraming:
         assert "libllama.dylib" in _classify(out, "/m.gguf", "u/x", 1, binary)
 
 
+class TestAnEncodedSecretIsStillRedacted:
+    """Redacting on the value alone only works if the child prints it verbatim.
+
+    A wrapper that dumps its environment as JSON prints pa"ss\\word as
+    pa\\"ss\\\\word. That is a different string, so the literal replacement
+    missed it and the credential reached the API error fully reconstructible.
+    Redacting whatever sits beside a secret-looking NAME does not care how the
+    value was encoded.
+    """
+
+    SECRET = 'pa"ss\\word-12345'
+
+    @pytest.fixture(autouse = True)
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("DB_PASSWORD", self.SECRET)
+        monkeypatch.setenv("MY_API_TOKEN", "sk-abcdefghijklmnopqrstuvwxyz")
+
+    @pytest.mark.parametrize(
+        "dump",
+        [
+            '{"DB_PASSWORD": "pa\\"ss\\\\word-12345"}',   # JSON escaped
+            'DB_PASSWORD=pa"ss\\word-12345',              # bare
+            "DB_PASSWORD='pa\"ss\\word-12345'",           # shell quoted
+            "DB_PASSWORD: pa\"ss\\word-12345",            # yaml-ish
+            "DB_PASSWORD=pa%22ss%5Cword-12345",           # url encoded
+            "DB_PASSWORD=secret123456,PORT=8080",         # one of several pairs
+        ],
+    )
+    def test_no_recognisable_fragment_survives(self, dump):
+        msg = _classify(dump, "/m.gguf", "u/x", 1, None, log_path = "/tmp/l.log")
+        for fragment in ("ss\\word", "pa%22", "secret123456", "pa\\\"ss"):
+            assert fragment not in msg, msg
+        assert "***" in msg
+
+    def test_a_value_we_never_set_is_redacted_by_its_name(self):
+        """The point of the name pass: we cannot match a value we never saw."""
+        msg = _classify('{"DB_PASSWORD": "never-set-98765"}', "/m.gguf", "u/x", 1)
+        assert "never-set-98765" not in msg
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "PATH=/usr/bin:/bin",
+            '{"port": 8080}',
+            "model_path=/models/x.gguf",
+            "n_ctx: 4096",
+            "load time = 1234.5 ms",
+            "llama_model_loader: n_layers = 32",
+        ],
+    )
+    def test_ordinary_llama_cpp_output_is_not_redacted(self, line):
+        """Over-redaction would destroy the diagnostics this PR exists to add."""
+        assert "***" not in _classify(line, "/m.gguf", "u/x", 1)
+
+    @pytest.mark.parametrize(
+        "blob",
+        [
+            '"A' + '\\"' * 20000 + 'B"',
+            "K=" + "x" * 100000,
+            "A=1," * 25000,
+            'TOKEN="' + "y" * 100000,
+        ],
+    )
+    def test_the_name_pass_stays_linear(self, blob):
+        """No nested quantifier: a crafted line must not be able to stall it."""
+        import time
+        start = time.monotonic()
+        _classify(blob, "/m.gguf", "u/x", 1)
+        assert time.monotonic() - start < 2.0
+
+
 class TestQuotedShortSecrets:
     """A short secret survived quoting.
 
@@ -1255,3 +1326,27 @@ class TestASecretLongerThanTheTailWindow:
             if "SECRET" in name or "PRIVATE" in name or "PASSWORD" in name:
                 monkeypatch.delenv(name, raising = False)
         assert LlamaCppBackend._max_secret_len(()) >= 0
+
+
+class TestTheLibraryNameIsBounded:
+    """The install name is quoted from untrusted output into an HTTP error.
+
+    A real dyld install name is a path, and macOS PATH_MAX is 1024, but nothing
+    stopped a wrapper from printing a longer one: a 200000-character input
+    produced a 100000-character API response.
+    """
+
+    def test_an_absurd_install_name_is_truncated(self):
+        huge = "lib" + "A" * 100000 + ".dylib"
+        out = (f"dyld[9]: Library not loaded: @rpath/{huge}\n"
+               f"  Reason: tried: '/a/{huge}' (no such file)\n")
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
+        assert len(msg) < 4000, len(msg)
+        assert "..." in msg
+
+    def test_a_real_install_name_is_untouched(self):
+        out = ("dyld[9]: Library not loaded: @rpath/libllama.dylib\n"
+               "  Reason: tried: '/a/libllama.dylib' (no such file)\n")
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
+        assert "libllama.dylib" in msg
+        assert "..." not in msg

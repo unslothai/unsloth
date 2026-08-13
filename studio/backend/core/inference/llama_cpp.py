@@ -9871,6 +9871,10 @@ class LlamaCppBackend:
     # kilobytes. The glibc branch is capped to one line; cap this one too.
     _MACOS_REASON_CHARS = 300
 
+    # A dyld install name is a path, and macOS PATH_MAX is 1024. Double it and
+    # anything longer is not something the loader produced.
+    _DYLD_LIB_NAME_MAX_CHARS = 2048
+
     @staticmethod
     def _plain_dyld_lib_name(lib: str) -> str:
         """Drop dyld's search directives from an install name.
@@ -9883,7 +9887,14 @@ class LlamaCppBackend:
         # Basename, not just the directive: "@loader_path/../Frameworks/x.dylib"
         # still reads as an exact location to _is_library_path.
         if lib.startswith(("@rpath/", "@loader_path/", "@executable_path/")):
-            return os.path.basename(lib)
+            lib = os.path.basename(lib)
+        # The name is quoted from untrusted output and lands in an HTTP error.
+        # A real install name is well under this; without the cap, a wrapper
+        # printing a 100000-character one turned a 200-character diagnosis into
+        # a 100000-character API response. PATH_MAX on macOS is 1024, so this
+        # only ever truncates something dyld could not have produced.
+        if len(lib) > LlamaCppBackend._DYLD_LIB_NAME_MAX_CHARS:
+            lib = lib[: LlamaCppBackend._DYLD_LIB_NAME_MAX_CHARS] + "..."
         return lib
 
     # Ten search paths at a long path each, with room to spare. Only ever cuts
@@ -10369,18 +10380,64 @@ class LlamaCppBackend:
         re.compile(r"(?<=://)[^/@\s]+(?=@)"),
     )
 
+    # NAME = value / "NAME": "value", in the three shapes an environment dump
+    # takes: shell-ish, JSON, and bare. The quoted arm consumes escapes so a
+    # backslash-escaped quote inside the value does not end it early. Both arms
+    # are unambiguous alternations of single characters, so matching is linear;
+    # there is no nested quantifier for a crafted line to exploit.
+    _SECRET_ASSIGNMENT_RE = re.compile(
+        r"""(?P<q>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_]{0,63})(?P=q)
+            (?P<sep>[ \t]*[=:][ \t]*)
+            (?:(?P<vq>["'])(?P<qval>(?:\\.|[^"'\\])*)(?P=vq)
+             |  (?P<val>[^\s,;]+))""",
+        re.VERBOSE,
+    )
+
+    @staticmethod
+    def _redact_secret_assignments(text: str) -> str:
+        """Redact the value beside any secret-looking NAME, however encoded.
+
+        Positional, not literal: whatever follows the name is replaced, so
+        JSON escaping, shell quoting or URL encoding cannot smuggle a value
+        past the check the way a value-literal comparison allows.
+        """
+        try:
+            from utils.prebuilt.child_env import is_secret_env_name
+        except Exception:  # noqa: BLE001 - redaction must never break a load error
+            return text
+
+        def sub(m: "re.Match[str]") -> str:
+            if not is_secret_env_name(m.group("name")):
+                return m.group(0)
+            q, vq = m.group("q"), m.group("vq")
+            body = f"{vq}***{vq}" if vq else "***"
+            return f"{q}{m.group('name')}{q}{m.group('sep')}{body}"
+
+        try:
+            return LlamaCppBackend._SECRET_ASSIGNMENT_RE.sub(sub, text)
+        except Exception:  # noqa: BLE001
+            return text
+
     @staticmethod
     def _scrub_secret_values(text: str, extra: Sequence[Optional[str]] = ()) -> str:
         """Redact credential-looking environment values out of ``text``.
 
         llama-server inherits nearly all of Studio's environment, so a wrapper
         script, a diagnostic build or a crash handler that echoes its env would
-        otherwise put an API key straight into the load error. Redact on value,
-        not on name: the child decides how it prints them.
+        otherwise put an API key straight into the load error.
+
+        Two passes, because either alone has a hole. Matching the VALUE catches
+        a credential under a name we never heard of, but only if the child
+        printed it verbatim: a wrapper dumping its environment as JSON prints
+        pa"ss\\word as pa\\"ss\\\\word, which is a different string and was
+        reaching the API error fully reconstructible. Matching the NAME and
+        redacting whatever follows it is immune to how the value was encoded,
+        but only works for names that look like secrets. Doing both leaves a
+        gap only for an unrecognised name AND an escaped value.
         """
         if not text:
             return text
-        cleaned = text
+        cleaned = LlamaCppBackend._redact_secret_assignments(text)
         # Secrets we minted and therefore know exactly: no pattern recognises
         # a token_urlsafe blob.
         for literal in extra:
