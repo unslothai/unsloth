@@ -12,12 +12,14 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
-// An AppImage can be launched from an activated Python environment. Keep the
-// host library path the thin bundle needs, but do not let PYTHONHOME/PYTHONPATH
-// shadow the managed Studio environment.
+// The complete AppImage's library path belongs only to its GTK/WebKit GUI.
+// Never leak that older bundled runtime—or activated Python overrides—into the
+// managed host Python environment.
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("LD_LIBRARY_PATH");
+
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
@@ -26,8 +28,67 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("LD_LIBRARY_PATH");
+
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod appimage_environment_tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn appimage_isolated_path() -> &'static OsStr {
+        OsStr::new("/appimage/lib")
+    }
+
+    #[test]
+    fn std_managed_child_drops_appimage_and_python_paths() {
+        let _guard = env_lock();
+        let old_appimage = std::env::var_os("APPIMAGE");
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("LD_LIBRARY_PATH", appimage_isolated_path())
+            .env("PYTHONHOME", "/activated/python")
+            .env("PYTHONPATH", "/activated/modules");
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run isolated child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(!env.contains("LD_LIBRARY_PATH="));
+        assert!(!env.contains("PYTHONHOME="));
+        assert!(!env.contains("PYTHONPATH="));
+        match old_appimage {
+            Some(value) => std::env::set_var("APPIMAGE", value),
+            None => std::env::remove_var("APPIMAGE"),
+        }
+    }
+
+    #[test]
+    fn native_package_child_keeps_caller_environment() {
+        let _guard = env_lock();
+        let old_appimage = std::env::var_os("APPIMAGE");
+        std::env::remove_var("APPIMAGE");
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("LD_LIBRARY_PATH", appimage_isolated_path())
+            .env("PYTHONHOME", "/activated/python")
+            .env("PYTHONPATH", "/activated/modules");
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run native-package child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(env.contains("LD_LIBRARY_PATH=/appimage/lib"));
+        assert!(env.contains("PYTHONHOME=/activated/python"));
+        assert!(env.contains("PYTHONPATH=/activated/modules"));
+        if let Some(value) = old_appimage {
+            std::env::set_var("APPIMAGE", value);
+        }
     }
 }
 
