@@ -198,11 +198,7 @@ def test_recorded_stats_carry_timings_only_when_a_run_was_timed():
         timer = timer,
     )
     stats = backend.last_generation_stats
-    assert stats["usage"] == {
-        "prompt_tokens": 64,
-        "completion_tokens": 16,
-        "total_tokens": 80,
-    }
+    assert stats["usage"] == {"prompt_tokens": 64, "completion_tokens": 16, "total_tokens": 80}
     assert stats["timings"]["prompt_n"] == 64
     assert stats["timings"]["predicted_n"] == 16
 
