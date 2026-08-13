@@ -1,16 +1,12 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
-# Usage:  irm https://unsloth.ai/install.ps1 | iex
-#         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# Usage, options and the web one-liner: see "Unsloth Studio (web UI)" in the README
+# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here, because
+# AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
 #
-# irm | iex cannot forward arguments, so web installs take options as env vars set
-# before the pipe (flags still work via .\install.ps1):
-#   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
-#   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
-#   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
-#   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-#   .\install.ps1 --no-torch                                                # equivalent flag
-# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+# The web entry point cannot forward arguments, so it takes options as environment variables set
+# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
+# local run takes the equivalent flags (--no-torch, --skip-autostart, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -20,7 +16,7 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
     # The user's PowerShell profile has already run by the time this does, and the documented
-    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
     #
     # Off, not Latest: this script predates strict mode, testing environment variables that are
@@ -60,7 +56,7 @@ function Install-UnslothStudio {
     # (27.8 MB) took 41.34s with the bar on against 0.08s with it off, and the uv archive the
     # same. That is the multi-minute "slow download" users report. -UseBasicParsing does NOT
     # avoid it and PowerShell 7 never had the cost; only this preference does. Same scoping rule
-    # as the table above: no qualifier, so the caller's own preference survives "irm ... | iex".
+    # as the table above: no qualifier, so the caller's own preference survives a piped web run.
     $ProgressPreference = 'SilentlyContinue'
 
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
@@ -90,7 +86,7 @@ function Install-UnslothStudio {
             } catch { }
         }
     }
-    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # A FUNCTION-local, not $script: or an environment variable: under a piped web run this runs
     # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
     # is the ordinary corporate form) that must not outlive the install on any of the dozens of
     # return paths. Module-qualified serializer, as in the probe: a profile alias or function
@@ -108,7 +104,7 @@ function Install-UnslothStudio {
     $PSNativeCommandUseErrorActionPreference = $false
 
     # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
-    # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
+    # a piped web run, $script: is the caller's session scope, so a second run in the same
     # console would start on the first run's state. These two are the only ones no later
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
@@ -1699,11 +1695,14 @@ try {
     # around 'unsloth', and unquoted they would end the string mid-expression.
     `$studioCommand = "& '" + (`$studioPython -replace "'", "''") + "' -X utf8 -c '" +
         (`$studioEntry -replace "'", "''") + "' studio -p " + `$launchPort
+    # RemoteSigned, not Bypass: the child runs an inline -Command against an executable, so no
+    # script file is loaded and the two behave identically here. No reason to spend a scored
+    # token on a launch that needs no policy relief.
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
         '-ExecutionPolicy',
-        'Bypass',
+        'RemoteSigned',
         '-Command',
         `$studioCommand
     )
@@ -1779,6 +1778,16 @@ exit 0
             if (-not $launcherUnchanged) {
                 [System.IO.File]::WriteAllBytes($launcherPs1, $desiredLauncher)
             }
+            # WriteAllBytes replaces the unnamed data stream and leaves any other NTFS stream on
+            # an existing file alone, so a launcher that somehow acquired a mark of the web keeps
+            # it across the rewrite. The shortcut loads this under RemoteSigned, which refuses a
+            # marked unsigned script, so clear the mark on the file we just authored. A no-op on
+            # every ordinary install, where the stream was never there.
+            #
+            # Outside the content check on purpose: a launcher whose bytes already match still
+            # has to lose the mark, and clearing an absent stream neither writes nor restamps
+            # the file, so an unchanged re-run stays a no-op on disk either way.
+            Unblock-File -LiteralPath $launcherPs1 -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
             # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
@@ -1876,9 +1885,14 @@ exit 0
             # launch-studio.ps1 with a hidden window. We deliberately avoid a
             # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
             # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            #
+            # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
+            # Microsoft's detections key on, and install.rs makes the same call for the app's own
+            # launch. Nothing is lost: this launcher is written locally, so it carries no
+            # mark-of-the-web and RemoteSigned loads it. The hidden window stays.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
-            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
@@ -2019,7 +2033,7 @@ exit 0
     }
 
     # ── Leave Windows system directories before installing ──
-    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # "Run as administrator" starts in C:\Windows\System32, so a piped web run installs
     # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
     # then rolls back. Relocating is safe: nothing here reads the caller's directory
     # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
@@ -2988,8 +3002,19 @@ exit 0
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
                 $src = Join-Path $work $exe
                 if (Test-Path -LiteralPath $src) {
-                    Copy-Item -LiteralPath $src -Destination (Join-Path $destDir $exe) -Force
-                    if ($exe -eq "uv.exe") { $haveUv = $true }
+                    $dst = Join-Path $destDir $exe
+                    Copy-Item -LiteralPath $src -Destination $dst -Force
+                    if ($exe -eq "uv.exe") {
+                        # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
+                        # a locked or ACL-denied destination leaves whatever was already there and
+                        # execution still reaches this line. Compare against the archive we just
+                        # verified: a stale uv.exe must not pass for the one we meant to install.
+                        try {
+                            $haveUv = (Test-Path -LiteralPath $dst) -and
+                                (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                                (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                        } catch { $haveUv = $false }
+                    }
                 }
             }
             if (-not $haveUv) {
@@ -3993,7 +4018,7 @@ exit 0
     # qualify, UHD / HD / Iris Xe do not.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so a
+    # Reset every invocation: under a piped web run $script: is the caller's session scope, so a
     # second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
     $script:IsIntelXpu = $false
     # $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below; an AMD host

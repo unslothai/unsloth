@@ -1,0 +1,420 @@
+#!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
+# Guards install.sh's uv bootstrap.
+#
+# It used to download astral's install.sh to a temp file, run it and delete the file, which
+# is shape for shape what a dropper does. It now fetches the pinned release archive and
+# verifies a hardcoded SHA-256 first, the move install.ps1 already made.
+#
+# The fallback must stay: musl, armv7 and hosts without a digest tool keep the old path
+# rather than risk a wrong triple. These tests pin the digest check (a mismatched archive
+# installs nothing), the extraction, and the fallback being reachable but not primary.
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_SH="$SCRIPT_DIR/../../install.sh"
+PASS=0
+FAIL=0
+
+ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# ── source contract ──
+echo "=== source contract ==="
+
+if grep -q '_uv_install_pinned' "$INSTALL_SH"; then
+    ok "install.sh has a pinned-release uv path"
+else
+    bad "install.sh has a pinned-release uv path"
+fi
+
+# The pinned attempt must precede the fallback, or the fallback is what actually runs.
+_pinned_at=$(grep -n 'if _uv_install_pinned; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_fallback_at=$(grep -n 'download "https://astral.sh/uv/install.sh"' "$INSTALL_SH" | head -1 | cut -d: -f1)
+if [ -n "$_pinned_at" ] && [ -n "$_fallback_at" ] && [ "$_pinned_at" -lt "$_fallback_at" ]; then
+    ok "the pinned path is tried before the astral fallback"
+else
+    bad "the pinned path is tried before the astral fallback (pinned=$_pinned_at fallback=$_fallback_at)"
+fi
+
+# A truncated digest would silently never match and route every host to the fallback.
+_bad_digests=$(grep -oE 'uv-[a-z0-9_]+-[a-z0-9.-]+\.tar\.gz [0-9a-f]*' "$INSTALL_SH" \
+    | awk '{ if (length($2) != 64) print }' | wc -l | tr -d ' ')
+if [ "$_bad_digests" = "0" ]; then
+    ok "every pinned archive digest is a full sha256"
+else
+    bad "every pinned archive digest is a full sha256 ($_bad_digests malformed)"
+fi
+
+# One version constant, quoted into every URL.
+if grep -q '^UV_PINNED_VERSION="' "$INSTALL_SH"; then
+    ok "the pinned uv version is a single constant"
+else
+    bad "the pinned uv version is a single constant"
+fi
+
+# All four installers must pin the same uv, or which one a user ends up with depends on which
+# script reached the machine first.
+_pinned_versions=$(
+    grep -hoE '(UV_PINNED_VERSION|_SETUP_UV_PINNED_VERSION)="[0-9.]+"' \
+        "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"
+    grep -hoE '\$UvPinnedVersion += +"[0-9.]+"' \
+        "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"
+)
+_pinned_distinct=$(printf '%s\n' "$_pinned_versions" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -u)
+_pinned_count=$(printf '%s\n' "$_pinned_distinct" | grep -c .)
+if [ "$(printf '%s\n' "$_pinned_versions" | grep -c .)" = "4" ] && [ "$_pinned_count" = "1" ]; then
+    ok "all four installers pin the same uv ($_pinned_distinct)"
+else
+    bad "the pinned uv version disagrees across installers: $(printf '%s' "$_pinned_distinct" | tr '\n' ' ')"
+fi
+
+# The pin has to clear every version floor in the tree. Before the pin, astral's endpoint always
+# delivered the newest uv, so raising a floor was safe on its own; now a floor above the pin would
+# install a uv the same script immediately judges too old. This is the check that catches it.
+_floors=$(
+    grep -hoE '^UV_MIN_VERSION="[0-9.]+"|^UV_OFFLINE_MIN_VERSION="[0-9.]+"' "$INSTALL_SH"
+    grep -hoE '\$UvMinVersion += +"[0-9.]+"' "$SCRIPT_DIR/../../install.ps1"
+)
+_floor_bad=0
+for _floor in $(printf '%s\n' "$_floors" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?'); do
+    # sort -V: the lower of the two sorts first, so the pin must not be it unless they are equal.
+    _lowest=$(printf '%s\n%s\n' "$_floor" "$_pinned_distinct" | sort -V | head -1)
+    if [ "$_lowest" != "$_floor" ] && [ "$_floor" != "$_pinned_distinct" ]; then
+        echo "      floor $_floor is above the pin $_pinned_distinct"
+        _floor_bad=$((_floor_bad + 1))
+    fi
+done
+if [ "$_floor_bad" = 0 ]; then
+    ok "the pinned uv clears every version floor in the tree"
+else
+    bad "$_floor_bad version floor(s) sit above the pinned uv"
+fi
+
+# astral's installer wrote its own shell-profile line; the pinned path does not, so install.sh's
+# own profile write is now the only thing that puts _LOCAL_BIN on a NEW shell's PATH. That guard
+# has to read the PATH we inherited: by the time it runs, this process has prepended the directory
+# for the uv bootstrap and the venv, so testing the live $PATH answers yes for a login shell that
+# would answer no, the profile line never gets written, and `unsloth` is missing from the next
+# terminal.
+_snapshot_at=$(grep -n '^_UNSLOTH_LOGIN_PATH="\$PATH"' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_first_mutation=$(grep -n 'export PATH=' "$INSTALL_SH" | head -1 | cut -d: -f1)
+if [ -n "$_snapshot_at" ] && [ -n "$_first_mutation" ] && [ "$_snapshot_at" -lt "$_first_mutation" ]; then
+    ok "the login PATH is snapshotted before anything prepends to PATH"
+else
+    bad "the login PATH snapshot is missing or too late (snapshot=$_snapshot_at first mutation=$_first_mutation)"
+fi
+if grep -q 'case ":\$_UNSLOTH_LOGIN_PATH:" in' "$INSTALL_SH"; then
+    ok "the shell-profile guard tests the inherited PATH, not the one we prepended to"
+else
+    bad "the shell-profile guard tests the inherited PATH, not the one we prepended to"
+fi
+
+# A configured uv mirror is exclusive: a restricted network sets one because the public hosts are
+# unreachable, and download() has no timeout, so trying them first stalls instead of falling back.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
+    if grep -q 'UV_INSTALLER_GHE_BASE_URL' "$_impl" && grep -q 'UV_INSTALLER_GITHUB_BASE_URL' "$_impl"; then
+        ok "${_impl##*/} honours a configured uv mirror"
+    else
+        bad "${_impl##*/} honours a configured uv mirror"
+    fi
+done
+
+# The staging name must be unique per process. Two installers sharing one fixed staging path let
+# the loser keep writing through its open descriptor after the winner renamed that inode into
+# place, publishing a truncated uv. mktemp in the destination directory is what makes the rename
+# a swap of a file nobody else can still be writing.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
+    if grep -qE 'mktemp "\$_[a-z]+_dest/\.\$_[a-z]+_exe\.XXXXXX"' "$_impl" \
+       && ! grep -q 'unsloth-new' "$_impl"; then
+        ok "${_impl##*/} stages the uv copy under a per-process name"
+    else
+        bad "${_impl##*/} stages the uv copy under a per-process name"
+    fi
+done
+
+# astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
+# default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
+# configured an XDG location, where no later shell looks for it.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh" \
+             "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"; do
+    if grep -q 'XDG_DATA_HOME' "$_impl"; then
+        ok "${_impl##*/} honours the XDG_DATA_HOME destination tier"
+    else
+        bad "${_impl##*/} honours the XDG_DATA_HOME destination tier"
+    fi
+done
+
+# ── behaviour ──
+echo "=== behaviour ==="
+
+# Drive the helper block from install.sh with a stubbed downloader: offline, sandboxed.
+awk '/^# ── uv from a pinned release ──$/,/^if ! command -v uv /' "$INSTALL_SH" \
+    | sed '$d' > "$WORK/uvfns.sh"
+
+# Stand-in for the real archive: same uv-<triple>/{uv,uvx} layout.
+mkdir -p "$WORK/src/uv-fake-triple"
+printf '#!/bin/sh\necho "uv 0.12.1 (fake)"\n' > "$WORK/src/uv-fake-triple/uv"
+printf '#!/bin/sh\necho "uvx"\n' > "$WORK/src/uv-fake-triple/uvx"
+tar -czf "$WORK/uv-fake.tar.gz" -C "$WORK/src" uv-fake-triple
+if command -v sha256sum >/dev/null 2>&1; then
+    FIXTURE_SHA=$(sha256sum "$WORK/uv-fake.tar.gz" | awk '{print $1}')
+else
+    FIXTURE_SHA=$(shasum -a 256 "$WORK/uv-fake.tar.gz" | awk '{print $1}')
+fi
+
+run_case() {
+    # $ADVERTISED = the digest the pin claims, $1 = HOME for the run
+    _rc_home="$1"
+    mkdir -p "$_rc_home"
+    (
+        set +e
+        tauri_log() { :; }
+        # shellcheck disable=SC1090
+        . "$WORK/uvfns.sh"
+        # Stub the host lookup and the transport, not the installer: the point under test
+        # is the verify/extract/place path.
+        _uv_pinned_asset() { echo "uv-fake.tar.gz $ADVERTISED"; }
+        download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
+        HOME="$_rc_home"
+        unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME
+        if [ -n "${CASE_XDG_DATA_HOME:-}" ]; then
+            export XDG_DATA_HOME="$CASE_XDG_DATA_HOME"
+        else
+            unset XDG_DATA_HOME
+        fi
+        _uv_install_pinned
+        echo "rc=$?"
+    )
+}
+
+ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_ok" > "$WORK/out_ok" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_ok" && [ -x "$WORK/home_ok/.local/bin/uv" ]; then
+    ok "a matching digest installs uv into the default destination"
+else
+    bad "a matching digest installs uv into the default destination"
+    sed 's/^/      /' "$WORK/out_ok"
+fi
+
+if [ -x "$WORK/home_ok/.local/bin/uvx" ]; then
+    ok "uvx is installed alongside uv"
+else
+    bad "uvx is installed alongside uv"
+fi
+
+# XDG_DATA_HOME/../bin wins over the home default, as it does for astral's installer.
+ADVERTISED="$FIXTURE_SHA" CASE_XDG_DATA_HOME="$WORK/home_xdg/share" \
+    run_case "$WORK/home_xdg" > "$WORK/out_xdg" 2>&1 || true
+if [ -x "$WORK/home_xdg/bin/uv" ] && [ ! -e "$WORK/home_xdg/.local/bin/uv" ]; then
+    ok "XDG_DATA_HOME redirects the install away from the home default"
+else
+    bad "XDG_DATA_HOME redirects the install away from the home default"
+    sed 's/^/      /' "$WORK/out_xdg"
+fi
+
+ADVERTISED="0000000000000000000000000000000000000000000000000000000000000000" \
+    run_case "$WORK/home_bad" > "$WORK/out_bad" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_bad"; then
+    bad "a mismatched digest is rejected"
+else
+    ok "a mismatched digest is rejected"
+fi
+if [ -e "$WORK/home_bad/.local/bin/uv" ]; then
+    bad "a rejected archive installs nothing"
+else
+    ok "a rejected archive installs nothing"
+fi
+
+# Repeat application. The installer is re-run on every upgrade and every repair, so the second
+# and third pass over the same HOME must land on the same tree, not accumulate or half-replace.
+_sig() { printf '%s|%s' "$(cd "$1" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" \
+                        "$(cat "$1/.local/bin/uv" 2>/dev/null)"; }
+_idem_ok=1
+_idem_sig=""
+for _i in 1 2 3; do
+    ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_idem" > "$WORK/out_idem_$_i" 2>&1 || true
+    grep -q '^rc=0$' "$WORK/out_idem_$_i" || _idem_ok=0
+    _s=$(_sig "$WORK/home_idem")
+    [ -z "$_idem_sig" ] && _idem_sig="$_s"
+    [ "$_s" = "$_idem_sig" ] || _idem_ok=0
+done
+if [ "$_idem_ok" = 1 ]; then
+    ok "runs 1..3 over the same HOME leave an identical tree"
+else
+    bad "repeat application is not idempotent"
+    sed 's/^/      /' "$WORK/out_idem_3"
+fi
+
+# A stale uv from an older install is replaced in place. Two copies under one destination would
+# leave PATH order deciding which one runs.
+printf 'stale binary' > "$WORK/home_idem/.local/bin/uv"
+ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_idem" > "$WORK/out_replace" 2>&1 || true
+if grep -q 'fake' "$WORK/home_idem/.local/bin/uv" 2>/dev/null \
+   && [ "$(cd "$WORK/home_idem" && find . -name uv -type f | wc -l | tr -d ' ')" = 1 ]; then
+    ok "an existing uv at the destination is replaced in place"
+else
+    bad "an existing uv at the destination is replaced in place"
+fi
+
+# A destination that is a symlink must be replaced, not written through. `~/.local/bin/uv ->
+# /opt/homebrew/bin/uv` is an ordinary layout, and a plain cp there rewrites Homebrew's binary.
+mkdir -p "$WORK/home_link/.local/bin" "$WORK/elsewhere"
+printf 'other package manager owns this' > "$WORK/elsewhere/uv"
+_link_before=$(sha256sum "$WORK/elsewhere/uv" 2>/dev/null || shasum -a 256 "$WORK/elsewhere/uv")
+ln -sf "$WORK/elsewhere/uv" "$WORK/home_link/.local/bin/uv"
+ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_link" > "$WORK/out_link" 2>&1 || true
+_link_after=$(sha256sum "$WORK/elsewhere/uv" 2>/dev/null || shasum -a 256 "$WORK/elsewhere/uv")
+if [ "$_link_before" = "$_link_after" ]; then
+    ok "a symlinked destination is not written through"
+else
+    bad "the install rewrote the file the destination symlink pointed at"
+fi
+if [ ! -L "$WORK/home_link/.local/bin/uv" ] && grep -q 'fake' "$WORK/home_link/.local/bin/uv" 2>/dev/null; then
+    ok "the symlink itself is replaced by the installed uv"
+else
+    bad "the symlink itself is replaced by the installed uv"
+fi
+# The staging file must not survive a run, or the destination collects debris on every upgrade.
+if [ -z "$(find "$WORK/home_link/.local/bin" -name '.uv.*' 2>/dev/null)" ]; then
+    ok "no staging file is left behind"
+else
+    bad "no staging file is left behind"
+fi
+
+# A binary that cannot execute must decline, not report success. The executable bit says nothing
+# about whether the loader a GNU binary asks for exists: a stripped NixOS-derived image reads a
+# glibc version from getconf, passes every static check, and then fails on first use with the
+# fallback already skipped. Stand in for that with an archive whose uv cannot run.
+mkdir -p "$WORK/src_bad/uv-fake-triple"
+printf '\177ELF not a real loader target\n' > "$WORK/src_bad/uv-fake-triple/uv"
+printf '#!/bin/sh\necho uvx\n' > "$WORK/src_bad/uv-fake-triple/uvx"
+tar -czf "$WORK/uv-bad.tar.gz" -C "$WORK/src_bad" uv-fake-triple
+if command -v sha256sum >/dev/null 2>&1; then
+    BAD_EXEC_SHA=$(sha256sum "$WORK/uv-bad.tar.gz" | awk '{print $1}')
+else
+    BAD_EXEC_SHA=$(shasum -a 256 "$WORK/uv-bad.tar.gz" | awk '{print $1}')
+fi
+mkdir -p "$WORK/home_noexec"
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-bad.tar.gz $BAD_EXEC_SHA"; }
+    download() { cp -f "$WORK/uv-bad.tar.gz" "$2"; }
+    HOME="$WORK/home_noexec"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_noexec" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_noexec"; then
+    bad "a uv that cannot execute declines to the fallback"
+else
+    ok "a uv that cannot execute declines to the fallback"
+fi
+
+# Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
+# installing at all, so every host must either get its own triple or decline to the fallback.
+# $4 libc: musl | none (no ldd and no getconf) | a glibc version | rosetta (Darwin only)
+# $5 bits: what getconf LONG_BIT reports, so a 32-bit userland on a 64-bit kernel is covered.
+_probe_asset() { # $1 fn, $2 os, $3 arch, $4 libc, $5 bits
+    (
+        set +e
+        # Bind before the stubs: inside a function body $2..$5 are the stub's own arguments.
+        _pa_os="$2"; _pa_arch="$3"; _pa_libc="$4"; _pa_bits="$5"
+        tauri_log() { :; }
+        # shellcheck disable=SC1090
+        . "$WORK/uvfns.sh"
+        uname() { case "${1:-}" in -m) echo "$_pa_arch" ;; *) echo "$_pa_os" ;; esac; }
+        ldd() {
+            case "$_pa_libc" in
+                musl) echo "musl libc (x86_64)" ;;
+                none) return 127 ;;
+                *) echo "ldd (Ubuntu GLIBC $_pa_libc-0ubuntu1) $_pa_libc" ;;
+            esac
+        }
+        getconf() {
+            case "${1:-}" in
+                LONG_BIT) echo "$_pa_bits" ;;
+                GNU_LIBC_VERSION) [ "$_pa_libc" = none ] && return 1; echo "glibc $_pa_libc" ;;
+            esac
+        }
+        sysctl() { [ "$_pa_libc" = rosetta ] && echo 1; }
+        "$1" 2>/dev/null
+    )
+}
+_matrix_bad=0
+# "<os> <arch> <libc> <bits> <expected triple, or - to decline>"
+while read -r _m_os _m_arch _m_libc _m_bits _m_want; do
+    [ -n "$_m_os" ] || continue
+    # `|| _m_got=`: a declining host exits non-zero, and set -e would end the run here.
+    _m_got=$(_probe_asset _uv_pinned_asset "$_m_os" "$_m_arch" "$_m_libc" "$_m_bits") || _m_got=""
+    _m_label="$_m_os/$_m_arch/$_m_libc/$_m_bits"
+    if [ "$_m_want" = "-" ]; then
+        [ -z "$_m_got" ] || { echo "      $_m_label should decline, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)); }
+    else
+        case "$_m_got" in
+            "uv-$_m_want.tar.gz "*) : ;;
+            *) echo "      $_m_label expected $_m_want, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)) ;;
+        esac
+    fi
+done <<'MATRIX'
+Linux x86_64 2.35 64 x86_64-unknown-linux-gnu
+Linux amd64 2.35 64 x86_64-unknown-linux-gnu
+Linux aarch64 2.35 64 aarch64-unknown-linux-gnu
+Linux arm64 2.28 64 aarch64-unknown-linux-gnu
+Linux x86_64 2.17 64 x86_64-unknown-linux-gnu
+Darwin x86_64 2.35 64 x86_64-apple-darwin
+Darwin arm64 2.35 64 aarch64-apple-darwin
+Darwin aarch64 2.35 64 aarch64-apple-darwin
+Darwin x86_64 rosetta 64 aarch64-apple-darwin
+Linux x86_64 musl 64 -
+Linux aarch64 musl 64 -
+Linux x86_64 none 64 -
+Linux aarch64 none 64 -
+Linux x86_64 2.12 64 -
+Linux aarch64 2.27 64 -
+Linux x86_64 2.35 32 -
+Linux aarch64 2.35 32 -
+Linux armv7l 2.35 64 -
+Linux i686 2.35 64 -
+Linux ppc64le 2.35 64 -
+Linux riscv64 2.35 64 -
+Linux s390x 2.35 64 -
+Darwin i386 2.35 64 -
+FreeBSD x86_64 2.35 64 -
+SunOS x86_64 2.35 64 -
+MINGW64_NT-10.0 x86_64 2.35 64 -
+CYGWIN_NT-10.0 x86_64 2.35 64 -
+unknown unknown 2.35 64 -
+MATRIX
+if [ "$_matrix_bad" = 0 ]; then
+    ok "every host either gets its own triple or declines to the fallback"
+else
+    bad "the host matrix has $_matrix_bad wrong outcomes"
+fi
+
+# An unpinned host must decline, so the caller falls back instead of installing nothing.
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    uname() { if [ "$1" = "-s" ]; then echo Linux; else echo sparc64; fi; }
+    _uv_pinned_asset >/dev/null 2>&1
+    echo "rc=$?"
+) > "$WORK/out_arch" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_arch"; then
+    bad "an unpinned architecture declines so the fallback runs"
+else
+    ok "an unpinned architecture declines so the fallback runs"
+fi
+
+echo
+echo "passed: $PASS  failed: $FAIL"
+[ "$FAIL" -eq 0 ]
