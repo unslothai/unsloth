@@ -2495,6 +2495,19 @@ _uv_sha256() {
     fi
 }
 
+# Ask a freshly downloaded binary whether it can run at all, with both of its ways of
+# hanging closed off: no stdin, so a build that decides to prompt reads EOF instead of
+# waiting forever, and a hard ceiling where `timeout` exists (it is absent on a stock
+# macOS, hence the probe). `uv --version` on a healthy host answers in milliseconds, so
+# the ceiling is only ever reached by a binary this installer must not publish anyway.
+_uv_probe_exec() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
+    else
+        "$1" --version >/dev/null 2>&1 </dev/null
+    fi
+}
+
 _uv_install_pinned() {
     _uip_spec=$(_uv_pinned_asset) || return 1
     [ -n "$_uip_spec" ] || return 1
@@ -2554,9 +2567,16 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         if ! tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null; then continue; fi
         mkdir -p "$_uip_dest" 2>/dev/null || break
         _uip_placed=0
+        # uv is first on purpose, and its failure aborts the whole placement below. The two
+        # binaries ship as a set, and publishing the pinned uvx next to whatever older uv the
+        # host already had is a pairing we have never built or tested.
         for _uip_exe in uv uvx; do
-            _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
-            if [ -n "$_uip_src" ] && [ -f "$_uip_src" ]; then
+            _uip_ok=0
+            # `while :` is only a block to break out of: every failure below abandons this
+            # binary and lands on the _uip_ok check, without a copy of the cleanup per branch.
+            while : ; do
+                _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
+                if [ -z "$_uip_src" ] || [ ! -f "$_uip_src" ]; then break; fi
                 # Stage then rename. cp onto a destination that is a symlink writes through it,
                 # so an install over `~/.local/bin/uv -> /opt/homebrew/bin/uv` would rewrite the
                 # Homebrew binary in place; rename replaces the link itself.
@@ -2566,10 +2586,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                 # after the winner renamed it publishes a truncated uv. A unique name per process
                 # means each rename publishes a file nobody else can still be writing, which is
                 # what makes the swap atomic for a concurrent reader.
-                _uip_stage=$(mktemp "$_uip_dest/.$_uip_exe.XXXXXX" 2>/dev/null) || continue
+                _uip_stage=$(mktemp "$_uip_dest/.$_uip_exe.XXXXXX" 2>/dev/null) || break
                 if ! cp -f "$_uip_src" "$_uip_stage" 2>/dev/null; then
                     rm -f "$_uip_stage" 2>/dev/null || true
-                    continue
+                    break
                 fi
                 # 0755, not +x: cp gives the staging file the umask default, and +x
                 # then adds execute only where the umask allowed read. astral ships
@@ -2581,16 +2601,22 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                 # so testing after the rename would already have taken out a working uv the host
                 # was relying on. The staging file sits on the destination filesystem, so this
                 # answers the noexec question too.
-                if [ "$_uip_exe" = "uv" ] && ! "$_uip_stage" --version >/dev/null 2>&1; then
+                if [ "$_uip_exe" = "uv" ] && ! _uv_probe_exec "$_uip_stage"; then
                     rm -f "$_uip_stage" 2>/dev/null || true
-                    continue
+                    break
                 fi
                 if ! mv -f "$_uip_stage" "$_uip_dest/$_uip_exe" 2>/dev/null; then
                     rm -f "$_uip_stage" 2>/dev/null || true
-                    continue
+                    break
                 fi
-                [ "$_uip_exe" = "uv" ] && _uip_placed=1
+                _uip_ok=1
+                break
+            done
+            if [ "$_uip_ok" != "1" ]; then
+                if [ "$_uip_exe" = "uv" ]; then break; fi
+                continue
             fi
+            [ "$_uip_exe" = "uv" ] && _uip_placed=1
         done
         # The staged binary already answered --version above, before it replaced anything.
         if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ]; then

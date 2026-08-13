@@ -1550,6 +1550,16 @@ _setup_uv_sha256() {
     fi
 }
 
+# Bounded liveness probe for a freshly downloaded binary. No stdin, so a build that decides
+# to prompt reads EOF, and a hard ceiling where `timeout` exists (stock macOS has none).
+_setup_uv_probe_exec() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
+    else
+        "$1" --version >/dev/null 2>&1 </dev/null
+    fi
+}
+
 _setup_install_uv_pinned() {
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
     [ -n "$_siup_spec" ] || return 1
@@ -1588,17 +1598,21 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
         tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
         mkdir -p "$_siup_dest" 2>/dev/null || break
+        # uv first, and its failure aborts the placement: the two binaries ship as a set, and
+        # a pinned uvx published next to the host's older uv is a pair we never tested.
         for _siup_exe in uv uvx; do
-            _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
-            if [ -n "$_siup_src" ]; then
+            _siup_ok=0
+            while : ; do
+                _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
+                if [ -z "$_siup_src" ]; then break; fi
                 # Stage then rename, as install.sh does: cp onto a symlinked destination writes
                 # through the link and would rewrite whatever it points at. The staging name is
                 # per-process, so two installers racing on one destination cannot publish each
                 # other's half-written file.
-                _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || continue
+                _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || break
                 if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then
                     rm -f "$_siup_stage" 2>/dev/null || true
-                    continue
+                    break
                 fi
                 # 0755, not +x: cp gives the staging file the umask default, and +x
                 # then adds execute only where the umask allowed read. astral ships
@@ -1607,17 +1621,23 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                 chmod 0755 "$_siup_stage" 2>/dev/null || true
                 # Validate before publishing, as install.sh does: the rename destroys whatever is
                 # at the destination, so a binary that cannot run here must never replace one that
-                # could.
-                if [ "$_siup_exe" = "uv" ] && ! "$_siup_stage" --version >/dev/null 2>&1; then
+                # could. No stdin and a ceiling where `timeout` exists, so the probe cannot hang.
+                if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then
                     rm -f "$_siup_stage" 2>/dev/null || true
-                    continue
+                    break
                 fi
                 if ! mv -f "$_siup_stage" "$_siup_dest/$_siup_exe" 2>/dev/null; then
                     rm -f "$_siup_stage" 2>/dev/null || true
-                    continue
+                    break
                 fi
-                [ "$_siup_exe" = "uv" ] && _siup_rc=0
+                _siup_ok=1
+                break
+            done
+            if [ "$_siup_ok" != "1" ]; then
+                if [ "$_siup_exe" = "uv" ]; then break; fi
+                continue
             fi
+            [ "$_siup_exe" = "uv" ] && _siup_rc=0
         done
         break
     done

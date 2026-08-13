@@ -368,6 +368,53 @@ if [ -z "$(find "$WORK/home_keep/.local/bin" -name '.uv.*' 2>/dev/null)" ]; then
 else
     bad "the rejected staging file is cleaned up"
 fi
+# uv and uvx ship as a set. When uv is rejected the loop must abandon the whole placement, not
+# carry on and publish the pinned uvx beside whatever older uv the host already had, which is a
+# pairing we never build or test.
+if [ -f "$WORK/home_keep/.local/bin/uvx" ]; then
+    bad "a rejected uv must not publish its uvx"
+else
+    ok "a rejected uv must not publish its uvx"
+fi
+
+# The probe runs a binary that was just downloaded, so it has to be bounded on both of the ways
+# such a binary can fail to return: reading stdin, and never exiting. Neither may hold an
+# unattended install open.
+mkdir -p "$WORK/src_hang/uv-fake-triple"
+# Reads a line from stdin, so with the installer's console attached it would block forever;
+# with </dev/null the read hits EOF at once. Then sleeps past the ceiling, so an unbounded
+# wait would hang here instead.
+printf '#!/bin/sh\nread _line\nsleep 120\n' > "$WORK/src_hang/uv-fake-triple/uv"
+chmod +x "$WORK/src_hang/uv-fake-triple/uv"
+printf '#!/bin/sh\necho uvx\n' > "$WORK/src_hang/uv-fake-triple/uvx"
+tar -czf "$WORK/uv-hang.tar.gz" -C "$WORK/src_hang" uv-fake-triple
+if command -v sha256sum >/dev/null 2>&1; then
+    HANG_SHA=$(sha256sum "$WORK/uv-hang.tar.gz" | awk '{print $1}')
+else
+    HANG_SHA=$(shasum -a 256 "$WORK/uv-hang.tar.gz" | awk '{print $1}')
+fi
+mkdir -p "$WORK/home_hang"
+_HANG_START=$(date +%s)
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-hang.tar.gz $HANG_SHA"; }
+    download() { cp -f "$WORK/uv-hang.tar.gz" "$2"; }
+    HOME="$WORK/home_hang"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_hang" 2>&1 || true
+_HANG_ELAPSED=$(( $(date +%s) - _HANG_START ))
+# 40s, not 20: the ceiling only applies where `timeout` exists, and a host without it still has
+# to come back because stdin is closed. Either way this must not run for two minutes.
+if [ "$_HANG_ELAPSED" -lt 40 ] && grep -q '^rc=1$' "$WORK/out_hang"; then
+    ok "the executable probe is bounded and declines (${_HANG_ELAPSED}s)"
+else
+    bad "the executable probe is bounded and declines (${_HANG_ELAPSED}s, $(cat "$WORK/out_hang"))"
+fi
 
 # Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
 # installing at all, so every host must either get its own triple or decline to the fallback.
