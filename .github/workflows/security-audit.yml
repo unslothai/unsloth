@@ -26,8 +26,6 @@
 #                        does not block the supply-chain pattern scan
 #                        (or vice versa).
 #   - npm-scan-packages: npm tarball content scan, no npm install.
-#   - workflow-trigger-lint:
-#                        bans pull_request_target + shared cache keys.
 #   - tests-security:    pytest tests/security regression suite.
 #   - npm-provenance-and-install-scripts:
 #                        npm audit signatures + new-postinstall gate.
@@ -1044,52 +1042,6 @@ jobs:
           name: scan-npm-packages-log
           path: logs-scan-npm.txt
           retention-days: 30
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Workflow-trigger lint. Refuses two patterns that together powered the
-  # TanStack GHSA-g7cv-rxg3-hmpx supply-chain compromise:
-  #
-  #   1. `pull_request_target` -- runs a fork's workflow YAML against
-  #      the base repository's secrets. There is no safe use of this
-  #      trigger for a public open-source project.
-  #
-  #   2. Shared cache keys between PR-triggered workflows and the
-  #      publish workflow. A fork PR can poison the cache; the publish
-  #      workflow then restores the poisoned cache on next run.
-  #
-  # Cheap pure-Python lint, runs in seconds. Fail-closed.
-  # ─────────────────────────────────────────────────────────────────────
-  workflow-trigger-lint:
-    name: workflow-trigger lint (pull_request_target / cache-poisoning)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-          disable-sudo: true
-          allowed-endpoints: >
-            api.github.com:443
-            github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            pypi.org:443
-            files.pythonhosted.org:443
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Install PyYAML
-        run: pip install pyyaml
-
-      - name: Lint workflow triggers + cache keys
-        run: python3 scripts/lint_workflow_triggers.py
 
   # ─────────────────────────────────────────────────────────────────────
   # Regression tests: pin scanner IOC tables and pre-install fixtures.

@@ -3448,6 +3448,8 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
+        # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
+        self._pooling_type: Optional[int] = None
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         self._feed_forward_length: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -4335,6 +4337,19 @@ class LlamaCppBackend:
         if not self._n_experts or not self._n_layers:
             return 0
         return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+
+    _EMBEDDING_POOLING_TYPES = frozenset({1, 2, 3})  # llama_pooling_type MEAN, CLS, LAST
+
+    @property
+    def is_embedding_gguf(self) -> bool:
+        """Whether the loaded GGUF is an embedding model, from its pooling type.
+
+        Only MEAN, CLS and LAST pool into the one vector per sequence that
+        `/v1/embeddings` returns. NONE (0) pools nothing, and RANK (4) is a reranker
+        head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
+        send_embedding reads n_embd_out floats out of it.
+        """
+        return getattr(self, "_pooling_type", None) in self._EMBEDDING_POOLING_TYPES
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -6730,9 +6745,11 @@ class LlamaCppBackend:
             compute = 2 * act_scratch + out_buffer * par
         else:
             # Each extra concurrent slot adds one output buffer (chat decode sizes
-            # ~one logit row per slot; would under-count embeddings/--logits-all,
-            # not run here). Matches measured {1:36,2:492,4:1388,8:3220} MiB.
-            compute = act_scratch + out_buffer * max(0, par - 1)
+            # ~one logit row per slot). Embedding mode outputs the whole first
+            # micro-batch too, so it pays for every slot rather than slots past one.
+            # Matches measured chat {1:36,2:492,4:1388,8:3220} MiB.
+            output_slots = par if self.is_embedding_gguf else max(0, par - 1)
+            compute = act_scratch + out_buffer * output_slots
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
     def _compute_buffer_ctx_bytes(
@@ -7397,6 +7414,7 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
+        self._pooling_type = None
         self._feed_forward_length = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -7443,6 +7461,7 @@ class LlamaCppBackend:
             # Arch-specific keys added dynamically once we know the arch.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            pooling_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -7490,7 +7509,7 @@ class LlamaCppBackend:
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys:
+                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -7507,6 +7526,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.head_count_kv": "n_kv_heads",
                                         f"{arch}.attention.head_count": "n_heads",
                                         f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.pooling_type": "pooling_type",
                                         f"{arch}.feed_forward_length": "feed_forward_length",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -7534,6 +7554,8 @@ class LlamaCppBackend:
                                 )
                                 if key == "diffusion.canvas_length":
                                     canvas_seen = True
+                                if key.endswith(".pooling_type"):
+                                    pooling_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -7575,6 +7597,11 @@ class LlamaCppBackend:
                         break
                 else:
                     kv_complete = True
+
+            # GGUF metadata has no key-order contract. Pooling can precede
+            # general.architecture, so bind the buffered value after the sweep.
+            if arch is not None:
+                self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -11142,6 +11169,25 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
+                if (
+                    self.is_embedding_gguf
+                    and _effective_ubatch is not None
+                    and _effective_ubatch < n_parallel
+                ):
+                    # max(): a degenerate "-b 0" extra resolves to 0, and --parallel 0 is
+                    # rejected at arg parse.
+                    _embedding_slots = max(1, _effective_ubatch)
+                    logger.warning(
+                        "Reducing serving slots from %d to %d: llama-server caps the batch "
+                        "at the %d-token micro-batch under --embedding and aborts when that "
+                        "is below the slot count.",
+                        n_parallel,
+                        _embedding_slots,
+                        _effective_ubatch,
+                    )
+                    n_parallel = _embedding_slots  # allow-slot-clamp: llama-server would abort
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -12689,6 +12735,10 @@ class LlamaCppBackend:
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
+                # llama-server 501s on /v1/embeddings without this; pooling stays model-default.
+                if self.is_embedding_gguf:
+                    cmd.append("--embedding")
+
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     # Two separate aborts, both reachable from the picker since the input
@@ -13350,6 +13400,13 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # The GGUF header controls pooling; ignore inherited defaults.
+                for _pooling_var in (
+                    "LLAMA_ARG_POOLING",
+                    "LLAMA_ARG_RERANKING",
+                    "LLAMA_ARG_EMBEDDINGS",
+                ):
+                    env.pop(_pooling_var, None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
@@ -15113,6 +15170,7 @@ class LlamaCppBackend:
             self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
+            self._pooling_type = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None

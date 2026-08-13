@@ -3096,6 +3096,35 @@ _TOOL_CODE_TIP = (
     "Use code execution for math, calculations, data processing, or to parse "
     "and analyze information from tool results."
 )
+# Full access only, and only alongside python/terminal. The schemas alone do not
+# undo the model's prior: asked "can you see the files on my laptop" it answers
+# "no, I am sandboxed" from training data rather than reading its own tool list,
+# so the environment is stated outright and the guess sent to a tool call.
+# Fixed order so the sentence reads the same whichever way the caller listed them.
+_LOCAL_CODE_TOOLS = ("python", "terminal")
+
+
+def _full_access_tip(code_tools: list[str]) -> str:
+    """The Full access sentence, naming only the code tools actually selected.
+
+    enabled_tools=["python"] leaves terminal out of the request's schemas, so
+    naming it here would advertise a tool the loop would refuse to run.
+    """
+    if len(code_tools) == 1:
+        subject = f"The {code_tools[0]} tool runs"
+    else:
+        subject = "The " + " and ".join(code_tools) + " tools run"
+    return (
+        subject + " where Unsloth Studio is running, with the code sandbox and the "
+        "approval prompts disabled, so you can inspect and change whatever that "
+        "process can reach. That is not necessarily the device the user is viewing "
+        "this on, and it may be a remote host or a container that mounts only some "
+        "of its host's paths. When asked what you can see or do, check with a tool "
+        "call rather than assuming you are isolated from it, and report what the "
+        "call actually returned rather than what a whole machine would hold."
+    )
+
+
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -3105,17 +3134,29 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
-def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
+def _build_tool_action_nudge(
+    *,
+    tools: list[dict],
+    model_name: str,
+    full_access: bool = False,
+    full_access_only: bool = False,
+) -> str:
+    """``full_access_only`` returns the Full access sentence alone, for a caller
+    that wants to state the environment without also introducing the general
+    tool guidance (and the date) to a path that has never carried it."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
         if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
     }
     has_web = "web_search" in tool_names
-    has_code = "python" in tool_names or "terminal" in tool_names
+    code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
+    has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     if not (has_web or has_code or has_artifact):
         return ""
+    if full_access_only:
+        return _full_access_tip(code_tools) if (full_access and has_code) else ""
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -3124,6 +3165,8 @@ def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
+        if full_access:
+            tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     return (
@@ -3152,8 +3195,16 @@ async def _select_request_tools(
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
     retrieval scope, then enabled MCP tools appended. An empty result means the
     caller should skip the tool loop, so a model-emitted built-in call can't
-    piggy-back on the empty allow-list."""
-    from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
+    piggy-back on the empty allow-list.
+
+    Under Full access the python/terminal schemas are swapped for the ones that
+    describe the unsandboxed run, since that is what the loop actually does
+    (disable_sandbox = bypass_permissions)."""
+    from core.inference.tools import (
+        ALL_TOOLS,
+        apply_full_access_tool_descriptions,
+        get_enabled_mcp_tools,
+    )
 
     if not tools_on:
         # MCP-only request: skip built-ins, leave room for MCP tools.
@@ -3166,6 +3217,11 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Built-ins only, so this runs before the MCP append: an MCP tool's
+    # description is the server's to write, and Full access says nothing about
+    # how that server runs.
+    if payload.bypass_permissions:
+        tools = apply_full_access_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
@@ -5903,10 +5959,6 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        managed_kv_unified = bool(
-            slots > 1
-            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
-        )
         planned_cache_types = _planned_main_cache_types(
             cache_type_kv,
             llama_extra_args,
@@ -5941,6 +5993,25 @@ def _estimate_gguf_kv_gb(
                 n_batch = _emitted_n_batch(n_batch, slots),
                 n_ubatch = n_ubatch,
             )
+        )
+        # --embedding makes llama-server cap n_batch to n_ubatch. The loader
+        # therefore reduces slots to the same value before fitting; admission
+        # must price the process that will launch, not the original request.
+        if (
+            getattr(probe, "is_embedding_gguf", False)
+            and effective_ubatch is not None
+            and effective_ubatch < slots
+        ):
+            slots = max(1, effective_ubatch)
+            effective_ubatch = _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx,
+                n_batch = _emitted_n_batch(n_batch, slots),
+                n_ubatch = n_ubatch,
+            )
+        managed_kv_unified = bool(
+            slots > 1
+            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -5983,10 +6054,13 @@ def _estimate_gguf_kv_gb(
             ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
             act_scratch = 4 * n_embd * ub * 4
             out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
+            output_slots = (
+                slots if getattr(probe, "is_embedding_gguf", False) else max(0, slots - 1)
+            )
             raw = (
                 2 * act_scratch + out_buffer * slots
                 if per_device_tensor
-                else act_scratch + out_buffer * max(0, slots - 1)
+                else act_scratch + out_buffer * output_slots
             )
             return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
@@ -6299,6 +6373,8 @@ def _estimate_gguf_required_gb(
                     n_ubatch = n_ubatch,
                 )
             )
+            if effective_ubatch is None and not is_diffusion:
+                effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
             if effective_ubatch:
                 # auto context: assume the native one fits at least a full micro-batch
                 budget_ctx = ctx if ctx > 0 else effective_ubatch
@@ -6338,7 +6414,8 @@ def _estimate_gguf_required_gb(
                 # Scaled per device only in tensor mode, mirroring the local branch: a
                 # layer split folds the flat buffer in once (_flat_buffer(False)), and
                 # only tensor mode replicates it on every card.
-                _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
+                # The remote header is unknown, so reserve as if it enables embeddings.
+                _out_slots = max(1, n_parallel)
                 out_buffer_bytes = (
                     _ASSUMED_MAX_VOCAB
                     * effective_ubatch
@@ -11348,6 +11425,21 @@ async def _proxy_to_external_provider(
             # The Studio loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
+            # This path runs python/terminal locally too (disable_sandbox =
+            # bypass_permissions), so it has the same false-isolation problem.
+            # Only the Full access sentence is added: the path has never carried
+            # the general tool nudge, and widening it would change every
+            # non-Full-access Codex run as a side effect.
+            if payload.bypass_permissions:
+                _codex_full_access_nudge = _build_tool_action_nudge(
+                    tools = studio_tool_payloads,
+                    model_name = model,
+                    full_access = True,
+                    full_access_only = True,
+                )
+                chat_messages = _append_to_codex_instructions(
+                    chat_messages, _codex_full_access_nudge
+                )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -12694,6 +12786,7 @@ async def openai_chat_completions(
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
                 model_name = model_name,
+                full_access = bool(payload.bypass_permissions),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -14195,6 +14288,7 @@ async def openai_chat_completions(
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
+            full_access = bool(payload.bypass_permissions),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -16004,11 +16098,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
-    # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
-    # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
-    # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
-    # a non-embedding target switches, then llama-server returns a no-pooling error.
+    # Auto-switch applies here too; the target launches embedding-enabled only if it pools.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
@@ -18106,6 +18196,28 @@ def _validate_anthropic_client_tools(tools) -> None:
             )
 
 
+def _append_to_codex_instructions(messages: list[dict], addition: str) -> list[dict]:
+    """Append text to the leading system message, or prepend one.
+
+    Not _append_to_system_message: that one also accepts a `developer` turn, but
+    _responses_input folds only `system` turns into the Responses instructions
+    and drops every other role bar user/assistant/tool, so text parked on a
+    developer message never reaches the model. `developer` is an accepted
+    ChatMessage role, so a request can carry one and no system turn at all.
+    """
+    if not addition:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    for msg in copied:
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = content.rstrip() + "\n\n" + addition
+            return copied
+    return [{"role": "system", "content": addition}, *copied]
+
+
 def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]:
     """Append text to the leading system/developer message, or prepend one."""
     if not addition:
@@ -18235,6 +18347,7 @@ async def chat_count_tokens(
                     _build_tool_action_nudge(
                         tools = tools_to_use,
                         model_name = _llama_public_model_id(llama_backend, payload.model),
+                        full_access = bool(payload.bypass_permissions),
                     ),
                     tools_to_use,
                     rag_scope = payload.rag_scope,
@@ -18950,7 +19063,7 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS
+        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
@@ -18961,11 +19074,17 @@ async def anthropic_messages(
             requested_studio_tools,
             payload.enabled_tools,
         )
+        # Mirrors _select_request_tools: this path builds its own selection, so
+        # the Full access swap has to be repeated rather than inherited.
+        _full_access = bool(getattr(payload, "bypass_permissions", False))
+        if _full_access:
+            openai_tools = apply_full_access_tool_descriptions(openai_tools)
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = model_name,
+            full_access = _full_access,
         )
 
         if _nudge:
