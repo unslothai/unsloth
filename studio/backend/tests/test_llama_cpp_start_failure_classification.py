@@ -1414,3 +1414,71 @@ class TestAQuotedValueEndsOnItsOwnDelimiter:
         cleaned = LlamaCppBackend._scrub_secret_values(dump, ())
         assert leak not in cleaned, cleaned
         assert "***" in cleaned
+
+
+class TestTheRedactionHolesCodexFound:
+    """Three ways a credential got past the name pass.
+
+    Each was reachable by a wrapper or crash handler printing its own
+    configuration rather than the environment we could match on.
+    """
+
+    @pytest.mark.parametrize(
+        "dump",
+        [
+            'DB_PASSWORD="prefix supersecret',            # truncated output
+            "DB_PASSWORD='prefix supersecret",
+            'DB_PASSWORD="prefix supersecret\nnext=1',    # runs to end of line only
+        ],
+    )
+    def test_an_unterminated_quoted_value_is_redacted_to_the_line_end(self, dump):
+        cleaned = LlamaCppBackend._scrub_secret_values(dump, ())
+        assert "supersecret" not in cleaned, cleaned
+        if "\n" in dump:
+            assert "next=1" in cleaned, "only the value's line should be consumed"
+
+    @pytest.mark.parametrize(
+        "dump,secret",
+        [
+            ('{"api-key": "abc123def456"}', "abc123def456"),
+            ('{"db-password": "correct horse"}', "correct horse"),
+            ("client.secret: hunter2value", "hunter2value"),
+            ('{"private-key": "MIIEvQIBADAN"}', "MIIEvQIBADAN"),
+            ("auth.token = deadbeefcafe", "deadbeefcafe"),
+        ],
+    )
+    def test_a_config_style_key_is_recognised(self, dump, secret):
+        """Hyphens and dots spell the same names the predicate underscores."""
+        assert secret not in LlamaCppBackend._scrub_secret_values(dump, ())
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "model-path=/models/x.gguf",
+            "ggml.backend: metal",
+            "n-gpu-layers=99",
+            "cache.type-k: q8_0",
+            "llama_model_loader: n_layers = 32",
+            "load time = 1234.5 ms",
+        ],
+    )
+    def test_a_widened_name_does_not_redact_ordinary_output(self, line):
+        assert "***" not in LlamaCppBackend._scrub_secret_values(line, ())
+
+    @pytest.mark.parametrize("order", [("abcdefgh", "abcdefgh VERYSECRET"),
+                                       ("abcdefgh VERYSECRET", "abcdefgh")])
+    def test_overlapping_secrets_are_replaced_longest_first(self, order):
+        """The short one first rewrote the long one so it no longer matched."""
+        text = "child printed abcdefgh VERYSECRET plainly"
+        cleaned = LlamaCppBackend._scrub_secret_values(text, order)
+        assert "VERYSECRET" not in cleaned, cleaned
+
+    @pytest.mark.parametrize(
+        "blob",
+        ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
+    )
+    def test_the_widened_pattern_stays_linear(self, blob):
+        import time
+        start = time.monotonic()
+        LlamaCppBackend._scrub_secret_values(blob, ())
+        assert time.monotonic() - start < 2.0

@@ -10437,10 +10437,22 @@ class LlamaCppBackend:
     # delimiter does not end the value early. Both arms are unambiguous
     # alternations of single characters, so matching stays linear; there is no
     # nested quantifier for a crafted line to exploit.
+    # The name accepts the separators a config key uses, not only the ones a
+    # shell variable may: a child dumping its own configuration writes
+    # "db-password" or client.secret, and an identifier-only pattern never
+    # reached is_secret_env_name for either. The predicate still decides.
+    #
+    # Third value arm: a truncated line ends the output mid-value, so
+    # DB_PASSWORD="prefix supersecret has no closing delimiter. It cannot match
+    # the terminated arm, and the bare arm stops at whitespace, which left the
+    # rest of the credential in the API error. An opened-but-unclosed quote
+    # runs to the end of the line. Ordered after the terminated arm so a
+    # properly closed value still matches that one.
     _SECRET_ASSIGNMENT_RE = re.compile(
-        r"""(?P<q>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_]{0,63})(?P=q)
+        r"""(?P<q>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})(?P=q)
             (?P<sep>[ \t]*[=:][ \t]*)
             (?:(?P<vq>["'])(?P<qval>(?:\\.|(?!(?P=vq))[^\\])*)(?P=vq)
+             |  (?P<uq>["'])(?P<uval>[^\r\n]*)
              |  (?P<val>[^\s,;]+))""",
         re.VERBOSE,
     )
@@ -10459,10 +10471,24 @@ class LlamaCppBackend:
             return text
 
         def sub(m: "re.Match[str]") -> str:
-            if not is_secret_env_name(m.group("name")):
+            # A config key spells the same thing with a hyphen or a dot, and
+            # the predicate's markers are underscored (API_KEY, PRIVATE_KEY),
+            # so "api-key" missed while "api_key" matched. Normalise the
+            # separator before asking; the predicate stays the one place that
+            # decides what counts as a secret.
+            name = m.group("name")
+            if not is_secret_env_name(name.replace("-", "_").replace(".", "_")):
                 return m.group(0)
-            q, vq = m.group("q"), m.group("vq")
-            body = f"{vq}***{vq}" if vq else "***"
+            q, vq, uq = m.group("q"), m.group("vq"), m.group("uq")
+            if vq:
+                body = f"{vq}***{vq}"
+            elif uq:
+                # Unterminated: keep the opening delimiter, drop the rest of
+                # the line. Inventing a closing quote would misreport what the
+                # child printed.
+                body = f"{uq}***"
+            else:
+                body = "***"
             return f"{q}{m.group('name')}{q}{m.group('sep')}{body}"
 
         try:
@@ -10491,10 +10517,13 @@ class LlamaCppBackend:
             return text
         cleaned = LlamaCppBackend._redact_secret_assignments(text)
         # Secrets we minted and therefore know exactly: no pattern recognises
-        # a token_urlsafe blob.
-        for literal in extra:
-            if literal and len(literal) >= 8:
-                cleaned = cleaned.replace(literal, "***")
+        # a token_urlsafe blob. Gathered together with the environment's own
+        # values and replaced LONGEST FIRST, because two credentials can
+        # overlap: with TOKEN_A=abcdefgh and TOKEN_B="abcdefgh VERYSECRET",
+        # replacing the short one first rewrote the long one's only occurrence
+        # to "*** VERYSECRET", after which the long one no longer matched
+        # itself and its tail went out in the API error.
+        literals = {literal for literal in extra if literal and len(literal) >= 8}
         # By name, reusing what decides which vars a managed server is denied,
         # so the two cannot drift: what we withhold must not come back out of
         # the child either. URL userinfo counts whatever it is named.
@@ -10521,9 +10550,11 @@ class LlamaCppBackend:
                         )
                     continue
                 if secret_name or URL_USERINFO_RE.search(value):
-                    cleaned = cleaned.replace(value, "***")
+                    literals.add(value)
         except Exception:  # noqa: BLE001 - redaction must never break a load error
             pass
+        for literal in sorted(literals, key = len, reverse = True):
+            cleaned = cleaned.replace(literal, "***")
         # By shape, for credentials that are not in our environment to match on
         # (a token the child read from its own config, a proxy's header echo).
         for pattern in LlamaCppBackend._SECRET_VALUE_RES:
