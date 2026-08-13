@@ -3,9 +3,8 @@
 
 """The training worker installs the soundfile decoder before it reads any row.
 
-Deliberately dependency-free, unlike test_audio_dataset_decode.py: that module
-importorskips soundfile and librosa, so on a host with neither it skips, and a
-host with neither is exactly where this ordering is load-bearing.
+Dependency-free on purpose: test_audio_dataset_decode.py importorskips soundfile and
+librosa, and a host with neither is exactly where this ordering is load-bearing.
 """
 
 from __future__ import annotations
@@ -30,17 +29,15 @@ def _calls_the_shim(node: ast.AST) -> bool:
 
 
 def test_the_shim_is_installed_before_the_first_row_is_read():
-    # The format-check endpoint installs it in the API process. This worker is a
-    # separate process and starts without it, so an Audio column decoding inside
-    # load_dataset() raised `datasets`' own "please install 'torchcodec'" before
-    # the audio branches further down could install anything.
+    # This worker starts without the shim the API process installs, so an Audio column
+    # decoding inside load_dataset() raised "please install 'torchcodec'".
     body = _load_and_format_dataset_body()
     assert body.index("ensure_audio_decoding()") < body.index("= load_dataset(")
 
 
 def test_the_audio_branches_are_still_covered():
-    # They call it themselves and report the FFmpeg-naming failure, which stays the
-    # message a caller sees when neither backend works. This only has to precede them.
+    # They call it themselves and keep reporting the FFmpeg-naming failure; the early
+    # call only has to precede them.
     body = _load_and_format_dataset_body()
     assert body.index("ensure_audio_decoding()") < body.index(
         "# ========== AUDIO MODELS: custom preprocessing =========="
@@ -55,8 +52,8 @@ def test_the_import_is_module_level():
 
 def test_the_early_call_cannot_stop_a_text_run():
     # It sits above the method's own try, so anything ensure_audio_decoding() does not
-    # catch (`import librosa` raises more than ImportError) would escape the method and
-    # fail every run, audio or not. The audio branches below re-run it and report.
+    # catch (`import librosa` raises more than ImportError) would fail every run, audio
+    # or not. The audio branches below re-run it and report.
     fn = next(
         node
         for node in ast.walk(ast.parse(_TRAINER.read_text(encoding = "utf-8")))
@@ -70,12 +67,9 @@ def test_the_early_call_cannot_stop_a_text_run():
 
 
 def test_a_datasets_without_the_torchcodec_flag_returns_a_bool():
-    # `datasets` < 4 has no config.TORCHCODEC_AVAILABLE, and pyproject still allows
-    # datasets>=3.4.1. Reading the attribute raised AttributeError, which the function
-    # catches nowhere and its callers do not expect: the call in the audio branch is
-    # unguarded, so an audio run on such an install died reporting a missing config
-    # attribute rather than training. Those versions decode through soundfile already,
-    # so the answer is True and nothing is patched.
+    # `datasets` < 4 (still allowed by pyproject) has no config.TORCHCODEC_AVAILABLE, and
+    # reading it raised AttributeError at the unguarded audio call site. Those versions
+    # decode through soundfile already, so the answer is True and nothing is patched.
     import sys
     import types
 
