@@ -3131,7 +3131,7 @@ _infer_unsupported_amd_gfx_arch_from_gpu_name() {
         *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
         *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
         *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
-        *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
+        *"RX 470"|*"RX 470"[!0]*|*"RX 480"|*"RX 480"[!0]*|*"RX 570"|*"RX 570"[!0]*|*"RX 580"|*"RX 580"[!0]*|*"RX 590"|*"RX 590"[!0]*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
         *) return 1 ;;
     esac
 }
