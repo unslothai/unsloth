@@ -42,7 +42,7 @@ def test_windows_symlink_privilege_failure_retries_with_regular_files(monkeypatc
     from huggingface_hub import constants
     from huggingface_hub import file_download
 
-    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
     monkeypatch.setattr(
         file_download,
         "_are_symlinks_supported_in_dir",
@@ -99,7 +99,7 @@ def test_success_does_not_change_windows_symlink_policy(monkeypatch):
 
     from huggingface_hub import constants
 
-    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
 
     assert cache_safe.load_dataset_cache_safe("Org/Data") == {"loaded": True}
     assert len(calls) == 1
