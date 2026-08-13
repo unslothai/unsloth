@@ -899,12 +899,12 @@ def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
                     }
                 ),
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"u"}'}}]}),
-                _sse(finish="tool_calls"),
+                _sse(finish = "tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
         ],
-        heals=False,
+        heals = False,
     )
     _run(transport)
 
