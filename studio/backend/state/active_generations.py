@@ -78,9 +78,15 @@ class ActiveGeneration:
 
 
 def snapshot() -> list[dict[str, Any]]:
-    """In-flight generations, newest last. Drops the Event: this is a response."""
+    """Generations a model swap would interrupt, newest last. Drops the Event.
+
+    Non-local entries are left out for the same reason ``count()`` skips them: the
+    swap cannot interrupt an external provider stream, so naming it would prompt the
+    user to stop a chat that the load leaves running. ``cancel_thread`` reads the
+    registry directly, so thread deletion still reaches them.
+    """
     with _LOCK:
-        entries = list(_ACTIVE.values())
+        entries = [e for e in _ACTIVE.values() if e.get("local_model", True)]
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -100,11 +106,8 @@ def active_thread_ids() -> list[str]:
     A first turn that races persistence has no thread id yet: count() sees it,
     this cannot name it.
     """
-    with _LOCK:
-        entries = [e for e in _ACTIVE.values() if e.get("local_model", True)]
-    entries.sort(key = lambda e: e["started_at"])
     seen: list[str] = []
-    for e in entries:
+    for e in snapshot():
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)

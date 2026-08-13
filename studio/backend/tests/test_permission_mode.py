@@ -3243,6 +3243,26 @@ def test_external_loop_permission_mode_keeps_the_legacy_confirm_contract():
     )
 
 
+def test_external_stream_is_absent_from_the_model_swap_snapshot():
+    # /active-generations names the chats a swap would interrupt; a swap leaves an
+    # external stream running, so listing it would prompt to stop it for nothing.
+    import threading
+
+    from routes.inference import _TrackedCancel
+    from state import active_generations
+
+    event = threading.Event()
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        thread_id = "T",
+        provider_type = "vllm",
+    )
+    with _TrackedCancel.for_payload(event, payload, "cancel-1", local_model = False):
+        assert all(e["thread_id"] != "T" for e in active_generations.snapshot())
+        # deletion reads the registry directly, so it still reaches the run
+        assert active_generations.cancel_thread("T") == 1
+
+
 def test_external_stream_is_tracked_but_not_counted_as_local():
     # It must stay cancellable by thread deletion while staying invisible to the
     # model-swap guard, which assumes every entry decodes on the local llama server.

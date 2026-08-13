@@ -11742,7 +11742,11 @@ async def _proxy_to_external_provider(
         base_url = base_url,
     )
     if local_tools:
-        local_tool_nudge = _build_tool_action_nudge(tools = local_tools, model_name = model)
+        local_tool_nudge = _build_tool_action_nudge(
+            tools = local_tools,
+            model_name = model,
+            full_access = bool(payload.bypass_permissions),
+        )
         local_tool_nudge = _apply_rag_nudge(
             local_tool_nudge, local_tools, rag_scope = payload.rag_scope
         )
