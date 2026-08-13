@@ -28,7 +28,10 @@ from typing import Any, AsyncGenerator, Callable, Optional, Sequence
 
 from loggers import get_logger
 
-from core.inference.chat_template_helpers import append_assistant_turn
+from core.inference.chat_template_helpers import (
+    append_assistant_turn,
+    neutralize_tool_descriptions,
+)
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS,
@@ -479,6 +482,33 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
         return _STEP_DONE
 
 
+async def _drain_step_task(task: Optional["asyncio.Future"], cancel_event: threading.Event) -> None:
+    """Wait for a pending ``next(gen)`` worker before its generator is closed.
+
+    Cancelling the awaiting task does not stop the worker thread, and calling
+    ``close()`` while ``next()`` is still running raises ``ValueError: generator
+    already executing`` and skips the generator's own cleanup. Setting the cancel
+    flag lets a cancel-observing tool return, then the task is shielded until the
+    worker actually finishes.
+    """
+    if task is None:
+        return
+    cancel_event.set()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            continue
+        except Exception:
+            break
+    if task.done():
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 def _close_provisional_cards(turn: _TurnAccumulator, resolved: set[str]) -> list[str]:
     """End every early card no execution claimed, so none spins forever."""
     lines = []
@@ -574,6 +604,9 @@ async def stream_chat_completion_with_local_tools(
     # a KB search ran outside the controller, so the loop opens in its post-tool phase.
     rag_autoinjected = bool(autoinject)
 
+    # the client drops a markup-carrying tool from the catalog it sends, so authorize
+    # against the same sanitized list or a withheld tool could still be executed (#7066).
+    tools = neutralize_tool_descriptions(tools)
     controller = ToolLoopController(tools = tools, auto_heal_tool_calls = auto_heal_tool_calls)
     all_tool_names = set(_tool_names(tools))
     cancel_event = threading.Event()
@@ -631,6 +664,9 @@ async def stream_chat_completion_with_local_tools(
 
             if turn.failed:
                 # the error line already went out, so do not re-prompt from a half-finished turn.
+                # any early card still has to close, or the frontend keeps it spinning.
+                for line in _close_provisional_cards(turn, set()):
+                    yield line
                 return
 
             # safety net for a model that writes its call as text: llama-server does
@@ -867,9 +903,18 @@ async def stream_chat_completion_with_local_tools(
                     cancel_event = cancel_event,
                 )
                 outcome: dict[str, Any] = {}
+                step_task: Optional[asyncio.Future] = None
                 try:
                     while True:
-                        event = await asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
+                        step_task = asyncio.create_task(
+                            asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
+                        )
+                        # wait leaves the worker future pending when this coroutine is
+                        # cancelled, so the drain below can still join it; await would
+                        # cancel the future and let close() race the running next().
+                        await asyncio.wait({step_task})
+                        event = step_task.result()
+                        step_task = None
                         if event is _STEP_DONE:
                             break
                         if event.get("type") == "heartbeat":
@@ -883,6 +928,7 @@ async def stream_chat_completion_with_local_tools(
                     logger.exception("External local tool %s raised: %s", decision.tool_name, exc)
                     result = f"Error: tool raised an exception: {exc}"
                 finally:
+                    await _drain_step_task(step_task, cancel_event)
                     tool_stream.close()
                 completion = controller.record_result(decision, result)
                 executed_calls += 1

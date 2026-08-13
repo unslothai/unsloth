@@ -637,3 +637,14 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
     assert "tools" in search_body
     assert "tools" not in fallback_body
     assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def test_qwen_registry_entry_stays_out_of_the_picker():
+    """The dialog filters on `hidden`, so the product gate lives in the registry."""
+    from core.inference.providers import get_provider_info, list_available_providers
+
+    info = get_provider_info("qwen")
+    assert info is not None
+    assert info["hidden"] is True
+    entry = next(p for p in list_available_providers() if p["provider_type"] == "qwen")
+    assert entry["hidden"] is True

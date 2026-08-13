@@ -227,6 +227,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "qwen": {
         "display_name": "Qwen",
+        # kept out of the connections picker; the entry still resolves saved connections.
+        "hidden": True,
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         "default_models": [
             "qwen-plus",
