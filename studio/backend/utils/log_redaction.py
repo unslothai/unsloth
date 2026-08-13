@@ -120,16 +120,27 @@ _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
 # A scheme word only introduces a credential when an Authorization header put it
 # there. Bare "digest sha256:..." and "token hf_..." are ordinary log content,
 # and firing on the word alone blanked the digest a user came here to read.
+# The credential stops at a quote or a structural delimiter rather than at the
+# next space: \S+ swallowed the closing quote and every field behind it, so a
+# compact header dict came back as {"Authorization":"Bearer <redacted> with the
+# request id and status the user opened the pane to read gone with it.
+_CREDENTIAL = r"[^\s\"',}\]]+"
 _AUTH_HEADER_RE = re.compile(
     r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
-    r"(?:" + "|".join(_SCHEMES) + r"))(\s+)(\S+)"
+    r"(?:" + "|".join(_SCHEMES) + r"))(\s+)(" + _CREDENTIAL + r")"
 )
 # Bearer is not an English word that shows up in a log on its own, so it keeps
 # a header-less rule; the shape guard still spares "Bearer credentials expired".
-_SCHEME_RE = re.compile(r"(?i)\b(Bearer)(\s+)(\S+)")
+_SCHEME_RE = re.compile(r"(?i)\b(Bearer)(\s+)(" + _CREDENTIAL + r")")
 # MULTILINE: this also runs over exception text, where the header is not on the
-# last line.
-_COOKIE_RE = re.compile(r"(?i)\b((?:set-)?cookie)(\s*[:=]\s*)(\S.*)$", re.MULTILINE)
+# last line. The optional quote matters: headers are usually logged as a dict,
+# and an anchored pair test on a value that opened with one never matched, so
+# the session cookie gating these very endpoints went out in the clear.
+_COOKIE_RE = re.compile(
+    r"(?i)\b(?P<key>(?:set-)?cookie)"
+    r"(?P<sep>[\"']?\s*[:=]\s*(?P<q>[\"'])?)(?P<val>\S.*)$",
+    re.MULTILINE,
+)
 
 # Keys whose value is a secret even when it is all digits (a numeric password is
 # still a password); everywhere else a bare number is a count or an id.
@@ -184,9 +195,17 @@ _COOKIE_PAIR_RE = re.compile(r"^[A-Za-z0-9_.\-]+=\S")
 
 
 def _redact_cookie(match: re.Match[str]) -> str:
-    if not _COOKIE_PAIR_RE.match(match.group(3).strip()):
+    value, tail = match.group("val"), ""
+    # A quoted value ends at its closing quote, so the fields behind it in a
+    # header dict survive instead of disappearing into the mask.
+    quote = match.group("q")
+    if quote:
+        end = value.find(quote)
+        if end != -1:
+            value, tail = value[:end], value[end:]
+    if not _COOKIE_PAIR_RE.match(value.strip()):
         return match.group(0)
-    return f"{match.group(1)}{match.group(2)}{REDACTED}"
+    return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
 def redact_log_text(text: str) -> str:

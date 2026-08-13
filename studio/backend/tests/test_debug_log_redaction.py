@@ -193,10 +193,34 @@ def test_a_cookie_diagnosis_is_not_mistaken_for_a_cookie(line):
     [
         ("Cookie: unsloth_ui_session=abc123def456xyz", "abc123def456xyz"),
         ("Set-Cookie: session=abc123def456xyz; HttpOnly", "abc123def456xyz"),
+        # Headers are normally logged as a dict, so the value opens with a
+        # quote. Anchoring the pair test on the bare value never matched it.
+        ('headers={"Cookie": "session=abc123def456xyz"}', "abc123def456xyz"),
+        ("Cookie: 'session=abc123def456xyz'", "abc123def456xyz"),
     ],
 )
 def test_a_real_cookie_pair_is_still_masked(line, secret):
     assert secret not in redact_log_text(line)
+
+
+# A credential that ran to the next space swallowed the closing quote and every
+# field behind it, so the pane lost the status and request id it was opened for.
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            '{"Authorization":"Bearer abcdef123456","x-request-id":"req-42"}',
+            '{"Authorization":"Bearer <redacted>","x-request-id":"req-42"}',
+        ),
+        ("authorization: 'Basic dXNlcjpwdw=='", "authorization: 'Basic <redacted>'"),
+        (
+            'headers={"Cookie": "session=abc123def456xyz", "accept": "*/*"}',
+            'headers={"Cookie": "<redacted>", "accept": "*/*"}',
+        ),
+    ],
+)
+def test_the_fields_after_a_masked_header_survive(line, expected):
+    assert redact_log_text(line) == expected
 
 
 # A colorized writer puts an escape between the key and its value. Every rule is
