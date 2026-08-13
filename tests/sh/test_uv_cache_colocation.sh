@@ -85,7 +85,14 @@ _set_line=$(grep -n 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$INSTALL_SH" | head
 _uv_line=$(grep -n 'installing uv package manager' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "precedes uv bootstrap" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_uv_line" ] && [ "$_set_line" -lt "$_uv_line" ] && echo yes || echo no)"
-_venv_line=$(grep -n 'run_install_cmd "create venv" uv venv' "$INSTALL_SH" | head -1 | cut -d: -f1)
+# Match the call that creates the venv, not the label it happens to carry. The
+# literal 'run_install_cmd "create venv" uv venv' stopped existing when #8479
+# moved venv creation behind _run_uv_venv, and a label this file cannot find
+# reads as "the cache is set too late" rather than "the grep is stale". Comment
+# lines are dropped so the prose above the helper does not answer first.
+_venv_line=$(grep -nE '(^|[^[:alnum:]_"`])uv venv([[:space:]]|$)' "$INSTALL_SH" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)
+assert_eq "found the venv creation call" "yes" "$([ -n "$_venv_line" ] && echo yes || echo no)"
 assert_eq "precedes venv creation" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_venv_line" ] && [ "$_set_line" -lt "$_venv_line" ] && echo yes || echo no)"
 
