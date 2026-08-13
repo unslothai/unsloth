@@ -214,14 +214,19 @@ jobs:
           cp "$APPIMAGE" "$workdir/app.AppImage"
           ( cd "$workdir" && chmod +x app.AppImage && ./app.AppImage --appimage-extract >/dev/null )
           cat > "$workdir/probe.sh" <<'SH'
+          # Not `set -e`: the probe returns non-zero for a real FAILED verdict, which the
+          # cases below are written to record and carry on from. So every command whose
+          # failure would leave the measurement unmade is checked by hand instead.
           set -u
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update -qq >/dev/null
+          apt-get update -qq >/dev/null \
+            || { echo "::error::probe setup: apt-get update failed"; exit 1; }
           # The bundle deliberately ships no glibc, GL/EGL/DRM, X11/Wayland or C++
           # runtime, so a bare container cannot load it. Install that host side here:
           # without it the preload below fails on a MISSING library rather than on the
           # version conflict it exists to detect.
-          apt-get install -y -qq gcc libcurl3-gnutls libgl1 libegl1 libglx-mesa0 >/dev/null
+          apt-get install -y -qq gcc libcurl3-gnutls libgl1 libegl1 libglx-mesa0 >/dev/null \
+            || { echo "::error::probe setup: apt-get install failed"; exit 1; }
           # Pull the whole host desktop stack in one package rather than naming
           # sonames: the boundary covers all of X11/xcb/Wayland/DRM, and enumerating
           # it by hand took two rounds and still missed libxcb-render. GTK depends on
@@ -249,7 +254,12 @@ jobs:
             printf("ok\n"); return 0;
           }
           C
+          # Without this the loop below runs with no probe binary at all: every capture
+          # is empty, the cases treat empty as a clean load, `preloaded` still reaches 4
+          # and the step exits 0 having measured nothing -- the same "a check that cannot
+          # run reads exactly like a check that passed" this job exists to catch.
           gcc -o /tmp/probe /tmp/probe.c
+          [ -x /tmp/probe ] || { echo "::error::probe setup: /tmp/probe was not built"; exit 1; }
           libdir=/work/squashfs-root/usr/lib/unsloth
           webkit=$(find "$libdir" -maxdepth 1 -name 'libwebkit2gtk-4.1.so*' -type f | head -1)
           [ -n "$webkit" ] || { echo "::error::no bundled libwebkit2gtk to preload"; exit 1; }
