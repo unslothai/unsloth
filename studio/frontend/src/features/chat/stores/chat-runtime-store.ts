@@ -1866,6 +1866,11 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
+    // Both describe the running model through a loaded* shadow this loop cannot set, and
+    // the load path reads the preference from the cache cacheHydratedSettings refreshes.
+    if (key === "speculativeType" || key === "gpuMemoryMode") {
+      continue;
+    }
     // A load sets this from the model's own capability, and only a load sets
     // reasoningAlwaysOn, so a stored false would ask a model that cannot stop
     // thinking to stop thinking.
@@ -2660,25 +2665,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
-    set((state) => {
+    set(() => {
       saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
-      setScalarSettingVersion(
-        "collapseHtmlArtifacts",
-        collapseHtmlArtifacts,
-        state.collapseHtmlArtifacts,
-      );
       return { collapseHtmlArtifacts };
     }),
   setAllowArtifactNetworkAccess: (allowArtifactNetworkAccess) =>
-    set((state) => {
+    set(() => {
       saveBool(
         CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
         allowArtifactNetworkAccess,
-      );
-      setScalarSettingVersion(
-        "allowArtifactNetworkAccess",
-        allowArtifactNetworkAccess,
-        state.allowArtifactNetworkAccess,
       );
       return { allowArtifactNetworkAccess };
     }),
