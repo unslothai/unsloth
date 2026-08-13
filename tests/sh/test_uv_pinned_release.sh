@@ -753,6 +753,60 @@ else
     bad "the half-published staging and undo files are cleaned up"
 fi
 
+# studio/setup.sh is run directly for local and Colab setup, and astral's installer used to
+# write a profile line for whichever destination it chose. Without one the export dies with that
+# shell and every later run reinstalls uv.
+SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
+_sp_start=$(grep -n '^_setup_persist_uv_path() {' "$SETUP_SH" | head -1 | cut -d: -f1)
+_sp_end=$(awk -v s="$_sp_start" 'NR>s && /^\}$/ {print NR; exit}' "$SETUP_SH")
+sed -n "${_sp_start},${_sp_end}p" "$SETUP_SH" > "$WORK/setup_path.sh"
+mkdir -p "$WORK/setup_home" "$WORK/setup_home/opt/bin"
+: > "$WORK/setup_home/.bashrc"
+(
+    set +e
+    HOME="$WORK/setup_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+    _SETUP_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/setup_path.sh"
+    _setup_persist_uv_path "$HOME/opt/bin"
+) >/dev/null 2>&1 || true
+if grep -qF "$WORK/setup_home/opt/bin" "$WORK/setup_home/.bashrc" 2>/dev/null; then
+    ok "a direct setup.sh run persists the uv destination"
+else
+    bad "a direct setup.sh run persists the uv destination"
+fi
+mkdir -p "$WORK/setup_unmanaged" "$WORK/setup_unmanaged/opt/bin"
+: > "$WORK/setup_unmanaged/.bashrc"
+(
+    set +e
+    HOME="$WORK/setup_unmanaged"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH
+    UV_UNMANAGED_INSTALL=1; export UV_UNMANAGED_INSTALL
+    _SETUP_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/setup_path.sh"
+    _setup_persist_uv_path "$HOME/opt/bin"
+) >/dev/null 2>&1 || true
+if grep -qF "$WORK/setup_unmanaged/opt/bin" "$WORK/setup_unmanaged/.bashrc" 2>/dev/null; then
+    bad "UV_UNMANAGED_INSTALL suppresses the setup.sh profile write"
+else
+    ok "UV_UNMANAGED_INSTALL suppresses the setup.sh profile write"
+fi
+
+# Both installers publish the pair with one rename after the other and the incumbents saved
+# aside, so a failure on the second undoes the first.
+for _impl in "$INSTALL_SH" "$SETUP_SH"; do
+    if grep -q 'ln -f "\$_\(uip\|siup\)_dest/uv" "\$_\(uip\|siup\)_save"' "$_impl" \
+       && grep -q 'UNDO_UV" "\$_\(uip\|siup\)_dest/uv"' "$_impl"; then
+        ok "${_impl##*/} saves and restores the incumbent across the pair"
+    else
+        bad "${_impl##*/} saves and restores the incumbent across the pair"
+    fi
+done
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

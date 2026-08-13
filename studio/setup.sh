@@ -1567,8 +1567,14 @@ _setup_uv_probe_exec() {
 _setup_uv_cleanup_temporaries() {
     [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
     [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE2:-}" ] && rm -f "$_SIUP_STAGE2" 2>/dev/null || true
+    [ -n "${_SIUP_UNDO_UV:-}" ] && rm -f "$_SIUP_UNDO_UV" 2>/dev/null || true
+    [ -n "${_SIUP_UNDO_UVX:-}" ] && rm -f "$_SIUP_UNDO_UVX" 2>/dev/null || true
     _SIUP_WORK=""
     _SIUP_STAGE=""
+    _SIUP_STAGE2=""
+    _SIUP_UNDO_UV=""
+    _SIUP_UNDO_UVX=""
 }
 
 _setup_uv_on_signal() {
@@ -1577,8 +1583,13 @@ _setup_uv_on_signal() {
     exit "$1"
 }
 
+# The PATH a new shell inherits, captured before the uv destination can be prepended to it.
+_SETUP_LOGIN_PATH="$PATH"
 _SIUP_WORK=""
 _SIUP_STAGE=""
+_SIUP_STAGE2=""
+_SIUP_UNDO_UV=""
+_SIUP_UNDO_UVX=""
 
 _setup_install_uv_pinned() {
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
@@ -1624,57 +1635,122 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
         tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
         mkdir -p "$_siup_dest" 2>/dev/null || break
-        # uv first, and either half failing aborts the placement: the two ship as a set.
+        # Stage both, publish both, as install.sh does: the rename is the only step that can
+        # destroy an incumbent, so the two sit next to each other with the previous binaries
+        # saved aside.
+        _siup_ready=1
         for _siup_exe in uv uvx; do
-            _siup_ok=0
-            while : ; do
-                _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
-                if [ -z "$_siup_src" ]; then break; fi
-                # Stage then rename, as install.sh does: cp writes through a symlinked
-                # destination, and a per-process staging name keeps two racing installers from
-                # publishing each other's half-written file.
-                _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || break
-                _SIUP_STAGE="$_siup_stage"
-                if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then
-                    rm -f "$_siup_stage" 2>/dev/null || true
-                    break
-                fi
-                # 0755, not +x: cp gives the staging file the umask default, and +x
-                # then adds execute only where the umask allowed read. astral ships
-                # these 0755, and a umask of 077 would otherwise leave uv unusable
-                # for every other account on a shared machine.
-                chmod 0755 "$_siup_stage" 2>/dev/null || true
-                # Validate before publishing: the rename destroys the incumbent, so a binary
-                # that cannot run here must never replace one that could.
-                if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then
-                    rm -f "$_siup_stage" 2>/dev/null || true
-                    break
-                fi
-                if ! mv -f "$_siup_stage" "$_siup_dest/$_siup_exe" 2>/dev/null; then
-                    rm -f "$_siup_stage" 2>/dev/null || true
-                    break
-                fi
-                _siup_ok=1
-                break
-            done
-            if [ "$_siup_ok" != "1" ]; then
-                # Either half failing fails the placement: reporting success on a mismatched
-                # pair would skip the fallback that installs both.
-                _siup_rc=1
-                break
-            fi
-            [ "$_siup_exe" = "uv" ] && _siup_rc=0
+            _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
+            if [ -z "$_siup_src" ]; then _siup_ready=0; break; fi
+            # cp writes through a symlinked destination, and a per-process staging name keeps
+            # two racing installers from publishing each other's half-written file.
+            _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || { _siup_ready=0; break; }
+            if [ "$_siup_exe" = "uv" ]; then _SIUP_STAGE="$_siup_stage"; else _SIUP_STAGE2="$_siup_stage"; fi
+            if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then _siup_ready=0; break; fi
+            # 0755, not +x: the staging file carries the umask default and +x only adds execute
+            # where read was allowed, so umask 077 would leave uv unusable for every other
+            # account. astral ships these 0755.
+            chmod 0755 "$_siup_stage" 2>/dev/null || true
+            # Validate before publishing: the rename destroys the incumbent, so a binary that
+            # cannot run here must never replace one that could.
+            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
         done
+        if [ "$_siup_ready" = "1" ]; then
+            # Save the incumbents so a failure between the two renames can be undone, as
+            # install.sh does. A hard link keeps the old inode reachable after the rename takes
+            # the name; cp is the fallback for a filesystem that refuses one.
+            _SIUP_UNDO_UV=""
+            _SIUP_UNDO_UVX=""
+            if [ -e "$_siup_dest/uv" ] && _siup_save=$(mktemp "$_siup_dest/.uv.old.XXXXXX" 2>/dev/null); then
+                if ln -f "$_siup_dest/uv" "$_siup_save" 2>/dev/null || cp -p "$_siup_dest/uv" "$_siup_save" 2>/dev/null; then
+                    _SIUP_UNDO_UV="$_siup_save"
+                else
+                    rm -f "$_siup_save" 2>/dev/null || true
+                fi
+            fi
+            if [ -e "$_siup_dest/uvx" ] && _siup_save=$(mktemp "$_siup_dest/.uvx.old.XXXXXX" 2>/dev/null); then
+                if ln -f "$_siup_dest/uvx" "$_siup_save" 2>/dev/null || cp -p "$_siup_dest/uvx" "$_siup_save" 2>/dev/null; then
+                    _SIUP_UNDO_UVX="$_siup_save"
+                else
+                    rm -f "$_siup_save" 2>/dev/null || true
+                fi
+            fi
+            if mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
+               mv -f "$_SIUP_STAGE2" "$_siup_dest/uvx" 2>/dev/null; then
+                _siup_rc=0
+            else
+                # Half published: put back what was there.
+                [ -n "$_SIUP_UNDO_UV" ] && mv -f "$_SIUP_UNDO_UV" "$_siup_dest/uv" 2>/dev/null
+                [ -n "$_SIUP_UNDO_UVX" ] && mv -f "$_SIUP_UNDO_UVX" "$_siup_dest/uvx" 2>/dev/null
+            fi
+            rm -f "$_SIUP_UNDO_UV" "$_SIUP_UNDO_UVX" 2>/dev/null || true
+            _SIUP_UNDO_UV=""
+            _SIUP_UNDO_UVX=""
+        fi
+        rm -f "$_SIUP_STAGE" "$_SIUP_STAGE2" 2>/dev/null || true
+        _SIUP_STAGE=""
+        _SIUP_STAGE2=""
         break
     done
     rm -rf "$_siup_work"
     _SIUP_WORK=""
     _SIUP_STAGE=""
+    _SIUP_STAGE2=""
     trap - EXIT HUP INT TERM
     # The staged binary already answered --version above, before it replaced anything.
     [ -x "$_siup_dest/uv" ] || _siup_rc=1
-    [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
+    if [ "$_siup_rc" = "0" ]; then
+        export PATH="$_siup_dest:$PATH"
+        _setup_persist_uv_path "$_siup_dest"
+    fi
     return "$_siup_rc"
+}
+
+# astral's installer wrote a profile line for whichever destination it chose. This replaces that
+# installer, so setup.sh run directly (local or Colab) has to do the same or the export above
+# dies with this shell and every later run reinstalls uv. Both of astral's opt-outs apply, and
+# fish is handled on its own terms since it reads none of the POSIX rc files.
+_setup_persist_uv_path() {
+    _supp_dir="$1"
+    [ -n "$_supp_dir" ] || return 0
+    [ -n "${HOME:-}" ] || return 0
+    [ -z "${UV_NO_MODIFY_PATH:-}" ] || return 0
+    [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
+    # The PATH a new shell inherits, not the one this process has already prepended to.
+    case ":${_SETUP_LOGIN_PATH:-$PATH}:" in
+        *":$_supp_dir:"*) return 0 ;;
+    esac
+    if [ "$(basename "${SHELL:-}")" = "fish" ]; then
+        _supp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
+        mkdir -p "$_supp_fish_dir" 2>/dev/null || return 0
+        _supp_fish="$_supp_fish_dir/unsloth.fish"
+        if ! grep -qF "$_supp_dir" "$_supp_fish" 2>/dev/null; then
+            # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
+            _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\/\\\\/g; s/'/\\'/g")
+            echo "# Added by Unsloth setup" >> "$_supp_fish"
+            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+        fi
+        return 0
+    fi
+    _supp_profile=""
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+        _supp_profile="${ZDOTDIR:-$HOME}/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        _supp_profile="$HOME/.bashrc"
+    elif [ -f "$HOME/.profile" ]; then
+        _supp_profile="$HOME/.profile"
+    elif [ -w "$HOME" ]; then
+        _supp_profile="$HOME/.profile"
+    fi
+    [ -n "$_supp_profile" ] || return 0
+    if ! grep -qF "$_supp_dir" "$_supp_profile" 2>/dev/null; then
+        # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
+        # terminated by the shell that reads it.
+        _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+        echo '' >> "$_supp_profile"
+        echo '# Added by Unsloth setup' >> "$_supp_profile"
+        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+    fi
 }
 
 USE_UV=false
