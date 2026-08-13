@@ -3797,9 +3797,16 @@ def _preflight_gguf_disk(
         # guard measures, so it rides on top of the checkpoint rather than
         # being reserved itself.
         need_here_with_cache = checkpoint_here + max(0, need_with_cache - need)
-        if needs_merge and need_sibling > 0 and checkpoint_here > 0:
-            # Three conditions, each removing a way to charge for a guard that
-            # will not run. `needs_merge = False` writes no merge. A sibling
+        writes_a_lora_merge = isinstance(model, (PeftModel, PeftModelForCausalLM))
+        if writes_a_lora_merge and needs_merge and need_sibling > 0 and checkpoint_here > 0:
+            # Four conditions, each removing a way to charge for a guard that
+            # will not run. Only a PEFT model reaches `merge_and_overwrite_lora`
+            # and its `free * 0.95`: a non-PEFT model with no reusable local
+            # checkpoint still needs `needs_merge`, because the GGUF path has
+            # to write one, but it is written by a bare `self.save_pretrained`
+            # that reserves nothing, so charging the reserve there refuses a
+            # filesystem with room for the checkpoint the writer would have
+            # accepted. `needs_merge = False` writes no merge at all. A sibling
             # the estimator could not size leaves `checkpoint_here` equal to
             # the aggregate, which is a fallback figure and not a checkpoint
             # to reserve against. And `min(need, ...)` keeps the promise the

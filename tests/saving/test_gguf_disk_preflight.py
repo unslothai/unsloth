@@ -1565,6 +1565,10 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         )
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        # The reserve below belongs to `merge_and_overwrite_lora`, which only
+        # a PEFT model reaches, so the tests that exercise it need a model the
+        # preflight recognises as one.
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         return state
@@ -1585,10 +1589,12 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         """
         split.update(free = free_gb * GB, sibling_free = 1000 * GB)
         if fits:
-            assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+            assert S._preflight_gguf_disk(
+                _FakeAdapterModel(), "model", "q4_k_m"
+            ) == ("model", False)
         else:
             with pytest.raises(RuntimeError) as error:
-                S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+                S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m")
             assert "about 16.8GB" in str(error.value)
 
     def test_the_cache_copy_is_charged_here_too(self, split):
@@ -1613,8 +1619,30 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         """
         split.update(free = 16 * GB, sibling_free = 1000 * GB)
         with pytest.raises(RuntimeError):
-            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+            S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m")
         assert S.free_bytes("model") * S._MERGE_FREE_SPACE_RESERVE < self.CHECKPOINT
+
+    def test_only_a_lora_merge_is_charged_the_reserve(self, split):
+        """A non-PEFT checkpoint is written by `save_pretrained`, which reserves nothing.
+
+        `needs_merge` is true for a non-PEFT model with no reusable local
+        `_name_or_path` as well, because the GGUF path still has to write a
+        checkpoint - but it writes it with a bare `self.save_pretrained`,
+        which never consults `merge_and_overwrite_lora` and never applies its
+        `free * 0.95`. Charging the reserve there refuses 16GB of checkpoint
+        on 16GB of disk that the writer would have accepted.
+        """
+        split.update(free = 16 * GB, sibling_free = 1000 * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+
+    def test_the_non_peft_writer_really_has_no_guard(self):
+        """The reserve is only skippable while this stays true."""
+        import inspect
+
+        source = inspect.getsource(S.unsloth_save_pretrained_gguf)
+        fallback = source.split("Saving directly without LoRA merge")[1]
+        assert "self.save_pretrained(save_directory)" in fallback
+        assert "merge_and_overwrite_lora" not in fallback
 
     def test_an_export_writing_no_merge_is_not_charged_the_reserve(self, split):
         """`needs_merge = False` reaches no merge guard, so it pays for none.
@@ -1648,7 +1676,9 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             ),
         )
         split.update(free = 34 * GB, sibling_free = 1000 * GB)
-        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+        assert S._preflight_gguf_disk(
+            _FakeAdapterModel(), "model", "q4_k_m"
+        ) == ("model", False)
 
     def test_a_short_sibling_roomier_than_the_checkpoint_disk_still_refuses(self, split):
         """The hole the split would leave if the refusal still needed a TIGHTER sibling.
@@ -2048,6 +2078,9 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         )
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        # A disposable merge is a LoRA merge, so the model is a PEFT one and
+        # the split branch's reserve applies to it.
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         state["directory"] = str(tmp_path / "model")
@@ -2056,7 +2089,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
     def _preflight(self, phases, **kwargs):
         kwargs.setdefault("merge_is_disposable", True)
         return S._preflight_gguf_disk(
-            _FakeModel(),
+            _FakeAdapterModel(),
             phases["directory"],
             "q4_k_m",
             first_conversion = "bf16",
