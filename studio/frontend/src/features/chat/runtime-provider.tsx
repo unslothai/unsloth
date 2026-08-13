@@ -59,6 +59,11 @@ import {
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import {
+  extractDocxAttachmentText,
+  extractHtmlAttachmentText,
+  extractPdfAttachmentText,
+} from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
@@ -270,12 +275,7 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
-      import("unpdf"),
-      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
-    ]);
-    const pdf = await getDocumentProxy(buffer);
-    const { text } = await extractText(pdf, { mergePages: true });
+    const text = await extractPdfAttachmentText(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -355,10 +355,7 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const html = await attachment.file.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    for (const el of doc.querySelectorAll("script, style")) el.remove();
-    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+    const text = extractHtmlAttachmentText(await attachment.file.text());
     return {
       id: attachment.id,
       type: "document",
@@ -390,17 +387,13 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
-      import("mammoth"),
-      attachment.file.arrayBuffer(),
-    ]);
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    const text = await extractDocxAttachmentText(attachment.file);
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
+      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${text}` }],
       status: { type: "complete" },
     };
   }

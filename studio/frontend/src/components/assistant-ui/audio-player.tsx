@@ -13,9 +13,13 @@ import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
   src: string;
+  filename?: string;
 }
 
-export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
+export const AudioPlayer: FC<AudioPlayerProps> = ({
+  src,
+  filename = "generated-audio.wav",
+}) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -58,7 +62,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
   };
 
   const handleDownload = () => {
-    void downloadUrl(src, "generated-audio.wav").catch((error) => {
+    void downloadUrl(src, filename).catch((error) => {
       if (!isDownloadCancelled(error)) {
         toast.error("Could not save audio.");
       }

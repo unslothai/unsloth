@@ -135,6 +135,14 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export {
+  type AttachmentText,
+  countAttachmentTextLines,
+  isAudioAttachment,
+  parseAttachmentText,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";

@@ -4,19 +4,15 @@
 "use client";
 
 // Avatar removed — caused circular crop on image thumbnails
+import { AttachmentPreviewDialog } from "@/components/assistant-ui/attachment-preview";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { useAttachmentImageSrc } from "@/components/assistant-ui/use-attachment-source";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { isAudioAttachment } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import {
   AttachmentPrimitive,
@@ -28,112 +24,10 @@ import {
 import { AudioWave01Icon, File02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PlusIcon, XIcon } from "lucide-react";
-import { type FC, type PropsWithChildren, useEffect, useState } from "react";
-import { useShallow } from "zustand/shallow";
-
-const useFileSrc = (file: File | undefined): string | undefined => {
-  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (!file) {
-      setObjectUrl(undefined);
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setObjectUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-
-  return objectUrl;
-};
-
-const useAttachmentSrc = (): string | undefined => {
-  const { file, src } = useAuiState(
-    useShallow(({ attachment }): { file?: File; src?: string } => {
-      if (attachment.type !== "image") {
-        return {};
-      }
-      if (attachment.file) {
-        return { file: attachment.file };
-      }
-      const src = attachment.content?.filter((c) => c.type === "image")[0]
-        ?.image;
-      if (!src) {
-        return {};
-      }
-      return { src };
-    }),
-  );
-
-  return useFileSrc(file) ?? src;
-};
-
-type AttachmentPreviewProps = {
-  src: string;
-};
-
-const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
-  const [isLoaded, setIsLoaded] = useState(false);
-  return (
-    <img
-      src={src}
-      alt="Preview"
-      className={cn(
-        "block h-auto max-h-[90dvh] w-auto max-w-[92vw] object-contain",
-        isLoaded
-          ? "aui-attachment-preview-image-loaded"
-          : "aui-attachment-preview-image-loading invisible",
-      )}
-      onLoad={() => setIsLoaded(true)}
-    />
-  );
-};
-
-const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
-  const src = useAttachmentSrc();
-
-  if (!src) {
-    return children;
-  }
-
-  return (
-    <Dialog>
-      <DialogTrigger
-        className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
-        asChild={true}
-      >
-        {children}
-      </DialogTrigger>
-      {/* Chrome-free lightbox: the image floats on the dimmed backdrop with
-          no dialog panel, and the close button sits in the screen corner. */}
-      <DialogContent
-        overlayClassName="bg-black/70"
-        className="aui-attachment-preview-dialog-content top-0 left-0 grid h-dvh w-screen max-h-none max-w-none translate-x-0 translate-y-0 place-items-center overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-none [&>button]:fixed [&>button]:top-4 [&>button]:right-4 [&>button]:z-20 [&>button]:size-9 [&>button]:rounded-full [&>button]:bg-transparent [&>button]:text-white [&>button]:opacity-100 [&>button]:ring-0! [&>button]:hover:bg-white/25 [&>button]:hover:text-white [&_svg]:text-white"
-      >
-        <DialogTitle className="aui-sr-only sr-only">
-          Image Attachment Preview
-        </DialogTitle>
-        {/* Clicking the backdrop (anywhere off the image) closes the preview. */}
-        <DialogClose asChild={true}>
-          <div aria-hidden="true" className="absolute inset-0" />
-        </DialogClose>
-        <div className="aui-attachment-preview pointer-events-none relative z-10 flex items-center justify-center">
-          <span className="pointer-events-auto">
-            <AttachmentPreview src={src} />
-          </span>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
-const AUDIO_ATTACHMENT_RE = /\.(wav|mp3|m4a|ogg|oga|flac|webm|mp4|aac)$/i;
-
-const isAudioAttachment = (name: string | undefined, contentType: string) =>
-  /^audio\//i.test(contentType) || AUDIO_ATTACHMENT_RE.test(name ?? "");
+import type { FC } from "react";
 
 const AttachmentThumb: FC = () => {
-  const src = useAttachmentSrc();
+  const src = useAttachmentImageSrc();
   const name = useAuiState(({ attachment }) => attachment.name);
   const contentType = useAuiState(
     ({ attachment }) =>
@@ -155,7 +49,9 @@ const AttachmentThumb: FC = () => {
   return (
     <div className="flex h-full w-full items-center justify-center">
       <HugeiconsIcon
-        icon={isAudioAttachment(name, contentType) ? AudioWave01Icon : File02Icon}
+        icon={
+          isAudioAttachment(name, contentType) ? AudioWave01Icon : File02Icon
+        }
         strokeWidth={2}
         className="size-6 text-muted-foreground"
       />
