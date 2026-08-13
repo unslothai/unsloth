@@ -2625,14 +2625,22 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                 break
             done
             if [ "$_uip_ok" != "1" ]; then
-                if [ "$_uip_exe" = "uv" ]; then break; fi
-                continue
+                # Either half failing fails the placement. uv first, so its failure stops uvx
+                # from being published at all; a uvx that the archive carried but that could
+                # not be staged or renamed leaves the pair mismatched, and reporting success
+                # there would skip the fallback that would have installed both.
+                _uip_placed=0
+                break
             fi
             [ "$_uip_exe" = "uv" ] && _uip_placed=1
         done
         # The staged binary already answered --version above, before it replaced anything.
         if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ]; then
             export PATH="$_uip_dest:$PATH"
+            # Where uv actually landed, for the profile write further down. UV_INSTALL_DIR and
+            # friends can put it somewhere other than ~/.local/bin, and that directory has to
+            # reach a new shell too or the install only works in this process.
+            _UNSLOTH_UV_BIN_DIR="$_uip_dest"
             _uip_rc=0
         fi
         break
@@ -5342,6 +5350,53 @@ fi
 # the shim path (the directory guard above already rejects a real directory).
 ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
 
+# Put a directory on the PATH of the NEXT shell, not just this process.
+#   $1 the directory
+#   $2 what to write into the rc file (the ~/.local/bin case writes $HOME unexpanded, as it
+#      always has, so the line keeps working if the home directory ever moves)
+#   $3 how to name it in the one line we print
+#   $4 the grep that decides the entry is already there
+_persist_login_path_dir() {
+    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"
+    [ -n "${HOME:-}" ] || return 0
+    # fish does not source ~/.profile or any of the POSIX rc files, so writing an `export`
+    # line there is a no-op for a fish user: the install works in this process and the next
+    # session resolves neither uv nor the unsloth shim. conf.d is fish's own drop-in
+    # directory, and fish_add_path is idempotent by design.
+    if [ "$(basename "${SHELL:-}")" = "fish" ]; then
+        _plp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
+        mkdir -p "$_plp_fish_dir" 2>/dev/null || return 0
+        _plp_fish="$_plp_fish_dir/unsloth.fish"
+        if ! grep -qF "$_plp_dir" "$_plp_fish" 2>/dev/null; then
+            echo "# Added by Unsloth installer" >> "$_plp_fish"
+            echo "fish_add_path $_plp_dir" >> "$_plp_fish"
+            step "path" "added $_plp_label to PATH in $_plp_fish"
+        fi
+        return 0
+    fi
+    _SHELL_PROFILE=""
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+        _SHELL_PROFILE="${ZDOTDIR:-$HOME}/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        _SHELL_PROFILE="$HOME/.bashrc"
+    elif [ -f "$HOME/.profile" ]; then
+        _SHELL_PROFILE="$HOME/.profile"
+    elif [ -w "$HOME" ]; then
+        # A fresh account can have no rc file at all. astral's installer used to create its
+        # own here, so the case never surfaced; the pinned path does not, and leaving it
+        # empty means the next shell resolves neither unsloth nor uv. The append below
+        # creates the file, and ~/.profile is the one every POSIX login shell reads.
+        _SHELL_PROFILE="$HOME/.profile"
+    fi
+    [ -n "$_SHELL_PROFILE" ] || return 0
+    if ! grep -q "$_plp_pattern" "$_SHELL_PROFILE" 2>/dev/null; then
+        echo '' >> "$_SHELL_PROFILE"
+        echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
+        echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
+        step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+    fi
+}
+
 case ":$_UNSLOTH_LOGIN_PATH:" in
     *":$_LOCAL_BIN:"*) ;;  # already on the PATH a new shell will inherit
     *)
@@ -5349,33 +5404,27 @@ case ":$_UNSLOTH_LOGIN_PATH:" in
             export PATH="$_LOCAL_BIN:$PATH"
             step "path" "exported $_LOCAL_BIN for this session (no rc-file append in env-override mode)"
         else
-            _SHELL_PROFILE=""
-            if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
-                _SHELL_PROFILE="$HOME/.zshrc"
-            elif [ -f "$HOME/.bashrc" ]; then
-                _SHELL_PROFILE="$HOME/.bashrc"
-            elif [ -f "$HOME/.profile" ]; then
-                _SHELL_PROFILE="$HOME/.profile"
-            elif [ -n "${HOME:-}" ] && [ -w "$HOME" ]; then
-                # A fresh account can have no rc file at all. astral's installer used to create
-                # its own here, so the case never surfaced; the pinned path does not, and
-                # leaving it empty means the next shell resolves neither unsloth nor uv. The
-                # append below creates the file, and ~/.profile is the one every POSIX login
-                # shell reads.
-                _SHELL_PROFILE="$HOME/.profile"
-            fi
-            if [ -n "$_SHELL_PROFILE" ]; then
-                if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
-                    echo '' >> "$_SHELL_PROFILE"
-                    echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
-                    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
-                    step "path" "added ~/.local/bin to PATH in $_SHELL_PROFILE"
-                fi
-            fi
+            _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' "~/.local/bin" '\.local/bin'
             export PATH="$_LOCAL_BIN:$PATH"
         fi
         ;;
 esac
+
+# uv can be installed somewhere else entirely: UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME
+# and XDG_DATA_HOME all outrank ~/.local/bin, and astral's installer wrote a PATH line for
+# whichever it picked. The pinned path replaces that installer, so it has to persist its own
+# destination too, or uv resolves in this process and nowhere else. UV_NO_MODIFY_PATH is
+# astral's opt-out and is honoured here for the same reason it is honoured there.
+if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN" ] \
+   && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+    case ":$_UNSLOTH_LOGIN_PATH:" in
+        *":$_UNSLOTH_UV_BIN_DIR:"*) ;;  # already on the PATH a new shell will inherit
+        *)
+            _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_UNSLOTH_UV_BIN_DIR" \
+                "$_UNSLOTH_UV_BIN_DIR" "$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')"
+            ;;
+    esac
+fi
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
 # create_studio_shortcuts gates persistent menu shortcuts on env-mode;

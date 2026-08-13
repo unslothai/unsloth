@@ -119,9 +119,13 @@ fi
 # A fresh account can have no rc file at all; astral's installer used to create one, the pinned
 # path does not, so an empty _SHELL_PROFILE means the next terminal resolves neither unsloth nor
 # uv. Run the real block from install.sh rather than grepping it.
+# The guard now calls _persist_login_path_dir, so the extract has to carry the function too.
+_fn_start=$(grep -n '^_persist_login_path_dir() {' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _guard_start=$(grep -n 'case ":\$_UNSLOTH_LOGIN_PATH:" in' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_guard_end=$(awk -v s="$_guard_start" 'NR>=s && $0=="esac" {print NR; exit}' "$INSTALL_SH")
-sed -n "${_guard_start},${_guard_end}p" "$INSTALL_SH" > "$WORK/path_guard.sh"
+# Through the second esac and the fi that closes the custom-uv-directory block after it: the
+# two persistence decisions are one contract and the test drives both.
+_guard_end=$(awk -v s="$_guard_start" 'NR>=s && /^[[:space:]]*esac$/ {n++} n==2 && /^fi$/ {print NR; exit}' "$INSTALL_SH")
+sed -n "${_fn_start},${_guard_end}p" "$INSTALL_SH" > "$WORK/path_guard.sh"
 mkdir -p "$WORK/fresh_home/.local/bin"
 (
     set +e
@@ -587,6 +591,76 @@ if grep -q '^_UIP_WORK=""' "$INSTALL_SH" && grep -q '_UIP_WORK="\$_uip_work"' "$
 else
     bad "the pinned uv temporaries are published to the trap as they are created"
 fi
+# fish sources none of the POSIX rc files, so an `export` line in ~/.profile is a no-op for a
+# fish user: the install works in this process and the next session resolves neither uv nor the
+# unsloth shim.
+mkdir -p "$WORK/fish_home/.local/bin"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/fish_home"; export HOME
+    SHELL="/usr/bin/fish"; export SHELL
+    unset ZSH_VERSION XDG_CONFIG_HOME
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -q 'fish_add_path' "$WORK/fish_home/.config/fish/conf.d/unsloth.fish" 2>/dev/null \
+   && [ ! -f "$WORK/fish_home/.profile" ]; then
+    ok "a fish login shell gets a fish drop-in, not an ignored ~/.profile"
+else
+    bad "a fish login shell gets a fish drop-in, not an ignored ~/.profile"
+fi
+
+# uv can land somewhere other than ~/.local/bin (UV_INSTALL_DIR and friends outrank it), and
+# astral's installer wrote a PATH line for whichever directory it picked. The pinned path
+# replaces that installer, so it has to persist its own destination too.
+mkdir -p "$WORK/uvdir_home/.local/bin" "$WORK/uvdir_home/opt/uvbin"
+: > "$WORK/uvdir_home/.bashrc"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/uvdir_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/uvbin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -qF "$WORK/uvdir_home/opt/uvbin" "$WORK/uvdir_home/.bashrc" 2>/dev/null; then
+    ok "a custom uv install directory reaches the next shell"
+else
+    bad "a custom uv install directory reaches the next shell"
+fi
+# ...and UV_NO_MODIFY_PATH is astral's opt-out, so it has to be honoured here for the same
+# reason it is honoured there.
+mkdir -p "$WORK/uvopt_home/.local/bin" "$WORK/uvopt_home/opt/uvbin"
+: > "$WORK/uvopt_home/.bashrc"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/uvopt_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION
+    UV_NO_MODIFY_PATH=1; export UV_NO_MODIFY_PATH
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/uvbin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -qF "$WORK/uvopt_home/opt/uvbin" "$WORK/uvopt_home/.bashrc" 2>/dev/null; then
+    bad "UV_NO_MODIFY_PATH still suppresses the uv directory write"
+else
+    ok "UV_NO_MODIFY_PATH still suppresses the uv directory write"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

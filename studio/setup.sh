@@ -1560,6 +1560,27 @@ _setup_uv_probe_exec() {
     fi
 }
 
+# An interrupted setup must not leave the pinned path's temporaries behind: the work directory
+# holds an unpacked ~40 MB archive and the staging file sits inside a directory that is on PATH.
+# The function's own cleanup only runs when it returns normally, and no trap is active in this
+# part of the script (the gitignore EXIT trap is cleared well above), so the pinned install owns
+# these four for its duration and hands them back on the way out.
+_setup_uv_cleanup_temporaries() {
+    [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
+    _SIUP_WORK=""
+    _SIUP_STAGE=""
+}
+
+_setup_uv_on_signal() {
+    trap - EXIT HUP INT TERM
+    _setup_uv_cleanup_temporaries
+    exit "$1"
+}
+
+_SIUP_WORK=""
+_SIUP_STAGE=""
+
 _setup_install_uv_pinned() {
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
     [ -n "$_siup_spec" ] || return 1
@@ -1577,6 +1598,11 @@ _setup_install_uv_pinned() {
     [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
     # 2>/dev/null, as install.sh does: a speculative attempt whose failure falls back.
     _siup_work=$(mktemp -d 2>/dev/null) || return 1
+    _SIUP_WORK="$_siup_work"
+    trap _setup_uv_cleanup_temporaries EXIT
+    trap '_setup_uv_on_signal 129' HUP
+    trap '_setup_uv_on_signal 130' INT
+    trap '_setup_uv_on_signal 143' TERM
     _siup_rc=1
     # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
     # restricted network sets one because the public hosts are unreachable, so trying those first
@@ -1611,6 +1637,7 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                 # per-process, so two installers racing on one destination cannot publish each
                 # other's half-written file.
                 _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || break
+                _SIUP_STAGE="$_siup_stage"
                 if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then
                     rm -f "$_siup_stage" 2>/dev/null || true
                     break
@@ -1635,14 +1662,20 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                 break
             done
             if [ "$_siup_ok" != "1" ]; then
-                if [ "$_siup_exe" = "uv" ]; then break; fi
-                continue
+                # Either half failing fails the placement, as install.sh does: a uv published
+                # next to a stale or missing uvx is a pair we never built, and reporting
+                # success would skip the fallback that installs both.
+                _siup_rc=1
+                break
             fi
             [ "$_siup_exe" = "uv" ] && _siup_rc=0
         done
         break
     done
     rm -rf "$_siup_work"
+    _SIUP_WORK=""
+    _SIUP_STAGE=""
+    trap - EXIT HUP INT TERM
     # The staged binary already answered --version above, before it replaced anything.
     [ -x "$_siup_dest/uv" ] || _siup_rc=1
     [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
