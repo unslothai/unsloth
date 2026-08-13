@@ -531,12 +531,15 @@ function extractTextParts(m: ThreadMessage | undefined): string {
     .trim();
 }
 
-// A message that is only a paste has no inline text, so the thread would stay
-// "New Chat". The attachment holds what the user actually sent.
+// A paste leaves the message's text in an attachment, so a title built from
+// inline text alone is "New Chat" for a paste-only turn and the bare
+// instruction for "summarise this" plus a paste. The sample is bounded.
 function titleTextOf(m: ThreadMessage | undefined): string {
   const text = extractTextParts(m);
-  if (text.length > 0) return text;
-  return m?.role === "user" ? attachmentsSample(m.attachments) : "";
+  if (m?.role !== "user") return text;
+  const sample = attachmentsSample(m.attachments);
+  if (sample.length === 0) return text;
+  return text.length > 0 ? `${text}\n\n${sample}` : sample;
 }
 
 async function generateTitleWithModel(payload: {

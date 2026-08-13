@@ -2109,7 +2109,11 @@ const Composer: FC<{
       // Bulk text pastes attach as a file instead of filling the input, except
       // in image-edit mode, whose submit path takes an inline instruction only.
       const input = event.currentTarget;
-      const attachedPastedText = !overlay && pasteLongTextAsFile(
+      // An attachment is serialised after all inline text, so only a paste that
+      // was already heading to the end can become one. Mid-text pastes stay
+      // inline, where the order the user typed them in survives.
+      const pasteGoesLast = input.selectionEnd === input.value.length;
+      const attachedPastedText = !overlay && pasteGoesLast && pasteLongTextAsFile(
         event,
         (file) => aui.composer().addAttachment(file),
         () =>
