@@ -10,6 +10,9 @@ degrade to llama.cpp rather than crash when ST breaks on a machine: an init-time
 probe falls back before any vector is produced (so spaces can't mix), and a
 runtime ``encode`` failure swaps the process to llama-server for the rest of its
 life (KBs already embedded with ST should then be reindexed).
+
+Torch driver faults bypass Python handlers, so ``_load_device`` probes allocation
+in a child and falls back to CPU without changing the embedding space.
 """
 
 from __future__ import annotations
@@ -48,6 +51,36 @@ _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 def _device() -> str:
     return _TORCH_DEVICE.get(get_device(), "cpu")
+
+
+class TorchDeviceUnusableError(RuntimeError):
+    """Raised when torch cannot allocate safely on the accelerator or CPU."""
+
+
+def _load_device() -> str:
+    """Choose a device after probing for fatal torch driver failures in a child.
+
+    Fall back to CPU to preserve the embedding space. Raise only if CPU also
+    crashes, allowing the caller to select the GGUF backend."""
+    device = _device()
+    if device == "cpu":
+        return device
+
+    from utils.torch_device_probe import device_can_allocate
+
+    if device_can_allocate(device):
+        return device
+    if device_can_allocate("cpu"):
+        logger.warning(
+            "torch cannot allocate on %s without crashing; loading the embedding model "
+            "on CPU instead. This install's torch build does not match this machine.",
+            device,
+        )
+        return "cpu"
+    raise TorchDeviceUnusableError(
+        f"torch crashes when allocating on {device}; this install's torch build does "
+        "not match this machine"
+    )
 
 
 _torchao_stub_done = False
@@ -351,17 +384,19 @@ def _get(model_name: str | None = None):
     local_only = hf_env_offline()
     with _lock:
         if _model is None or _name != name:
+            # Probe before loading sentence-transformers on the selected device.
+            device = _load_device()
+            degraded_to_cpu = device == "cpu" and _device() != "cpu"
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
 
-            device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name, local_only)
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                model_kwargs = dtype_kwargs("float16"),
+                model_kwargs = dtype_kwargs("float32" if degraded_to_cpu else "float16"),
             )
             load_target = name
             if local_only:

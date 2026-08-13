@@ -1331,6 +1331,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
         rocm_gfx = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
@@ -2101,6 +2102,16 @@ def _rocm_choice(**overrides):
     return AssetChoice(**fields)
 
 
+def _sync_arch_coverage(install_dir, choice):
+    """sync_marker_selection with only the built-arch coverage in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = choice,
+        backend_request = None,
+        persist_llama_backend = "auto",
+    )
+
+
 def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
     """An install made before mapped_targets existed must gain it on reuse.
     write_prebuilt_metadata only runs on a real install and the field sits outside the
@@ -2114,7 +2125,7 @@ def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
         encoding = "utf-8",
     )
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+    _sync_arch_coverage(install_dir, _rocm_choice())
 
     marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
@@ -2142,7 +2153,7 @@ def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
         encoding = "utf-8",
     )
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+    _sync_arch_coverage(install_dir, _rocm_choice())
 
     marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
@@ -2163,11 +2174,13 @@ def test_a_bundle_that_declares_no_arch_leaves_the_marker_alone(tmp_path: Path, 
     }
     marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(
-        install_dir, _rocm_choice(gfx_target = None, mapped_targets = targets)
-    )
+    _sync_arch_coverage(install_dir, _rocm_choice(gfx_target = None, mapped_targets = targets))
 
-    assert json.loads(marker_path.read_text(encoding = "utf-8")) == original
+    # The arch fields specifically: the shared writer may still record other
+    # selection fields from this run, which is not what this test is about.
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["gfx_target"] == original["gfx_target"]
+    assert marker["mapped_targets"] == original["mapped_targets"]
 
 
 def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
@@ -2176,33 +2189,31 @@ def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     # No marker at all.
-    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+    _sync_arch_coverage(install_dir, _rocm_choice())
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     assert not marker_path.exists()
     # A marker that is not JSON, and one that is JSON but not an object.
     for payload in ("{not json", "[1, 2]"):
         marker_path.write_text(payload, encoding = "utf-8")
-        INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+        _sync_arch_coverage(install_dir, _rocm_choice())
         assert marker_path.read_text(encoding = "utf-8") == payload
 
 
 def test_every_reuse_path_syncs_the_arch_coverage():
-    """The three reuse paths each skip write_prebuilt_metadata, so each has to call
-    the backfill. Source-level because reaching them needs a full install run; pinned
-    beside sync_marker_rocm_gfx, which has the same reach."""
+    """The reuse paths skip write_prebuilt_metadata, so the coverage has to ride the
+    one writer they all share. Source-level because reaching them needs a full install
+    run: pinned on _record_reused_selection, which every reuse path calls."""
     source = MODULE_PATH.read_text(encoding = "utf-8")
-    assert (
-        source.count("sync_marker_arch_coverage(install_dir,")
-        == source.count("sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)")
-        == 3
-    )
+    assert source.count("_record_reused_selection(") == 4  # definition + 3 reuse paths
+    patch = source[source.index("def _marker_selection_patch") : source.index("def sync_marker_selection")]
+    assert 'patch["mapped_targets"] = targets' in patch
 
 
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
-    """The reuse-path syncs must not drop the arch fields (#7624). sync_marker_* read
-    the marker, set one key and write the whole dict back; a rebuild-from-known-keys
-    implementation would strip mapped_targets on any reused install, turning the gate
-    off unnoticed."""
+    """A sync that touches other fields must not drop the arch ones (#7624).
+    sync_marker_selection reads the marker, applies a patch and writes the whole dict
+    back; a rebuild-from-known-keys implementation would strip mapped_targets on any
+    reused install, turning the gate off unnoticed."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -2218,10 +2229,15 @@ def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
         ),
         encoding = "utf-8",
     )
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
-    INSTALL_LLAMA_PREBUILT.sync_marker_rocm_gfx(install_dir, "gfx1101")
-    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, "tree-abc")
-    INSTALL_LLAMA_PREBUILT.sync_marker_llama_backend(install_dir, "auto")
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _rocm_choice(gfx_target = None, mapped_targets = None),
+        backend_request = "cpu",
+        persist_force_cpu = True,
+        persist_llama_backend = "auto",
+        ggml_tree = "tree-abc",
+        rocm_gfx = "gfx1101",
+    )
 
     marker = json.loads(marker_path.read_text())
     assert marker["gfx_target"] == "gfx110X"
@@ -2815,6 +2831,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
         rocm_gfx = None,
     ):
         call_log.append(llama_tag)
@@ -2965,6 +2982,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         quantized_path,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
         rocm_gfx = None,
     ):
         attempted_names.append(choice.name)
@@ -3094,6 +3112,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
         rocm_gfx = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
@@ -4143,7 +4162,7 @@ C_OK=""; C_WARN=""; C_ERR=""
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
-_explicit_vulkan_backend=false
+_explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
@@ -4175,7 +4194,13 @@ def _setup_sh_routing_block() -> str:
     return setup_sh[start : end + len("\n    fi\n")]
 
 
-def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) -> dict[str, str]:
+def _run_setup_sh_routing(
+    status: int,
+    tmp_path: Path,
+    *,
+    install_exists: bool,
+    explicit_backend: str = "",
+) -> dict[str, str]:
     """Drive the real setup.sh exit-code chain with a stubbed helper result."""
     llama_dir = tmp_path / "llama.cpp"
     if install_exists:
@@ -4189,6 +4214,7 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
             f'LLAMA_CPP_DIR="{llama_dir}"',
             f'_PREBUILT_LOG="{log_path}"',
             f"_PREBUILT_STATUS={status}",
+            f'_explicit_llama_source_backend="{explicit_backend}"',
             _setup_sh_routing_block(),
             _SETUP_SH_HARNESS_TAIL,
         ]
@@ -4207,18 +4233,25 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
     "POSIX script through Git Bash with Windows paths proves nothing about either",
 )
 @pytest.mark.parametrize(
-    "status, expect_source_build, expect_exit",
+    "status, explicit_backend, expect_source_build, expect_exit",
     [
-        (0, False, 0),  # installed and validated
-        (1, False, 1),  # helper error -> fail, never compile
-        (2, True, 0),  # the one status that means "prebuilt unusable, go build"
-        (3, False, 3),  # busy: a source build cannot replace locked binaries
-        (4, False, 0),  # out of disk: compiling needs more, not less
-        (137, False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
+        (0, "", False, 0),  # installed and validated
+        (1, "", False, 1),  # helper error -> fail, never compile
+        (2, "", True, 0),  # automatic selection may fall back to a source build
+        # Exit 2 means the installer had no concrete request to honour; a request
+        # it could not serve arrives as exit 5 instead, so this branch does not
+        # second-guess it from the environment.
+        (2, "cuda", True, 0),
+        (3, "", False, 3),  # busy: a source build cannot replace locked binaries
+        (4, "", False, 0),  # out of disk: compiling needs more, not less
+        (4, "rocm", False, 1),  # an old install cannot satisfy an unchecked request
+        (5, "", False, 1),  # a concrete selection failed; never substitute another
+        (5, "cuda", False, 1),
+        (137, "", False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
     ],
 )
 def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
-    tmp_path, status, expect_source_build, expect_exit
+    tmp_path, status, explicit_backend, expect_source_build, expect_exit
 ):
     """Behavioural cover for the exit-code routing: runs the real block under bash.
 
@@ -4233,13 +4266,143 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to exercise the setup.sh routing block")
 
-    result = _run_setup_sh_routing(status, tmp_path, install_exists = True)
+    result = _run_setup_sh_routing(
+        status, tmp_path, install_exists = True, explicit_backend = explicit_backend
+    )
 
     assert result["returncode"] == expect_exit, result
     if expect_source_build:
         assert "source_build=true" in result["stdout"], result
     else:
         assert "source_build=true" not in result["stdout"], result
+
+
+_SETUP_PS1_HARNESS = """
+$ErrorActionPreference = "Stop"
+$NeedLlamaSourceBuild = $false
+$script:LlamaCppDegraded = $false
+$StudioHomeIsCustom = $false
+$prebuiltOutput = "boom"
+function step { param($a, $b, $c) Write-Output "step: $b" }
+function substep { param($a, $b) Write-Output "substep: $a" }
+function Write-LlamaFailureLog { param($Output) }
+function Mark-StudioOwned { param($Path) }
+function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
+function Test-PathQuiet { param($p) return $false }
+function Exit-SetupFailure {
+    param($Message, $Code = 1)
+    Write-Output "setup_fail: $Code"
+    exit $Code
+}
+"""
+
+_SETUP_PS1_HARNESS_TAIL = """
+Write-Output "source_build=$($NeedLlamaSourceBuild.ToString().ToLower())"
+"""
+
+requires_pwsh = pytest.mark.skipif(
+    shutil.which("pwsh") is None, reason = "pwsh is required to execute the setup.ps1 routing block"
+)
+
+
+def _setup_ps1_routing_block() -> str:
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    return _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
+
+
+def _run_setup_ps1_routing(
+    status: int,
+    tmp_path: Path,
+    *,
+    install_exists: bool,
+    explicit_backend: str = "",
+) -> dict[str, str]:
+    """Drive the real setup.ps1 exit-code chain, the mirror of _run_setup_sh_routing."""
+    llama_dir = tmp_path / "llama.cpp"
+    if install_exists:
+        llama_dir.mkdir(parents = True, exist_ok = True)
+    else:
+        tmp_path.mkdir(parents = True, exist_ok = True)
+
+    script = "\n".join(
+        [
+            _SETUP_PS1_HARNESS,
+            f'$LlamaCppDir = "{llama_dir}"',
+            f"$prebuiltExit = {status}",
+            f'$explicitLlamaSourceBackend = "{explicit_backend}"',
+            _setup_ps1_routing_block(),
+            _SETUP_PS1_HARNESS_TAIL,
+        ]
+    )
+    script_path = tmp_path / "routing.ps1"
+    script_path.write_text(script, encoding = "utf-8")
+    completed = subprocess.run(
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script_path),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+@requires_pwsh
+@pytest.mark.parametrize("install_exists", [True, False], ids = ["installed", "fresh"])
+@pytest.mark.parametrize("explicit_backend", ["", "cuda", "rocm", "vulkan", "cpu"])
+@pytest.mark.parametrize("status", [0, 1, 2, 3, 4, 5, 137])
+def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_exists, tmp_path):
+    """Windows must route an installer exit exactly as Linux does.
+
+    The two scripts are maintained side by side and the assertions above compare their
+    SOURCE TEXT, which cannot catch a branch that reads the same and behaves differently
+    (a PowerShell `$false` string, an `exit` that does not propagate, a guard whose
+    variable was never set). Running both and comparing the decision is what makes
+    "the mirrored setup.ps1 does the same" a measurement rather than a claim.
+
+    The decision is two values: the process exit code, and whether a source build was
+    queued. Exit 5 must fail closed everywhere -- that is the point of the exit code --
+    while exit 2 stays the one automatic path allowed to fall back to a compile.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
+        pytest.skip("bash is required to compare against the setup.sh routing block")
+
+    sh_dir, ps_dir = tmp_path / "sh", tmp_path / "ps"
+    sh_dir.mkdir()
+    ps_dir.mkdir()
+    sh = _run_setup_sh_routing(
+        status,
+        sh_dir,
+        install_exists = install_exists,
+        explicit_backend = explicit_backend,
+    )
+    ps = _run_setup_ps1_routing(
+        status,
+        ps_dir,
+        install_exists = install_exists,
+        explicit_backend = explicit_backend,
+    )
+
+    assert ps["returncode"] == sh["returncode"], {"bash": sh, "pwsh": ps}
+    assert ("source_build=true" in ps["stdout"]) == ("source_build=true" in sh["stdout"]), {
+        "bash": sh,
+        "pwsh": ps,
+    }
+    # Pin the two branches the backend selector depends on, so a future edit that keeps
+    # the halves in step but changes the contract still fails.
+    if status == 5:
+        assert ps["returncode"] == 1
+        assert "source_build=true" not in ps["stdout"]
+    if status == 2:
+        assert "source_build=true" in ps["stdout"]
 
 
 def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
@@ -4252,8 +4415,10 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "_NEED_LLAMA_SOURCE_BUILD=true" not in sh_else
     assert "setup_fail 1" in sh_else
     assert "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)" in sh_else
-    # Only status 2 may queue the source build.
+    # Only exit 2 under automatic selection may queue a source build. Exit 5 is
+    # a concrete unavailable or failed request and fails closed.
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
+    assert 'elif [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
     assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block
 
     ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
@@ -4262,6 +4427,7 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "Exit-SetupFailure" in ps_else
     assert "prebuilt helper failed unexpectedly (exit code $prebuiltExit)" in ps_else
     assert ps_block.count("$NeedLlamaSourceBuild = $true") == 1
+    assert "} elseif ($prebuiltExit -eq 5) {" in ps_block
     assert "} elseif ($prebuiltExit -eq 2) {" in ps_block
 
     # Statuses 3 and 4 keep their dedicated branches ahead of the catch-all.
@@ -4433,7 +4599,7 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.tempfile, "NamedTemporaryFile", lambda **kw: _Ctx())
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert marker.read_text(encoding = "utf-8") == original
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
@@ -4491,7 +4657,7 @@ def test_reused_install_backfills_the_ggml_tree(tmp_path):
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker.write_text(json.dumps({"release_tag": "b10173-mix-2c8b9c1"}) + "\n", encoding = "utf-8")
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, TREE_A)
+    _sync_ggml_tree(install_dir, TREE_A)
 
     payload = json.loads(marker.read_text(encoding = "utf-8"))
     assert payload["ggml_tree"] == TREE_A
@@ -4510,7 +4676,7 @@ def test_reused_install_keeps_the_ggml_tree_when_the_release_declares_none(tmp_p
         encoding = "utf-8",
     )
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, declared)
+    _sync_ggml_tree(install_dir, declared)
 
     assert json.loads(marker.read_text(encoding = "utf-8"))["ggml_tree"] == TREE_A
 
@@ -4531,7 +4697,7 @@ def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
     marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding = "utf-8")
     os.chmod(marker, mode)
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert stat.S_IMODE(marker.stat().st_mode) == mode
     assert json.loads(marker.read_text(encoding = "utf-8"))["force_cpu"] is True
@@ -4557,7 +4723,7 @@ def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path,
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_replace_from_tempfile", out_of_space)
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert marker.read_text(encoding = "utf-8") == original
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
@@ -4677,20 +4843,59 @@ def test_binary_env_linux_skips_inaccessible_inherited_ld_library_path(monkeypat
 # ── marker sync is advisory, never fatal ──
 
 
+def _reused_choice(install_kind = "linux-cpu"):
+    """The bundle a reuse path re-records the run's selection against."""
+    return AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b10173",
+        name = "bundle.tar.gz",
+        url = "file://bundle",
+        source_label = "published",
+        install_kind = install_kind,
+    )
+
+
+def _sync_force_cpu(install_dir, value = True):
+    """sync_marker_selection with only the deliberate-CPU choice in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _reused_choice(),
+        backend_request = "cpu" if value else "auto",
+        persist_force_cpu = value,
+    )
+
+
+def _sync_ggml_tree(install_dir, tree):
+    """sync_marker_selection with only the paired ggml tree in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _reused_choice(),
+        backend_request = "auto",
+        ggml_tree = tree,
+    )
+
+
 @pytest.mark.parametrize(
-    "sync, kwargs",
+    "kwargs, install_kind, field, expected",
     [
-        ("sync_marker_force_cpu", {"persist_force_cpu": True}),
-        ("sync_marker_llama_backend", {"llama_backend": "vulkan"}),
+        ({"persist_force_cpu": True, "backend_request": "cpu"}, "linux-cpu", "force_cpu", True),
+        (
+            {"persist_llama_backend": "vulkan", "backend_request": "vulkan"},
+            "linux-vulkan",
+            "llama_backend",
+            "vulkan",
+        ),
+        ({"backend_request": "vulkan"}, "linux-vulkan", "backend_request", "vulkan"),
     ],
 )
-def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
+def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind, field, expected):
     """A shared or admin-owned install must not fail setup on a marker rewrite.
 
-    Re-recording force_cpu / llama_backend runs on the existing-install reuse
-    path. The read is guarded but the write was not, so a read-only marker
-    raised PermissionError out of the helper as EXIT_ERROR -- which no longer
-    falls back to a source build, so it would abort the whole install.
+    Re-recording the run's selection (force_cpu, the legacy backend field, the
+    recorded choice) happens on the existing-install reuse path. The read is
+    guarded but the write was not, so a read-only marker raised PermissionError
+    out of the helper as EXIT_ERROR -- which no longer falls back to a source
+    build, so it would abort the whole install.
     """
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
@@ -4707,7 +4912,9 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
     try:
         # Must not raise: that would surface as EXIT_ERROR and abort setup.
-        getattr(INSTALL_LLAMA_PREBUILT, sync)(install_dir, *kwargs.values())
+        INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+            install_dir, choice = _reused_choice(install_kind), **kwargs
+        )
     finally:
         monkeypatch.undo()
         if marker.exists():
@@ -4717,8 +4924,6 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
     # Silently losing force_cpu would let a later update re-route a deliberate CPU
     # user onto a GPU bundle (#7213). Windows refuses os.replace onto a read-only
     # destination, hence the two-way assert.
-    field = list(kwargs)[0].replace("persist_", "")
-    expected = list(kwargs.values())[0]
     persisted = json.loads(marker.read_text(encoding = "utf-8")).get(field) == expected
     assert persisted or any("WARNING" in line and field in line for line in logged), logged
 
@@ -4738,7 +4943,7 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     logged: list[str] = []
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert any("WARNING" in line and "force_cpu" in line for line in logged), logged
 
@@ -4757,6 +4962,7 @@ _VALIDATOR_KEYWORD_ONLY = {
         "existing_install_dir",
         "force_cpu",
         "llama_backend",
+        "backend_request",
         "rocm_gfx",
     ),
     "validate_prebuilt_choice": (
@@ -4768,6 +4974,7 @@ _VALIDATOR_KEYWORD_ONLY = {
         "quantized_path",
         "force_cpu",
         "llama_backend",
+        "backend_request",
         "rocm_gfx",
     ),
 }
