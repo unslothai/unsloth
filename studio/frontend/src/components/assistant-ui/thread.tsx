@@ -103,7 +103,10 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
-import { parseExternalModelId } from "@/features/chat/external-providers";
+import {
+  parseExternalModelId,
+  providerModelSupportsStudioTools,
+} from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
@@ -4658,7 +4661,10 @@ const ComposerToolsMenu: FC<{
   const researchDisabled =
     !researchAvailable ||
     (Boolean(externalSelection) &&
-      selectedExternalProvider?.providerType !== "openai_codex") ||
+      providerModelSupportsStudioTools(
+        selectedExternalProvider?.providerType,
+        externalSelection?.modelId,
+      ) !== true) ||
     incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
