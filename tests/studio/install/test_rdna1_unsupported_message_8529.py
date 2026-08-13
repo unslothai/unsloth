@@ -210,6 +210,28 @@ class TestExplicitIndexPinIsHonoured:
         assert "gfx1010" in out, "the card is still named"
         assert self._CPU_CLAIM not in out, f"a pinned index still gets the CPU-only verdict:\n{out}"
 
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"UNSLOTH_TORCH_INDEX_URL": "   "},
+            {"UNSLOTH_TORCH_INDEX_FAMILY": "\t\n "},
+            {"UNSLOTH_TORCH_INDEX_URL": "", "UNSLOTH_TORCH_INDEX_FAMILY": " "},
+        ],
+        ids = ["url-spaces", "family-blank", "both-blank"],
+    )
+    def test_a_blank_pin_is_not_a_pin(self, env):
+        """get_torch_index_url trims both variables and treats a blank one as unset, so a
+        blank value must not suppress the CPU-only verdict here either. Dropping the
+        .strip() from the read passes every other test in this file."""
+        with patch.dict(os.environ, env, clear = False):
+            for _k in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+                if _k not in env:
+                    os.environ.pop(_k, None)
+            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert self._CPU_CLAIM in out, (
+            f"a blank pin ({env}) was read as a pin, dropping the CPU-only warning:\n{out}"
+        )
+
     def test_the_claim_is_there_without_a_pin(self):
         """The positive control: without it the test above passes on any wording."""
         with patch.dict(os.environ, {}, clear = False):

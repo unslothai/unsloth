@@ -2377,10 +2377,7 @@ if (-not $HasNvidiaSmi) {
     # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
     # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
     # so the name-based inference below can still attempt an arch lookup.
-    # Gated on the ARCH, like install.ps1: amd-smi can set $HasROCm with no arch, and gated
-    # that way the scan was skipped, so $script:ROCmGpuLabels held one name and the inference
-    # below judged a whole multi-GPU host on it. Same condition as that inference.
-    if (-not $script:ROCmGfxArch) {
+    if (-not $HasROCm) {
         try {
             # Keep every AMD adapter, not just the first: WMI orders controllers as the
             # driver stack enumerated them, so a shadowing iGPU can lead here exactly as
@@ -2404,11 +2401,26 @@ if (-not $HasNvidiaSmi) {
             $wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
-                # amd-smi's label wins when it had one; this scan is here for the peers.
-                if (-not $HasROCm) { $ROCmGpuLabel = $script:ROCmGpuLabels[0] }
+                $ROCmGpuLabel = $script:ROCmGpuLabels[0]
             }
         } catch {}
     }
+    # Peer names for the REPORT ONLY. amd-smi can confirm a runtime with no gfx token and
+    # only the first card's name, and the scan above is skipped there, so the verdict below
+    # would speak for a host it has seen one adapter of. Kept out of $script:ROCmGpuLabels
+    # deliberately: that feeds the inference, and widening it turned a CPU install into ROCm.
+    $script:ROCmPeerLabels = @()
+    if ($HasROCm -and -not $script:ROCmGfxArch) {
+        try {
+            $peerGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" })
+            $healthyPeers = @($peerGpus | Where-Object {
+                ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+            $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerGpus })
+            $script:ROCmPeerLabels = @($usePeers | ForEach-Object { $_.Name })
+        } catch {}
+    }
+
     # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
     # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
     # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
@@ -2498,7 +2510,18 @@ if (-not $HasNvidiaSmi) {
                 # Nothing mapped: the card may be a generation ROCm never covered rather
                 # than one we failed to recognise (unslothai#8529). $script:ROCmGfxArch
                 # stays null either way, so only the wording of the report below moves.
-                $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
+                # Stay quiet when a PEER is covered: "no override can help" is false beside a
+                # card that has wheels. Read-only; never reaches $gpuNames or the inference.
+                $unsupPeerCovered = $false
+                foreach ($peerName in $script:ROCmPeerLabels) {
+                    if (Get-GfxArchFromGpuName -Name $peerName -Table $nameArchTable) {
+                        $unsupPeerCovered = $true
+                        break
+                    }
+                }
+                if (-not $unsupPeerCovered) {
+                    $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
+                }
             }
         }
     }

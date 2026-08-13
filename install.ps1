@@ -3312,13 +3312,10 @@ exit 0
                 } catch {}
             }
         }
-        # Set outside the scan: only the WMI arm fills it, but the lookup further down reads
-        # it on every AMD path, including the amd-smi ones that never enter the block.
-        $wmiAmdNames = @()
-        # Keyed on the ARCH, not on $HasROCm: amd-smi can report GPUs with no gfx token and
-        # only the first market name, which sets $HasROCm and used to skip this scan, leaving
-        # the peer guard below blind. A host with an arch never reaches that lookup anyway.
-        if (-not $ROCmGfxArch) {
+        # Unchanged on purpose: this scan fills the LABEL the arch inference reads, so its
+        # gate and cmdlet are load-bearing. Widening either turned a CPU install into a ROCm
+        # one on hosts amd-smi had already claimed.
+        if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
                 # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
@@ -3328,23 +3325,26 @@ exit 0
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                # CIM, as everywhere else here: Get-WmiObject is gone from PowerShell 7, where
-                # the catch below would swallow it and leave the peer list empty. CIM is 5.1+.
-                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
-                $wmiAdapters = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })
-                $wmiGpu = $wmiAdapters[0]
-                if ($wmiGpu) {
-                    # amd-smi's label wins when it had one; this scan is here for the peers.
-                    if (-not $HasROCm) { $ROCmGpuLabel = $wmiGpu.Name }
-                    # Every adapter's name, not just the chosen one: only the peer list tells
-                    # "this host has no ROCm-capable GPU" apart from "this host's FIRST adapter
-                    # is not the ROCm-capable one". Read by the unsupported lookup below;
-                    # nothing here picks an arch, so the choice above is untouched.
-                    $wmiAmdNames = @($wmiAdapters | ForEach-Object { $_.Name })
-                }
+                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            } catch {}
+        }
+        # Peer names for the REPORT ONLY, kept apart from the scan above: that one feeds the
+        # inference, this one only the uncovered-card verdict. CIM because Get-WmiObject is
+        # gone from PowerShell 7, and a missed message is the worst this can cost.
+        $wmiAmdNames = @()
+        if (-not $ROCmGfxArch) {
+            try {
+                $peerAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $healthyPeers = @($peerAdapters | Where-Object {
+                    ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+                $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerAdapters })
+                $wmiAmdNames = @($usePeers | ForEach-Object { $_.Name })
             } catch {}
         }
         # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
