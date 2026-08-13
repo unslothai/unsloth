@@ -165,6 +165,55 @@ def test_resolving_the_attention_implementation_no_longer_raises():
     assert isinstance(impl, str) and impl
 
 
+def _saved_gemma4_text_config():
+    """What transformers 5.15 writes to config.json for a saved Gemma 4.
+
+    `Gemma4TextConfig` synthesizes `per_layer_config` with `head_dim = 512` on
+    every full-attention layer, and `to_dict` serializes it as a MAPPING of
+    zero-padded layer index to that layer's overrides -- not a list, and not the
+    `_PerLayerConfigView` sequence a live config hands back. Verbatim shape from
+    `AutoConfig.from_pretrained("google/gemma-4-E2B-it").save_pretrained(...)`.
+    """
+    return {
+        "model_type": "gemma4_text",
+        "attention_dropout": 0,
+        "head_dim": 256,
+        "per_layer_config": {"04": {"head_dim": 512}, "09": {"head_dim": 512}},
+    }
+
+
+def _to_namespace(value):
+    """Studio's `_load_config_for_gpu_estimate`, verbatim.
+
+    It never builds a transformers config: it reads config.json and recursively
+    wraps every dict in a SimpleNamespace, so the per-layer mapping arrives as
+    an object whose attribute names are the layer indices.
+    """
+    if isinstance(value, dict):
+        return SimpleNamespace(**{key: _to_namespace(item) for key, item in value.items()})
+    return value
+
+
+def test_a_serialized_per_layer_config_is_read_from_a_dict():
+    """Same checkpoint, same answer, whichever form of the config arrives.
+
+    The object form reports 512 and disables Flash Attention. Before this, the
+    dict form reported the global 256 and left FA2 on for the 512-wide layers
+    of the very same model.
+    """
+    config = _saved_gemma4_text_config()
+    assert sorted(_utils._get_per_layer_values(config, "head_dim")) == [512, 512]
+    assert _utils._get_max_attention_head_dim(config) == 512
+    assert _utils._get_flash_attention_disable_reason(config) is not None
+
+
+def test_a_serialized_per_layer_config_is_read_from_a_namespace():
+    """Studio's VRAM estimate reads config.json, so this is the shape it sees."""
+    config = _to_namespace({"model_type": "gemma4", "text_config": _saved_gemma4_text_config()})
+    assert _utils._get_max_attention_head_dim(config) == 512
+    assert _utils._get_flash_attention_disable_reason(config) is not None
+
+
 @pytest.mark.parametrize("per_layer", [None, (), "not-a-sequence"])
 def test_configs_without_per_layer_values_are_unaffected(per_layer):
     """transformers 4.57.6 has no per-layer concept at all, and a homogeneous
