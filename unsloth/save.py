@@ -3579,6 +3579,31 @@ def _gguf_conversion_directory(model_directory):
     return cwd if _directory_is_writable(cwd) else model_directory
 
 
+def _gguf_model_input_directory(model, save_directory):
+    """The folder the converter reads, which is not always `save_directory`.
+
+    A non-PEFT model whose `_name_or_path` names a directory is converted from
+    that checkpoint: `unsloth_save_pretrained_gguf` reassigns `save_directory`
+    to it before calling `save_to_gguf`, so it is that path which arrives as
+    `convert_to_gguf`'s `input_folder`. The same condition
+    `_gguf_writes_16bit_checkpoint` uses to decide no merge is written.
+
+    It matters only where the input folder is also written to, which is the
+    unwritable-CWD fallback: the intermediate GGUF then lands beside the
+    reused checkpoint rather than beside the requested output, and those two
+    can be on different filesystems.
+    """
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return save_directory
+    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    try:
+        if name_or_path and os.path.isdir(str(name_or_path)):
+            return str(name_or_path)
+    except Exception:
+        pass
+    return save_directory
+
+
 def _merge_reclamation_is_possible(save_directory):
     """Will `_free_merge_if_disk_is_tight` have a merge to reclaim?
 
@@ -3864,7 +3889,9 @@ def _preflight_gguf_disk(
     # moved. When that CWD is on its own filesystem, nothing above has measured
     # the disk the largest staging artefact actually lands on: on Kaggle it is
     # the 20GB working directory the redirect just moved the export away from.
-    conversion_directory = _gguf_conversion_directory(save_directory)
+    conversion_directory = _gguf_conversion_directory(
+        _gguf_model_input_directory(model, save_directory)
+    )
     if (
         need_conversion > 0
         and conversion_directory is not None

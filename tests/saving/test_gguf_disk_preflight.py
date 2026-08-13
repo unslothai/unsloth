@@ -2334,6 +2334,79 @@ class TestWhereTheConversionWrites:
         assert list(tmp_path.iterdir()) == []
 
 
+class TestTheFallbackFollowsTheReusedCheckpoint:
+    """An unwritable CWD sends the conversion to the folder the converter READS.
+
+    `convert_to_gguf` redirects a bare `--outfile` into `input_folder`, and for
+    a non-PEFT model with a local `_name_or_path` that folder is the reused
+    checkpoint, not the requested output: `unsloth_save_pretrained_gguf`
+    reassigns `save_directory` to it before the conversion runs. Probing the
+    requested output there measures a filesystem nothing is written to, while
+    the intermediate fills the checkpoint's.
+    """
+
+    class _NonPeftFromDisk:
+        def __init__(self, directory):
+            self.config = type("cfg", (), {"_name_or_path": directory})()
+
+    def test_the_reused_checkpoint_is_the_input_folder(self, tmp_path):
+        model = self._NonPeftFromDisk(str(tmp_path))
+        assert S._gguf_model_input_directory(model, "model") == str(tmp_path)
+
+    def test_a_merged_model_still_reads_the_output(self, tmp_path, monkeypatch):
+        """A PEFT merge writes the checkpoint into `save_directory` and converts it."""
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        assert S._gguf_model_input_directory(_FakeAdapterModel(), "model") == "model"
+
+    def test_a_hub_id_is_not_a_directory(self):
+        model = self._NonPeftFromDisk("unsloth/Qwen3-32B")
+        assert S._gguf_model_input_directory(model, "model") == "model"
+
+    def test_a_model_with_no_config_reads_the_output(self):
+        assert S._gguf_model_input_directory(_FakeModel(), "model") == "model"
+
+    def test_the_probe_measures_the_checkpoints_filesystem(self, tmp_path, monkeypatch):
+        """End to end: the refusal names the checkpoint, not the requested output."""
+        checkpoint = tmp_path / "base"
+        checkpoint.mkdir()
+        model = self._NonPeftFromDisk(str(checkpoint))
+        monkeypatch.setattr(S, "_directory_is_writable", lambda directory: False)
+        monkeypatch.setattr(
+            S,
+            "estimate_gguf_export_bytes",
+            lambda **kwargs: 30 * GB if kwargs.get("quantization_methods") else 20 * GB,
+        )
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: 1 * GB if str(path) == str(checkpoint) else 1000 * GB,
+        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
+        monkeypatch.setattr(
+            S,
+            "_on_separate_filesystems",
+            lambda left, right: str(left) != str(right),
+        )
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(
+                model, "output", "q4_k_m", first_conversion = "bf16", needs_merge = False
+            )
+        message = str(error.value)
+        assert str(checkpoint) in message
+        assert "1.0GB free" in message and "20.0GB" in message
+
+    def test_the_converter_really_falls_back_to_its_input_folder(self):
+        """The redirect is only worth following while llama_cpp does this."""
+        import inspect
+
+        from unsloth_zoo import llama_cpp
+
+        source = inspect.getsource(llama_cpp.convert_to_gguf)
+        assert "os.path.abspath(input_folder)" in source
+        assert '"--outfile": output_file' in source
+
+
 class TestWhetherTheMergeCanBeReclaimed:
     """`_merge_reclamation_is_possible` asks the question the reclamation asks."""
 
