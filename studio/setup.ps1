@@ -4790,15 +4790,16 @@ if ($_verifyUpdate) {
     # __MISSING__ only when the metadata positively reports no such package: a probe
     # that merely crashed must not read as "not installed" and fail setup. Names are
     # PEP 503-normalized on both sides, matching importlib.metadata's own lookup, and
-    # PYTHONPATH entries are dropped from sys.path so same-name metadata outside the
-    # managed environment cannot satisfy the probe.
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p]; sys.path[:] = [_sp for _sp in sys.path if os.path.abspath(_sp or '.') not in _pp]; import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
+    # PYTHONPATH and working-directory entries are dropped from sys.path so same-name
+    # metadata outside the managed environment cannot satisfy the probe (python -c
+    # leaves the inherited cwd on sys.path; the shell probe's -I covers both).
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p] + [os.getcwd()]; sys.path[:] = [_sp for _sp in sys.path if _sp and os.path.abspath(_sp) not in _pp]; import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
     if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
         # newer than announced is fine (a release can land mid-update); PEP 440
         # ordering so an installed pre/post/dev build never passes as the release
-        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p]; sys.path[:] = [_sp for _sp in sys.path if os.path.abspath(_sp or '.') not in _pp]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
+        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p] + [os.getcwd()]; sys.path[:] = [_sp for _sp in sys.path if _sp and os.path.abspath(_sp) not in _pp]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
         if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
@@ -4815,8 +4816,12 @@ if ($_verifyUpdate) {
             # already fetched above (flattened to version/yanked/requires_python lines --
             # no second request that could fail under Python's own proxy/TLS setup);
             # base64 keeps the multi-line probe clear of the -c double-quote wrapping.
-            $_relPath = [System.IO.Path]::GetTempFileName()
+            # The whole probe is best-effort: a full or unwritable temp dir (or an
+            # exhausted GetTempFileName pool) must fall through to the warning
+            # outcome below, not abort setup under ErrorActionPreference Stop.
+            $_relPath = $null
             try {
+                $_relPath = [System.IO.Path]::GetTempFileName()
                 $_relLines = foreach ($_rel in $pypiJson.releases.PSObject.Properties) {
                     foreach ($_relFile in $_rel.Value) {
                         "$($_rel.Name)`t$(if ($_relFile.yanked) { 1 } else { 0 })`t$($_relFile.requires_python)`t$($_relFile.packagetype)`t$($_relFile.filename)"
@@ -4828,8 +4833,8 @@ if ($_verifyUpdate) {
                 $_relPathB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_relPath))
                 $_bestCode = @"
 import base64, os, sys
-_pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p]
-sys.path[:] = [_sp for _sp in sys.path if os.path.abspath(_sp or '.') not in _pp]
+_pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p] + [os.getcwd()]
+sys.path[:] = [_sp for _sp in sys.path if _sp and os.path.abspath(_sp) not in _pp]
 try:
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version, InvalidVersion
@@ -4882,8 +4887,13 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
                     substep "$_PkgName $PostVer kept: no $LatestVer artifact installs on this environment"
                     $_updateOk = $true
                 }
+            } catch {
+                # Temp-table write failed: leave $_updateOk false and let the
+                # older-but-successful outcome below stay a warning, not a failure.
             } finally {
-                Remove-Item -LiteralPath $_relPath -Force -ErrorAction SilentlyContinue
+                if ($_relPath) {
+                    Remove-Item -LiteralPath $_relPath -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
