@@ -2,11 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Issue #8473: the installer announces a GPU and the backend then runs CPU-only, with nothing
-# reconciling the two verdicts. setup.ps1 now asks torch itself, after the dependency step.
-# Get-TorchGpuVisibility is driven with a stubbed Invoke-BoundedPythonProbe: the answers that matter
-# (a banner ahead of the sentinel, a timeout, a crash) are exactly the ones a real interpreter will
-# not produce on demand. No runner has AMD hardware, so the report block itself is checked as
-# wiring, on the real source text.
+# reconciling the two verdicts. Get-TorchGpuVisibility is driven with a stubbed
+# Invoke-BoundedPythonProbe: a banner, a timeout and a crash are not producible on demand.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_gpu_visibility_8473.ps1
 
 $ErrorActionPreference = "Stop"
@@ -33,8 +30,8 @@ function Get-FunctionText {
 
 $visFn = Get-FunctionText $setup "Get-TorchGpuVisibility"
 $leafFn = Get-FunctionText $setup "Get-TorchIndexLeaf"
-# Defined up here, not beside its own cases below: the mask-arm block between the two runs the
-# real $_gpuCheckMasked chain, whose Intel arm calls this.
+# Defined up here, not beside its own cases: the mask-arm block above them runs the real
+# $_gpuCheckMasked chain, whose Intel arm calls this.
 $oneApiFn = Get-FunctionText $setup "Test-OneApiSelectorExcludesGpu"
 Invoke-Expression $oneApiFn
 # An empty or wrong extraction would make every case below pass vacuously.
@@ -42,8 +39,7 @@ Check "extraction kept the sentinel"  ($visFn -match 'UNSLOTHTORCHGPU')
 Check "extraction kept the interpreter call" ($visFn -match 'Invoke-BoundedPythonProbe')
 
 # --- Get-TorchGpuVisibility ------------------------------------------------------------------
-# $Output/$Ok/$Error stand in for what the bounded probe returns; the stub also records the code it
-# was handed, so the probe's own shape can be asserted without launching python.
+# The stub records the code it was handed, so the probe's shape is asserted without launching python.
 function Invoke-Vis {
     param([string] $Output, [bool] $Ok = $true, [string] $ProbeError = "")
     $sb = [scriptblock]::Create(@"
@@ -75,13 +71,10 @@ Check "a cpu wheel has no hip"        ($blind.Hip -eq "")
 Check "the cpu wheel is named"        ($blind.TorchVersion -eq "2.9.0+cpu")
 
 Write-Host "and only the sentinel line is the answer"
-# torch prints to stdout on some hosts; an unanchored match would read the banner.
 $spoof = Invoke-Vis "warning: overriding UNSLOTHTORCHGPU=1|8|2.9.0|6.4|1`nUNSLOTHTORCHGPU=0|0|2.9.0+cpu||0"
 Check "a banner cannot spoof it"  ($spoof.Answered -and -not $spoof.SeesGpu)
 
 Write-Host "a probe that did not answer accuses nobody"
-# Answered=False and SeesGpu=False are different facts: collapsing them accuses a host whose GPU
-# may be perfectly fine.
 $timedOut = Invoke-Vis "" $false "python did not answer within 90 seconds"
 Check "a timeout is not an answer"    (-not $timedOut.Answered)
 Check "a timeout is not a verdict"    (-not $timedOut.SeesGpu)
@@ -89,7 +82,6 @@ Check "the reason survives"           ($timedOut.Error -match "did not answer")
 $crashed = Invoke-Vis "" $false "ModuleNotFoundError: No module named 'torch'"
 Check "a crash is not an answer"      (-not $crashed.Answered)
 Check "the crash text survives"       ($crashed.Error -match "ModuleNotFoundError")
-# Its own case: exit 0 plus a garbled line must not read as a verdict.
 $garbled = Invoke-Vis "UNSLOTHTORCHGPU=maybe"
 Check "garbled output is not an answer" (-not $garbled.Answered)
 Check "a bare success is not an answer" (-not (Invoke-Vis "").Answered)
@@ -119,48 +111,39 @@ Check "the comment strip left code"       ($reportCode -match 'Get-TorchGpuVisib
 Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`n") -match $reportPat))
 
 Write-Host "the check runs on the update that prints 'dependencies up to date'"
-# The reported run took the fast path, so a check nested inside the dependency-pass branch would
-# stay silent on exactly the run complained about.
 $_fastPathLine = ($setupText -split "`n" | Select-String -Pattern 'step "python" "dependencies up to date"' | Select-Object -First 1).LineNumber
 $_checkLine = ($setupText -split "`n" | Select-String -Pattern '# ── Does PyTorch see the GPU this installer announced' | Select-Object -First 1).LineNumber
 Check "it follows the fast-path message"  ($_fastPathLine -and $_checkLine -and $_fastPathLine -lt $_checkLine)
-# ...and outside its else-block: the closing brace of the deps gate must sit between them.
 $_gateClose = ($setupText -split "`n" | Select-String -Pattern '^\}$' | Where-Object { $_.LineNumber -gt $_fastPathLine } | Select-Object -First 1).LineNumber
 Check "it is outside the deps gate"       ($_gateClose -and $_gateClose -lt $_checkLine)
 
 Write-Host "it reports, and never aborts"
 Check "the mismatch is an error line"     ($report -match 'step "gpu check" "PyTorch cannot see the \$_gpuCheckAnnounced reported above" "Red"')
 Check "it names the venv"                 ($report -match '"\$_gpuCheckApi in \$VenvDir"')
-# Only an Intel announcement is held back until BOTH answers are False, so only there may the report
-# say so; naming torch.xpu on an NVIDIA/AMD host would state something never checked.
+# Only an Intel announcement is held to BOTH answers, so naming torch.xpu elsewhere states nothing.
 Check "an Intel report names both answers" ($report -match 'Intel\*[\s\S]{0,120}torch\.xpu\.is_available\(\) are False')
 Check "every other report names torch.cuda only" ($report -match 'else \{ "torch\.cuda\.is_available\(\) is False" \}')
 Check "it names the wheel"                ($report -match 'substep "torch \$\(\$_gpuVisibility\.TorchVersion\)')
 Check "it names torch.version.hip"        ($report -match 'torch\.version\.hip \$_gpuCheckHip')
-# Naming the symptom is what stops the user filing it a second time as a UI bug.
 Check "it names what the user will see"   ($report -match 'No visible GPU')
-# ...conditionally. llama.cpp is a separate stack: with the Vulkan bundle the monitor shows that
-# card's real VRAM, so promising "--" and a CPU-only Studio would be a false prediction there.
+# ...conditionally: with a Vulkan GGUF bundle the monitor shows real VRAM, so "--" would be false.
 Check "it does not promise a CPU-only Studio" (-not ($report -match 'Studio will run CPU-only'))
-# hardware.py leaves CHAT_ONLY true on the CPU fallback and disables Train/Export, so "training
-# will run on CPU" was the opposite of what happens. Same wording as the XPU arm.
+# hardware.py leaves CHAT_ONLY true on the fallback and disables Train/Export.
 Check "it claims only what torch answered" ($report -match 'PyTorch training and GPU inference are unavailable; chat and GGUF still work')
-# "PyTorch", because a false torch.cuda.is_available() says nothing about llama.cpp: a CUDA / HIP /
-# Vulkan GGUF bundle still offloads to the same card.
+# A false torch.cuda.is_available() says nothing about llama.cpp: a GGUF bundle still offloads.
 Check "the claim is scoped to torch"      (-not ($report -match '(?<!PyTorch )training and GPU inference are unavailable'))
 Check "it does not promise CPU training" (-not ($report -match 'will run on CPU'))
 Check "the monitor line is conditional"   ($report -match 'If the Live monitor shows VRAM')
 Check "chat and GGUF are exempted"        ($report -match 'chat and GGUF still work')
 Check "it says where to report it"        ($report -match 'github\.com/unslothai/unsloth/issues')
-# A CPU-only Studio still chats. Failing the install over a diagnostic would be a regression.
+# A CPU-only Studio still chats, so failing the install over a diagnostic would be a regression.
 Check "it never fails the setup"          (-not ($report -match 'Exit-SetupFailure|exit 1|\$stackExit'))
 Check "a silent probe warns instead"      ($report -match '\[WARN\] could not check whether PyTorch sees this GPU')
 # A GGUF-only venv has no torch and nothing to reconcile; warning there is noise every update.
 Check "a missing torch is not warned about" ($report -match "No module named 'torch'")
 
 Write-Host "the quiet-when-torch-is-absent arm is about torch, and only torch"
-# Run the real arm rather than reading it: a match broad enough to swallow any import error silences
-# the host this check exists for, and the source text alone cannot show that.
+# Run rather than read: source text alone cannot show that the match is narrow enough.
 $quietPat = '(?ms)^        if \(-not \(\$_gpuVisibility\.Error -match.*?^        \}$'
 $quietArm = if ($report -match $quietPat) { $Matches[0] } else { "" }
 Check "the quiet arm was found"           ($quietArm -ne "")
@@ -177,8 +160,7 @@ $quietArm
     return (& $sb $ErrText)
 }
 Check "an absent torch says nothing"      (-not (Test-Warns "ModuleNotFoundError: No module named 'torch'"))
-# The backend treats ANY torch import failure as detection failure and runs on CPU, so an installed
-# torch that cannot import is exactly the host that needs telling.
+# The backend treats ANY torch import failure as detection failure and falls to CPU.
 Check "a missing transitive dep warns"    (Test-Warns "ModuleNotFoundError: No module named 'typing_extensions'")
 Check "a broken torch internal warns"     (Test-Warns "ModuleNotFoundError: No module named 'torch._C'")
 Check "a timeout still warns"             (Test-Warns "python did not answer within 90 seconds")
@@ -188,26 +170,19 @@ Write-Host "and it costs nothing where it cannot help"
 Check "no-torch mode is excluded"         ($report -match '-not \$NoTorchMode')
 Check "a CPU-only host is excluded"       ($report -match '\$_gpuCheckAnnounced -and')
 Check "there is an escape hatch"          ($report -match 'UNSLOTH_SKIP_TORCH_GPU_CHECK')
-# An explicit cpu pin is a request, not a fault: install_python_stack force-reinstalls the CPU wheel
-# for it, so a red "cannot see the GPU" would accuse the user of their own setting.
+# An explicit cpu pin is a request, not a fault, so a red report would accuse the user's own setting.
 Check "an explicit cpu pin is excluded"   ($report -match '\$_gpuCheckPinLeaf -ne "cpu"')
-# A hide-all visibility mask is a request too, and detection cannot see it: nvidia-smi ignores
-# CUDA_VISIBLE_DEVICES and the AMD arch can come from a WMI GPU name, so the card is announced
-# while torch is meant to see nothing.
+# A hide-all mask is a request too, and detection cannot see it: nvidia-smi ignores it entirely.
 Check "a hide-all mask is excluded"       ($report -match '-not \$_gpuCheckMasked')
-# install.ps1 routes an NVIDIA host whose CUDA is below 11 to the CPU index by design and hands
-# the resolved tag over, so the CPU wheel answering False there is the install working.
+# install.ps1 routes an NVIDIA host whose CUDA is below 11 to the CPU index by design, but $null is
+# "did not say", so a presence test would disable the check on every standalone update.
 Check "an installer cpu tag is excluded"  ($report -match '\$InstallerTorchTag -ne "cpu"')
-# $null is "did not say" -- an older cached installer, or a standalone update -- and a presence
-# test would disable the check on every run that did not come from install.ps1.
 Check "an absent tag is not read as cpu"  (-not ($reportCode -match '-not \$InstallerTorchTag|\$InstallerTorchTag -eq \$null'))
 # Scoped to the mask governing what was announced: an idle HIP mask must not mute a real mismatch.
 Check "the NVIDIA arm reads the CUDA mask" ($report -match 'NVIDIA\*.*[\s\S]{0,80}CUDA_VISIBLE_DEVICES')
-# HIP then CUDA, the two masks clr declares, in hardware.py's order: ROCm layers HIP on
-# CUDA_VISIBLE_DEVICES and falls back to it.
+# HIP then CUDA, the two masks clr declares, in hardware.py's order.
 Check "the AMD arm reads the HIP masks"   ($reportCode -match 'HIP_VISIBLE_DEVICES.*CUDA_VISIBLE_DEVICES')
-# ROCR_VISIBLE_DEVICES belongs to the ROCr runtime, which Windows HIP does not have, so a stray
-# cross-platform ROCR var must not read as a hide here. setup.sh keeps it; this is the win32 gate.
+# ROCR_VISIBLE_DEVICES belongs to the ROCr runtime, which Windows HIP does not have.
 Check "the AMD arm ignores ROCR"          (-not ($reportCode -match 'ROCR_VISIBLE_DEVICES'))
 Check "the NVIDIA arm ignores HIP"        (-not ($report -match 'NVIDIA\*\) \{\s*\n\s*Test-VisibleMaskHidesAll \$env:HIP'))
 
@@ -230,20 +205,16 @@ Check "an empty mask hides everything"    (Test-Mask "")
 Check "whitespace is trimmed"             (Test-Mask " -1 ")
 Check "a selected device is not hidden"   (-not (Test-Mask "0"))
 Check "a device list is not hidden"       (-not (Test-Mask "1,0"))
-# First-set-wins: an empty HIP mask shadows a later mask that names a device.
 Check "the first set mask wins"           (Test-Mask @("", "0"))
 Check "and an unset one is skipped"       (-not (Test-Mask @($null, "0")))
 Check "a bare CUDA mask still hides"      (Test-Mask @($null, "-1"))
 Check "a named AMD device wins over it"   (-not (Test-Mask @("0", "-1")))
 
 Write-Host "and the arms that pick the masks are run, not merely read"
-# Source text cannot tell a scoped exclusion from one that suppresses every host, and
-# always-suppress is the failure mode that would hide #8473 again, so the expression is executed.
-# Unset via the Env: drive, never [Environment]::SetEnvironmentVariable($n, $null): PowerShell
-# converts $null to "" when it binds a [string] parameter, so that leaves the variable SET and
-# empty, which is the hide-all value, and every "hides nothing" case below passed while asserting
-# the opposite. Values are "-1" and named indices only; the empty mask is covered above, where the
-# predicate takes its values directly and no env round trip can reinterpret them.
+# Always-suppress is the failure mode that would hide #8473 again, and source text cannot tell it
+# from a scoped exclusion, so the expression is executed. Unset via the Env: drive, never
+# [Environment]::SetEnvironmentVariable($n, $null): PowerShell converts $null to "" when it binds a
+# [string] parameter, leaving the variable SET and empty, which is the hide-all value.
 $maskedPat = '(?ms)^\$_gpuCheckMasked = if \(.*?^\} else \{ \$false \}$'
 $maskedExpr = if ($report -match $maskedPat) { $Matches[0] } else { "" }
 Check "the mask arms were found"          ($maskedExpr -match 'Test-VisibleMaskHidesAll')
@@ -281,13 +252,10 @@ Check "nor shadow a real CUDA hide"       (Test-Arm "AMD GPU (gfx1201)" @{ ROCR_
 Check "a hidden NVIDIA card is masked"    (Test-Arm "NVIDIA GPU" @{ CUDA_VISIBLE_DEVICES = "-1" })
 Check "a selected NVIDIA card is not"     (-not (Test-Arm "NVIDIA GPU" @{ CUDA_VISIBLE_DEVICES = "0" }))
 Check "an idle HIP mask mutes nothing"    (-not (Test-Arm "NVIDIA GPU" @{ HIP_VISIBLE_DEVICES = "-1" }))
-# No Intel arm on purpose: compute-runtime's parseAffinityMask returns early on an empty
-# ZE_AFFINITY_MASK exactly as it does when unset, so an empty mask hides nothing and torch.xpu
-# still answers True. Reading it with this predicate would mute the broken Intel runtimes instead.
+# No Intel arm on purpose: an empty ZE_AFFINITY_MASK hides nothing, per the last check in this file.
 Check "an Intel host reads no mask"       (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "-1" }))
 Check "an unannounced host is not masked" (-not (Test-Arm "" @{ CUDA_VISIBLE_DEVICES = "-1" }))
-# Resolved here, not read off $TorchIndexPinned / $CuTag: those live inside the dependency-pass
-# branch and are $null on the run this check exists for.
+# Not $TorchIndexPinned / $CuTag: those are $null on the run this check exists for.
 Check "the pin is resolved fresh"         ($report -match '\$_gpuCheckPinLeaf = Get-TorchIndexLeaf \(Get-PinnedTorchIndexUrl\)')
 Check "a GPU pin is not excluded with it" (-not ($reportCode -match '\$CuTag|\$TorchIndexPinned'))
 Check "a missing interpreter is excluded" ($report -match 'Test-Path -LiteralPath \$_gpuCheckPy')
@@ -295,15 +263,12 @@ Check "it probes the venv interpreter"    ($report -match '\$_gpuCheckPy = Join-
 Check "the probe is called once"          ((([regex]::Matches($report, 'Get-TorchGpuVisibility')).Count) -eq 1)
 
 Write-Host "the announced GPU is quoted from the summary, not re-derived"
-# Re-deriving from the raw detection flags disagreed with the summary on a host with an Intel Arc
-# next to an AMD card whose arch gets no ROCm wheels: Intel wins the scan while $script:ROCmGfxArch
-# stays populated, so the report named a GPU nobody announced (#8473).
+# The raw flags disagree with the summary on an Intel Arc host that also has an unwheeled AMD card.
 Check "it quotes the summary"             ($reportCode -match '\$_gpuCheckAnnounced = \$script:GpuSummaryAnnounced')
 Check "it re-derives nothing"             (-not ($reportCode -match '\$_gpuCheckAnnounced = "'))
 Check "it reads no detection flag"        (-not ($reportCode -match '\$script:ROCmGfxArch|\$HasROCm|\$HasNvidiaSmi|\$script:IsIntelXpu'))
 
-# ...and the summary itself records what it printed. Run the real chain, so an announcement that
-# stops being recorded fails here rather than passing on source text alone.
+# ...and the summary itself records what it printed, so the real chain is run, not read.
 $summaryPat = '(?ms)^\$script:GpuSummaryAnnounced = \$null\nif \(\$HasNvidiaSmi\) \{.*?^\}$'
 $summary = if ($setupText -match $summaryPat) { $Matches[0] } else { "" }
 Check "the GPU summary was found"         ($summary -ne "")
@@ -337,8 +302,7 @@ $sNvidia = Invoke-Summary @{ HasNvidiaSmi = $true; ROCmGfxArch = "gfx1201" }
 Check "NVIDIA is announced as NVIDIA"     ($sNvidia.Announced -eq "NVIDIA GPU")
 Check "and that is what it printed"       ($sNvidia.Lines -match 'STEP\|gpu\|NVIDIA GPU detected')
 
-# The reported combination: Intel Arc plus an AMD card on an arch outside $_rocmWheelArches, so the
-# Intel scan runs, Intel wins the summary, and $script:ROCmGfxArch is still set.
+# The reported combination: Intel Arc plus an AMD card on an arch outside $_rocmWheelArches.
 $sHybrid = Invoke-Summary @{ IsIntelXpu = $true; IntelGpuLabel = "Intel Arc B580"; ROCmGfxArch = "gfx90c" }
 Check "Intel wins the summary"            ($sHybrid.Lines -match 'STEP\|gpu\|Intel GPU detected')
 Check "and Intel is what is announced"    ($sHybrid.Announced -eq "Intel GPU")
@@ -349,15 +313,12 @@ Check "a ROCm-wheel AMD host is announced" ($sAmd.Announced -eq "AMD GPU (gfx120
 $sHip = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx1100)"; ROCmGfxArch = "gfx1100"; AmdHasGpuWheels = $true }
 Check "a HIP SDK AMD host is announced"   ($sHip.Announced -eq "AMD GPU (gfx1100)")
 
-# Nothing to reconcile: no accelerator at all, and any AMD card the install path deliberately sends
-# to CPU torch, where a red "PyTorch cannot see it" would ask the user to report a working
-# configuration. Every AMD arm has to agree, so all three are run.
+# Nothing to reconcile: no accelerator, or an AMD card the install path sends to CPU torch by design.
 $sNone = Invoke-Summary @{}
 Check "a CPU-only host announces nothing" ($null -eq $sNone.Announced)
 $sUnknownArch = Invoke-Summary @{ ROCmGpuLabel = "AMD Radeon 780M" }
 Check "an arch-less AMD host is not accused" ($null -eq $sUnknownArch.Announced)
-# Vega / RDNA1 / MI300 on Windows: $HasROCm is true, the arch is outside $_rocmWheelArches, and the
-# install path falls back to CPU-only PyTorch.
+# Vega / RDNA1 / MI300 on Windows: the arch is outside $_rocmWheelArches, so torch is CPU-only.
 $sVega = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx900)"; ROCmGfxArch = "gfx900" }
 Check "an unmapped arch on the ROCm arm is not accused" ($null -eq $sVega.Announced)
 Check "and the summary still announced it"  ($sVega.Lines -match 'STEP\|gpu\|AMD ROCm \(gfx900\)')
@@ -366,8 +327,7 @@ Check "an unmapped arch on the HIP SDK arm is not accused" ($null -eq $sVegaSdk.
 $sVegaBundled = Invoke-Summary @{ ROCmGfxArch = "gfx1010" }
 Check "an unmapped arch on the bundled-wheel arm is not accused" ($null -eq $sVegaBundled.Announced)
 
-# ...unless a pin overrides the arch decision. The pinned ROCm path routes a gfx*/rocm* leaf through
-# the GPU index whatever the arch, so that host really does get a GPU wheel.
+# ...unless a pin overrides it: the pinned path routes a gfx*/rocm* leaf through the GPU index.
 $sPinned = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx1010)"; ROCmGfxArch = "gfx1010"; AmdPinIsGpu = $true }
 Check "a pinned unmapped arch is reconciled" ($sPinned.Announced -eq "AMD GPU (gfx1010)")
 $sPinnedSdk = Invoke-Summary @{ HipSdkInstalled = $true; ROCmGpuLabel = "AMD Radeon VII"; ROCmGfxArch = "gfx906"; AmdPinIsGpu = $true }
@@ -378,8 +338,8 @@ Check "the bundled-wheel arm honours a pin too" ($sPinnedBundled.Announced -eq "
 $sPinnedNoArch = Invoke-Summary @{ ROCmGpuLabel = "AMD Radeon 780M"; AmdPinIsGpu = $true }
 Check "an arch-less pinned host is reconciled" ($sPinnedNoArch.Announced -eq "AMD GPU")
 Check "and it is not named 'AMD GPU ()'"    (-not ($sPinnedNoArch.Announced -match '\(\)'))
-# The pin predicate itself is run: `$null -ne "cpu"` is TRUE in PowerShell, so the emptiness half is
-# what stops every unpinned host announcing again.
+# The pin predicate is run: `$null -ne "cpu"` is TRUE in PowerShell, so the emptiness half is what
+# stops every unpinned host announcing again.
 $pinPat = '(?ms)^\$_amdPinLeaf = Get-TorchIndexLeaf.*?\n\$_amdPinIsGpu = .*?$'
 $pinExpr = if ($setupText -match $pinPat) { $Matches[0] } else { "" }
 Check "the pin predicate was found"       ($pinExpr -ne "")
@@ -400,10 +360,8 @@ Check "a gfx pin is a GPU pin"            (Test-AmdPinIsGpu "https://repo.amd.co
 Check "a rocm pin is a GPU pin"           (Test-AmdPinIsGpu "https://download.pytorch.org/whl/rocm7.1")
 Check "a cuda pin is a GPU pin"           (Test-AmdPinIsGpu "https://download.pytorch.org/whl/cu128")
 
-# A hybrid Intel/NVIDIA host on the XPU wheel answers SeesGpu=False and still runs on the GPU,
-# because _detect_hardware_locked falls through from CUDA to XPU, so accusing it is a false alarm
-# (#8473). The suppression reads the probe's own xpu answer rather than the wheel label, so a +xpu
-# wheel whose Intel runtime is dead is still reported.
+# _detect_hardware_locked falls through CUDA -> XPU, so a hybrid host on the XPU wheel answers
+# SeesGpu=False and still runs on the GPU (#8473).
 Check "the XPU suppression is present"    ($report -match 'SeesXpu')
 Check "it suppresses, not merely reports" ($report -match 'not \$_gpuVisibility\.SeesXpu')
 Check "it guards the mismatch arm"        ($report -match '\$_gpuVisibility\.SeesGpu -and[\s\S]{0,120}SeesXpu')
@@ -411,11 +369,8 @@ Check "the suppression reads the probe, not the wheel label" (-not ($report -mat
 
 
 # --- Test-OneApiSelectorExcludesGpu ------------------------------------------------------------
-# An Arc user who sets ONEAPI_DEVICE_SELECTOR=*:cpu means torch to see no GPU, but WMI still
-# announces the card, so the reconciliation accused a host doing exactly what it was told. Only
-# forms that PROVABLY admit no GPU may suppress; a numeric device spec can name a GPU. Semantics
-# from Intel's SYCL runtime reference: `;`-separated `<backend>:<devices>`, `!` discards, discards
-# outrank accepts, discards alone imply an accept-all. Driven as a real function, not a source match.
+# Only forms that PROVABLY admit no GPU may suppress; an ordinal can name a GPU. Semantics from
+# Intel's SYCL reference: `<backend>:<devices>` terms, `!` discards, discards imply an accept-all.
 Write-Host ""
 Write-Host "=== ONEAPI_DEVICE_SELECTOR ==="
 
@@ -441,7 +396,6 @@ foreach ($case in @(
 }
 Check "a null selector fails open" ((Test-OneApiSelectorExcludesGpu $null) -eq $false)
 
-# Wiring: the helper is useless unless the Intel arm of $_gpuCheckMasked calls it.
 Check "extraction kept the discard arm" ($oneApiFn -match 'StartsWith\("!"\)')
 
 $maskedText = (Get-Content -Raw $setup) -replace "`r`n", "`n"

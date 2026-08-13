@@ -1988,35 +1988,23 @@ fi
 
 # ── Does PyTorch see the GPU this installer just announced? ──
 # The line above comes from rocminfo / amd-smi / nvidia-smi; the backend's verdict is
-# torch.cuda.is_available() in its own process (on ROCm the ONLY thing that populates the device
-# list). Nothing reconciled the two, so a host whose torch cannot open the device was told "AMD
-# ROCm (gfx1201)" and then ran CPU-only with "No visible GPU" (#8473, #7485, problem 5 of #7307).
-# Diagnosis only: nothing below changes routing or wheel selection.
-# Bounded like the XPU probe above -- `import torch` on a stalled GPU driver is the classic hang --
-# via an outer `timeout` plus a SIGALRM deadline for hosts without it (base macOS, minimal images).
-# Never fatal: a probe that fails says nothing about the GPU, and even a real mismatch leaves a
-# working chat-only Studio.
+# torch.cuda.is_available() in its own process. Nothing reconciled the two, so a host whose torch
+# cannot open the device was told "AMD ROCm (gfx1201)" and then ran CPU-only with "No visible GPU"
+# (#8473, #7485, problem 5 of #7307). Diagnosis only, and never fatal.
+# Bounded twice because base macOS and minimal images ship no timeout(1): there, the SIGALRM in the
+# probe string is the only deadline.
 _setup_torch_probe_answered=false
 _setup_torch_sees_gpu=false
 _setup_torch_sees_xpu=false
 _setup_torch_devices=0
 _setup_torch_ver=""
 _setup_torch_hip=""
-# An explicit CPU pin is a request, not a fault: install_python_stack force-reinstalls the CPU wheel
-# for a cpu leaf. Parsed here rather than reusing _setup_pin_leaf, which is assigned inside the
-# fast-path branch and unset on a fresh install. EXACT cpu leaf only: a cu128 or rocm pin still
-# expects a GPU.
-# Trim before anything else, parity with get_torch_index_url (install.sh:3272) and
-# Trim-IndexPathSlashes (setup.ps1:863), which both trim first. The installer accepts a padded
-# " cpu " and installs the CPU wheel, so keeping the spaces here would fail the cpu exclusion and
-# accuse a host that asked for CPU torch. It also has to land: a whitespace-only value is unset to
-# install.sh, and a leaf of spaces is non-empty, which reads as a GPU pin below and overrides the
-# arch gate. Leading/trailing only -- a value with inner spaces is not a pin shape any installer
-# here accepts, and stripping those would rewrite a URL rather than normalise it.
-# Trim each override separately and pick after, never `${URL:-${FAMILY}}`: a space is non-empty to
-# :- , so a blank URL would win and the family would never be read, while install.sh (3954) and
-# Get-PinnedTorchIndexUrl's IsNullOrWhiteSpace both fall through to the family and install what it
-# names. Same precedence as all three -- URL first, family only when the URL trims away.
+# An explicit CPU pin is a request, not a fault. Parsed here rather than reusing _setup_pin_leaf,
+# which is assigned inside the fast-path branch and unset on a fresh install.
+# Trimmed BEFORE the slash strip, parity with get_torch_index_url (install.sh:3272): the installer
+# accepts a padded " cpu ", and a leaf of spaces is non-empty, so it would read as a GPU pin below.
+# Each override is trimmed separately rather than `${URL:-${FAMILY}}`, because a space is non-empty
+# to :- , so a blank URL would win and the family would never be read.
 _setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_URL:-}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin#"${_setup_gpucheck_pin%%[![:space:]]*}"}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin%"${_setup_gpucheck_pin##*[![:space:]]}"}"
@@ -2031,26 +2019,20 @@ while [ "${_setup_gpucheck_pin%/}" != "$_setup_gpucheck_pin" ]; do
     _setup_gpucheck_pin="${_setup_gpucheck_pin%/}"
 done
 _setup_gpucheck_pin_leaf="${_setup_gpucheck_pin##*/}"
-# Shell expansion only, for the same reason as the arch below: coreutils is what the minimal
-# images this probe is bounded for lack, and a failed `tr` pipe would empty the leaf, so a cpu
-# pin would stop excluding the host and we would accuse it. Only "cpu" is compared, so folding
-# that one spelling is enough.
+# Shell expansion throughout this block, never `tr`: coreutils is exactly what the minimal images
+# it is bounded for lack, and a failed pipe would empty the value and drop the exclusion.
 case "$_setup_gpucheck_pin_leaf" in
     [Cc][Pp][Uu]) _setup_gpucheck_pin_leaf=cpu ;;
 esac
 # install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it deliberately
-# sent to CPU (non-x86_64, ROCm below 6.0, an unreadable ROCm runtime) arrives as "cpu" with the CPU
-# wheel it asked for and _setup_amd_detected still true, and install.sh already explained it on
-# screen. Only the exact "cpu": unset is the normal standalone `studio update` state and must still
-# be checked.
+# sent to CPU arrives as "cpu" with _setup_amd_detected still true. Only the exact "cpu": unset is
+# the normal standalone `studio update` state and must still be checked.
 #
-# Returns 0 when the AMD visibility mask hides every device ("" or "-1"), so torch is meant to see
-# nothing. Mirrors _setup_cvd_hides_nvidia; AMD needs its own because the KFD sysfs fallback reads
-# the kernel topology and ignores the mask, so only this can tell a hidden GPU from a broken one.
-# First-set-wins over the same three masks in the order hardware.py's _pick_visible_index uses:
-# ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to it, so an empty HIP mask shadows
-# ROCR and a bare CUDA mask still hides the AMD card, while a mask that names a device (HIP=0 with
-# CUDA=-1) is a selection, not a hide.
+# Returns 0 when the AMD visibility mask hides every device ("" or "-1"). AMD needs its own rather
+# than _setup_cvd_hides_nvidia because the KFD sysfs fallback reads the kernel topology and ignores
+# the mask, so only this can tell a hidden GPU from a broken one. First-set-wins in hardware.py's
+# _pick_visible_index order, since ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to
+# it: an empty HIP mask shadows ROCR, and HIP=0 with CUDA=-1 is a selection, not a hide.
 _setup_amd_mask_hides_all() {
     if [ "${HIP_VISIBLE_DEVICES+set}" = "set" ]; then
         _setup_amd_mask="$HIP_VISIBLE_DEVICES"
@@ -2061,7 +2043,6 @@ _setup_amd_mask_hides_all() {
     else
         return 1
     fi
-    # Bash expansion, not `tr`: without coreutils the pipe fails and an empty mask reads as hide-all.
     _setup_amd_mask="${_setup_amd_mask//[[:space:]]/}"
     [ -z "$_setup_amd_mask" ] || [ "$_setup_amd_mask" = "-1" ]
 }
@@ -2070,8 +2051,7 @@ if [ "$_setup_amd_detected" = true ] && _setup_amd_mask_hides_all; then
     _setup_gpucheck_masked=true
 fi
 # A GGUF-only install has no torch to reconcile and should not pay for an interpreter launch every
-# update. The POSIX half of setup.ps1's $NoTorchMode, reading the two durable records
-# install_manifest writes: the manifest key, then the marker.
+# update. The POSIX half of setup.ps1's $NoTorchMode, over the two records install_manifest writes.
 _setup_gpucheck_no_torch=false
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _setup_gpucheck_no_torch=true ;; esac
 if [ "$_setup_gpucheck_no_torch" = false ] && [ -f "$VENV_DIR/unsloth_install_manifest.json" ] \
@@ -2085,35 +2065,17 @@ fi
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present" -- the POSIX half of $AmdHasGpuWheels
 # (setup.ps1:2593). _setup_amd_detected is equally true on arches Unsloth deliberately routes to
 # CPU torch (Vega, RDNA1, and every host whose arch cannot be read at all), so without this the
-# report below accuses those hosts of a fault on every `unsloth studio update` for behaving
-# exactly as designed. UNSLOTH_TORCH_BACKEND does not cover them: `studio update` runs this file
-# and never install.sh, so it is unset on precisely the repeat path.
-#
-# Sourced from Unsloth's OWN routing rather than AMD's support matrix, so the two cannot drift:
-#   install.sh:2852 _amd_arch_index_family_for_gfx -- AMD per-arch wheels (repo.amd.com/rocm/whl),
-#                                                     the shared half, identical to setup.ps1's
-#                                                     $_rocmWheelArches
-#   install.sh:4298 gfx906 -> the rocm6.3 index    -- MI50 / Radeon VII, the last wheel family
-#                                                     carrying gfx906 kernels
-#   gfx950/942/906/900                             -- carried by the GENERIC rocm index a ROCm
-#                                                     host resolves in get_torch_index_url, which
-#                                                     is arch-independent: upstream builds these
-#                                                     into every wheel (PYTORCH_ROCM_ARCH in
-#                                                     pytorch .ci/docker/manywheel/build.sh, and
-#                                                     the rocBLAS kernels are present in the
-#                                                     published torch 2.6-2.11 +rocm wheels)
-# The last four are Linux-only, which is why setup.ps1's list has none of them: AMD publishes no
-# Windows ROCm wheels for MI-series or Vega. Deliberately still absent: gfx803 (Polaris) and
-# gfx1010/1011/1012 (RDNA1), which appear in NO upstream wheel and no index install.sh routes to,
-# so their CPU torch is correct and reporting it accuses a working host.
-# test_torch_gpu_visibility_8473.py pins both directions of that relationship.
+# report below accuses those hosts of a fault on every `unsloth studio update` for behaving exactly
+# as designed. UNSLOTH_TORCH_BACKEND does not cover them: `studio update` runs this file and never
+# install.sh, so it is unset on precisely the repeat path.
+# The list follows Unsloth's OWN routing rather than AMD's support matrix, so the two cannot drift:
+# install.sh:2852 _amd_arch_index_family_for_gfx (identical to setup.ps1's $_rocmWheelArches) and
+# install.sh:4298 (gfx906 -> rocm6.3), plus gfx950/942/906/900, which upstream builds into every
+# generic rocm wheel (PYTORCH_ROCM_ARCH). Those four are Linux-only, hence absent from setup.ps1;
+# gfx803 and gfx1010/1011/1012 stay absent because no upstream wheel carries them at all.
 # Normalised first: UNSLOTH_ROCM_GFX_ARCH lands in $_setup_gfx verbatim (setup.sh:1837), so a
-# copied HIP gcnArchName ("gfx906:sramecc-:xnack-") or a capitalised arch must still match.
-# Shell expansion only, no `tr`: coreutils is exactly what the minimal images this probe is
-# bounded for are missing, and a failed pipe here would empty the arch and read EVERY AMD host as
-# unwheeled -- silencing the whole report instead of the three host shapes it is meant to spare.
-# Same reasoning as the mask check above. ${x,,} would be shorter and is bash 4, which macOS's
-# /bin/bash 3.2 cannot even parse, so the arms carry the letter class instead.
+# copied HIP gcnArchName ("gfx906:sramecc-:xnack-") or a capitalised arch must still match. The
+# letter classes are there because ${x,,} is bash 4 and macOS /bin/bash 3.2 cannot parse it.
 _setup_amd_wheel_arch="${_setup_gfx:-}"
 _setup_amd_wheel_arch="${_setup_amd_wheel_arch//[[:space:]]/}"
 _setup_amd_wheel_arch="${_setup_amd_wheel_arch%%:*}"
@@ -2127,9 +2089,7 @@ case "$_setup_amd_wheel_arch" in
     gfx950|gfx942|gfx90[aA]|gfx908|gfx906|gfx900)                            _setup_amd_has_gpu_wheels=true ;;
 esac
 # An explicit GPU index pin still reconciles on an arch with no wheels of its own: the user asked
-# for that index, so a torch that cannot see the GPU afterwards is worth reporting. Mirrors
-# $_amdPinIsGpu (setup.ps1:2664). The "cpu" leaf is excluded by the condition below, so a non-empty
-# leaf reaching here is a GPU pin.
+# for that index. Mirrors $_amdPinIsGpu (setup.ps1:2664); "cpu" is excluded by the condition below.
 _setup_gpucheck_pin_is_gpu=false
 if [ -n "$_setup_gpucheck_pin_leaf" ]; then
     _setup_gpucheck_pin_is_gpu=true
@@ -2145,9 +2105,8 @@ if { [ "$_setup_nvidia_usable" = true ] \
         1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
         *) _setup_skip_torch_check=false ;;
     esac
-    # Which interpreter actually carries the backend deps. Colab has no Unsloth venv: it installs
-    # into the SYSTEM python and sets _COLAB_NO_VENV, so requiring $VENV_DIR/bin/python skipped the
-    # probe on exactly the runtime that announces an NVIDIA GPU and ships torch.
+    # Colab installs into the SYSTEM python and sets _COLAB_NO_VENV, so requiring the venv
+    # interpreter skipped the probe on the one runtime that ships torch and announces an NVIDIA GPU.
     if [ "${_COLAB_NO_VENV:-false}" = true ]; then
         _setup_torch_py=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
         _setup_torch_where="$_setup_torch_py"
@@ -2165,8 +2124,7 @@ if { [ "$_setup_nvidia_usable" = true ] \
     elif [ -z "$_setup_torch_py" ]; then
         verbose_substep "torch GPU visibility check skipped: no interpreter at $VENV_DIR/bin/python"
     else
-        # Sentinel-prefixed and matched line-anchored below, so a banner from a noisy import
-        # cannot be read as the answer.
+        # Sentinel-prefixed and matched line-anchored, so an import banner cannot be the answer.
         _setup_torch_probe='import signal; signal.alarm(90); import torch; print("UNSLOTHTORCHGPU=" + ("1" if torch.cuda.is_available() else "0") + "|" + str(torch.cuda.device_count()) + "|" + torch.__version__ + "|" + str(getattr(torch.version, "hip", None) or "") + "|" + ("1" if (hasattr(torch, "xpu") and torch.xpu.is_available()) else "0"))'
         if command -v timeout >/dev/null 2>&1; then
             _setup_torch_out=$(timeout 90 "$_setup_torch_py" -c "$_setup_torch_probe" 2>/dev/null || true)
@@ -2181,15 +2139,13 @@ if { [ "$_setup_nvidia_usable" = true ] \
             _setup_torch_devices=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f2)
             _setup_torch_ver=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f3)
             _setup_torch_hip=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f4)
-            # Asked in the SAME bounded probe as CUDA, so suppression turns on a usable runtime,
-            # not the wheel label: a +xpu wheel with a dead Intel runtime answers 0 and is reported.
             [ "$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f5)" = "1" ] && _setup_torch_sees_xpu=true
         fi
     fi
     # A hybrid Intel/NVIDIA host on the XPU wheel answers False for CUDA and still runs on the GPU
     # (_detect_hardware_locked falls through CUDA -> XPU), so reporting it would be a false alarm.
-    # Gate on what the probe SAW, not the wheel label: a +xpu wheel with a broken Intel runtime
-    # falls to CPU like the hosts this exists for, and must still be reported.
+    # Gated on what the probe SAW, not on the wheel label: a +xpu wheel with a dead Intel runtime
+    # falls to CPU too and must still be reported.
     if [ "$_setup_torch_probe_answered" = true ] && [ "$_setup_torch_sees_gpu" = false ] \
         && [ "$_setup_torch_sees_xpu" = false ]; then
         if [ "$_setup_amd_detected" = true ]; then
@@ -2206,13 +2162,11 @@ if { [ "$_setup_nvidia_usable" = true ] \
         substep "If the Live monitor shows VRAM \"--\" and \"No visible GPU\", that is this, not a second bug." "$C_ERR"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then
-        # device_count() is CUDA-only: it is 0 on a host suppressed by the XPU answer, so name what
-        # it counts instead of calling it the total.
+        # device_count() is CUDA-only, so 0 on a host suppressed by the XPU answer; named as such.
         verbose_substep "torch sees $_setup_torch_devices CUDA device(s), xpu $_setup_torch_sees_xpu (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"
     elif [ "$_setup_skip_torch_check" = false ] && [ -n "$_setup_torch_py" ]; then
         # Silent when torch is simply absent (GGUF-only venv): nothing to reconcile, and a warning
-        # would be noise every update. Colab has no venv layout to look at and its runtimes ship
-        # torch, so a probe that did not answer there is worth saying.
+        # would be noise every update. Colab has no venv layout to look at, and ships torch anyway.
         _setup_torch_on_disk=false
         if [ "${_COLAB_NO_VENV:-false}" = true ]; then
             _setup_torch_on_disk=true

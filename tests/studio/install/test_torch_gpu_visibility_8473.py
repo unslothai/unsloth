@@ -4,16 +4,14 @@
 """Regression tests for issue #8473 -- the installer says the GPU is fine and the backend runs CPU-only.
 
 Reporter: AMD host, `unsloth studio update` prints `gpu AMD ROCm (gfx1201)` then
-`python dependencies up to date`, and Studio shows VRAM `--`, "No visible GPU" and a
-`CPU` detail line. The installer's GPU line comes from rocminfo / amd-smi / hipinfo;
-the backend's verdict is torch.cuda.is_available() in its own process (on ROCm the
-only thing that can populate devices). Nothing reconciled the two.
+`python dependencies up to date`, and Studio shows VRAM `--` and "No visible GPU".
+The installer's GPU line comes from rocminfo / amd-smi / hipinfo; the backend's
+verdict is torch.cuda.is_available() in its own process. Nothing reconciled the two.
 
-setup.sh now runs one bounded probe in the venv after the GPU summary and prints the
-mismatch. No CI runner has AMD hardware, so the real block is extracted from setup.sh
-and run under bash against a FAKE venv interpreter whose answer, exit code and latency
-the test controls, plus a fake `timeout` that records the bound setup.sh asked for
-while enforcing a short one, so the hang case finishes in seconds.
+No CI runner has AMD hardware, so the real block is extracted from setup.sh and run
+under bash against a FAKE venv interpreter whose answer, exit code and latency the
+test controls, plus a fake `timeout` that records the bound setup.sh asked for while
+enforcing a short one.
 """
 
 from __future__ import annotations
@@ -117,19 +115,14 @@ def _run_block(
     timeout_log = tmp_path / "timeout_args.log"
     real_timeout = shutil.which("timeout")
     if with_timeout:
-        # Records the bound setup.sh ASKED for, then enforces a short one, so the hang case is
-        # observable without waiting out the real 90 seconds. macOS ships no timeout(1) (it is
-        # GNU coreutils), so the whole file failed there on the assert this replaces; the shim
-        # below carries the same contract -- inherited stdout, child killed at the bound, 124 on
-        # expiry -- so both hosts exercise the same arm of the block.
+        # macOS ships no timeout(1), so the shim below stands in with the same contract:
+        # inherited stdout, child killed at the bound, 124 on expiry.
         if real_timeout:
             enforcer = f'exec "{real_timeout}" {timeout_bound} "$@"'
         else:
             shim = tmp_path / "timeout_shim.py"
-            # Own process group, killed as a group: timeout(1) does exactly that, and without it
-            # the hang case leaves the `sleep` grandchild holding the captured stdout open, so
-            # the command substitution in setup.sh waits out the full sleep and the bound proves
-            # nothing.
+            # Killed as a group, like timeout(1): otherwise the `sleep` grandchild holds the
+            # captured stdout open and setup.sh's command substitution waits it out anyway.
             shim.write_text(
                 "import os, signal, subprocess, sys\n"
                 "child = subprocess.Popen(sys.argv[2:], start_new_session = True)\n"
@@ -150,8 +143,7 @@ def _run_block(
             "#!/bin/sh\n" f'printf "%s\\n" "$*" >> "{timeout_log}"\n' "shift\n" f"{enforcer}\n",
         )
     else:
-        # No `timeout` on PATH: the fallback arm must still run, with only the block's own
-        # utilities reachable.
+        # No `timeout` on PATH, and only the block's own utilities reachable.
         for tool in ("bash", "grep", "tail", "cut", "sh", "sleep", "cat"):
             found = shutil.which(tool)
             assert found, f"missing {tool}"
@@ -162,8 +154,7 @@ def _run_block(
         shutil.copy2(venv / "bin" / "python", stub_bin / "python")
         (stub_bin / "python").chmod(0o755)
     elif path_python is not None:
-        # A DIFFERENT answer than the venv's, so a probe that drifted onto the system interpreter
-        # changes the report instead of matching by coincidence.
+        # A DIFFERENT answer than the venv's, so a drifted probe changes the report.
         _write_exec(stub_bin / "python", f"#!/bin/sh\nprintf '%s' '{path_python}'\n")
 
     script = "\n".join(
@@ -235,14 +226,12 @@ def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
     assert "SUB|detected by the installer: AMD ROCm (gfx1201) -- Radeon RX 9070 XT|ERR" in out
     assert f"SUB|torch.cuda.is_available() is False in {venv}|ERR" in out
     assert "SUB|torch 2.9.0+cpu, device_count 0, torch.version.hip none|ERR" in out
-    # Naming the symptom stops it being filed twice, but only conditionally: with the Vulkan bundle
-    # the monitor shows real VRAM, so promising "--" would be false. "PyTorch", because a false
-    # torch.cuda.is_available() says nothing about a GGUF bundle offloading to the same card.
+    # Conditional, and scoped to PyTorch: with a Vulkan GGUF bundle the monitor shows real VRAM.
     assert (
         "SUB|PyTorch training and GPU inference are unavailable; chat and GGUF still work.|ERR"
         in out
     )
-    # Not "runs on CPU": hardware.py leaves CHAT_ONLY true on the fallback and disables Train/Export.
+    # hardware.py leaves CHAT_ONLY true on the fallback and disables Train/Export.
     assert "will run on CPU" not in out
     assert (
         'SUB|If the Live monitor shows VRAM "--" and "No visible GPU", that is this, not a second bug.|ERR'
@@ -287,8 +276,8 @@ def test_nvidia_host_is_named_as_nvidia(block, tmp_path):
 def test_a_banner_cannot_spoof_the_answer(block, tmp_path):
     """torch imports print to stdout on some hosts; only a line-anchored sentinel is the answer.
 
-    Spoofed on BOTH sides of the real answer: the reader takes the last match, so a leading
-    banner alone would be caught by the tail while an unanchored match survives it.
+    Spoofed on BOTH sides, because the reader takes the last match: a leading banner alone
+    would be caught by the tail while an unanchored match survives it.
     """
     venv = _make_venv(
         tmp_path,
@@ -304,7 +293,7 @@ def test_a_banner_cannot_spoof_the_answer(block, tmp_path):
 
 def test_the_two_guards_against_a_spoofed_answer_both_exist(block):
     """Either guard alone rejects a mid-line sentinel, so the behavioural test above cannot tell
-    them apart and removing one silently leaves the reader on the other. Asserted per guard."""
+    them apart. Asserted per guard."""
     assert "grep '^UNSLOTHTORCHGPU='" in block
     assert '"${_setup_torch_line#UNSLOTHTORCHGPU=}"' in block
 
@@ -333,8 +322,8 @@ def test_a_gguf_only_venv_says_nothing(block, tmp_path):
 
 
 def test_a_hanging_import_cannot_hang_the_installer(block, tmp_path):
-    """`import torch` on a stalled GPU driver is the classic hang, and this probe exists
-    precisely for hosts whose driver is misbehaving."""
+    """`import torch` on a stalled GPU driver is the classic hang, and this probe exists for
+    exactly those hosts."""
     venv = _make_venv(tmp_path, sleep_seconds = 60, stdout = _answer("1", count = "1"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", timeout_bound = 3)
     assert result["elapsed"] < 30
@@ -346,8 +335,7 @@ def test_a_hanging_import_cannot_hang_the_installer(block, tmp_path):
 
 
 def test_the_probe_runs_where_timeout_is_missing(block, tmp_path):
-    """Base macOS and minimal images have no timeout(1); the probe's SIGALRM deadline bounds
-    them, and the check must still happen."""
+    """Base macOS and minimal images have no timeout(1), so only the probe's SIGALRM bounds them."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", with_timeout = False)
     assert result["calls"].count("call") == 1
@@ -355,8 +343,8 @@ def test_the_probe_runs_where_timeout_is_missing(block, tmp_path):
 
 
 def test_both_probe_arms_carry_the_in_process_deadline(block):
-    """Per call site, not per file: one arm losing signal.alarm leaves that host unbounded, and
-    a file-level check passes with the other arm intact."""
+    """Per call site: one arm losing signal.alarm leaves that host unbounded, and a file-level
+    check passes with the other arm intact."""
     arms = [line for line in block.splitlines() if '-c "$_setup_torch_probe"' in line]
     assert len(arms) == 2, arms
     assert all('"$_setup_torch_py"' in line for line in arms), arms
@@ -400,8 +388,7 @@ def test_the_check_can_be_switched_off(block, tmp_path):
 )
 def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
     """install_python_stack force-reinstalls the CPU wheel for a cpu leaf, so torch answering
-    False is the pin working. Accusing that host of a broken GPU is the false alarm this check
-    must not become."""
+    False is the pin working."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert result["calls"] == ""
@@ -422,9 +409,7 @@ def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
 )
 def test_a_padded_cpu_pin_is_still_a_request_not_a_fault(block, tmp_path, env):
     """get_torch_index_url (install.sh:3272) and Trim-IndexPathSlashes (setup.ps1:863) both trim
-    before resolving, so a padded " cpu " really does install the CPU wheel. Leaving the spaces
-    only in this copy would accuse the host on every later `studio update`, where
-    UNSLOTH_TORCH_BACKEND is unset -- the false alarm this whole check exists to avoid."""
+    before resolving, so a padded " cpu " really does install the CPU wheel."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert result["calls"] == ""
@@ -439,10 +424,8 @@ def test_a_padded_cpu_pin_is_still_a_request_not_a_fault(block, tmp_path, env):
     ],
 )
 def test_a_whitespace_only_pin_is_not_a_gpu_pin(block, tmp_path, env):
-    """A whitespace-only override is unset to install.sh (install.sh:3952) and to
-    Get-PinnedTorchIndexUrl's IsNullOrWhiteSpace. Untrimmed it leaves a non-empty leaf, and a
-    non-empty leaf is read as a GPU pin below, which overrides the arch gate and accuses an
-    unwheeled arch that is behaving exactly as designed."""
+    """A whitespace-only override is unset to install.sh (install.sh:3952). Untrimmed it leaves a
+    non-empty leaf, which reads as a GPU pin below and overrides the arch gate."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1010", env = env)
     assert result["calls"] == ""
@@ -458,10 +441,8 @@ def test_a_whitespace_only_pin_is_not_a_gpu_pin(block, tmp_path, env):
 )
 def test_a_blank_url_falls_back_to_the_family(block, tmp_path, env):
     """get_torch_index_url trims the URL BEFORE choosing, so a blank URL is unset there and the
-    family wins -- the host really is installing the CPU wheel it asked for. Choosing with a
-    single ${URL:-${FAMILY}} picks the blank URL instead, because a space is non-empty to :-,
-    and the family never gets read: the leaf lands empty, the cpu exclusion misses, and every
-    later `studio update` accuses a host that is behaving exactly as pinned."""
+    family wins. A single ${URL:-${FAMILY}} picks the blank URL instead, because a space is
+    non-empty to :-, and the family never gets read."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert result["calls"] == ""
@@ -469,8 +450,7 @@ def test_a_blank_url_falls_back_to_the_family(block, tmp_path, env):
 
 
 def test_a_blank_url_falls_back_to_a_gpu_family(block, tmp_path):
-    """Same precedence, other direction: the family is what install.sh installs, so a cu128
-    family behind a blank URL is a GPU pin and reconciles on an arch with no wheels of its own."""
+    """Same precedence, other direction: a cu128 family behind a blank URL is a GPU pin."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -493,8 +473,7 @@ def test_a_blank_url_falls_back_to_a_gpu_family(block, tmp_path):
     ],
 )
 def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):
-    """EXACT cpu leaf only: a cu128 or rocm pin asked for a GPU wheel, so a torch that sees
-    nothing under one is exactly the mismatch worth reporting."""
+    """EXACT cpu leaf only: a cu128 or rocm pin asked for a GPU wheel."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
@@ -502,9 +481,8 @@ def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):
 
 def test_an_installer_resolved_cpu_backend_is_not_a_fault(block, tmp_path):
     """install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it
-    deliberately sent to CPU (non-x86_64, ROCm below 6.0, an unreadable runtime) arrives with
-    the CPU wheel it asked for and _setup_amd_detected still true. install.sh already explains
-    that fallback on screen; repeating it in red is the false alarm."""
+    deliberately sent to CPU arrives with the CPU wheel it asked for and _setup_amd_detected
+    still true."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -520,9 +498,8 @@ def test_an_installer_resolved_cpu_backend_is_not_a_fault(block, tmp_path):
 
 @pytest.mark.parametrize("backend", ["rocm", "cuda", ""])
 def test_a_gpu_backend_or_no_backend_is_still_reconciled(block, tmp_path, backend):
-    """Only the exact "cpu". Unset is the normal standalone `studio update` state -- the run
-    this check exists for -- so treating "not a GPU backend" as CPU would disable the feature
-    for everyone who updates without re-running the installer."""
+    """Only the exact "cpu". Unset is the normal standalone `studio update` state, the run this
+    check exists for."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -546,8 +523,7 @@ def test_a_gpu_backend_or_no_backend_is_still_reconciled(block, tmp_path, backen
 )
 def test_a_hidden_amd_gpu_is_not_a_broken_one(block, tmp_path, env):
     """The KFD sysfs fallback reads the kernel topology and ignores the mask, so a user who hid
-    every AMD device still gets the GPU announced and a torch that correctly sees nothing. The
-    AMD half of _setup_cvd_hides_nvidia, not a new policy."""
+    every AMD device still gets the GPU announced and a torch that correctly sees nothing."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert result["calls"] == ""
@@ -556,16 +532,14 @@ def test_a_hidden_amd_gpu_is_not_a_broken_one(block, tmp_path, env):
 
 @pytest.mark.parametrize("env", [{"HIP_VISIBLE_DEVICES": "0"}, {"ROCR_VISIBLE_DEVICES": "1,0"}])
 def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
-    """Only a hide-ALL mask. Selecting a device is the opposite of hiding one, and muting
-    there would silence every host that pins its GPU."""
+    """Only a hide-ALL mask: muting on a selection would silence every host that pins its GPU."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
 
 
 def test_a_bare_cuda_mask_hides_the_amd_card_too(block, tmp_path):
-    """ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to it when neither is set,
-    so a hide-all CUDA mask on an AMD host is the user hiding the card, not torch failing."""
+    """ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to it when neither is set."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block, venv, tmp_path, amd = True, gfx = "gfx1201", env = {"CUDA_VISIBLE_DEVICES": "-1"}
@@ -576,7 +550,7 @@ def test_a_bare_cuda_mask_hides_the_amd_card_too(block, tmp_path):
 
 def test_a_mixed_host_steered_to_its_amd_card_is_still_reconciled(block, tmp_path):
     """First-set-wins keeps the fallback narrow: hiding NVIDIA while naming an AMD device is a
-    selection, and that host still wants to hear that torch cannot open it."""
+    selection."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -591,8 +565,7 @@ def test_a_mixed_host_steered_to_its_amd_card_is_still_reconciled(block, tmp_pat
 
 def test_the_mask_check_needs_no_coreutils(block, tmp_path):
     """Trimmed with bash expansion rather than `tr`: without coreutils on PATH the pipe fails,
-    leaving the mask empty, which reads as hide-all and silences every host. Run on the
-    no-timeout PATH, which carries only what the block itself uses."""
+    leaving the mask empty, which reads as hide-all and silences every host."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -609,7 +582,7 @@ def test_the_mask_check_needs_no_coreutils(block, tmp_path):
 
 def test_an_empty_hip_mask_shadows_rocr(block, tmp_path):
     """First-set-wins, like the runtime: an empty HIP mask hides everything even when ROCR
-    names a device, so reading ROCR first would report a host hidden by request."""
+    names a device."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -625,9 +598,8 @@ def test_an_empty_hip_mask_shadows_rocr(block, tmp_path):
 
 @pytest.mark.parametrize("marker", ["env", "manifest", "file"])
 def test_a_no_torch_install_never_launches_the_interpreter(block, tmp_path, marker):
-    """A GGUF-only install has no torch to reconcile. Without this POSIX half of setup.ps1's
-    $NoTorchMode every update paid for an `import torch` that could only fail, and a no-torch
-    venv carrying a user-added CPU torch got the red mismatch."""
+    """A GGUF-only install has no torch to reconcile, so without this POSIX half of setup.ps1's
+    $NoTorchMode a no-torch venv carrying a user-added CPU torch got the red mismatch."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     env = {}
     if marker == "env":
@@ -644,8 +616,7 @@ def test_a_no_torch_install_never_launches_the_interpreter(block, tmp_path, mark
 
 
 def test_a_torch_install_is_not_read_as_no_torch(block, tmp_path):
-    """The manifest key is false on every normal install, and matching the key name alone
-    would mute the whole feature."""
+    """The manifest key is false on every normal install, so matching the name alone mutes all."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     (venv / "unsloth_install_manifest.json").write_text(
         '{"schema": 1, "no_torch": false}', encoding = "utf-8"
@@ -655,8 +626,8 @@ def test_a_torch_install_is_not_read_as_no_torch(block, tmp_path):
 
 
 def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):
-    """setup.sh runs before the venv exists in some repair paths. Asserted on the skip line,
-    not on silence: without the guard the probe merely fails to exec, which is silent too."""
+    """setup.sh runs before the venv exists in some repair paths. Asserted on the skip line, not
+    on silence: without the guard the probe merely fails to exec, which is silent too."""
     venv = tmp_path / "novenv"
     venv.mkdir()
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
@@ -666,8 +637,7 @@ def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):
 
 
 def test_the_check_runs_after_the_gpu_summary_and_before_the_llama_step():
-    """Ordering is load-bearing: _setup_gfx and _setup_amd_detected are computed by the
-    summary, and the report has to sit next to the line it contradicts."""
+    """_setup_gfx and _setup_amd_detected are computed by the summary above."""
     text = SETUP_SH.read_text(encoding = "utf-8")
     summary = text.index("# ── GPU detection summary")
     announcement = text.index('step "gpu" "AMD ROCm ($_setup_gfx)"')
@@ -678,8 +648,7 @@ def test_the_check_runs_after_the_gpu_summary_and_before_the_llama_step():
 
 def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
     """Hybrid Intel/NVIDIA on the XPU wheel: torch.cuda.is_available() is False and the machine
-    still runs on its GPU, because _detect_hardware_locked falls through CUDA -> XPU. Reporting
-    a CPU verdict there is a false alarm about a working host (#8473)."""
+    still runs on its GPU, because _detect_hardware_locked falls through CUDA -> XPU (#8473)."""
     venv = _make_venv(tmp_path, stdout = _answer("0", xpu = "1"))
     result = _run_block(block, venv, tmp_path, nvidia = True)
     out = result["stdout"]
@@ -690,8 +659,7 @@ def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
 
 
 def test_the_verbose_line_does_not_call_zero_cuda_devices_the_total(block, tmp_path):
-    """device_count() is CUDA-only. On the host the XPU answer suppresses it is 0 while torch
-    uses the Intel GPU, so "torch sees 0 GPU(s)" reads as a failure on a working machine."""
+    """device_count() is CUDA-only, so it is 0 on the host the XPU answer suppresses."""
     venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+xpu", xpu = "1"))
     result = _run_block(block, venv, tmp_path, nvidia = True, env = {"UNSLOTH_VERBOSE": "1"})
     out = result["stdout"]
@@ -700,8 +668,7 @@ def test_the_verbose_line_does_not_call_zero_cuda_devices_the_total(block, tmp_p
 
 
 def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
-    """The suppression is XPU-specific, not a blanket mute: with no XPU the same
-    invisible-GPU host must still be reported."""
+    """The suppression is XPU-specific, not a blanket mute."""
     venv = _make_venv(tmp_path, stdout = _answer("0", xpu = "0"))
     result = _run_block(block, venv, tmp_path, nvidia = True)
     assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
@@ -709,8 +676,7 @@ def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
 
 def test_a_colab_runtime_probes_the_interpreter_its_deps_went_into(block, tmp_path):
     """Colab has no Unsloth venv: setup.sh installs the deps into the SYSTEM python and sets
-    _COLAB_NO_VENV. A guard requiring $VENV_DIR/bin/python skipped the probe there, so an NVIDIA
-    Colab runtime whose torch cannot see the GPU got no diagnostic."""
+    _COLAB_NO_VENV, so a guard requiring $VENV_DIR/bin/python skipped the probe there."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
@@ -738,8 +704,7 @@ def test_a_working_colab_runtime_prints_no_mismatch(block, tmp_path):
 
 
 def test_a_colab_probe_that_does_not_answer_still_warns(block, tmp_path):
-    """The GGUF-only silence keys on the venv's torch on disk; Colab has no venv layout while
-    its runtimes ship torch, so falling back to silence there would hide the crash."""
+    """The GGUF-only silence keys on the venv's torch on disk, and Colab has no venv layout."""
     venv = _make_venv(tmp_path, exit_code = 1, torch_on_disk = False)
     result = _run_block(
         block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
@@ -749,8 +714,7 @@ def test_a_colab_probe_that_does_not_answer_still_warns(block, tmp_path):
 
 
 def test_the_venv_interpreter_still_wins_where_there_is_a_venv(block, tmp_path):
-    """Colab support must not redirect the normal path onto a system python carrying a
-    different torch, and must not add a second launch to it."""
+    """Colab support must not redirect the normal path onto a system python."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -766,9 +730,8 @@ def test_the_venv_interpreter_still_wins_where_there_is_a_venv(block, tmp_path):
 
 
 def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
-    """The suppression must turn on what the probe SAW, not the wheel label: a +xpu wheel with
-    a broken Intel runtime answers False for both and falls to CPU exactly like the hosts this
-    exists for, so a disk-only 'is this an XPU wheel' test would silence it (#8473)."""
+    """The suppression must turn on what the probe SAW, not the wheel label: a +xpu wheel with a
+    broken Intel runtime falls to CPU exactly like the hosts this exists for (#8473)."""
     venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+xpu", xpu = "0"))
     result = _run_block(block, venv, tmp_path, nvidia = True)
     assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
@@ -778,11 +741,9 @@ def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
 # ── The supported-arch gate: hosts Unsloth deliberately puts on CPU torch ────────────────────
 #
 # _setup_amd_detected is "an AMD GPU is present", not "Unsloth installed GPU wheels for it".
-# install.sh routes Vega / RDNA1 / unreadable-arch hosts to CPU torch on purpose, so without the
-# gate every one of them is told, in red, on every `unsloth studio update`, that its CPU torch is
-# a fault worth filing. UNSLOTH_TORCH_BACKEND cannot cover them: `studio update` runs setup.sh and
-# never install.sh, so it is unset on exactly the repeat path. Mirrors $AmdHasGpuWheels
-# (setup.ps1:2593), which has carried this gate since it was written.
+# install.sh routes Vega / RDNA1 / unreadable-arch hosts to CPU torch on purpose, and
+# UNSLOTH_TORCH_BACKEND cannot cover them: `studio update` runs setup.sh and never install.sh, so
+# it is unset on exactly the repeat path. Mirrors $AmdHasGpuWheels (setup.ps1:2593).
 
 
 @pytest.mark.parametrize(
@@ -794,8 +755,7 @@ def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
     ],
 )
 def test_an_arch_with_no_gpu_wheels_is_not_accused(block, tmp_path, gfx, marketing):
-    """CPU torch is the CORRECT outcome on these hosts, so the report is a false accusation
-    against a machine working exactly as designed -- and it repeats on every update."""
+    """CPU torch is the CORRECT outcome on these hosts, and the report repeats on every update."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx, marketing = marketing)
     assert "gpu check" not in result["stdout"]
@@ -807,11 +767,9 @@ def test_an_arch_with_no_gpu_wheels_is_not_accused(block, tmp_path, gfx, marketi
 
 
 def test_an_unreadable_arch_is_not_accused(block, tmp_path):
-    """The KFD-sysfs path: /dev/kfd names an AMD vendor_id but no gfx arch is available from it,
-    and rocminfo/amd-smi are missing. get_torch_index_url cannot route GPU wheels without an
-    arch (install.sh:3330 warns and returns the cpu index), so there is nothing to reconcile.
-    Blast radius is why this case matters: it is EVERY AMD host whose arch cannot be read, not a
-    named arch, and all of them get CPU torch by definition."""
+    """The KFD-sysfs path: /dev/kfd names an AMD vendor_id but no gfx arch is readable.
+    get_torch_index_url cannot route GPU wheels without an arch (install.sh:3330 warns and
+    returns the cpu index), and this is EVERY such host, not a named arch."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "", marketing = "")
     assert "gpu check" not in result["stdout"]
@@ -821,9 +779,7 @@ def test_an_unreadable_arch_is_not_accused(block, tmp_path):
 
 @pytest.mark.parametrize("gfx", ["gfx1201", "gfx1100", "gfx1030", "gfx90a", "gfx908"])
 def test_an_arch_with_gpu_wheels_is_still_reported(block, tmp_path, gfx):
-    """The other direction, and the whole point of #8473: these arches DO get GPU wheels, so
-    CPU torch on them is the contradiction the report exists for. A gate that silenced these
-    would delete the feature."""
+    """The other direction, and the whole point of #8473: these arches DO get GPU wheels."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
@@ -832,12 +788,11 @@ def test_an_arch_with_gpu_wheels_is_still_reported(block, tmp_path, gfx):
 
 @pytest.mark.parametrize("gfx", ["gfx942", "gfx950", "gfx906", "gfx900"])
 def test_the_linux_only_arches_are_reported(block, tmp_path, gfx):
-    """These four are why the POSIX list is not a copy of setup.ps1's. gfx906 (MI50 / Radeon VII)
-    also gets GPU wheels from Unsloth's own rocm6.3 reroute (install.sh:4298); all four are built
-    into the generic rocm wheels a ROCm host resolves (upstream PYTORCH_ROCM_ARCH carries
-    gfx900/906/908/90a/942 for every release 2.6-2.11, and gfx950 from 2.10). None are in
-    $_rocmWheelArches because AMD publishes no Windows wheels for them, so copying that list
-    verbatim would go silent on a broken MI300 -- the flagship Linux part."""
+    """These four are why the POSIX list is not a copy of setup.ps1's. gfx906 also gets GPU
+    wheels from Unsloth's own rocm6.3 reroute (install.sh:4298); all four are built into the
+    generic rocm wheels a ROCm host resolves (upstream PYTORCH_ROCM_ARCH carries
+    gfx900/906/908/90a/942 for 2.6-2.11, gfx950 from 2.10). None are in $_rocmWheelArches
+    because AMD publishes no Windows wheels for them."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
@@ -852,10 +807,8 @@ def test_the_linux_only_arches_are_reported(block, tmp_path, gfx):
     ],
 )
 def test_a_gpu_index_pin_reconciles_even_on_an_unwheeled_arch(block, tmp_path, env):
-    """An explicit GPU index pin is a request for GPU wheels, so torch failing to see the GPU
-    afterwards is worth reporting even on an arch with no wheels of its own -- the user asked
-    for that index and install.sh honours the pin verbatim. Matches $_amdPinIsGpu
-    (setup.ps1:2664) rather than inventing a third behaviour for the same situation."""
+    """An explicit GPU index pin is a request for GPU wheels, which install.sh honours verbatim
+    even on an arch with no wheels of its own. Matches $_amdPinIsGpu (setup.ps1:2664)."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1010", env = env)
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
@@ -888,7 +841,7 @@ def test_a_cpu_pin_still_wins_over_a_wheeled_arch(block, tmp_path):
 )
 def test_the_arch_is_normalised_before_the_membership_test(block, tmp_path, gfx, reported):
     """$_setup_gfx takes UNSLOTH_ROCM_GFX_ARCH verbatim (setup.sh:1837), so an unnormalised
-    comparison would both miss real GPU hosts and hand every accused host a one-variable bypass."""
+    comparison hands every accused host a one-variable bypass."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
     assert ("PyTorch cannot see the AMD GPU reported above" in result["stdout"]) is reported
@@ -910,8 +863,7 @@ def _posix_wheel_arches() -> set[str]:
     text = SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_setup_amd_has_gpu_wheels=false")
     end = text.index("esac", start)
-    # gfx90[aA] -> gfx90a: the arms carry a letter class because the arch is normalised with
-    # shell expansion only (no `tr`), so the class is part of the real pattern.
+    # gfx90[aA] -> gfx90a: the letter class is part of the real pattern, not a typo.
     body = re.sub(r"\[([a-zA-Z])[a-zA-Z]*\]", lambda m: m.group(1).lower(), text[start:end])
     found = set(re.findall(r"gfx[0-9a-z]+", body))
     assert found, "the arch list is no longer parseable out of setup.sh"
@@ -939,9 +891,7 @@ def _install_sh_family_arches() -> set[str]:
 
 
 def test_every_arch_unsloth_routes_gpu_wheels_to_is_in_the_posix_gate():
-    """The gate's authority is install.sh's own routing, not AMD's support matrix: an arch added
-    to _amd_arch_index_family_for_gfx and not here would get GPU wheels and then be silently
-    unreconcilable, which is the failure the gate must not introduce."""
+    """The gate's authority is install.sh's own routing, not AMD's support matrix."""
     missing = _install_sh_family_arches() - _posix_wheel_arches()
     assert not missing, (
         f"install.sh routes {sorted(missing)} to AMD per-arch GPU wheels, but setup.sh's "
@@ -950,9 +900,8 @@ def test_every_arch_unsloth_routes_gpu_wheels_to_is_in_the_posix_gate():
 
 
 def test_the_posix_gate_covers_the_windows_list():
-    """setup.sh's list is a superset of setup.ps1's, never a divergent one. The delta is
-    Linux-only by construction (gfx906 / gfx942 / gfx950 have no Windows ROCm wheels), so an
-    arch present on Windows and absent here is drift, not a platform difference."""
+    """setup.sh's list is a superset of setup.ps1's, never a divergent one: the delta is
+    Linux-only by construction (gfx906 / gfx942 / gfx950 have no Windows ROCm wheels)."""
     missing = _windows_wheel_arches() - _posix_wheel_arches()
     assert (
         not missing
@@ -965,8 +914,7 @@ def test_the_posix_gate_covers_the_windows_list():
 
 
 def test_the_known_unwheeled_arches_are_absent_from_both_lists():
-    """Pins the reported hosts themselves: an arch quietly added here would restore the false
-    accusation these tests exist to prevent."""
+    """Pins the reported hosts themselves."""
     for arch in ("gfx803", "gfx1010", "gfx1011", "gfx1012"):
         assert arch not in _posix_wheel_arches()
         assert arch not in _windows_wheel_arches()
