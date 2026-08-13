@@ -456,7 +456,7 @@ test("a read displaced by a forced one does not publish", () => {
   // the Reload button that the forced read had just cleared.
   assert.match(
     client.replace(/\s+/g, " "),
-    /inFlightVramBudget === read &&/,
+    /if \( inFlightVramBudget !== read \|\|/,
   );
 });
 
@@ -495,7 +495,7 @@ test("a read does not repaint over a write issued while it was in the air", () =
   assert.match(flat, /const generationAtRead = vramBudgetWriteGeneration;/);
   assert.match(
     flat,
-    /generationAtRead === vramBudgetWriteGeneration \? publishVramBudget/,
+    /generationAtRead !== vramBudgetWriteGeneration \) \{ throw new Error\("superseded"\)/,
   );
 });
 
@@ -507,4 +507,22 @@ test("Manual with automatic layers still shows the budget", () => {
     pageSource.replace(/\s+/g, " "),
     /\{!isDiffusion && \(!isManual \|\| autoLayers\) && gpuDevices\.length > 0 && \( <VramBudgetRow \/> \)\}/,
   );
+});
+
+test("a superseded read is refused, not handed back to the caller", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  // Holding back the publish is not enough: the row applies the return value with
+  // setSettings, so a read overtaken by a save would put back the isStored and
+  // reloadRequired that save had just changed. Null is already this function's
+  // "no usable answer", which every caller treats as keep what you have.
+  const flat = client.replace(/\s+/g, " ");
+  assert.match(flat, /throw new Error\("superseded"\); \}/);
+  assert.match(flat, /try \{ return await inFlightVramBudget; \} catch \{/);
+  const row = vramBudgetRowSource().replace(/\s+/g, " ");
+  assert.match(row, /if \(cancelled \|\| !loaded\) \{ return; \}/);
 });

@@ -182,15 +182,22 @@ export async function loadVramBudgetSettings(
   if (!inFlightVramBudget) {
     const read: Promise<VramBudgetSettings> = pendingWrites
       .then(fetchVramBudgetSettings)
-      .then((settings) =>
-        // Publish only while this is still the current read. A read displaced by a
-        // forced one describes the child being replaced, and answering late would
-        // restore the notice, and the Reload button, that the forced read cleared.
-        inFlightVramBudget === read &&
-        generationAtRead === vramBudgetWriteGeneration
-          ? publishVramBudget(settings)
-          : settings,
-      )
+      .then((settings) => {
+        // Answer only while this is still the current read and nothing newer has
+        // been written. A read displaced by a forced one describes the child being
+        // replaced, and a read overtaken by a save describes the fraction that save
+        // replaced; either would restore state the newer answer had just corrected.
+        // Refused rather than merely left unpublished, because the caller applies
+        // the return value directly and would put back the same stale isStored and
+        // reloadRequired the publish was held back for.
+        if (
+          inFlightVramBudget !== read ||
+          generationAtRead !== vramBudgetWriteGeneration
+        ) {
+          throw new Error("superseded");
+        }
+        return publishVramBudget(settings);
+      })
       .finally(() => {
         // Identity-checked: a forced read displaces this one, and clearing blindly
         // would drop the newer request's handle and leave it unshared.
@@ -203,6 +210,8 @@ export async function loadVramBudgetSettings(
   try {
     return await inFlightVramBudget;
   } catch {
+    // Null is already the "no usable answer" contract here: an older backend with
+    // no such route reads the same way, and every caller keeps what it has.
     return null;
   }
 }
