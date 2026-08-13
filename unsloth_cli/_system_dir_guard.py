@@ -418,14 +418,16 @@ _INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE",))
 # once we are gone: huggingface_hub calls expandvars on HF_HOME (and on the
 # XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE, and Studio
 # calls it on SENTENCE_TRANSFORMERS_HOME (`studio/backend/utils/utils.py`).
-_EXPANDED_ENV = frozenset((
-    "HF_HOME",
-    "HF_HUB_CACHE",
-    "HUGGINGFACE_HUB_CACHE",
-    "HF_ASSETS_CACHE",
-    "XDG_CACHE_HOME",
-    "SENTENCE_TRANSFORMERS_HOME",
-))
+_EXPANDED_ENV = frozenset(
+    (
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_ASSETS_CACHE",
+        "XDG_CACHE_HOME",
+        "SENTENCE_TRANSFORMERS_HOME",
+    )
+)
 
 # A bare on/off token is skipped by the pre-quant allowlist precisely so there
 # is no "allow all" mode (`diffusion_prequant.py`, `_allowed_prequant_roots`);
@@ -460,7 +462,6 @@ def pin_relative_sys_path(
     """
     if syspath is None:
         import sys as _sys
-
         syspath = _sys.path
     pinned = []
     for index, entry in enumerate(syspath):
