@@ -461,7 +461,11 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                # Both names: install.ps1 asks CIM (Get-WmiObject is gone from PowerShell 7),
+                # and the stub stays under the old name so a revert is caught rather than
+                # silently answering nothing through the block's own catch.
+                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                "function Get-WmiObject { throw 'Get-WmiObject is not available in PowerShell 7' }",
                 "function substep { param($a, $b) }",
                 "$HasROCm = $false",
                 "$ROCmGpuLabel = $null",
