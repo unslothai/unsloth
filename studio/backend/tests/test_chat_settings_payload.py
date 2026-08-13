@@ -18,6 +18,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from routes.chat_history import ChatSettingsPayload  # noqa: E402
+from storage.studio_db import _deep_merge_settings  # noqa: E402
 
 
 def test_mirrored_settings_round_trip():
@@ -63,6 +64,28 @@ def test_mirrored_settings_round_trip():
 def test_thread_rag_source_keeps_its_shape():
     payload = ChatSettingsPayload.model_validate({"ragSource": {"type": "thread"}})
     assert payload.model_dump(exclude_unset = True) == {"ragSource": {"type": "thread"}}
+
+
+def test_rag_source_replaces_rather_than_merges():
+    """A thread pick over a stored kb pick must not keep kbId.
+
+    The union's thread variant forbids extra fields, so a merged
+    {"type": "thread", "kbId": ...} is out of contract the moment it is read back.
+    """
+    merged = _deep_merge_settings(
+        {"ragSource": {"type": "kb", "kbId": "notes"}},
+        {"ragSource": {"type": "thread"}},
+    )
+    assert merged["ragSource"] == {"type": "thread"}
+    ChatSettingsPayload.model_validate(merged)
+
+
+def test_other_nested_settings_still_merge():
+    merged = _deep_merge_settings(
+        {"inferenceParams": {"temperature": 0.7, "topP": 0.9}},
+        {"inferenceParams": {"temperature": 0.2}},
+    )
+    assert merged["inferenceParams"] == {"temperature": 0.2, "topP": 0.9}
 
 
 def test_unset_fields_stay_out_of_the_merge():

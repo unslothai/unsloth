@@ -34,6 +34,7 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import { normalizeStoredRagAutoInject } from "../utils/mirrored-chat-settings";
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
@@ -174,10 +175,9 @@ function loadRagMode(): RagMode {
 }
 
 function loadRagAutoInject(): RagAutoInject {
-  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
-  if (raw === "auto" || raw === "on" || raw === "off") return raw;
-  // Legacy boolean migration: false -> Off, else Auto.
-  return raw === "false" ? "off" : "auto";
+  return normalizeStoredRagAutoInject(
+    loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT),
+  );
 }
 
 function loadRagTopK(): number {
@@ -313,11 +313,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Discriminated unions, not partial patches: merging a `thread` pick into a
+// stored `kb` one keeps `kbId`, which the backend's thread variant forbids.
+const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
+
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
   for (const [key, value] of Object.entries(more)) {
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
-    if (isPlainObject(prev) && isPlainObject(value)) {
+    if (
+      !ATOMIC_SETTING_KEYS.has(key) &&
+      isPlainObject(prev) &&
+      isPlainObject(value)
+    ) {
       intoAny[key] = { ...prev, ...value };
     } else {
       intoAny[key] = value;
@@ -389,6 +397,8 @@ function writeStorageValue(key: string, raw: string): void {
 type MirroredSettingCodec = {
   encode: (value: unknown) => string;
   decode: (raw: string) => unknown;
+  /** Value to seed the backend with, for a setting stored under older keys. */
+  readForBackfill?: () => unknown;
 };
 
 const BOOLEAN_SETTING: MirroredSettingCodec = {
@@ -418,6 +428,11 @@ const JSON_SETTING: MirroredSettingCodec = {
       return undefined;
     }
   },
+};
+
+const RAG_AUTOINJECT_SETTING: MirroredSettingCodec = {
+  encode: STRING_SETTING.encode,
+  decode: normalizeStoredRagAutoInject,
 };
 
 /**
@@ -472,11 +487,24 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
     ...BOOLEAN_SETTING,
   },
-  permissionMode: { storageKey: CHAT_PERMISSION_MODE_KEY, ...STRING_SETTING },
+  permissionMode: {
+    storageKey: CHAT_PERMISSION_MODE_KEY,
+    ...STRING_SETTING,
+    // A profile predating permission levels holds only the confirm toggle, and
+    // loadPermissionMode derives the level from it.
+    readForBackfill: () =>
+      readStorageValue(CHAT_PERMISSION_MODE_KEY) !== null ||
+      loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY) !== null
+        ? loadPermissionMode()
+        : undefined,
+  },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
   ragTopK: { storageKey: CHAT_RAG_TOP_K_KEY, ...NUMBER_SETTING },
-  ragAutoInject: { storageKey: CHAT_RAG_AUTOINJECT_KEY, ...STRING_SETTING },
+  ragAutoInject: {
+    storageKey: CHAT_RAG_AUTOINJECT_KEY,
+    ...RAG_AUTOINJECT_SETTING,
+  },
   ragAutoInjectMinScore: {
     storageKey: CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
     ...NUMBER_SETTING,
@@ -498,10 +526,7 @@ const MIRRORED_SETTINGS = {
     ...BOOLEAN_SETTING,
   },
 } satisfies Partial<
-  Record<
-    ScalarSettingKey | StorageOnlySettingKey,
-    { storageKey: string } & MirroredSettingCodec
-  >
+  Record<ScalarSettingKey, { storageKey: string } & MirroredSettingCodec>
 >;
 
 type MirroredSettingKey = keyof typeof MIRRORED_SETTINGS;
@@ -516,23 +541,37 @@ const MIRRORED_SETTING_BY_STORAGE_KEY: ReadonlyMap<
   ]),
 );
 
-/**
- * Send a changed mirrored setting to the backend. Writes are held back until
- * hydration has run: before the installation's values are known, the local
- * cache is empty on a fresh browser and the model-load path would otherwise
- * push its defaults over what another browser already saved. Anything only
- * localStorage holds at that point is backfilled by `backfillMirroredSettings`.
- */
 let mirroredSettingsHydrated = false;
+let preHydrationPatch: SettingsPatch | null = null;
 
+/**
+ * Send a changed mirrored setting to the backend. An edit made before the
+ * initial GET lands is held rather than dropped: the request would race the
+ * hydrating value, so it is replayed once hydration has applied the server's.
+ * The mutation version is bumped straight away either way, so hydration leaves
+ * a field the user has just set alone.
+ */
 function mirrorSettingToBackend(key: string, raw: string): void {
-  if (!mirroredSettingsHydrated) return;
   const setting = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
   if (!setting) return;
   const value = setting.decode(raw);
   if (value === undefined) return;
-  bumpMirroredSettingVersion(setting.field);
-  saveSettingsPatch({ [setting.field]: value } as SettingsPatch);
+  scalarSettingMutationVersions[setting.field] += 1;
+  const patch = { [setting.field]: value } as SettingsPatch;
+  if (!mirroredSettingsHydrated) {
+    preHydrationPatch ??= {};
+    mergePatch(preHydrationPatch, patch);
+    return;
+  }
+  saveSettingsPatch(patch);
+}
+
+/** Replay the edits made while the initial GET was still in flight. */
+function flushPreHydrationSettings(): void {
+  if (!preHydrationPatch) return;
+  const patch = preHydrationPatch;
+  preHydrationPatch = null;
+  saveSettingsPatch(patch);
 }
 
 /**
@@ -1517,11 +1556,9 @@ type ScalarSettingKey =
   | "ragCaptionFigures"
   | "expandQuantizations"
   | "showAllQuantizations"
-  | "fitOnDeviceOnly";
-
-// Standing preferences the model-load path reads straight from storage instead
-// of the store, so hydration refreshes their cache rather than any store field.
-type StorageOnlySettingKey = "speculativeType" | "gpuMemoryMode";
+  | "fitOnDeviceOnly"
+  | "speculativeType"
+  | "gpuMemoryMode";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -1532,7 +1569,6 @@ type PresetHydrationVersions = {
 type SettingsHydrationVersions = {
   inferenceParams: Record<PersistedInferenceParamKey, number>;
   scalarSettings: Record<ScalarSettingKey, number>;
-  storageOnlySettings: Record<StorageOnlySettingKey, number>;
   presets: PresetHydrationVersions;
 };
 
@@ -1583,12 +1619,9 @@ const SCALAR_SETTING_KEYS = [
   "expandQuantizations",
   "showAllQuantizations",
   "fitOnDeviceOnly",
-] as const satisfies readonly ScalarSettingKey[];
-
-const STORAGE_ONLY_SETTING_KEYS = [
   "speculativeType",
   "gpuMemoryMode",
-] as const satisfies readonly StorageOnlySettingKey[];
+] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
@@ -1596,17 +1629,6 @@ const inferenceParamMutationVersions = Object.fromEntries(
 const scalarSettingMutationVersions = Object.fromEntries(
   SCALAR_SETTING_KEYS.map((key) => [key, 0]),
 ) as Record<ScalarSettingKey, number>;
-const storageOnlySettingMutationVersions = Object.fromEntries(
-  STORAGE_ONLY_SETTING_KEYS.map((key) => [key, 0]),
-) as Record<StorageOnlySettingKey, number>;
-
-function bumpMirroredSettingVersion(field: MirroredSettingKey): void {
-  if (field in scalarSettingMutationVersions) {
-    scalarSettingMutationVersions[field as ScalarSettingKey] += 1;
-    return;
-  }
-  storageOnlySettingMutationVersions[field as StorageOnlySettingKey] += 1;
-}
 
 function hasKeys(value: object): boolean {
   return Object.keys(value).length > 0;
@@ -1616,28 +1638,12 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
   return {
     inferenceParams: { ...inferenceParamMutationVersions },
     scalarSettings: { ...scalarSettingMutationVersions },
-    storageOnlySettings: { ...storageOnlySettingMutationVersions },
     presets: {
       customPresets: customPresetsMutationVersion,
       activePreset: activePresetMutationVersion,
       activePresetSource: activePresetSourceMutationVersion,
     },
   };
-}
-
-function mirroredSettingVersion(field: MirroredSettingKey): number {
-  return field in scalarSettingMutationVersions
-    ? scalarSettingMutationVersions[field as ScalarSettingKey]
-    : storageOnlySettingMutationVersions[field as StorageOnlySettingKey];
-}
-
-function snapshotMirroredSettingVersion(
-  field: MirroredSettingKey,
-  versions: SettingsHydrationVersions,
-): number {
-  return field in versions.scalarSettings
-    ? versions.scalarSettings[field as ScalarSettingKey]
-    : versions.storageOnlySettings[field as StorageOnlySettingKey];
 }
 
 /** Refresh the localStorage cache from the values hydration just applied. */
@@ -1650,8 +1656,7 @@ function cacheHydratedSettings(
     const value = settings[field];
     if (value === undefined) continue;
     if (
-      mirroredSettingVersion(field) !==
-      snapshotMirroredSettingVersion(field, versions)
+      scalarSettingMutationVersions[field] !== versions.scalarSettings[field]
     ) {
       continue;
     }
@@ -1664,14 +1669,21 @@ function cacheHydratedSettings(
  * Without it an existing install would keep its preferences local until each
  * one is next changed.
  */
+function readStoredSettingValue(
+  setting: { storageKey: string } & MirroredSettingCodec,
+): unknown {
+  const raw = readStorageValue(setting.storageKey);
+  return raw === null ? undefined : setting.decode(raw);
+}
+
 function backfillMirroredSettings(settings: PersistedChatSettings): void {
   const patch: SettingsPatch = {};
   for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
     const field = name as MirroredSettingKey;
     if (settings[field] !== undefined) continue;
-    const raw = readStorageValue(setting.storageKey);
-    if (raw === null) continue;
-    const value = setting.decode(raw);
+    const value = setting.readForBackfill
+      ? setting.readForBackfill()
+      : readStoredSettingValue(setting);
     if (value === undefined) continue;
     (patch as Record<string, unknown>)[field] = value;
   }
@@ -1994,12 +2006,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           cacheHydratedSettings(settings, hydrationVersions);
           mirroredSettingsHydrated = true;
           backfillMirroredSettings(settings);
+          // After the backfill, so a startup edit wins over the stored value.
+          flushPreHydrationSettings();
         }
       } catch {
         // Hydrate failed: treat as hydrated-with-defaults so future setParams
         // calls reach saveSettingsPatch (which toasts on real network failure).
         warnSettingsPersistenceFailure();
         mirroredSettingsHydrated = true;
+        flushPreHydrationSettings();
         set({ settingsHydrated: true });
       } finally {
         settingsHydrationPromise = null;

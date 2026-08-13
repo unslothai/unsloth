@@ -14,6 +14,7 @@ import type { PersistedChatSettings } from "../src/features/chat/api/chat-settin
 import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
+  normalizeStoredRagAutoInject,
 } from "../src/features/chat/utils/mirrored-chat-settings.ts";
 
 function sanitized(value: Record<string, unknown>): PersistedChatSettings {
@@ -108,6 +109,17 @@ test("non-string domains are stripped from the research policy", () => {
       },
     },
   );
+});
+
+// Storage predating the three-way control holds the old booleans. Backfilling one
+// raw would send a value the backend rejects, so the preference never carries.
+test("a legacy RAG auto-inject boolean is migrated before it is sent", () => {
+  assert.equal(normalizeStoredRagAutoInject("false"), "off");
+  assert.equal(normalizeStoredRagAutoInject("true"), "auto");
+  assert.equal(normalizeStoredRagAutoInject("on"), "on");
+  assert.equal(normalizeStoredRagAutoInject("off"), "off");
+  assert.equal(normalizeStoredRagAutoInject("auto"), "auto");
+  assert.equal(normalizeStoredRagAutoInject("nonsense"), "auto");
 });
 
 // The legacy localStorage import runs only against a record with nothing in it,

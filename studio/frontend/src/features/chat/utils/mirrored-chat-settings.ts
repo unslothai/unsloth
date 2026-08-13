@@ -147,6 +147,18 @@ export function assignSanitizedMirroredSettings(
   if (ragSource) settings.ragSource = ragSource;
 }
 
+/**
+ * Map a stored RAG auto-inject value onto the three-way control. Storage
+ * predating that control holds "true"/"false", which the backend rejects, so
+ * the migration has to run before a backfill sends the stored value.
+ */
+export function normalizeStoredRagAutoInject(
+  raw: string,
+): "auto" | "on" | "off" {
+  if (raw === "auto" || raw === "on" || raw === "off") return raw;
+  return raw === "false" ? "off" : "auto";
+}
+
 /** Whether `settings` carries none of the mirrored values. */
 export function hasNoMirroredSettings(
   settings: PersistedChatSettings,
