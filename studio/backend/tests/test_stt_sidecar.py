@@ -579,6 +579,58 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
     assert sidecar.is_loading() is False
 
 
+def test_a_late_cancelled_worker_that_outlived_the_kill_stays_resident(monkeypatch):
+    # The same late cancel, against the child that answers False: it survived
+    # terminate and kill and still holds its accelerator memory. Reporting
+    # nothing resident is what the cancel is read as, so training would be
+    # admitted against memory that is not free.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    workers = []
+
+    class UnkillableLateCancelWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closes = 0
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+            assert sidecar.cancel_pending_load() is True
+
+        def is_alive(self):
+            return True
+
+        def close(self):
+            self.closes += 1
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker",
+        UnkillableLateCancelWorker,
+        raising = True,
+    )
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    # Once. A second terminate-and-kill round on the way out would only spend
+    # another wait on a child that just proved it does not answer them.
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cpu"
+    assert sidecar.is_loading() is False
+
+
 def _install_unkillable_worker(monkeypatch):
     """A worker whose child outlived terminate and kill, so close() answers False."""
     workers = []

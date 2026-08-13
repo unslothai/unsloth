@@ -1262,6 +1262,23 @@ class WhisperSttSidecar:
             self._schedule_idle_unload_locked()
         return released
 
+    def _keep_survivor_locked(self, engine, model_id: str) -> None:
+        """Hold an engine whose child outlived its close, so it stays accounted.
+
+        Its device is the one the child reports, which after a CPU retry is not
+        the one this load started on. The idle timer is rearmed, so the release
+        is tried again rather than the survivor being stranded here.
+        """
+        self._engine = engine
+        self._model_id = model_id
+        self._device = getattr(engine, "device", None)
+        logger.error(
+            "The dictation worker for %s outlived the kill and still holds its memory; "
+            "keeping it resident so it is not reported unloaded",
+            model_id,
+        )
+        self._schedule_idle_unload_locked()
+
     def _release_dead_engine_locked(self) -> None:
         """Drop a worker whose process is gone, so the next use loads a fresh one."""
         if self._engine is not None and not _engine_is_alive(self._engine):
@@ -1454,7 +1471,18 @@ class WhisperSttSidecar:
                 # and the check that rejects it. Nothing installed the candidate,
                 # and dropping the handle does not end the process holding the
                 # context that training is waiting for, so close it here.
-                _close_engine(candidate)
+                if not _close_engine(candidate):
+                    # It outlived terminate and kill, so it is still holding the
+                    # memory this cancel was made to free. Keep it, for the same
+                    # reason _release_engine_locked keeps its own survivor:
+                    # reporting nothing resident is what lets training be
+                    # admitted against memory that is not free. Nothing was
+                    # installed over, since a candidate exists only after the
+                    # resident was released.
+                    self._keep_survivor_locked(candidate, model_id)
+                    candidate = None
+                    _clear_device_cache(device)
+                    raise
                 candidate = None
                 if resident_released:
                     # _release_engine_locked already collected, and the candidate was dropped
