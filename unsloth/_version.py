@@ -19,4 +19,4 @@
 # and the torch-free MLX path in __init__.py imports it directly, which it cannot do for
 # models/_utils.py (torch, transformers, trl, peft, Triton). That is why the MLX branch
 # used to borrow unsloth_zoo's version, reporting a different package's number.
-__version__ = "2026.8.15"
+__version__ = "2026.8.16"

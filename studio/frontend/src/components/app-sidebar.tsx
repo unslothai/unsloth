@@ -747,25 +747,38 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // "More" flyout. Opens on click or hover; close is delayed so the pointer can cross the gap to the panel.
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
+  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
+  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
+  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
+  const moreOpen = moreHoverOpen || morePinnedOpen;
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const openMore = useCallback(() => {
-    if (moreCloseTimer.current) {
-      clearTimeout(moreCloseTimer.current);
-      moreCloseTimer.current = null;
-    }
-    setMoreOpen(true);
+  const clearMoreCloseTimer = useCallback(() => {
+    if (!moreCloseTimer.current) return;
+    clearTimeout(moreCloseTimer.current);
+    moreCloseTimer.current = null;
   }, []);
-  const closeMoreSoon = useCallback(() => {
-    if (moreCloseTimer.current) clearTimeout(moreCloseTimer.current);
-    moreCloseTimer.current = setTimeout(() => setMoreOpen(false), 180);
+  const openMorePreview = useCallback(() => {
+    clearMoreCloseTimer();
+    setMoreHoverOpen(true);
+  }, [clearMoreCloseTimer]);
+  const closeMorePreviewSoon = useCallback(() => {
+    clearMoreCloseTimer();
+    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
+  }, [clearMoreCloseTimer]);
+  const handleMoreOpenChange = useCallback((next: boolean) => {
+    if (next) {
+      setMorePinnedOpen(true);
+      return;
+    }
+    setMorePinnedOpen(false);
+    setMoreHoverOpen(false);
   }, []);
   useEffect(
     () => () => {
-      if (moreCloseTimer.current) clearTimeout(moreCloseTimer.current);
+      clearMoreCloseTimer();
     },
-    [],
+    [clearMoreCloseTimer],
   );
   const [runsOpen, setRunsOpen] = useState(true);
 
@@ -2287,12 +2300,12 @@ export function AppSidebar() {
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem
-                  onPointerEnter={openMore}
-                  onPointerLeave={closeMoreSoon}
+                  onPointerEnter={openMorePreview}
+                  onPointerLeave={closeMorePreviewSoon}
                 >
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={setMoreOpen}
+                    onOpenChange={handleMoreOpenChange}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
@@ -2304,6 +2317,19 @@ export function AppSidebar() {
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
+                            onPointerDownCapture={(event) => {
+                              if (event.button !== 0 || event.ctrlKey) return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              event.currentTarget.focus({ preventScroll: true });
+                              clearMoreCloseTimer();
+                              if (morePinnedOpen) {
+                                setMorePinnedOpen(false);
+                                setMoreHoverOpen(false);
+                              } else {
+                                setMorePinnedOpen(true);
+                              }
+                            }}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
@@ -2331,9 +2357,9 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      onPointerEnter={openMore}
-                      onPointerLeave={closeMoreSoon}
                       className="w-48 p-1"
+                      onPointerEnter={openMorePreview}
+                      onPointerLeave={closeMorePreviewSoon}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];

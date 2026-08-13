@@ -17,7 +17,6 @@ export const de = {
     searchAriaLabel: "Suche: {noun}",
     modelSourceAriaLabel: "Modellquelle",
     hubSectionAriaLabel: "Hub-Bereich",
-    pickModelFile: "Modelldatei vom Datenträger auswählen",
     modelDropped: "Nicht mehr angeboten",
     modelDroppedByProvider: "{provider} · nicht mehr angeboten",
     modelDisabled: "Nicht aktiviert",
@@ -436,6 +435,12 @@ export const de = {
         launchAtLogin: "Unsloth bei der Anmeldung starten",
         launchAtLoginDescription:
           "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+
+        closeToTray: "In den Infobereich schließen",
+        closeToTrayDescription:
+          "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
+        closeToTraySaveError:
+          "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -740,6 +745,39 @@ export const de = {
         free: "{value} frei",
         total: "{value} gesamt",
       },
+      llamaBackend: {
+        title: "GGUF-Inferenz-Engine",
+        label: "Compute-Backend",
+        description: "Das Backend, mit dem llama.cpp GGUF-Modelle ausführt.",
+        runningOn: "llama.cpp läuft derzeit mit {backend}.",
+        hint: "Installiert den llama.cpp-Build für dieses Backend und behält ihn über Updates hinweg bei. Nützlich, wenn die automatische Wahl abstürzt oder dein GPU-Treiber sie nicht unterstützt. Es werden nur Backends aufgeführt, für die es einen Build für diesen Rechner gibt; das Training bleibt unberührt.",
+        autoWith: "Automatisch ({backend})",
+        apply: "Anwenden",
+        applying: "Wird installiert ...",
+        applyHint: "Lädt den neuen Build herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
+        applyHintWithSize: "Lädt {size} herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
+        switchedTo: "llama.cpp läuft jetzt mit {backend}.",
+        switchFailed: "Das llama.cpp-Backend konnte nicht geändert werden.",
+        switchInterrupted: "Der Wechsel wurde vor dem Abschluss unterbrochen.",
+        envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_CPP_BACKEND auf {backend} festgelegt; sie überschreibt diese Einstellung.",
+        backends: {
+          auto: "Automatisch",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Es wurde keine von Unsloth verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
+          localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das Unsloth nicht ersetzt.",
+          sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
+          unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+        },
+        // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
+      },
       modelMemory: {
         title: "Modellspeicher",
         keepResident: "Modell im GPU-Speicher behalten",
@@ -960,12 +998,14 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in „Zuletzt verwendet“.",
+        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
       importedChatCount:
         "{count} Konversationen in „Zuletzt verwendet“ importiert.",
+      importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
+      importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",

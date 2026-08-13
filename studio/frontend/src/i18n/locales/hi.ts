@@ -17,7 +17,6 @@ export const hi = {
     searchAriaLabel: "{noun} खोजें",
     modelSourceAriaLabel: "मॉडल स्रोत",
     hubSectionAriaLabel: "Hub सेक्शन",
-    pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
     modelDropped: "अब उपलब्ध नहीं",
     modelDroppedByProvider: "{provider} · अब उपलब्ध नहीं",
     modelDisabled: "सक्षम नहीं",
@@ -422,6 +421,11 @@ export const hi = {
         launchAtLogin: "लॉगिन पर Unsloth चलाएं",
         launchAtLoginDescription:
           "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
+
+        closeToTray: "सिस्टम ट्रे में बंद करें",
+        closeToTrayDescription:
+          "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
+        closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
@@ -719,6 +723,39 @@ export const hi = {
         free: "{value} खाली",
         total: "{value} कुल",
       },
+      llamaBackend: {
+        title: "GGUF इनफ़रेंस इंजन",
+        label: "कंप्यूट बैकएंड",
+        description: "वह बैकएंड जिस पर llama.cpp GGUF मॉडल चलाता है।",
+        runningOn: "llama.cpp अभी {backend} पर चल रहा है।",
+        hint: "इस बैकएंड के लिए llama.cpp बिल्ड इंस्टॉल करता है और अपडेट के बाद भी वही रखता है। जब स्वचालित चुनाव क्रैश हो या आपका GPU ड्राइवर उसे सपोर्ट न करे, तब उपयोगी है। केवल वही बैकएंड दिखते हैं जिनका बिल्ड इस मशीन के लिए मौजूद है; ट्रेनिंग पर कोई असर नहीं पड़ता।",
+        autoWith: "स्वचालित ({backend})",
+        apply: "लागू करें",
+        applying: "इंस्टॉल हो रहा है...",
+        applyHint: "नया बिल्ड डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
+        applyHintWithSize: "{size} डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
+        switchedTo: "अब llama.cpp {backend} पर चल रहा है।",
+        switchFailed: "llama.cpp बैकएंड नहीं बदला जा सका।",
+        switchInterrupted: "स्विच पूरा होने से पहले बाधित हो गया।",
+        envLocked: "पर्यावरण चर UNSLOTH_LLAMA_CPP_BACKEND ने इसे {backend} पर तय किया है, जो इस सेटिंग पर भारी पड़ता है।",
+        backends: {
+          auto: "स्वचालित",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "कोई प्रबंधित llama.cpp इंस्टॉल नहीं मिला, इसलिए बदलने के लिए कोई बैकएंड नहीं है।",
+          localLink: "llama.cpp आपकी अपनी लिंक की हुई लोकल डायरेक्टरी है, इसलिए Unsloth उसे नहीं बदलेगा।",
+          sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
+          unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
+        },
+        // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
+        llamaBackendKeywords:
+          "llama.cpp backend gguf इनफ़रेंस cuda rocm hip vulkan metal cpu gpu एक्सेलेरेटर prebuilt बदलें इंजन",
+      },
       modelMemory: {
         title: "मॉडल मेमोरी",
         keepResident: "मॉडल को GPU मेमोरी में रखें",
@@ -932,12 +969,14 @@ export const hi = {
       exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
-        "JSONL, NDJSON या CSV एक्सपोर्ट को हाल के सेक्शन में इंपोर्ट करें।",
+        "Open WebUI, JSONL, NDJSON या CSV एक्सपोर्ट को Recents में इंपोर्ट करें।",
       importChatsAction: "इंपोर्ट करें",
       importNoConversations: "फ़ाइल में कोई वार्तालाप नहीं मिला।",
       importedOneChat: "1 वार्तालाप हाल के सेक्शन में इंपोर्ट किया गया।",
       importedChatCount:
         "{count} वार्तालाप हाल के सेक्शन में इंपोर्ट किए गए।",
+      importingChats: "चैट इंपोर्ट हो रही हैं: अब तक {count} ({percent}%)...",
+      importedChatCountPartial: "{count} बातचीत Recents में इंपोर्ट की गईं; {failed} सेव नहीं हो सकीं।",
       importFailed: "इंपोर्ट विफल रहा।",
       clearHistory: "चैट इतिहास साफ़ करें",
       clearHistoryDescription: "इस डिवाइस से चैट इतिहास हटाएं।",

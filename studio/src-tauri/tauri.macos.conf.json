@@ -1,5 +1,8 @@
 {
   "bundle": {
+    "resources": {
+      "../../install.sh": "install.sh"
+    },
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "infoPlist": "./Info.plist",
