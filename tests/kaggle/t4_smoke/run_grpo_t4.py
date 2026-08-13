@@ -53,10 +53,13 @@ recorded and never asserted, and that is not an oversight.
   seen are captured and reported. An engine that returns N empty strings
   scores them all the same, so the reward checks alone would call that a
   clean run.
-* At least one logged `grad_norm` must be finite and non-zero. Under fp16 on
-  this card every step can overflow and be skipped while loss, reward and
-  reward_std are all still logged, so without this the leg passes on a run
-  that generated, scored and updated nothing.
+* The optimizer must have applied something. Under fp16 on this card every
+  step can overflow and be skipped while loss, reward and reward_std are all
+  still logged, so without this the leg passes on a run that generated,
+  scored and updated nothing. Decided on the LoRA weights, fingerprinted
+  before and after training, with `grad_norm` as the fallback: a TRL version
+  that stops logging that field must not be able to take the assertion with
+  it. See training_evidence.py.
 * The final `fast_generate` runs with the TRAINED adapter, transferred into
   the engine with `save_lora` + `load_lora`. Generating with
   `lora_request=None` reads the base weights and passes whether or not the
@@ -82,6 +85,11 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from training_evidence import (  # noqa: E402
+    adapter_fingerprint,
+    adapter_update,
+    update_verdict,
+)
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
     flatten_versions,
@@ -339,9 +347,19 @@ def train(args, report: dict | None = None) -> dict:
         train_dataset = dataset,
     )
 
+    # The adapter before a single step, so whether the optimizer applied
+    # anything is a subtraction rather than a reading of what TRL chose to
+    # log. Under fp16 on this card every step can overflow and be skipped
+    # while loss, reward and reward_std are all still logged, and grad_norm
+    # is the only field that used to say so. See training_evidence.py.
+    adapter_before = adapter_fingerprint(model)
+    _log(f"adapter before training: {json.dumps(adapter_before)}")
+
     t0 = time.time()
     trainer.train()
     result["train_seconds"] = round(time.time() - t0, 1)
+    result["adapter_update"] = adapter_update(adapter_before, adapter_fingerprint(model))
+    _log(f"adapter update: {json.dumps(result['adapter_update'])}")
     result["log_history"] = [
         {
             k: v
@@ -415,14 +433,6 @@ def train(args, report: dict | None = None) -> dict:
     return result
 
 
-def _is_finite(value) -> bool:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return number == number and number not in (float("inf"), float("-inf"))
-
-
 def failures_for(result: dict, args) -> list[str]:
     """The GRPO assertions. See this file's docstring for why not the loss."""
     failures: list[str] = []
@@ -478,15 +488,25 @@ def failures_for(result: dict, args) -> list[str]:
     # Under fp16 on this card every step can overflow and be skipped while
     # loss, reward and reward_std are all still logged, and base-model
     # generation still returns text -- so the length check above is satisfied
-    # by a run that applied no optimizer update at all. Only decidable where
-    # grad_norm was logged: a trainer that stopped logging it says nothing.
-    norms = [m.get("grad_norm") for m in metrics if m.get("grad_norm") is not None]
-    applied = [g for g in norms if _is_finite(g) and float(g) != 0.0]
-    if norms and not applied:
+    # by a run that applied no optimizer update at all.
+    #
+    # Decided on the adapter itself, with grad_norm as the fallback. The
+    # earlier spelling was `if norms and not applied`, which passes on an
+    # EMPTY list: a TRL version that stops logging grad_norm removes the only
+    # instrument this leg had, and this leg saves no adapter to read back
+    # either. See training_evidence.py.
+    update = update_verdict(metrics, result.get("adapter_update"))
+    if update["verdict"] == "not_applied":
         failures.append(
-            f"no optimizer update was applied: every logged grad_norm is zero or "
-            f"non-finite ({norms}). The fp16 scaler skips the step it overflowed on, "
-            f"so this run generated, scored and updated nothing."
+            f"no optimizer update was applied: {update['detail']}. The fp16 scaler "
+            f"skips the step it overflowed on, so this run generated, scored and "
+            f"updated nothing."
+        )
+    elif update["verdict"] == "unverifiable":
+        failures.append(
+            f"whether the optimizer applied anything could not be established: "
+            f"{update['detail']}. Every other number this leg reports is produced "
+            f"by generation and scoring, which the base model does on its own."
         )
 
     lora = result.get("fast_generate_lora")

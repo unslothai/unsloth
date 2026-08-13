@@ -1445,6 +1445,7 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
     assert set(files) == {
         "versions.py",
         "canary_dataset.jsonl",
+        "training_evidence.py",
         "run_t4_smoke.py",
         "determinism.py",
         "pins/control.txt",
@@ -2233,10 +2234,19 @@ def _gptoss_ok() -> dict:
     """A report shaped like the one the probe actually produced."""
     return {
         "metrics": [
-            {"step": 1, "loss": 5.76},
-            {"step": 2, "loss": 4.78},
-            {"step": 3, "loss": 4.03},
+            {"step": 1, "loss": 5.76, "grad_norm": 2.1},
+            {"step": 2, "loss": 4.78, "grad_norm": 1.8},
+            {"step": 3, "loss": 4.03, "grad_norm": 1.6},
         ],
+        "adapter_update": {
+            "ok": True,
+            "changed": True,
+            "tensors": 168,
+            "abs_sum_before": 1234.5,
+            "abs_sum_after": 1240.25,
+            "b_abs_sum_before": 0.0,
+            "b_abs_sum_after": 5.75,
+        },
         "compile": {
             "available": True,
             "unique_graphs": 32,
@@ -2333,7 +2343,19 @@ def _grpo_ok() -> dict:
             {"step": 1, "reward": 1.4, "reward_std": 0.35},
             {"step": 2, "reward": 1.6, "reward_std": 0.21},
         ],
-        "metrics": [{"step": 1, "loss": 0.0}, {"step": 2, "loss": 0.0}],
+        "metrics": [
+            {"step": 1, "loss": 0.0, "grad_norm": 0.9},
+            {"step": 2, "loss": 0.0, "grad_norm": 0.7},
+        ],
+        "adapter_update": {
+            "ok": True,
+            "changed": True,
+            "tensors": 196,
+            "abs_sum_before": 900.0,
+            "abs_sum_after": 902.5,
+            "b_abs_sum_before": 0.0,
+            "b_abs_sum_after": 2.5,
+        },
         "completions": [["forty two", "42", "about 42", "no idea"]],
         "fast_generate": "the square root of 101 is about 10.05",
     }

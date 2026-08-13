@@ -40,9 +40,14 @@ What it asserts
 1. The model loads, and the report says in what dtype and across which
    devices.
 2. Training runs for the requested number of steps, every logged loss is
-   finite, and at least one logged `grad_norm` is finite and non-zero -- a
-   run whose every gradient was zero produces healthy numbers everywhere
-   else and trained nothing. There is no committed reference band here: the
+   finite, and the optimizer actually applied something -- a run whose every
+   gradient was zero produces healthy numbers everywhere else and trained
+   nothing. That last one is decided on the ADAPTER, fingerprinted before and
+   after training, with `grad_norm` as the fallback rather than the source:
+   this leg saves no adapter and reloads none, so a trainer that stops
+   logging that field would otherwise take the only evidence with it and the
+   leg would go on passing. See training_evidence.py.
+   There is no committed reference band here: the
    run is too short and the model too large for a per-step trace to be worth
    capturing, and a band nobody can recapture cheaply is a check that gets
    disabled the first time it is inconvenient.
@@ -79,6 +84,11 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from training_evidence import (  # noqa: E402
+    adapter_fingerprint,
+    adapter_update,
+    update_verdict,
+)
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
     flatten_versions,
@@ -329,6 +339,15 @@ def train_and_infer(args) -> dict:
     compile_before = compile_counters()
     _log(f"compile counters before training: {json.dumps(compile_before)}")
 
+    # The adapter as it stands before a single step, so "did the optimizer
+    # apply anything" is a subtraction rather than a reading of what the
+    # trainer chose to log. This leg saves no adapter and reloads none, so
+    # without it the only evidence of training is grad_norm, and a trainer
+    # that stops logging that field leaves the leg asserting nothing. See
+    # training_evidence.py.
+    adapter_before = adapter_fingerprint(model)
+    _log(f"adapter before training: {json.dumps(adapter_before)}")
+
     t0 = time.time()
     stats = trainer.train()
     result["train_seconds"] = round(time.time() - t0, 1)
@@ -338,6 +357,8 @@ def train_and_infer(args) -> dict:
         if "loss" in entry
     ]
     result["train_metrics"] = {k: v for k, v in (stats.metrics or {}).items()}
+    result["adapter_update"] = adapter_update(adapter_before, adapter_fingerprint(model))
+    _log(f"adapter update: {json.dumps(result['adapter_update'])}")
     result["compile"] = compile_counters(before = compile_before)
     result["memory_after_train"] = memory()
     _log(
@@ -389,14 +410,6 @@ def train_and_infer(args) -> dict:
     return result
 
 
-def _is_finite(value) -> bool:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return number == number and number not in (float("inf"), float("-inf"))
-
-
 def failures_for(result: dict, args) -> list[str]:
     """The assertions, separated from the run so they can be unit-tested.
 
@@ -417,18 +430,27 @@ def failures_for(result: dict, args) -> list[str]:
     # Did the optimizer apply anything? Every number above stays healthy on a
     # run whose gradients are all zero -- the loss is finite, compilation
     # engaged, and the untrained base model still generates text -- so a leg
-    # that claims to cover LoRA training on this path has to look. Only
-    # decidable where grad_norm was logged at all, exactly as in the SFT
-    # leg: a trainer that stopped logging it says nothing either way, and
-    # inferring "nothing applied" from silence would be a failure this check
-    # invented rather than found.
-    norms = [m.get("grad_norm") for m in metrics if m.get("grad_norm") is not None]
-    applied = [g for g in norms if _is_finite(g) and float(g) != 0.0]
-    if norms and not applied:
+    # that claims to cover LoRA training on this path has to look.
+    #
+    # The adapter is fingerprinted before and after training and that reading
+    # decides it, with grad_norm as the fallback rather than the other way
+    # round. This USED to be `if norms and not applied`, which passes on an
+    # empty list: a trainer that stopped logging grad_norm at all took the
+    # only instrument this leg had with it, silently, and unlike the SFT leg
+    # there is no saved adapter here to read back. See training_evidence.py.
+    update = update_verdict(metrics, result.get("adapter_update"))
+    if update["verdict"] == "not_applied":
         failures.append(
-            f"no optimizer update was applied: every logged grad_norm is zero or "
-            f"non-finite ({norms}), so the adapter is the adapter it started with "
-            f"and this leg measured a forward pass rather than LoRA training"
+            f"no optimizer update was applied: {update['detail']}, so the adapter "
+            f"is the adapter it started with and this leg measured a forward pass "
+            f"rather than LoRA training"
+        )
+    elif update["verdict"] == "unverifiable":
+        failures.append(
+            f"whether the optimizer applied anything could not be established: "
+            f"{update['detail']}. LoRA training on this path is the only thing "
+            f"this leg claims, and the base model on its own produces every other "
+            f"number in this report"
         )
 
     # The float32 path, which is the coverage this leg uniquely claims. It is

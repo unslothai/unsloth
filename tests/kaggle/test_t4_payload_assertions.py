@@ -685,12 +685,208 @@ def test_gptoss_fails_when_no_optimizer_update_was_applied():
     assert failures and any("optimizer update" in f for f in failures)
 
 
+def _moved(**over) -> dict:
+    """An adapter reading from a run that trained."""
+    reading = {
+        "ok": True,
+        "changed": True,
+        "tensors": 168,
+        "abs_sum_before": 100.0,
+        "abs_sum_after": 101.5,
+        "b_abs_sum_before": 0.0,
+        "b_abs_sum_after": 1.5,
+    }
+    reading.update(over)
+    return reading
+
+
 def test_gptoss_does_not_infer_a_verdict_from_an_unlogged_grad_norm():
-    """A trainer that stops logging grad_norm says nothing either way."""
+    """A trainer that stops logging grad_norm still says nothing either way.
+
+    That position has not changed. What changed is that the leg no longer
+    depends on the field: the adapter it trained is fingerprinted before and
+    after, so silence from the trainer is answered from the weights rather
+    than guessed at.
+    """
     from run_gptoss_t4 import failures_for
 
-    result = _gptoss_result(metrics = [{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)])
+    result = _gptoss_result(
+        metrics = [{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)],
+        adapter_update = _moved(),
+    )
     assert failures_for(result, _gptoss_args()) == []
+
+
+def test_gptoss_fails_when_nothing_at_all_can_say_the_adapter_moved():
+    """No grad_norm logged AND no adapter reading is not a pass.
+
+    Every other number in this report -- finite losses, captured graphs,
+    non-empty generation -- is produced by the base model and the loader on
+    their own. With both instruments gone the leg has nothing left to show
+    for the LoRA training it exists to cover, so it must not report green.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(
+        metrics = [{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)],
+        adapter_update = {"ok": False, "error": "RuntimeError: meta tensor"},
+    )
+    failures = failures_for(result, _gptoss_args())
+    assert any("could not be established" in f for f in failures), failures
+
+
+def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
+    """The grad norms can look healthy and the weights still not move.
+
+    Gradients that flowed into weights nobody updated is a run that trained
+    nothing, so the adapter reading decides it rather than the telemetry.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(
+        adapter_update = _moved(
+            changed = False, abs_sum_after = 100.0, b_abs_sum_after = 0.0
+        ),
+    )
+    failures = failures_for(result, _gptoss_args())
+    assert any("no optimizer update was applied" in f for f in failures), failures
+
+
+def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():
+    """The same hole, and the same reason it is a hole on this leg too.
+
+    Reward, reward_std and the completions are all produced by generating and
+    scoring, which the base model does without a single optimizer step.
+    """
+    from run_grpo_t4 import failures_for
+
+    result = _grpo_result(
+        metrics = [{"step": s, "loss": 0.0} for s in (1, 2, 3)],
+    )
+    failures = failures_for(result, _grpo_args())
+    assert any("could not be established" in f for f in failures), failures
+
+
+def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
+    from run_grpo_t4 import failures_for
+
+    result = _grpo_result(
+        metrics = [{"step": s, "loss": 0.0} for s in (1, 2, 3)],
+        adapter_update = _moved(),
+    )
+    assert failures_for(result, _grpo_args()) == []
+
+
+# ------------------------------------------------- training_evidence.py
+
+
+class _Tensor:
+    """The two calls adapter_fingerprint makes on a parameter, and no more."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def detach(self):
+        return self
+
+    def float(self):
+        return self
+
+    def abs(self):
+        return self
+
+    def sum(self):
+        return self
+
+    def item(self):
+        return self._value
+
+
+def test_an_empty_norm_list_is_not_the_same_answer_as_a_useless_one():
+    """The distinction the `if norms and not applied` spelling collapsed."""
+    from training_evidence import update_verdict
+
+    useless = [{"step": 1, "loss": 1.0, "grad_norm": 0.0}]
+    silent = [{"step": 1, "loss": 1.0}]
+    assert update_verdict(useless)["verdict"] == "not_applied"
+    assert update_verdict(silent)["verdict"] == "unverifiable"
+    assert update_verdict(useless, _moved())["verdict"] == "not_applied"
+    assert update_verdict(silent, _moved())["verdict"] == "applied"
+
+
+def test_the_adapter_reading_beats_the_grad_norms_it_is_a_proxy_for():
+    """Healthy norms over weights that did not move is still nothing trained."""
+    from training_evidence import update_verdict
+
+    healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
+    frozen = _moved(changed = False, abs_sum_after = 100.0, b_abs_sum_after = 0.0)
+    verdict = update_verdict(healthy, frozen)
+    assert verdict["verdict"] == "not_applied"
+    assert "bitwise identical" in verdict["detail"]
+
+
+def test_a_fingerprint_of_a_model_with_no_lora_parameters_is_not_an_answer():
+    """`ok: False` means the question could not be answered, never "no"."""
+    from training_evidence import adapter_fingerprint, adapter_update
+
+    class _Bare:
+        def named_parameters(self):
+            return iter([("model.layers.0.mlp.up_proj.weight", _Tensor(1.0))])
+
+    from training_evidence import update_verdict
+
+    reading = adapter_fingerprint(_Bare())
+    assert reading["ok"] is False
+    assert adapter_update(reading, reading)["ok"] is False
+    assert update_verdict([{"step": 1, "loss": 1.0}], reading)["verdict"] == "unverifiable"
+
+
+def test_a_fingerprint_that_raises_is_reported_rather_than_propagated():
+    """A diagnostic that kills the payload it diagnoses is worse than the gap."""
+    from training_evidence import adapter_fingerprint
+
+    class _Broken:
+        def named_parameters(self):
+            raise RuntimeError("Cannot copy out of meta tensor")
+
+    reading = adapter_fingerprint(_Broken())
+    assert reading["ok"] is False
+    assert "RuntimeError" in reading["error"]
+
+
+def test_the_zero_initialised_b_matrices_are_what_make_the_comparison_safe():
+    """Both sums are compared, so an exact float equality can be a red."""
+    from training_evidence import adapter_fingerprint, adapter_update
+
+    class _Adapter:
+        def __init__(self, b):
+            self._b = b
+
+        def named_parameters(self):
+            return iter(
+                [
+                    ("base.layers.0.q_proj.lora_A.default.weight", _Tensor(4.0)),
+                    ("base.layers.0.q_proj.lora_B.default.weight", _Tensor(self._b)),
+                ]
+            )
+
+    before = adapter_fingerprint(_Adapter(0.0))
+    assert before == {"ok": True, "tensors": 2, "abs_sum": 4.0, "b_abs_sum": 0.0}
+    # A B matrix that moved while the total happened to come out the same.
+    after = adapter_fingerprint(_Adapter(0.0))
+    after["b_abs_sum"] = 0.5
+    assert adapter_update(before, after)["changed"] is True
+    assert adapter_update(before, before)["changed"] is False
+
+
+def test_two_fingerprints_over_different_tensor_counts_are_not_compared():
+    from training_evidence import adapter_update
+
+    before = {"ok": True, "tensors": 168, "abs_sum": 1.0, "b_abs_sum": 0.0}
+    after = {"ok": True, "tensors": 12, "abs_sum": 1.0, "b_abs_sum": 0.0}
+    verdict = adapter_update(before, after)
+    assert verdict["ok"] is False
+    assert "not comparable" in verdict["error"]
 
 
 # --------------------------------------------------------- run_grpo_t4.py

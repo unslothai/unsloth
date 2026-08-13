@@ -122,10 +122,12 @@ class Leg:
     system_site_packages: bool = True
 
 
-# Files every leg needs: the version recorder and the canary dataset. The
-# recorder is what makes any red leg attributable to a version, so no leg is
-# allowed to ship without it.
-COMMON_FILES = ("versions.py", "canary_dataset.jsonl")
+# Files every leg needs: the version recorder, the canary dataset, and the
+# "did the optimizer apply anything" evidence. The recorder is what makes any
+# red leg attributable to a version, so no leg is allowed to ship without it;
+# the evidence module is what keeps a leg from passing on a run that trained
+# nothing, which every payload here can otherwise do.
+COMMON_FILES = ("versions.py", "canary_dataset.jsonl", "training_evidence.py")
 
 # The install prefix shared by every leg. unsloth_zoo first and WITH deps,
 # then unsloth --no-deps on top, so the overlay does not fight the dependency
