@@ -24,7 +24,14 @@ What it asserts, in descending order of confidence
    nondeterministic kernel newly introduced into the backward pass.
 2. **The canary string.** The training data maps a question to the literal
    target ``__UNSLOTH__!!!``. After overfitting on it, greedy decoding of a
-   training prompt must emit that string exactly. This is a binary,
+   training prompt must emit that string and nothing else -- an exact match
+   after stripping surrounding whitespace, not a substring, because the
+   completion trained on is ``CANARY + eos_token`` and
+   ``'__UNSLOTH__!!!<more text>'`` is a stopping regression rather than a
+   pass. The adapter that was written is also read back off disk and
+   checked for tensors that are present, finite and not all zero, since
+   inference runs on the in-memory model and would not notice. This is a
+   binary,
    tolerance-free check that the forward pass, the backward pass, the
    optimizer step, the adapter save and the inference path are all wired
    together correctly -- it fails loudly if LoRA weights silently never
@@ -36,14 +43,16 @@ What it asserts, in descending order of confidence
    is wide enough not to fire on that and narrow enough to catch a real
    change in the optimisation.
 
-   A reference is only comparable to a run of the SAME LENGTH. The step
+   A reference is only comparable to a run of the SAME EXPERIMENT. The step
    count is part of what the trace encodes -- step 4 of a 10-step run and
    step 4 of a 3-step run are the same iterate only by coincidence, and the
    fp16 scaler's skip pattern lives at the front of the run where a short
-   run spends all of its steps. So the reference records the ``max_steps``
-   it was captured at, and comparing against a reference captured at a
-   different count is a hard failure, never a quiet pass. See
-   ``check_reference``.
+   run spends all of its steps -- and so are the learning rate, the
+   optimizer, the LoRA shape, the model and which commit of the model
+   repository was read. The reference records all of them, and comparing
+   against a reference captured with any of them different is a hard
+   failure, never a quiet pass. See ``check_reference`` and
+   ``REFERENCE_DEFINING_SETTINGS``.
 
 Determinism caveats, stated rather than assumed
 -----------------------------------------------
@@ -70,6 +79,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -249,6 +259,17 @@ def train_once(args, run_index: int) -> dict:
         dtype = torch.float16,
     )
     load_seconds = time.time() - t0
+    # Which repository and which commit of it. `load_in_4bit=True` makes
+    # Unsloth redirect the request through FLOAT_TO_INT_MAPPER, so the name
+    # in the config is not the name that was asked for, and `revision=` is
+    # explicitly DROPPED by the loader once a remap happened
+    # (unsloth/models/loader.py::_revision_for_resolved_repo). Pinning the
+    # load is therefore not available here; recording what was loaded is,
+    # and it is what makes a silent in-place re-upload attributable.
+    _config = getattr(model, "config", None)
+    resolved_checkpoint = getattr(_config, "_name_or_path", None)
+    resolved_revision = getattr(_config, "_commit_hash", None)
+    _log(f"loaded {resolved_checkpoint} @ {resolved_revision}")
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -331,8 +352,13 @@ def train_once(args, run_index: int) -> dict:
             f"expected {args.max_steps} logged steps, got {len(stats.logs)}: " f"{stats.logs}"
         )
 
-    # Adapter save. The reload happens in the caller's separate verification
-    # step; here we only prove the files land.
+    # Adapter save, then read the serialized weights back off disk. A
+    # filename is not evidence: save_pretrained can leave an empty, truncated
+    # or all-zero adapter_model.safetensors and every later assertion here
+    # still passes, because inference runs on the in-memory model. The
+    # verification is deliberately a file read rather than a second
+    # FastLanguageModel load -- it answers "can these weights be consumed"
+    # without a second 4-bit load on a card that is already hosting one.
     adapter_dir = Path(args.outdir) / f"lora_run{run_index}"
     t0 = time.time()
     model.save_pretrained(str(adapter_dir))
@@ -342,6 +368,8 @@ def train_once(args, run_index: int) -> dict:
     adapter_weights = [f for f in saved_files if f.startswith("adapter_model.")]
     if not adapter_weights:
         raise RuntimeError(f"no adapter weights in {adapter_dir}: {saved_files}")
+    saved_adapter = verify_saved_adapter(adapter_dir)
+    _log(f"saved adapter: {json.dumps(saved_adapter)}")
 
     # Inference on the trained, in-memory model. Greedy, so the output is a
     # function of the weights alone.
@@ -369,9 +397,22 @@ def train_once(args, run_index: int) -> dict:
         "run_index": run_index,
         "metrics": stats.logs,
         "generated": generated,
+        # Both, because they answer different questions when this goes red.
+        # `canary_found` says the training reached the weights at all;
+        # `canary_exact` is the assertion, and the gap between them is the
+        # signature of a stopping/EOS regression rather than a training one.
         "canary_found": CANARY in generated,
+        "canary_exact": generated.strip() == CANARY,
         "prompt": prompt,
         "adapter_files": saved_files,
+        "saved_adapter": saved_adapter,
+        # The repository the loader actually read, and its commit. The
+        # requested name is not the name that gets loaded -- load_in_4bit
+        # sends this through Unsloth's FLOAT_TO_INT_MAPPER -- and a mirror
+        # repo re-uploaded in place moves the trajectory with no change in
+        # this repository at all. Recorded so the band check can say so.
+        "resolved_checkpoint": resolved_checkpoint,
+        "resolved_revision": resolved_revision,
         "determinism": det_state,
         "loss_scale": loss_scale,
         "timing_seconds": {
@@ -390,6 +431,143 @@ def train_once(args, run_index: int) -> dict:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return result
+
+
+def verify_saved_adapter(adapter_dir) -> dict:
+    """Read the serialized adapter back and say what is in it.
+
+    Everything downstream of the save runs on the in-memory model, so the
+    only thing that ever looked at the file was a filename test. This opens
+    it. Kept to a tensor read rather than a PEFT reload because it has to run
+    on a card that is already holding a 4-bit model, and because the failure
+    modes worth naming -- unreadable, empty, non-finite, all zero -- are all
+    visible in the tensors themselves.
+
+    ``nonzero_tensors`` is the load-bearing one. ``lora_B`` is zero at
+    initialisation and only becomes non-zero once an optimizer update has been
+    applied and saved, so an all-zero file is an untrained adapter that would
+    reload without complaint.
+
+    Returns a dict; never raises. ``saved_adapter_failures`` turns it into a
+    verdict, so the pass/fail rule stays testable without a GPU.
+    """
+    adapter_dir = Path(adapter_dir)
+    state: dict[str, Any] = {"dir": str(adapter_dir)}
+    try:
+        state["files"] = sorted(p.name for p in adapter_dir.iterdir())
+    except OSError as exc:
+        state["files"] = []
+        state["error"] = f"{type(exc).__name__}: {exc}"
+        return state
+    try:
+        json.loads((adapter_dir / "adapter_config.json").read_text(encoding = "utf-8"))
+        state["config_readable"] = True
+    except Exception as exc:  # noqa: BLE001
+        state["config_readable"] = False
+        state["config_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+    safetensors_file = adapter_dir / "adapter_model.safetensors"
+    bin_file = adapter_dir / "adapter_model.bin"
+    tensors = None
+    try:
+        if safetensors_file.exists():
+            from safetensors.torch import load_file
+            state["weight_file"] = safetensors_file.name
+            tensors = load_file(str(safetensors_file))
+        elif bin_file.exists():
+            import torch
+            state["weight_file"] = bin_file.name
+            tensors = torch.load(str(bin_file), map_location = "cpu", weights_only = True)
+        else:
+            state["error"] = "no adapter_model.safetensors and no adapter_model.bin"
+            return state
+    except Exception as exc:  # noqa: BLE001
+        state["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        return state
+
+    non_finite: list[str] = []
+    nonzero = 0
+    total = 0
+    for name, tensor in tensors.items():
+        try:
+            floating = tensor.is_floating_point()
+            if floating and not bool(tensor.isfinite().all()):
+                non_finite.append(name)
+            if bool(tensor.count_nonzero()):
+                nonzero += 1
+            total += int(tensor.numel())
+        except Exception as exc:  # noqa: BLE001
+            non_finite.append(f"{name}: {type(exc).__name__}")
+    state["tensors"] = len(tensors)
+    state["parameters"] = total
+    state["non_finite_tensors"] = non_finite[:10]
+    state["nonzero_tensors"] = nonzero
+    return state
+
+
+def saved_adapter_failures(state: dict) -> list[str]:
+    """Turn ``verify_saved_adapter``'s reading into failure strings."""
+    failures: list[str] = []
+    if not state:
+        return ["the saved adapter was never verified"]
+    if state.get("config_readable") is False:
+        failures.append(
+            f"the saved adapter's adapter_config.json could not be read, so "
+            f"nothing can load it: {state.get('config_error')}"
+        )
+    if state.get("tensors") is None:
+        failures.append(
+            f"the saved adapter weights could not be read back from "
+            f"{state.get('dir')}: {state.get('error')}"
+        )
+        return failures
+    if not state["tensors"]:
+        failures.append(f"the saved adapter holds no tensors: {state.get('files')}")
+        return failures
+    if state.get("non_finite_tensors"):
+        failures.append(
+            f"the saved adapter holds non-finite weights: {state['non_finite_tensors']}"
+        )
+    if not state.get("nonzero_tensors"):
+        failures.append(
+            f"every saved tensor is zero across all {state['tensors']} of them. lora_B "
+            f"starts at zero, so this adapter carries no training at all and reloading "
+            f"it would restore the base model."
+        )
+    return failures
+
+
+def canary_failures(run: dict, *, require: bool) -> list[str]:
+    """The canary assertion, as an EXACT match rather than a substring.
+
+    The completion this run trains on is ``CANARY + eos_token`` and decoding
+    strips the special tokens, so a healthy greedy decode returns the canary
+    and nothing else. ``CANARY in generated`` also accepts
+    ``'__UNSLOTH__!!!<anything>'``, which is precisely what a stopping or EOS
+    regression produces -- the model learned the target and no longer knows
+    where to stop -- and that is a broken inference path reporting green.
+
+    Surrounding whitespace is the one normalisation allowed: it is a decoder
+    artefact, not a change in what the model emitted.
+    """
+    generated = run.get("generated") or ""
+    if generated.strip() == CANARY:
+        return []
+    if CANARY in generated:
+        msg = (
+            f"run {run.get('run_index')} did not emit the canary {CANARY!r} exactly: "
+            f"the canary is there but so is other text, which is what a stopping or "
+            f"EOS regression looks like. Got {generated!r}"
+        )
+    else:
+        msg = (
+            f"run {run.get('run_index')} did not emit the canary "
+            f"{CANARY!r}; got {generated!r}"
+        )
+    if not require:
+        _log("WARNING (not enforced): " + msg)
+        return []
+    return [msg]
 
 
 def environment_fingerprint() -> dict:
@@ -450,8 +628,40 @@ def reference_step_count(ref: dict):
         return None
 
 
+# Every setting that defines which experiment a trace is a trace OF. A run
+# that differs in any of these is not comparable to the reference, whatever
+# the numbers happen to do -- references/README.md says so and says widening
+# the band is never the answer.
+#
+# `repeat` is deliberately absent: each cycle is a fresh process running the
+# identical configuration, so how many of them were run does not change any
+# one of them, and refusing on it would reject a --repeat 3 run against a
+# --repeat 2 reference for no reason.
+REFERENCE_DEFINING_SETTINGS = (
+    "max_steps",
+    "init_loss_scale",
+    "batch_size",
+    "grad_accum",
+    "max_seq_length",
+    "learning_rate",
+    "lora_r",
+    "lora_alpha",
+    "optim",
+    "gradient_checkpointing",
+)
+
+
 def check_reference(
-    metrics: list[dict], reference_path: Path, rel_tol: float, abs_floor: float, *, max_steps: int
+    metrics: list[dict],
+    reference_path: Path,
+    rel_tol: float,
+    abs_floor: float,
+    *,
+    max_steps: int,
+    config: dict | None = None,
+    model: str | None = None,
+    resolved_checkpoint: str | None = None,
+    resolved_revision: str | None = None,
 ) -> dict:
     """Compare against a committed reference. Never an equality check.
 
@@ -464,6 +674,19 @@ def check_reference(
     arithmetic that succeeds and means nothing, so the mismatch is reported
     as its own status and the numbers are never touched. ``reference_failures``
     turns it into a failure; nothing here can turn it into a pass.
+
+    ``max_steps`` was the only one of those settings that was checked, and it
+    is not the only one that has that property. The reference records the
+    whole ``config`` block, and README calls out the learning rate, the
+    optimizer and the model by name as things that invalidate the file. So
+    ``config``, ``model`` and the resolved checkpoint are compared on the same
+    terms, under the same refuse-before-comparing rule.
+
+    All four are optional and default to not-compared, so an older caller and
+    an older reference file both keep working: a key the reference does not
+    carry is listed in ``config_unchecked`` rather than treated as a
+    mismatch. "It does not say" is not "it differs", just as it is not "it
+    matches".
     """
     if not reference_path.exists():
         return {"status": "absent", "path": str(reference_path)}
@@ -477,6 +700,9 @@ def check_reference(
         "reference_max_steps": reference_step_count(ref),
         "deviations": [],
         "worst_rel": {},
+        "config_differences": [],
+        "config_unchecked": [],
+        "step_differences": [],
     }
 
     # The step-count gate comes FIRST and returns, so no partially
@@ -503,9 +729,73 @@ def check_reference(
         )
         return verdict
 
+    # The rest of the configuration, on the same terms as the step count:
+    # refuse before comparing a single number, because these settings define
+    # a different experiment rather than a drift within one.
+    ref_config = ref.get("config") if isinstance(ref.get("config"), dict) else {}
+    observed_pairs: list[tuple[str, Any, Any]] = []
+    if config:
+        for key in REFERENCE_DEFINING_SETTINGS:
+            if key == "max_steps":
+                continue  # already gated above, with its own status
+            if key not in ref_config or key not in config:
+                verdict["config_unchecked"].append(key)
+                continue
+            observed_pairs.append((key, ref_config[key], config[key]))
+    for key, observed in (
+        ("model", model),
+        ("resolved_checkpoint", resolved_checkpoint),
+        ("resolved_revision", resolved_revision),
+    ):
+        if observed is None:
+            continue
+        if ref.get(key) is None:
+            verdict["config_unchecked"].append(key)
+            continue
+        observed_pairs.append((key, ref[key], observed))
+    for key, expected, observed in observed_pairs:
+        if expected != observed:
+            verdict["config_differences"].append(
+                {"key": key, "reference": expected, "observed": observed}
+            )
+    if verdict["config_differences"]:
+        verdict["status"] = "config_mismatch"
+        verdict["note"] = (
+            f"{reference_path.name} was captured with a different training "
+            f"configuration: {verdict['config_differences']}. Those settings "
+            "define which experiment the trace is a trace of, so the numbers "
+            "are not comparable. Regenerate the reference "
+            "(references/README.md) rather than widening the band."
+        )
+        return verdict
+
     if len(ref_metrics) != len(metrics):
         verdict["status"] = "length_mismatch"
         return verdict
+
+    # The step coordinates, before any value is compared. The two lists are
+    # zipped positionally, so a shifted, duplicated or reordered `step` pairs
+    # values that describe different iterates and the band check then reports
+    # on arithmetic it invented. Safe to be strict here because the leg that
+    # carries a reference is the control, whose library set is pinned to the
+    # one the trace was captured with and whose pin failure is itself fatal --
+    # so the trainer cannot renumber its steps underneath this check without
+    # the pins going red first.
+    for index, (cur, old) in enumerate(zip(metrics, ref_metrics)):
+        if cur.get("step") != old.get("step"):
+            verdict["step_differences"].append(
+                {"index": index, "reference": old.get("step"), "observed": cur.get("step")}
+            )
+    if verdict["step_differences"]:
+        verdict["status"] = "step_mismatch"
+        verdict["note"] = (
+            f"the observed per-step trace does not carry the same step "
+            f"coordinates as {reference_path.name}: "
+            f"{verdict['step_differences'][:5]}. The two are compared "
+            "positionally, so nothing was compared."
+        )
+        return verdict
+
     for field in ("loss", "grad_norm"):
         worst = 0.0
         for cur, old in zip(metrics, ref_metrics):
@@ -581,12 +871,26 @@ def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
     # Refusals. Loud, and a failure: a reference that cannot be compared is
     # worth strictly less than no reference at all, because it looks like
     # cover and is not. Never demote either of these to a warning.
-    if verdict["status"] in ("step_count_mismatch", "reference_step_count_unknown"):
+    if verdict["status"] in (
+        "step_count_mismatch",
+        "reference_step_count_unknown",
+        "config_mismatch",
+        "step_mismatch",
+    ):
         return [
             "refusing to band-check against a reference that is not for "
             "this run: " + verdict.get("note", verdict["status"])
         ]
     return []
+
+
+def _is_finite(value) -> bool:
+    """NaN and both infinities are all "the step did not apply"."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
 
 
 def optimisation_failures(metrics: list[dict]) -> list[str]:
@@ -611,12 +915,19 @@ def optimisation_failures(metrics: list[dict]) -> list[str]:
     # that stops logging it says nothing about whether steps were applied,
     # and inferring "all skipped" from its silence would be a failure
     # invented by this check rather than found by it.
+    #
+    # Finite, not merely non-NaN. An fp16 overflow reports the norm as inf at
+    # least as readily as NaN -- clip_grad_norm_ over a gradient holding an
+    # inf returns inf -- and `inf == inf` is True, so a NaN-only test counted
+    # every skipped step as an applied one and a run that applied nothing
+    # reported green. The loss check three lines above already treats inf as
+    # non-finite; this one did not.
     reported = [m["grad_norm"] for m in metrics if m.get("grad_norm") is not None]
-    applied = [g for g in reported if float(g) == float(g)]
+    applied = [g for g in reported if _is_finite(g)]
     if reported and not applied:
         failures.append(
             f"the fp16 gradient scaler skipped every one of the "
-            f"{len(metrics)} steps (grad_norm is NaN throughout), so no "
+            f"{len(metrics)} steps (no grad_norm is finite: {reported}), so no "
             f"optimizer update was applied and this run measured nothing "
             f"about training. Raise --max-steps or lower --init-loss-scale."
         )
@@ -745,6 +1056,31 @@ def main() -> int:
     # the leak rather than the code, and would report a false regression on
     # a perfectly reproducible run. A fresh process is also the honest unit:
     # it is what a user re-running a notebook actually gets.
+    # Read BEFORE the cycles rather than after them, so a run that dies in a
+    # cycle still says which library set it died with. That is the case where
+    # the version block matters most: control red / canary green is a bisect
+    # only if the red leg reported its versions.
+    config = {
+        k: getattr(args, k)
+        for k in (
+            "max_steps",
+            "init_loss_scale",
+            "batch_size",
+            "grad_accum",
+            "max_seq_length",
+            "learning_rate",
+            "lora_r",
+            "lora_alpha",
+            "optim",
+            "gradient_checkpointing",
+            "repeat",
+        )
+    }
+    try:
+        env = environment_fingerprint()
+    except Exception as exc:  # noqa: BLE001
+        env = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+
     runs = []
     for i in range(args.repeat):
         _log(f"=== cycle {i + 1}/{args.repeat} (fresh process) ===")
@@ -786,6 +1122,8 @@ def main() -> int:
             failed = {
                 "label": args.label,
                 "model": args.model,
+                "config": config,
+                "environment": env,
                 "passed": False,
                 "runs": runs,
                 "metrics": [],
@@ -799,29 +1137,18 @@ def main() -> int:
             return 1
         runs.append(json.loads(report_file.read_text(encoding = "utf-8")))
 
-    env = environment_fingerprint()
     report: dict = {
         "label": args.label,
         "model": args.model,
-        # max_steps leads, and travels into any reference captured from this
-        # report: check_reference refuses to compare a run against a trace
-        # captured at a different count.
-        "config": {
-            k: getattr(args, k)
-            for k in (
-                "max_steps",
-                "init_loss_scale",
-                "batch_size",
-                "grad_accum",
-                "max_seq_length",
-                "learning_rate",
-                "lora_r",
-                "lora_alpha",
-                "optim",
-                "gradient_checkpointing",
-                "repeat",
-            )
-        },
+        # The repo and commit the loader actually read, travelling into any
+        # reference captured from this report so the band check can refuse
+        # against a mirror that was re-uploaded in place.
+        "resolved_checkpoint": runs[0].get("resolved_checkpoint"),
+        "resolved_revision": runs[0].get("resolved_revision"),
+        # max_steps leads, and the whole block travels into any reference
+        # captured from this report: check_reference refuses to compare a run
+        # against a trace captured with a different configuration.
+        "config": config,
         "environment": env,
         "runs": runs,
         "metrics": runs[0]["metrics"],
@@ -838,36 +1165,59 @@ def main() -> int:
         report["pins"] = {"file": args.pins, "requested": pins, "failures": broken}
         failures += broken
 
-    # 1. bitwise run-to-run
+    # 1. bitwise run-to-run. EVERY extra cycle against the baseline, not just
+    # the second: --repeat 3 asks for three fresh processes, and a third that
+    # disagreed used to be collected, stored and never looked at.
+    #
+    # The top-level keys stay exactly as they were -- report.py renders
+    # `identical`, `first_diff_step` and `max_abs_diff` off this dict -- and
+    # now summarise every comparison rather than one. The per-cycle detail
+    # goes under `cycles`.
     if len(runs) > 1:
-        cmp = compare_metrics(runs[0]["metrics"], runs[1]["metrics"])
-        report["reproducibility"] = cmp
-        if not cmp["identical"]:
-            failures.append(
-                f"run-to-run metrics differ (first diff at step "
-                f"{cmp['first_diff_step']}, max abs {cmp['max_abs_diff']})"
+        cycles: dict = {}
+        for other in runs[1:]:
+            cycles[str(other["run_index"])] = compare_metrics(
+                runs[0]["metrics"], other["metrics"]
             )
+        worst: dict = {}
+        for cmp in cycles.values():
+            for field, value in cmp.get("max_abs_diff", {}).items():
+                worst[field] = max(worst.get(field, 0.0), value)
+        differing = [(k, c) for k, c in cycles.items() if not c["identical"]]
+        report["reproducibility"] = {
+            "identical": not differing,
+            "first_diff_step": differing[0][1]["first_diff_step"] if differing else None,
+            "max_abs_diff": worst,
+            "compared_cycles": sorted(cycles, key = int),
+            "cycles": cycles,
+        }
+        for index, cmp in differing:
+            failures.append(
+                f"run-to-run metrics differ between cycle 0 and cycle {index} "
+                f"(first diff at step {cmp['first_diff_step']}, max abs "
+                f"{cmp['max_abs_diff']}, step mismatches {cmp['step_mismatch']})"
+            )
+
         gen = {r["generated"] for r in runs}
         report["generated_identical"] = len(gen) == 1
         if len(gen) != 1:
             failures.append(f"run-to-run generation differs: {sorted(gen)!r}")
 
-    # 2. canary
+    # 2. canary, exactly
     for run in runs:
-        if not run["canary_found"]:
-            msg = (
-                f"run {run['run_index']} did not emit the canary "
-                f"{CANARY!r}; got {run['generated']!r}"
-            )
-            if args.require_canary:
-                failures.append(msg)
-            else:
-                _log("WARNING (not enforced): " + msg)
+        failures += canary_failures(run, require = args.require_canary)
 
     # 3. sanity: finite, the optimisation moved, and it moved at all
     failures += optimisation_failures(runs[0]["metrics"])
 
-    # 4. band check against the committed reference
+    # 4. the adapter that was written is an adapter that can be loaded
+    for run in runs:
+        failures += [
+            f"run {run['run_index']}: {f}"
+            for f in saved_adapter_failures(run.get("saved_adapter") or {})
+        ]
+
+    # 5. band check against the committed reference
     if args.reference:
         ref = check_reference(
             runs[0]["metrics"],
@@ -875,6 +1225,10 @@ def main() -> int:
             args.rel_tol,
             args.abs_floor,
             max_steps = args.max_steps,
+            config = config,
+            model = args.model,
+            resolved_checkpoint = runs[0].get("resolved_checkpoint"),
+            resolved_revision = runs[0].get("resolved_revision"),
         )
         report["reference_check"] = ref
         failures += reference_failures(ref, args.rel_tol)
