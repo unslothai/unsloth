@@ -1783,3 +1783,107 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
         assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
+
+
+class TestHsaOverrideGfxVersion:
+    """``HSA_OVERRIDE_GFX_VERSION`` is the long-standing AMD workaround for an
+    arch the ROCm stack does not build for: the user sets it, ROCr reports the
+    SPOOFED arch, and code compiled for that arch really does run on the card.
+
+    The gate reads the arch through the same device properties HIP will act on,
+    so it sees the override too. Pinned because this is the shape most likely to
+    read as "your fix broke my working setup": the raw silicon is uncovered, the
+    presented arch is covered, and the launch has to follow the presented one.
+    """
+
+    def test_a_spoofed_arch_is_gated_on_what_the_runtime_reports(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        # A gfx1035 laptop iGPU presenting itself as gfx1030 under the override,
+        # beside a card the bundle does not cover at all.
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 8000), _device("gfx1036", free_mib = 30000)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(
+            binary = str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server = True
+        ) == [(0, 8000)]
+
+
+class TestAnInstallFromBeforeThisPr:
+    """An install written by an older Studio has no ``mapped_targets`` in its
+    marker, and the fingerprint deliberately does not cover the field, so it is
+    never refreshed for this reason alone. Such a host must behave EXACTLY as it
+    did before the PR -- the fix arrives with the next llama.cpp update, and
+    until then nothing may change, least of all a drop to CPU.
+    """
+
+    OLD_MARKER = {
+        "release_tag": "b10107",
+        "asset": "app-b10107-windows-x64-rocm-gfx110X.zip",
+        "install_kind": "app",
+        "bundle_profile": "rocm",
+        "runtime_line": "rocm",
+        "coverage_class": "gfx110X",
+        "install_fingerprint": "unchanged-by-this-pr",
+        "installed_at_utc": "2026-07-01T00:00:00Z",
+    }
+
+    def test_the_probe_keeps_every_device(self, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
+            json.dumps(self.OLD_MARKER), encoding = "utf-8"
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [
+                    _device("gfx1101", free_mib = 12049),
+                    _device("gfx1036", free_mib = 12176, is_integrated = 1),
+                ],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(
+            binary = str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server = True
+        ) == [(0, 12049), (1, 11152)]
+
+    def test_the_launch_is_not_masked_onto_the_cpu(self, tmp_path, monkeypatch, probe_env):
+        """The failure that would matter most: an old install that used to run
+        on the GPU being gated to CPU by a marker the gate cannot read."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
+            json.dumps(self.OLD_MARKER), encoding = "utf-8"
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(
+                [
+                    _device("gfx1101", free_mib = 12049),
+                    _device("gfx1036", free_mib = 30000, is_integrated = 1),
+                ],
+                vendor = "amd",
+            ),
+            None,  # the marker above stands; do not overwrite it
+            returncode = None,
+        )
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert env.get("HIP_VISIBLE_DEVICES") != "-1", "an old install was gated onto the CPU"
+        # Pre-PR placement, reproduced: the shared-pool iGPU still outranks the
+        # dGPU. That is #7669, and it stays until the install is refreshed.
+        # CUDA_VISIBLE_DEVICES is 0 because ROCr re-indexes the visible agents
+        # from zero; the physical pick is the ROCR one.
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "1", "CUDA_VISIBLE_DEVICES": "0"}

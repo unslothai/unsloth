@@ -468,6 +468,15 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ggml-cuda.cu:76: ROCm error\n"
             "  no kernel image is available for execution on the device\n"
             "  current device: 1",
+            # The same code raised during backend init rather than at a kernel
+            # launch: ggml prints it through a different format string, so the
+            # match has to be on the message and not on the "ROCm error:" prefix.
+            "ggml_cuda_init: failed to initialize ROCm: "
+            "no kernel image is available for execution on the device",
+            # cudaErrorNoKernelImageForDevice. Same string, same defect, and the
+            # retry is not ROCm-gated, so an NVIDIA host with a build that has
+            # no kernels for one of its cards recovers the same way.
+            "CUDA error: no kernel image is available for execution on the device",
         ],
     )
     def test_the_real_crash_matches(self, output):
@@ -479,11 +488,14 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "Device Kernel Image Is Invalid",
             "ROCm error: DEVICE KERNEL IMAGE IS INVALID",
             "No kernel image is available for execution on the device",
+            "ROCM ERROR: NO KERNEL IMAGE IS AVAILABLE FOR EXECUTION ON THE DEVICE",
         ],
     )
     def test_matching_is_case_insensitive(self, output):
         # hipGetErrorString is lowercase, but the layers that reprint it are not
         # consistent about that, and a missed match costs the whole recovery.
+        # Safe because the markers are specific enough that folding case cannot
+        # pull an unrelated failure in: the corpus above runs unchanged.
         assert LlamaCppBackend._kernel_image_invalid(output)
 
     def test_non_string_input_is_not_a_match(self):
@@ -548,7 +560,14 @@ class TestArchRetryDropsTensorSplit:
     def test_a_command_without_a_split_reports_nothing_to_do(self):
         cmd = ["llama-server", "-m", "x.gguf", "--split-mode", "tensor", "-ngl", "-1"]
         assert LlamaCppBackend._without_tensor_split(cmd) is None
-        # A value that merely looks like one is not a flag.
+        # Known limitation, pinned rather than fixed: the scan is positional, so
+        # a VALUE spelled exactly like the flag is removed as if it were one --
+        # and the two-token form would then swallow the argument after it. No
+        # Studio-built argv can reach this (the only free-text values are the
+        # model path and the HF-derived --alias, and llama.cpp's own value
+        # tokens are numbers or enum words), so the cost of teaching the scanner
+        # every flag's arity is not worth paying. If a caller-supplied value can
+        # ever be "-ts" or "--split-mode", this is where it breaks.
         assert LlamaCppBackend._without_tensor_split(["s", "--alias", "-ts"]) == ["s", "--alias"]
 
     def test_only_the_split_is_removed(self):
