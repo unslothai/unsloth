@@ -88,15 +88,15 @@ class TestAvailabilityProbe:
         import sysconfig
 
         with mock.patch.object(datasets_availability.sys, "platform", "win32"):
-            with mock.patch.object(sysconfig, "get_platform", return_value="win-arm64"):
+            with mock.patch.object(sysconfig, "get_platform", return_value = "win-arm64"):
                 assert datasets_availability._is_arm64_windows() is True
-            with mock.patch.object(sysconfig, "get_platform", return_value="win-amd64"):
+            with mock.patch.object(sysconfig, "get_platform", return_value = "win-amd64"):
                 assert datasets_availability._is_arm64_windows() is False
 
         # Linux and macOS never take the tier branch, whatever their arch says.
         for platform_name in ("linux", "darwin"):
             with mock.patch.object(datasets_availability.sys, "platform", platform_name):
-                with mock.patch.object(sysconfig, "get_platform", return_value="win-arm64"):
+                with mock.patch.object(sysconfig, "get_platform", return_value = "win-arm64"):
                     assert datasets_availability._is_arm64_windows() is False
 
     def test_http_dependency_raises_503(self, monkeypatch):

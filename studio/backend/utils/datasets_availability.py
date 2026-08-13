@@ -33,8 +33,7 @@ import sysconfig
 logger = logging.getLogger(__name__)
 
 _WHAT_IS_LOST = (
-    "Training, dataset previews and Data Recipes need it; chat and model downloads "
-    "do not."
+    "Training, dataset previews and Data Recipes need it; chat and model downloads do not."
 )
 
 # The ARM64-Windows story is the REASON this gate exists, but it is not the only
