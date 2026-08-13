@@ -5763,6 +5763,39 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
 }
 
 # ==========================================================================
+#  Report whether torchcodec can actually load
+# ==========================================================================
+# pyproject declares torchcodec on win32/AMD64, but its wheel is Python-side only:
+# at import it dlopens FFmpeg's avcodec/avutil, and Windows ships neither. So it
+# installs, reports a version, satisfies the torch/torchcodec matrix that
+# notebook_validator enforces, and then fails at import. `datasets` 4.x decodes
+# audio only through it, and reports that failure as "please install 'torchcodec'"
+# -- naming a package that is already installed. Say so here instead, while the
+# user is still looking at the installer.
+if (-not $SkipPythonDeps) {
+    $torchcodecState = try {
+        (& python -c "
+try:
+    import torchcodec  # noqa: F401
+except ModuleNotFoundError:
+    print('absent')
+except Exception:
+    print('unloadable')  # installed, native libraries missing: the case worth reporting
+else:
+    print('ok')
+" 2>$null | Out-String).Trim()
+    } catch { "" }
+
+    if ($torchcodecState -eq "unloadable") {
+        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "Yellow"
+    } elseif ($torchcodecState -eq "ok") {
+        step "torchcodec" "FFmpeg libraries loaded"
+    }
+    # 'absent' and a probe that could not run are silent: neither says anything about
+    # FFmpeg, and audio decoding still has the soundfile path.
+}
+
+# ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
 # llama-server needs OpenSSL to download models from HuggingFace via -hf.

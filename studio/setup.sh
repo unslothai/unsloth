@@ -2959,6 +2959,34 @@ PY
     fi
 fi
 
+# ── torchcodec: report whether it can actually load ──
+# pyproject declares torchcodec on linux and win32, but its wheel is Python-side
+# only: at import it dlopens FFmpeg's avcodec/avutil. Where those are absent it
+# still installs, reports a version, and satisfies the torch/torchcodec matrix
+# notebook_validator enforces, then fails at import. `datasets` 4.x decodes audio
+# only through it and reports that as "please install 'torchcodec'", naming a
+# package that is already installed. Say so here, while setup is still on screen.
+if [ "$_SKIP_PYTHON_DEPS" != true ]; then
+    _TORCHCODEC_STATE="$(python - <<'PY' 2>/dev/null || true
+try:
+    import torchcodec  # noqa: F401
+except ModuleNotFoundError:
+    print("absent")
+except Exception:
+    print("unloadable")  # installed, native libraries missing: the case worth reporting
+else:
+    print("ok")
+PY
+)"
+    if [ "$_TORCHCODEC_STATE" = "unloadable" ]; then
+        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "$C_WARN"
+    elif [ "$_TORCHCODEC_STATE" = "ok" ]; then
+        step "torchcodec" "FFmpeg libraries loaded"
+    fi
+    # "absent" and a probe that could not run stay silent: neither says anything
+    # about FFmpeg, and audio decoding still has the soundfile path.
+fi
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
