@@ -9241,10 +9241,13 @@ class LlamaCppBackend:
         _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
 
         def _usable(idx: int, free_mib: int) -> float:
+            # Through the shared helper, so the floor reserve the ranking and the
+            # layer path apply is charged here too. Tensor mode has no --fit valve,
+            # so a budget spent above the floor fails at startup rather than
+            # offloading. Clamped on both branches, unlike _select_gpus: this pool
+            # is summed, and one negative card must not fund another.
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
-            if t > 0:
-                return max(0.0, free_mib - (1.0 - _tp_frac) * t)
-            return max(0.0, free_mib * _tp_frac)
+            return max(0.0, _vram_usable_mib(free_mib, t, _tp_frac))
 
         # Drop GPUs whose usable budget can't hold the per-device compute-graph
         # buffer; they'd OOM in tensor mode. Admitting on raw free would let a

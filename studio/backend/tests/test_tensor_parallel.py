@@ -1111,6 +1111,59 @@ def test_fit_context_follows_the_user_vram_budget(monkeypatch):
     assert _fit() == fit_default
 
 
+def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
+    """At 100% a tensor plan must leave the same 512 MiB the layer path leaves.
+
+    ``_plan_tensor_parallel`` sized its per-device budget with an inline
+    ``free - (1-frac)*total`` instead of ``_vram_usable_mib``, so it skipped
+    ``_VRAM_FLOOR_RESERVE_MIB``. The GPU ranking ahead of it applies the floor and
+    the model-config panel promises it in so many words ("At 100% a load still
+    leaves 512 MiB per card"), so a tensor plan could spend up to 512 MiB per card
+    that nothing had reserved -- and tensor mode has no ``--fit`` fallback to
+    absorb the overshoot, so it fails at startup instead.
+    """
+    import core.inference.llama_cpp as lc
+
+    backend = _kv_seeded_backend()
+    total_mib = 24 * 1024
+    gpus = [(0, total_mib), (1, total_mib)]
+    total_by_idx = {0: total_mib, 1: total_mib}
+
+    def _plan(frac: float, model_gb: int):
+        return backend._plan_tensor_parallel(
+            list(gpus),
+            model_gb * 1024**3,
+            131072,
+            cache_type_kv = "f16",
+            total_by_idx = dict(total_by_idx),
+            vram_fraction = frac,
+        )
+
+    # The fraction whose percentage reserve is exactly the floor on this card, so
+    # a floored 100% and this must plan identically.
+    floor_frac = 1.0 - lc._VRAM_FLOOR_RESERVE_MIB / total_mib
+    assert floor_frac > lc._CTX_FIT_VRAM_FRACTION, "24 GiB: 1% is under the floor"
+
+    # The weighted split exposes the per-device budget directly: each weight is
+    # the usable budget less the per-device buffers.
+    *_, split_full = _plan(1.0, 40)
+    *_, split_floor = _plan(floor_frac, 40)
+    *_, split_default = _plan(lc._CTX_FIT_VRAM_FRACTION, 40)
+    assert split_full is not None, "expected a weighted split at this model size"
+    assert split_full == split_floor, (
+        f"100% spent {split_full} per card where the floor allows {split_floor}"
+    )
+    # The default still reserves its full 3% (737 MiB > the floor), so the floor
+    # must not have flattened every budget onto the same number.
+    assert all(d < f for d, f in zip(split_default, split_full))
+
+    # And the fitted context, which is what actually OOMs at startup.
+    ctx_full, *_ = _plan(1.0, 36)
+    ctx_floor, *_ = _plan(floor_frac, 36)
+    assert ctx_full < 131072, "expected the context to be capped at this VRAM tier"
+    assert ctx_full == ctx_floor
+
+
 # ── unsupported-arch load failure -> clean message ───────────────────
 
 
