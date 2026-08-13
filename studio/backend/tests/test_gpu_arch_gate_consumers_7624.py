@@ -777,8 +777,16 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         whole host -- exposing cards the parent hid, the dropped one included."""
         self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
+        # A torch module has to be importable, not just _torch_is_rocm patched:
+        # _active_gpu_visibility_mask reads the ROCr mask only inside its `import
+        # torch` try, so on a host without torch it answers from
+        # CUDA_VISIBLE_DEVICES instead and an unmappable ROCr mask reads back as
+        # "no mask". Without this the test silently checks the wrong branch and
+        # fails on any runner whose dependency set omits torch.
+        monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace())
         monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
         monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "GPU-DEADBEEFDEADBEEF")
         from core.rag.embed_llama_server import LlamaServerBackend
