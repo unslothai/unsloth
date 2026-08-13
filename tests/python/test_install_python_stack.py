@@ -871,7 +871,6 @@ class TestManifestVerificationHonoursTheTier:
 
     def _write_manifest(self, root: Path, no_datasets: bool) -> None:
         import json
-
         reqs = self.manifest.requirements_root(STUDIO_DIR)
         (root / self.manifest.MANIFEST_NAME).write_text(
             json.dumps(
@@ -950,9 +949,7 @@ class TestOverridesFileIsFingerprinted:
     manifest = _manifest
 
     def test_overrides_file_is_tracked(self):
-        assert (
-            "single-env/overrides-win-arm64.txt" in self.manifest.TRACKED_REQUIREMENT_FILES
-        )
+        assert "single-env/overrides-win-arm64.txt" in self.manifest.TRACKED_REQUIREMENT_FILES
 
     def test_editing_the_overrides_file_changes_the_fingerprint(self, tmp_path):
         real = self.manifest.requirements_root(STUDIO_DIR)
@@ -964,5 +961,7 @@ class TestOverridesFileIsFingerprinted:
                 (staged / name).write_text(source.read_text(encoding = "utf-8"), encoding = "utf-8")
         before = self.manifest.requirement_digests(staged)
         target = staged / "single-env" / "overrides-win-arm64.txt"
-        target.write_text(target.read_text(encoding = "utf-8") + "\npymupdf>=1.99\n", encoding = "utf-8")
+        target.write_text(
+            target.read_text(encoding = "utf-8") + "\npymupdf>=1.99\n", encoding = "utf-8"
+        )
         assert self.manifest.requirement_digests(staged) != before

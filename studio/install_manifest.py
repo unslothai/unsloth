@@ -431,9 +431,7 @@ def verify_install(
     # tier the install actually recorded, not the platform, so an environment moved
     # between tiers is judged by the rule it was built under.
     omit = NO_DATASETS_OMITTED_REQUIREMENTS if recorded_no_datasets(root) else None
-    missing = missing_requirements(
-        reqs / BOOT_REQUIREMENT_FILE, installed = installed, omit = omit
-    )
+    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed, omit = omit)
     deps_ok = not missing
 
     manifest_ok = False

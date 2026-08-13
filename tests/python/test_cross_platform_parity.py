@@ -1128,9 +1128,9 @@ class TestArm64SkipListParity:
         """The skip list is only as good as the transitive closure it excludes."""
         assert "openai-whisper" in self._python_set()
         assert "openai-whisper" in self._powershell_list()
-        extras = (
-            REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt"
-        ).read_text(encoding = "utf-8")
+        extras = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
+            encoding = "utf-8"
+        )
         assert "openai-whisper" in extras
 
     @staticmethod
