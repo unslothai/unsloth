@@ -1544,7 +1544,8 @@ def test_named_reader_keeps_advertised_url():
     assert t.wait_for_ready(0) == t.url
 
 
-def test_named_reader_parses_custom_hostname():
+def test_named_reader_parses_custom_hostname(monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_URL", raising = False)
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared", token = "tok")
     t._reader(
         _fake_proc(
@@ -1553,6 +1554,65 @@ def test_named_reader_parses_custom_hostname():
         )
     )
     assert t.url == "https://unsloth.example.com"
+    assert t.ready is True
+
+
+def test_named_log_url_skips_github_release_link(monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_URL", raising = False)
+    line = (
+        "INF downloading "
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+        "cloudflared-linux-amd64"
+    )
+    assert ct._named_log_url(line) is None
+
+
+def test_named_log_url_skips_github_then_keeps_hostname(monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_URL", raising = False)
+    line = (
+        "INF https://github.com/cloudflare/cloudflared/releases/latest/download/x "
+        "|  https://unsloth.example.com  |"
+    )
+    assert ct._named_log_url(line) == "https://unsloth.example.com"
+
+
+def test_named_log_url_prefers_env_over_log_hosts(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_TUNNEL_URL", "https://studio.example.com")
+    line = (
+        "INF downloading https://github.com/cloudflare/cloudflared/releases/"
+        "latest/download/x |  https://other.example.com  |"
+    )
+    assert ct._named_log_url(line) == "https://studio.example.com"
+
+
+def test_named_reader_skips_github_download_url(monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_URL", raising = False)
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared", token = "tok")
+    t._reader(
+        _fake_proc(
+            "INF downloading https://github.com/cloudflare/cloudflared/releases/"
+            "latest/download/cloudflared-linux-amd64\n"
+            "INF |  https://unsloth.example.com  |\n"
+            "INF Registered tunnel connection connIndex=0 protocol=http2\n"
+        )
+    )
+    assert t.url == "https://unsloth.example.com"
+    assert t.ready is True
+
+
+def test_named_reader_prefers_env_over_log_urls(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_TUNNEL_URL", "studio.example.com")
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared", token = "tok")
+    t._reader(
+        _fake_proc(
+            "INF downloading https://github.com/cloudflare/cloudflared/releases/"
+            "latest/download/cloudflared-linux-amd64\n"
+            "INF |  https://other.example.com  |\n"
+            "INF Registered tunnel connection connIndex=0 protocol=http2\n"
+        )
+    )
+    assert t.url == "https://studio.example.com"
+    assert t.advertised_url == "https://studio.example.com"
     assert t.ready is True
 
 

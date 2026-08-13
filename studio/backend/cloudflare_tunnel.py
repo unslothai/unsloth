@@ -29,6 +29,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+from urllib.parse import urlsplit
 
 # cloudflared logs the quick-tunnel URL; match only the URL so we do not depend
 # on the surrounding wording, which Cloudflare may change. The negative lookahead
@@ -41,6 +42,35 @@ _URL_RE = re.compile(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com")
 _NAMED_URL_RE = re.compile(
     r"https://(?!api\.(?:trycloudflare|cloudflare)\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
 )
+# cloudflared also logs GitHub release URLs and DNS/API hosts. Those must not be
+# advertised as the tunnel (Kaggle otherwise shows github.com as the share link).
+_NAMED_URL_SKIP_HOSTS = frozenset(
+    {
+        "github.com",
+        "www.github.com",
+        "api.github.com",
+        "cloudflare-dns.com",
+        "api.cloudflare.com",
+        "api.trycloudflare.com",
+    }
+)
+_NAMED_URL_SKIP_SUFFIXES = (".github.com", ".githubusercontent.com")
+
+
+def _named_log_url(line: str) -> Optional[str]:
+    """Named-tunnel URL: ``CLOUDFLARE_TUNNEL_URL`` first, else a hostname from *line*."""
+    advertised = named_tunnel_url()
+    if advertised:
+        return advertised
+    for match in _NAMED_URL_RE.finditer(line):
+        url = match.group(0)
+        host = (urlsplit(url).hostname or "").lower()
+        if not host or host in _NAMED_URL_SKIP_HOSTS:
+            continue
+        if any(host.endswith(suffix) for suffix in _NAMED_URL_SKIP_SUFFIXES):
+            continue
+        return url
+    return None
 
 _NAMED_TOKEN_ENV = "CLOUDFLARE_TUNNEL_TOKEN"
 _NAMED_URL_ENV = "CLOUDFLARE_TUNNEL_URL"
@@ -489,6 +519,8 @@ class CloudflareTunnel:
         # fallback); set to "http2" to force it when quic is blocked.
         self.protocol = protocol
         self.token = token
+        if advertised_url is None and token:
+            advertised_url = named_tunnel_url()
         self.advertised_url = advertised_url
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
@@ -551,14 +583,17 @@ class CloudflareTunnel:
         # Drain cloudflared's output: capture the first public URL and the first
         # edge-connection registration, and keep draining so it never blocks on a
         # full pipe. Named tunnels may already have advertised_url set.
-        url_re = _NAMED_URL_RE if self.token else _URL_RE
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
                     if self.url is None:
-                        match = url_re.search(line)
-                        if match:
-                            self.url = match.group(0)
+                        if self.token:
+                            url = _named_log_url(line)
+                        else:
+                            match = _URL_RE.search(line)
+                            url = match.group(0) if match else None
+                        if url:
+                            self.url = url
                             self._url_event.set()
                     if not self.ready and _REGISTERED_MARKER in line:
                         self.ready = True
