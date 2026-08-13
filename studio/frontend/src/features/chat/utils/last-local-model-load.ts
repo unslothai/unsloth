@@ -116,6 +116,11 @@ export function recordLastLocalModelLoad(input: {
   if (!record) {
     return;
   }
+  // Shadow write first, synchronously: a fetch still pending at document
+  // teardown is dropped without running either callback, and the pre-backend
+  // record was this surface's only memory of the load. It also covers the
+  // pre-route backend that answers 404 without rejecting.
+  writeLegacyRecord(record);
   authFetch(API_PATH, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -125,16 +130,7 @@ export function recordLastLocalModelLoad(input: {
       // biome-ignore lint/style/useNamingConvention: API schema
       gguf_variant: record.ggufVariant,
     }),
-  })
-    .then((res) => {
-      if (!res.ok) {
-        // A pre-route backend answers 404 without rejecting: keep the legacy
-        // shadow record current so the read fallback stays truthful.
-        writeLegacyRecord(record);
-      }
-    })
-    .catch(() => {
-      // Best effort; the read path falls back to the legacy record.
-      writeLegacyRecord(record);
-    });
+  }).catch(() => {
+    // Best effort; the read path falls back to the legacy record.
+  });
 }
