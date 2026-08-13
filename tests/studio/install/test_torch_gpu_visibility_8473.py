@@ -4,18 +4,15 @@
 """Regression tests for issue #8473 -- the installer says the GPU is fine and the backend runs CPU-only.
 
 Reporter: AMD host, `unsloth studio update` prints `gpu AMD ROCm (gfx1201)` then
-`python dependencies up to date`, and Studio then shows VRAM `--`, "No visible GPU"
-and a `CPU` detail line. The installer's GPU line comes from rocminfo / amd-smi /
-hipinfo plus a marketing-name table; the backend's verdict is
-torch.cuda.is_available() in its own process (on ROCm, get_backend_visible_gpu_info
-skips the SMI branch, so torch.cuda is the only thing that can populate devices).
-Nothing ever reconciled the two, so the user was told twice the GPU was fine.
+`python dependencies up to date`, and Studio shows VRAM `--`, "No visible GPU" and a
+`CPU` detail line. The installer's GPU line comes from rocminfo / amd-smi / hipinfo;
+the backend's verdict is torch.cuda.is_available() in its own process (on ROCm the
+only thing that can populate devices). Nothing reconciled the two.
 
-setup.sh now runs one bounded probe in the venv after the GPU summary and prints
-the mismatch. There is no AMD hardware in CI -- every runner is a hosted
-ubuntu/windows/macos box -- so the real block is extracted from setup.sh and run
-under bash against a FAKE venv interpreter whose answer, exit code and latency the
-test controls, plus a fake `timeout` that records the bound setup.sh asked for
+setup.sh now runs one bounded probe in the venv after the GPU summary and prints the
+mismatch. No CI runner has AMD hardware, so the real block is extracted from setup.sh
+and run under bash against a FAKE venv interpreter whose answer, exit code and latency
+the test controls, plus a fake `timeout` that records the bound setup.sh asked for
 while enforcing a short one, so the hang case finishes in seconds.
 """
 
@@ -36,9 +33,8 @@ SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _BLOCK_START = "# ── Does PyTorch see the GPU this installer just announced? ──"
 _BLOCK_END = "# ── 7. Prefer prebuilt llama.cpp bundles"
 
-# Colours are the assertion surface for severity: the harness substitutes the names
-# themselves, so a report demoted from $C_ERR to $C_WARN fails rather than passing on
-# text alone.
+# Colours are the assertion surface for severity: the harness prints the names themselves,
+# so a report demoted from $C_ERR to $C_WARN fails rather than passing on text alone.
 _HARNESS_HEAD = """
 C_DIM="DIM"; C_RST=""; C_OK="OK"; C_WARN="WARN"; C_ERR="ERR"
 step()    { printf 'STEP|%s|%s|%s\\n' "$1" "$2" "${3:-OK}"; }
@@ -59,7 +55,7 @@ def _block() -> str:
 @pytest.fixture(scope = "module")
 def block() -> str:
     extracted = _block()
-    # An empty or truncated extraction would make every check below pass vacuously.
+    # An empty extraction would make every check below pass vacuously.
     assert "torch.cuda.is_available()" in extracted
     assert "_setup_amd_detected" in extracted
     return extracted
@@ -121,8 +117,8 @@ def _run_block(
     real_timeout = shutil.which("timeout")
     if with_timeout:
         assert real_timeout, "this test host has no timeout(1) to delegate to"
-        # Records the bound setup.sh ASKED for, then enforces a short one, so the
-        # hang case is observable without waiting out the real 90 seconds.
+        # Records the bound setup.sh ASKED for, then enforces a short one, so the hang
+        # case is observable without waiting out the real 90 seconds.
         _write_exec(
             stub_bin / "timeout",
             "#!/bin/sh\n"
@@ -131,8 +127,8 @@ def _run_block(
             f'exec "{real_timeout}" {timeout_bound} "$@"\n',
         )
     else:
-        # No `timeout` on PATH at all: the fallback arm of the probe must still run.
-        # Only the utilities the block itself uses are reachable.
+        # No `timeout` on PATH: the fallback arm must still run, with only the
+        # utilities the block itself uses reachable.
         for tool in ("bash", "grep", "tail", "cut", "sh", "sleep", "cat"):
             found = shutil.which(tool)
             assert found, f"missing {tool}"
@@ -144,7 +140,7 @@ def _run_block(
         (stub_bin / "python").chmod(0o755)
     elif path_python is not None:
         # A DIFFERENT answer than the venv's, so a probe that drifted onto the system
-        # interpreter changes the report instead of passing on identical output.
+        # interpreter changes the report instead of matching by coincidence.
         _write_exec(stub_bin / "python", f"#!/bin/sh\nprintf '%s' '{path_python}'\n")
 
     script = "\n".join(
@@ -205,7 +201,7 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason = "setup.sh is the POSIX
 
 
 def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
-    """The whole point of #8473: say the two verdicts disagree, and say which is which."""
+    """The whole point of #8473: say the two verdicts disagree, and which is which."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block, venv, tmp_path, amd = True, gfx = "gfx1201", marketing = "Radeon RX 9070 XT"
@@ -216,19 +212,16 @@ def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
     assert "SUB|detected by the installer: AMD ROCm (gfx1201) -- Radeon RX 9070 XT|ERR" in out
     assert f"SUB|torch.cuda.is_available() is False in {venv}|ERR" in out
     assert "SUB|torch 2.9.0+cpu, device_count 0, torch.version.hip none|ERR" in out
-    # Naming the symptom the user is about to see is what stops it being filed twice, but only
-    # as a conditional: llama.cpp is a separate stack, and with the Vulkan bundle the backend
-    # fills inference_gpu from get_vulkan_inference_gpu_info() and the monitor shows that card's
-    # real VRAM, so promising a CPU-only Studio and a "--" readout would be false there.
-    # "PyTorch", because a false torch.cuda.is_available() says nothing about llama.cpp: a
-    # CUDA / HIP / Vulkan GGUF bundle still offloads to the same card.
+    # Naming the symptom stops it being filed twice, but only conditionally: with the Vulkan
+    # bundle the backend fills inference_gpu from get_vulkan_inference_gpu_info() and the
+    # monitor shows real VRAM, so promising "--" would be false. "PyTorch", because a false
+    # torch.cuda.is_available() says nothing about a GGUF bundle offloading to the same card.
     assert (
         "SUB|PyTorch training and GPU inference are unavailable; chat and GGUF still work.|ERR"
         in out
     )
     # Not "runs on CPU": hardware.py leaves CHAT_ONLY true on the fallback and disables
-    # Train/Export, so promising CPU training is the opposite of what happens. Same sentence
-    # the XPU-runtime-unavailable arm above already uses.
+    # Train/Export, so promising CPU training is the opposite of what happens.
     assert "will run on CPU" not in out
     assert (
         'SUB|If the Live monitor shows VRAM "--" and "No visible GPU", that is this, not a second bug.|ERR'
@@ -273,8 +266,8 @@ def test_nvidia_host_is_named_as_nvidia(block, tmp_path):
 def test_a_banner_cannot_spoof_the_answer(block, tmp_path):
     """torch imports print to stdout on some hosts; only a line-anchored sentinel is the answer.
 
-    The spoof is placed on BOTH sides of the real answer on purpose: the reader takes the last
-    match, so a leading banner alone is caught by the tail and an unanchored match survives it.
+    Spoofed on BOTH sides of the real answer: the reader takes the last match, so a leading
+    banner alone would be caught by the tail while an unanchored match survives it.
     """
     venv = _make_venv(
         tmp_path,
@@ -289,9 +282,8 @@ def test_a_banner_cannot_spoof_the_answer(block, tmp_path):
 
 
 def test_the_two_guards_against_a_spoofed_answer_both_exist(block):
-    """The line anchor and the sentinel prefix strip are independent, and either alone rejects a
-    mid-line sentinel -- so the behavioural test above cannot tell them apart, and removing one
-    silently leaves the reader resting on the other. Asserted here per guard instead."""
+    """Either guard alone rejects a mid-line sentinel, so the behavioural test above cannot tell
+    them apart and removing one silently leaves the reader on the other. Asserted per guard."""
     assert "grep '^UNSLOTHTORCHGPU='" in block
     assert '"${_setup_torch_line#UNSLOTHTORCHGPU=}"' in block
 
@@ -320,22 +312,21 @@ def test_a_gguf_only_venv_says_nothing(block, tmp_path):
 
 
 def test_a_hanging_import_cannot_hang_the_installer(block, tmp_path):
-    """`import torch` on a box with a stalled GPU driver is the classic hang, and this probe
-    exists precisely for hosts whose driver is misbehaving."""
+    """`import torch` on a stalled GPU driver is the classic hang, and this probe exists
+    precisely for hosts whose driver is misbehaving."""
     venv = _make_venv(tmp_path, sleep_seconds = 60, stdout = _answer("1", count = "1"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", timeout_bound = 3)
     assert result["elapsed"] < 30
     assert "could not check whether PyTorch sees this GPU" in result["stdout"]
     assert result["returncode"] == 0
-    # ...and the bound setup.sh actually asked for is the one in the source, not the
-    # short one this test enforces.
+    # ...and the bound setup.sh asked for is the source's, not the short one enforced here.
     assert result["timeout_args"].split()[0] == "90"
     assert str(venv / "bin" / "python") in result["timeout_args"]
 
 
 def test_the_probe_runs_where_timeout_is_missing(block, tmp_path):
-    """Base macOS and minimal Linux images have no timeout(1); the SIGALRM deadline inside the
-    probe is what bounds them, and the check must still happen."""
+    """Base macOS and minimal images have no timeout(1); the probe's SIGALRM deadline bounds
+    them, and the check must still happen."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", with_timeout = False)
     assert result["calls"].count("call") == 1
@@ -343,12 +334,12 @@ def test_the_probe_runs_where_timeout_is_missing(block, tmp_path):
 
 
 def test_both_probe_arms_carry_the_in_process_deadline(block):
-    """Per call site, not per file: one arm losing signal.alarm leaves that host unbounded, and a
-    file-level check passes with the other arm intact."""
+    """Per call site, not per file: one arm losing signal.alarm leaves that host unbounded, and
+    a file-level check passes with the other arm intact."""
     arms = [line for line in block.splitlines() if '-c "$_setup_torch_probe"' in line]
     assert len(arms) == 2, arms
     assert all('"$_setup_torch_py"' in line for line in arms), arms
-    # One arm bounded by timeout(1), one for hosts without it -- both share the same probe
+    # One arm bounded by timeout(1), one for hosts without it; both share the same probe
     # string, so the in-process deadline covers each.
     assert sum(1 for line in arms if "timeout 90 " in line) == 1, arms
     assert block.count("_setup_torch_probe='import signal; signal.alarm(90); ") == 1
@@ -387,10 +378,9 @@ def test_the_check_can_be_switched_off(block, tmp_path):
     ],
 )
 def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
-    """install_python_stack's _explicit_cpu_torch_index_url treats a cpu leaf as authoritative
-    and force-reinstalls the CPU wheel, so torch answering False is the pin working. Accusing
-    that host of a broken GPU and asking it to file an issue is the false alarm this whole
-    check must not become. install.sh already carries the same exclusion for its ROCm line."""
+    """install_python_stack force-reinstalls the CPU wheel for a cpu leaf, so torch answering
+    False is the pin working. Accusing that host of a broken GPU is the false alarm this check
+    must not become."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert result["calls"] == ""
@@ -406,8 +396,8 @@ def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
     ],
 )
 def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):
-    """The exclusion is the EXACT cpu leaf, not any pin: a cu128 or rocm pin asked for a GPU
-    wheel, so a torch that sees nothing under one is exactly the mismatch worth reporting."""
+    """EXACT cpu leaf only: a cu128 or rocm pin asked for a GPU wheel, so a torch that sees
+    nothing under one is exactly the mismatch worth reporting."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
@@ -415,10 +405,9 @@ def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):
 
 def test_an_installer_resolved_cpu_backend_is_not_a_fault(block, tmp_path):
     """install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it
-    deliberately sent to CPU (non-x86_64, ROCm older than 6.0, an unreadable ROCm runtime)
-    arrives with the CPU wheel it asked for and _setup_amd_detected still true, since this
-    file's AMD detection has no uname or ROCm-version gate. install.sh already explains that
-    fallback on screen; repeating it in red and asking for an issue is the false alarm."""
+    deliberately sent to CPU (non-x86_64, ROCm below 6.0, an unreadable runtime) arrives with
+    the CPU wheel it asked for and _setup_amd_detected still true. install.sh already explains
+    that fallback on screen; repeating it in red is the false alarm."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -459,10 +448,9 @@ def test_a_gpu_backend_or_no_backend_is_still_reconciled(block, tmp_path, backen
     ],
 )
 def test_a_hidden_amd_gpu_is_not_a_broken_one(block, tmp_path, env):
-    """The KFD sysfs fallback reads the kernel topology and ignores the mask, so a user who
-    deliberately hid every AMD device still gets the GPU announced and a torch that correctly
-    sees nothing. _setup_cvd_hides_nvidia already keeps the masked NVIDIA host out; this is
-    the missing AMD half, not a new policy."""
+    """The KFD sysfs fallback reads the kernel topology and ignores the mask, so a user who hid
+    every AMD device still gets the GPU announced and a torch that correctly sees nothing. The
+    AMD half of _setup_cvd_hides_nvidia, not a new policy."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
     assert result["calls"] == ""
@@ -479,9 +467,8 @@ def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
 
 
 def test_a_bare_cuda_mask_hides_the_amd_card_too(block, tmp_path):
-    """ROCm layers HIP/ROCR on top of CUDA_VISIBLE_DEVICES and falls back to it when neither is
-    set (hardware.py's visible-devices resolver), so a hide-all CUDA mask on an AMD host is the
-    user hiding the card, not torch failing to open it."""
+    """ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to it when neither is set,
+    so a hide-all CUDA mask on an AMD host is the user hiding the card, not torch failing."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block, venv, tmp_path, amd = True, gfx = "gfx1201", env = {"CUDA_VISIBLE_DEVICES": "-1"}
@@ -491,8 +478,8 @@ def test_a_bare_cuda_mask_hides_the_amd_card_too(block, tmp_path):
 
 
 def test_a_mixed_host_steered_to_its_amd_card_is_still_reconciled(block, tmp_path):
-    """First-set-wins is what keeps the fallback narrow: hiding NVIDIA while naming an AMD
-    device is a selection, and that host still wants to hear that torch cannot open it."""
+    """First-set-wins keeps the fallback narrow: hiding NVIDIA while naming an AMD device is a
+    selection, and that host still wants to hear that torch cannot open it."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -506,9 +493,9 @@ def test_a_mixed_host_steered_to_its_amd_card_is_still_reconciled(block, tmp_pat
 
 
 def test_the_mask_check_needs_no_coreutils(block, tmp_path):
-    """Trimmed with bash expansion rather than `tr`: on a minimal image without coreutils on
-    PATH the pipe would fail, leave the mask empty, and read that as hide-all, silencing every
-    host. Run on the no-timeout PATH, which carries only what the block itself uses."""
+    """Trimmed with bash expansion rather than `tr`: without coreutils on PATH the pipe fails,
+    leaving the mask empty, which reads as hide-all and silences every host. Run on the
+    no-timeout PATH, which carries only what the block itself uses."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -525,8 +512,7 @@ def test_the_mask_check_needs_no_coreutils(block, tmp_path):
 
 def test_an_empty_hip_mask_shadows_rocr(block, tmp_path):
     """First-set-wins, like the runtime: an empty HIP mask hides everything even when ROCR
-    names a device, so reading ROCR first would report a host that torch cannot see by
-    request."""
+    names a device, so reading ROCR first would report a host hidden by request."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block,
@@ -542,9 +528,9 @@ def test_an_empty_hip_mask_shadows_rocr(block, tmp_path):
 
 @pytest.mark.parametrize("marker", ["env", "manifest", "file"])
 def test_a_no_torch_install_never_launches_the_interpreter(block, tmp_path, marker):
-    """A GGUF-only install has no torch to reconcile. setup.ps1 already excludes it through
-    $NoTorchMode; without the POSIX half every update paid for an `import torch` that could
-    only fail, and a no-torch venv carrying a user-added CPU torch got the red mismatch."""
+    """A GGUF-only install has no torch to reconcile. Without this POSIX half of setup.ps1's
+    $NoTorchMode every update paid for an `import torch` that could only fail, and a no-torch
+    venv carrying a user-added CPU torch got the red mismatch."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     env = {}
     if marker == "env":
@@ -572,9 +558,8 @@ def test_a_torch_install_is_not_read_as_no_torch(block, tmp_path):
 
 
 def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):
-    """setup.sh runs before the venv exists in some repair paths. Asserted on the skip line
-    rather than on the absence of a report: without the guard the probe merely fails to exec,
-    which is silent too, so silence proves nothing."""
+    """setup.sh runs before the venv exists in some repair paths. Asserted on the skip line,
+    not on silence: without the guard the probe merely fails to exec, which is silent too."""
     venv = tmp_path / "novenv"
     venv.mkdir()
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
@@ -584,8 +569,8 @@ def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):
 
 
 def test_the_check_runs_after_the_gpu_summary_and_before_the_llama_step():
-    """Ordering is load-bearing: _setup_gfx and _setup_amd_detected are computed by the summary,
-    and the report has to sit next to the line it contradicts."""
+    """Ordering is load-bearing: _setup_gfx and _setup_amd_detected are computed by the
+    summary, and the report has to sit next to the line it contradicts."""
     text = SETUP_SH.read_text(encoding = "utf-8")
     summary = text.index("# ── GPU detection summary")
     announcement = text.index('step "gpu" "AMD ROCm ($_setup_gfx)"')
@@ -595,10 +580,9 @@ def test_the_check_runs_after_the_gpu_summary_and_before_the_llama_step():
 
 
 def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
-    """Hybrid Intel/NVIDIA on the XPU wheel: torch.cuda.is_available() is False and the
-    machine still runs on its GPU, because _detect_hardware_locked falls through from
-    CUDA to XPU (hardware.py). Reporting a CPU verdict there is a false alarm about a
-    working host, which is worse than saying nothing (#8473)."""
+    """Hybrid Intel/NVIDIA on the XPU wheel: torch.cuda.is_available() is False and the machine
+    still runs on its GPU, because _detect_hardware_locked falls through CUDA -> XPU. Reporting
+    a CPU verdict there is a false alarm about a working host (#8473)."""
     venv = _make_venv(tmp_path, stdout = _answer("0", xpu = "1"))
     result = _run_block(block, venv, tmp_path, nvidia = True)
     out = result["stdout"]
@@ -609,8 +593,8 @@ def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
 
 
 def test_the_verbose_line_does_not_call_zero_cuda_devices_the_total(block, tmp_path):
-    """device_count() is CUDA-only. On the host the XPU answer suppresses, it is 0 while torch
-    is using the Intel GPU, so "torch sees 0 GPU(s)" reads as a failure on a working machine."""
+    """device_count() is CUDA-only. On the host the XPU answer suppresses it is 0 while torch
+    uses the Intel GPU, so "torch sees 0 GPU(s)" reads as a failure on a working machine."""
     venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+xpu", xpu = "1"))
     result = _run_block(block, venv, tmp_path, nvidia = True, env = {"UNSLOTH_VERBOSE": "1"})
     out = result["stdout"]
@@ -627,9 +611,9 @@ def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
 
 
 def test_a_colab_runtime_probes_the_interpreter_its_deps_went_into(block, tmp_path):
-    """Colab has no Unsloth venv: setup.sh installs the backend deps into the SYSTEM python and
-    sets _COLAB_NO_VENV. A guard requiring $VENV_DIR/bin/python skipped the probe there, so an
-    NVIDIA Colab runtime whose torch cannot see the GPU got no diagnostic at all."""
+    """Colab has no Unsloth venv: setup.sh installs the deps into the SYSTEM python and sets
+    _COLAB_NO_VENV. A guard requiring $VENV_DIR/bin/python skipped the probe there, so an NVIDIA
+    Colab runtime whose torch cannot see the GPU got no diagnostic."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(
         block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
@@ -657,8 +641,8 @@ def test_a_working_colab_runtime_prints_no_mismatch(block, tmp_path):
 
 
 def test_a_colab_probe_that_does_not_answer_still_warns(block, tmp_path):
-    """The GGUF-only silence keys on the venv's torch on disk, and Colab has no venv layout to
-    look at while its runtimes ship torch. Falling back to silence there would hide the crash."""
+    """The GGUF-only silence keys on the venv's torch on disk; Colab has no venv layout while
+    its runtimes ship torch, so falling back to silence there would hide the crash."""
     venv = _make_venv(tmp_path, exit_code = 1, torch_on_disk = False)
     result = _run_block(
         block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
@@ -685,10 +669,9 @@ def test_the_venv_interpreter_still_wins_where_there_is_a_venv(block, tmp_path):
 
 
 def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
-    """The suppression must turn on what the probe SAW, not on the wheel label. A +xpu
-    wheel whose Intel runtime is broken answers False for both CUDA and XPU and falls
-    through to CPU exactly like the hosts this check exists for, so a disk-only
-    'is this an XPU wheel' test would silence the one case that needs saying (#8473)."""
+    """The suppression must turn on what the probe SAW, not the wheel label: a +xpu wheel with
+    a broken Intel runtime answers False for both and falls to CPU exactly like the hosts this
+    exists for, so a disk-only 'is this an XPU wheel' test would silence it (#8473)."""
     venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+xpu", xpu = "0"))
     result = _run_block(block, venv, tmp_path, nvidia = True)
     assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
