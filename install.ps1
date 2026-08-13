@@ -313,13 +313,9 @@ function Install-UnslothStudio {
     # recovery this very script prints -- install x64 Python, re-run in the same
     # terminal -- would then re-enter the tier and ignore the new interpreter.
     # Restored next to UNSLOTH_STUDIO_HOME and the other handoff variables, after
-    # the setup call that is the only thing that reads it.
-    #
-    # Taken HERE, before the flag parsing, because $script: state survives between
-    # invocations in a caller's session and Exit-InstallFailure restores from it:
-    # a second `irm ... | iex` that dies on its own arguments would otherwise put
-    # back the value the FIRST run saw, in a shell where the user has since changed
-    # it. Nothing between here and the old position touched the variable.
+    # the setup call that is the only thing that reads it. Snapshotted before the
+    # flag parsing: $script: state outlives one invocation, so a second run that
+    # died on its own arguments would restore what the FIRST run saw.
     $script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS
     $script:HadPreviousNoDatasetsEnv = ($null -ne $script:PreviousNoDatasetsEnv)
 

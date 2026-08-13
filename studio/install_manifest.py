@@ -64,12 +64,10 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "single-env/overrides-win-arm64.txt",
 )
 
-# Files added to TRACKED_REQUIREMENT_FILES after installs in the field were already
-# recording digests. A manifest cannot be stale for a file it never knew about, so a
-# key missing from an older manifest is tolerated -- for THESE names only. Any other
-# gap is what it always was: a manifest that does not describe this install, and the
-# dependency pass runs. Empty this tuple once the release that introduced them is
-# far enough back that no manifest predates it.
+# Added to TRACKED_REQUIREMENT_FILES after installs in the field were already
+# recording digests: a manifest cannot be stale for a file it never knew about. Only
+# these names are tolerated; any other gap still means the manifest does not describe
+# this install. Empty once no manifest predates the release that added them.
 LATE_TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = ("single-env/overrides-win-arm64.txt",)
 
 # Entries in studio.txt that the ARM64 inference-only tier deliberately never
@@ -364,11 +362,10 @@ def _version_satisfies(version: str, specifier: str) -> bool:
 def _is_windows_arm64_python() -> bool:
     """Is the interpreter being verified a native ARM64 Windows build?
 
-    sysconfig, not platform.machine(): an x64 interpreter emulated on an ARM64
-    Windows host reports arm64 for the machine and win-amd64 for the platform tag,
-    and it is the tag that decides which wheels exist. Same expression as
-    install_python_stack.IS_WINDOWS_ARM64_PYTHON, kept here rather than imported
-    because this module is loaded on its own by setup.ps1 and the desktop preflight.
+    sysconfig, not platform.machine(): an emulated x64 interpreter reports arm64 for
+    the machine and win-amd64 for the tag, and the tag decides which wheels exist.
+    Same expression as install_python_stack.IS_WINDOWS_ARM64_PYTHON, repeated because
+    this module is loaded alone by setup.ps1 and the desktop preflight.
     """
     import sysconfig
     return os.name == "nt" and sysconfig.get_platform().lower() == "win-arm64"
@@ -474,10 +471,9 @@ def _requirements_changed(
     an older version compare unequal, and every existing install on every platform
     would take a full dependency pass on its first `unsloth studio update` after the
     upgrade. A file the install never recorded says nothing about whether the
-    install is stale, so a key only the current version tracks is ignored
-    -- but only for the names in LATE_TRACKED_REQUIREMENT_FILES. A manifest missing
-    any of the long-standing keys is a manifest that does not describe this install,
-    and is stale exactly as it was before.
+    install is stale, so a key only the current version tracks is ignored -- for the
+    names in LATE_TRACKED_REQUIREMENT_FILES only. Any long-standing key still has to
+    be there, so a truncated manifest is as stale as it always was.
 
     Everything the manifest DID record still has to match, and a file that has since
     disappeared still counts as a change, so a --local edit is caught exactly as
@@ -531,12 +527,9 @@ def verify_install(
     omit = NO_DATASETS_OMITTED_REQUIREMENTS if tier else None
     # And the pins the tier LIFTED rather than dropped, or a correctly installed
     # PyMuPDF 1.28.x reads as missing against studio.txt's ==1.27.2.3 for ever.
-    #
-    # Gated on the INTERPRETER as well as the tier, exactly as the install side is
-    # (install_python_stack applies the overrides under `NO_DATASETS and
-    # IS_WINDOWS_ARM64_PYTHON`). UNSLOTH_NO_DATASETS=1 turns the tier on for an x64
-    # install too, and there the overrides never ran: demanding the lifted versions
-    # would report correctly installed x64 pins as missing on every single launch.
+    # Gated on the interpreter too, as the install side is: UNSLOTH_NO_DATASETS=1
+    # turns the tier on for an x64 install, where the overrides never ran and the
+    # original pins are what is installed.
     lifts = tier_version_lifts(reqs) if (tier and _is_windows_arm64_python()) else None
     missing = missing_requirements(
         reqs / BOOT_REQUIREMENT_FILE,

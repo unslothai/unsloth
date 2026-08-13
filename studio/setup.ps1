@@ -3301,15 +3301,11 @@ if (-not $NoDatasetsMode -and $ReusedSetupPython) {
         }
         if ($null -ne $_recorded) {
             $NoDatasetsMode = $_recorded
-            # Handed to the Python child explicitly. install_python_stack.py re-infers
-            # the tier for itself -- environment, then manifest, then marker, then
-            # interpreter -- and by the time it runs, the dependency pass has already
-            # deleted the manifest this decision came from. Without the handoff a
-            # completed x64 manifest saying false loses to a stale marker, and one
-            # saying true loses to no record at all, so the very precedence resolved
-            # here is undone at the process boundary. Only a RECORDED value is
-            # exported: with no record there is nothing to override, and the child's
-            # own interpreter check is the right answer.
+            # Handed over explicitly: install_python_stack.py re-infers the tier
+            # from env, manifest, marker, interpreter -- and the dependency pass
+            # deletes the manifest first, so this precedence would be undone at the
+            # process boundary. Only a recorded value is exported; with no record
+            # the child's own interpreter check is the right answer.
             $env:UNSLOTH_NO_DATASETS = if ($_recorded) { "1" } else { "0" }
         } elseif ($_venvRoot -and (Test-Path -LiteralPath (Join-Path $_venvRoot ".unsloth-no-datasets"))) {
             $NoDatasetsMode = $true

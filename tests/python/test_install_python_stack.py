@@ -906,11 +906,9 @@ class TestManifestVerificationHonoursTheTier:
         assert result["ok"] is True
 
     def test_an_x64_no_datasets_install_is_judged_by_the_x64_pins(self, tmp_path, monkeypatch):
-        """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install too, and there
-        pip_install never applies overrides-win-arm64.txt: the interpreter has wheels
-        for the original pins. Verification must judge it by those pins, or a
-        correctly installed PyMuPDF 1.27.2.3 is reported missing on every launch and
-        the dependency pass never stops running."""
+        """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install too, where
+        pip_install never applies overrides-win-arm64.txt. Judged by the lifted pins,
+        a correctly installed PyMuPDF 1.27.2.3 reads as missing on every launch."""
         monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda: False)
         self._write_manifest(tmp_path, no_datasets = True)
         reqs = self.manifest.requirements_root(STUDIO_DIR)
