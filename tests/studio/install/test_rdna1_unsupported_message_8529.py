@@ -254,8 +254,19 @@ class TestWindowsArm64GetsNoVulkanAdvice:
             "no Windows ARM64 Vulkan bundle is published" in src
         ), "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
 
-    @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
-    def test_every_vulkan_offer_is_behind_an_arch_check(self, path):
+    # The Python stack emits the PowerShell setter too, and setup.ps1 runs it before
+    # reaching its own throw, so it is the last advice an ARM64 user sees. The tests
+    # above pin the one offer it has today; this one covers any offer added later.
+    @pytest.mark.parametrize(
+        "path,guard",
+        [
+            (_INSTALL_PS1, "Get-HostMachineArch"),
+            (_SETUP_PS1, "Get-HostMachineArch"),
+            (_STACK_PY, "_is_windows_arm64"),
+        ],
+        ids = lambda p: getattr(p, "name", p),
+    )
+    def test_every_vulkan_offer_is_behind_an_arch_check(self, path, guard):
         lines = _normalised(path).splitlines()
         offers = [
             i
@@ -264,10 +275,10 @@ class TestWindowsArm64GetsNoVulkanAdvice:
         ]
         assert offers, f"{path.name}: no Vulkan offer found"
         for i in offers:
-            # Get-HostMachineArch itself, not a boolean named after it: a mutant that
-            # kept the branch and hardcoded $unsupArm64 = $false survived that spelling.
+            # The resolver itself, not a boolean named after it: a mutant that kept the
+            # branch and hardcoded $unsupArm64 = $false survived that spelling.
             back = "\n".join(lines[max(i - 20, 0) : i])
-            assert "Get-HostMachineArch" in back, (
+            assert guard in back, (
                 f"{path.name}:{i + 1}: offers the Vulkan variable without checking for "
                 f"Windows ARM64, where setting it throws:\n{back}"
             )
