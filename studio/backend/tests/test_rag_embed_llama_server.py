@@ -655,3 +655,28 @@ def test_literal_gpu_remains_a_hard_request(monkeypatch):
         with pytest.raises(RuntimeError, match = "no cuda"):
             backend._spawn()
         assert backend._force_cpu is False, requested
+
+
+def test_a_soft_gpu_opt_in_keeps_its_own_cpu_fallback(monkeypatch):
+    """The chat reaper kills this server routinely, so respawns are the common case.
+
+    A GPU start we were already allowed to give up on must not be retried on every
+    one of them: each retry pays the full startup timeout before landing back on the
+    CPU it had already fallen back to. Only the literal ``gpu`` outranks the flag,
+    and that spelling never sets it."""
+    for requested in ("cuda", "xpu", "  gpu  "):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        calls: list[bool] = []
+
+        def fake_spawn_once(use_gpu, _calls = calls):
+            _calls.append(use_gpu)
+            if use_gpu:
+                raise RuntimeError("GPU start failed")
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        backend._spawn()
+        assert calls == [True, False], requested
+        backend._spawn()  # the reaper killed it; the respawn stays where we landed
+        assert calls == [True, False, False], requested
+        assert backend._use_gpu() is False, requested

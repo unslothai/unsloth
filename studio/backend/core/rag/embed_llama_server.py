@@ -271,9 +271,12 @@ class LlamaServerBackend:
 
     def _use_gpu(self) -> bool:
         """``RAG_EMBED_DEVICE``: ``gpu``/``cpu`` force it; ``auto`` uses a GPU when
-        present. A sticky CPU fallback (after an auto GPU start fails) wins."""
+        present. A sticky CPU fallback (after a GPU start we were allowed to give up
+        on) wins, so the reaper's next restart does not pay the startup timeout again
+        on a path already known not to start. Only the literal ``gpu`` outranks it,
+        and that spelling never sets the flag."""
         dev = config.embed_device_preference()
-        if dev == "gpu":
+        if dev == "gpu" and not self._force_cpu:
             return True
         if dev == "cpu" or self._force_cpu:
             return False
