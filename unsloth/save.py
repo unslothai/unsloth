@@ -3201,8 +3201,25 @@ def _full_model_checkpoint_bytes(model, state_dict = None):
 
 
 def _same_filesystem(left, right):
-    """True when two existing paths sit on the same mount."""
-    return os.stat(left).st_dev == os.stat(right).st_dev
+    """True when two paths sit on the same mount.
+
+    Neither path has to exist. The nearest existing ancestor answers, exactly
+    as `free_bytes` resolves the disk it measures, because that ancestor is
+    the filesystem a write to the path really lands on. A destination is
+    routinely absent here: `_preflight_merge_disk` runs before anything is
+    created, so stat-ing it directly raised, the callers' broad handlers
+    swallowed the probe, and a first export got no TMPDIR warning at all.
+
+    Raises when either side cannot be identified, which is what every caller
+    already reads as "cannot tell".
+    """
+    left_id = _filesystem_id(left)
+    right_id = _filesystem_id(right)
+    if left_id is None or right_id is None:
+        raise OSError(
+            f"Unsloth: cannot identify the filesystem holding `{left}` or `{right}`."
+        )
+    return left_id == right_id
 
 
 def _destination_holds_torchao_staging(destination, need_bytes, staging_bytes):
@@ -3505,10 +3522,10 @@ def _on_separate_filesystems(directory, sibling):
     filesystems would charge a single-filesystem export the larger of the two
     halves instead of their sum.
 
-    Separate from `_same_filesystem`, which answers a different question for
-    the torchao redirect: that one compares two paths that both exist and
-    raises otherwise, and its caller wants the raise. The GGUF sibling does
-    not exist yet.
+    Separate from `_same_filesystem`, which resolves paths the same way but
+    answers a different question for the torchao redirect: it raises when a
+    path cannot be identified, because its callers want that to cancel the
+    probe rather than to charge one filesystem for both halves.
     """
     left = _filesystem_id(directory)
     right = _filesystem_id(sibling)

@@ -1025,6 +1025,77 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         assert "save_pretrained_merged" in source or "merge" in source.lower()
 
 
+class TestTheStagingWarningSurvivesAFreshDestination:
+    """The destination of a first export does not exist yet.
+
+    `_preflight_merge_disk` runs before anything is written, so on a first
+    export `save_directory` is a name and not a directory. Comparing devices
+    by stat-ing it directly raised, the helper's broad handler swallowed the
+    whole probe, and the undersized TMPDIR went unmentioned in exactly the
+    case the warning exists for. The nearest existing ancestor is the
+    filesystem the write lands on, and is what `free_bytes` already measures.
+
+    `os.stat` is faked rather than `_same_filesystem` monkeypatched, because
+    the bug is inside `_same_filesystem` and a stub for it cannot show it.
+    Existence still comes from the real `os.stat`, so the missing directory
+    is genuinely missing.
+    """
+
+    _STAGING = 10 * GB
+
+    @pytest.fixture
+    def fresh(self, monkeypatch, tmp_path):
+        import tempfile
+
+        staging = tmp_path / "tmp"
+        staging.mkdir()
+        monkeypatch.chdir(tmp_path)
+        # `tempfile.gettempdir()` caches its answer, so the attribute and the
+        # variable both have to move.
+        monkeypatch.setattr(tempfile, "tempdir", str(staging))
+        monkeypatch.setenv("TMPDIR", str(staging))
+
+        class _Device:
+            def __init__(self, st_dev):
+                self.st_dev = st_dev
+
+        devices = {str(staging): 20, str(tmp_path): 10}
+        real_stat = os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            device = devices.get(str(path), None)
+            return result if device is None else _Device(device)
+
+        monkeypatch.setattr(os, "stat", fake_stat)
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: self._STAGING)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: 0 if str(path) == str(staging) else 1000 * GB,
+        )
+        return tmp_path
+
+    def test_an_absent_destination_still_gets_the_warning(self, fresh, capsys):
+        destination = str(fresh / "model")
+        assert not os.path.exists(destination)
+        S._preflight_merge_disk(_FakeModel(), destination, "torchao_fp8")
+        assert "TMPDIR" in capsys.readouterr().out
+
+    def test_a_shared_filesystem_is_still_silent(self, fresh, capsys, monkeypatch):
+        """Resolving the ancestor must not turn every fresh path into a warning."""
+        monkeypatch.setattr(S, "_filesystem_id", lambda path: 10)
+        S._preflight_merge_disk(_FakeModel(), str(fresh / "model"), "torchao_fp8")
+        assert capsys.readouterr().out == ""
+
+    def test_an_unidentifiable_path_cancels_the_probe(self, fresh, capsys, monkeypatch):
+        """Unmeasurable stays "cannot tell", which is silence and not a guess."""
+        monkeypatch.setattr(S, "_filesystem_id", lambda path: None)
+        S._preflight_merge_disk(_FakeModel(), str(fresh / "model"), "torchao_fp8")
+        assert capsys.readouterr().out == ""
+
+
 class TestMergeHeadroomMatchesTheZooGuard:
     """A working directory that is "just big enough" is not big enough.
 
