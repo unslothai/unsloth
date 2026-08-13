@@ -928,8 +928,15 @@ def _training_active() -> bool:
         return False
 
 
-def _clear_device_cache(device: Optional[str]) -> None:
-    gc.collect()
+def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
+    """Drop the unreferenced model, then hand its blocks back to the allocator.
+
+    ``collect = False`` for a caller that has just collected and dropped nothing since: a full
+    collection is not free (a long-lived backend reaches millions of tracked objects, where one
+    pass costs about a second), and the cancel path below runs this twice in a row while it
+    holds the model lock that ``wait_for_load_to_settle`` waits on."""
+    if collect:
+        gc.collect()
     try:
         import torch
         if device == "cuda":
@@ -1347,8 +1354,14 @@ class WhisperSttSidecar:
             except SttLoadCancelledError:
                 candidate = None
                 if resident_released:
+                    # _release_engine_locked already collected, and the candidate was dropped
+                    # before it ran, so nothing has become garbage since. This second call is
+                    # only here to empty the cache of the device this LOAD picked, which need
+                    # not be the resident's, so it keeps the sweep and skips the collection.
                     self._release_engine_locked()
-                _clear_device_cache(device)
+                    _clear_device_cache(device, collect = False)
+                else:
+                    _clear_device_cache(device)
                 raise
             finally:
                 self._end_load(cancel_event)

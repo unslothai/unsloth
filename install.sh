@@ -2866,7 +2866,7 @@ _amd_arch_index_family_for_gfx() {
 # Map a GPU marketing name to gfx arch (kept in sync with install.ps1 nameArchTable).
 _infer_amd_gfx_arch_from_gpu_name() {
     case "$1" in
-        *9070*|*9080*) echo gfx1201 ;;
+        *9070*|*9080*|*"R9700"*) echo gfx1201 ;;
         *9060*) echo gfx1200 ;;
         *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) echo gfx1151 ;;
         *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) echo gfx1150 ;;
@@ -2939,6 +2939,142 @@ $_amd_disp
 EOF
     fi
     return 1
+}
+
+# gfx arch named by an HSA_OVERRIDE_GFX_VERSION value ($1), or nothing if it is not a
+# readable major.minor.stepping triple. ROCr builds gfx<major><minor><stepping in hex>,
+# which is why 9.0.10 is gfx90a: 11.0.0 -> gfx1100, 11.5.1 -> gfx1151, 10.3.0 -> gfx1030.
+# Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py.
+_hsa_override_gfx_arch() {
+    printf '%s' "${1:-}" | awk '
+        {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) exit
+            split($0, p, ".")
+            maj = p[1] + 0; min = p[2] + 0; step = p[3] + 0
+            # Steppings are a single hex nibble; wider is not a real target.
+            if (maj <= 0 || min > 9 || step > 15) exit
+            printf "gfx%d%d%x", maj, min, step
+        }'
+}
+
+# gfx arches the KERNEL sees, one line per AMD GPU node, from KFD topology sysfs.
+# amdkfd writes gfx_target_version itself, so it is immune to HSA_OVERRIDE_GFX_VERSION
+# (which ROCr applies in userland) -- the ground truth for unslothai#7331. Encoding is
+# major*10000 + minor*100 + stepping in hex: 110000 -> gfx1100, 110501 -> gfx1151,
+# 90010 -> gfx90a. CPU nodes carry no gfx_target_version and drop out; vendor_id 4098
+# (0x1002) keeps NVIDIA's open-driver KFD nodes out, mirroring _has_amd_rocm_gpu.
+# Kept in sync with _kfd_gfx_targets in studio/install_python_stack.py.
+_kfd_gfx_targets() {
+    [ -d /sys/class/kfd/kfd/topology/nodes ] || return 0
+    for _kfd_node in /sys/class/kfd/kfd/topology/nodes/*/properties; do
+        [ -r "$_kfd_node" ] || continue
+        awk '
+            /^[[:space:]]*vendor_id[[:space:]]/     { vendor = $2 }
+            /^[[:space:]]*gfx_target_version[[:space:]]/ { gtv = $2 + 0 }
+            END {
+                if (vendor != 4098 || gtv <= 0) exit
+                maj = int(gtv / 10000) % 100
+                min = int(gtv / 100) % 100
+                step = gtv % 100
+                if (maj <= 0 || min > 9 || step > 15) exit
+                printf "gfx%d%d%x\n", maj, min, step
+            }' "$_kfd_node" 2>/dev/null || true
+    done
+    return 0
+}
+
+# Physical gfx arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof
+# (unslothai#7331): $1 = the arch inferred from the product name, $2 = the probed gfx
+# token list. Prints the physical arch, or nothing to mean "believe the probe" (default).
+#
+# Requires ALL of the following, which keeps a mixed Strix APU + discrete AMD GPU host
+# (the reason the probe outranks the product name at all) out of reach:
+#   * HSA_OVERRIDE_GFX_VERSION is set -- with no override there is nothing to doubt;
+#   * the product name inferred a spoofable RDNA 3.5 APU arch and the probe reported
+#     a DIFFERENT one;
+#   * the probe saw exactly ONE arch (rocminfo repeats the token per agent, so this
+#     counts DISTINCT tokens -- a pre-filter, not the safety property);
+#   * the variable names EXACTLY the arch that was reported: ROCr can only spoof to
+#     the target the variable names, so any other reading is real silicon;
+#   * a source the override cannot reach agrees with the product name: KFD sysfs
+#     first (the kernel), then rocminfo re-run with the variable unset.
+# Corroboration is REQUIRED, with deliberately no "the variable names the reported arch,
+# so assume a spoof" fallback: that shape is identical on a host telling the truth (a real
+# gfx1100 dGPU in a Ryzen AI Max chassis whose owner set the override for unrelated
+# reasons), and rerouting a working machine to the wrong wheels is worse than
+# unslothai#7331 itself.
+# Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
+_hsa_spoofed_physical_gfx() {
+    _hsp_inferred="${1:-}"
+    _hsp_probed_all="${2:-}"
+    [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] || return 0
+    case "$_hsp_inferred" in
+        gfx1151|gfx1150|gfx1152) : ;;
+        *) return 0 ;;
+    esac
+    # Exactly one DISTINCT arch, else the single-arch premise fails. Deduplicated because
+    # the caller passes raw `rocminfo | grep -oE gfx...`, which repeats the token per
+    # Name/ISA line -- counting lines would never fire on #7331's own host.
+    _hsp_n=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')
+    [ "${_hsp_n:-0}" -ne 1 ] && return 0
+    _hsp_probed=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF { print; exit }')
+    [ -n "$_hsp_probed" ] || return 0
+    [ "$_hsp_probed" = "$_hsp_inferred" ] && return 0
+    # Only the arch the variable names can be a spoof of that variable's doing.
+    [ "$(_hsa_override_gfx_arch "$HSA_OVERRIDE_GFX_VERSION")" = "$_hsp_probed" ] || return 0
+
+    echo "  [WARN] HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION is set; ROCm reports" >&2
+    echo "  [WARN] $_hsp_probed but this host's product name is $_hsp_inferred. Checking for a spoof." >&2
+
+    # 1. The kernel, which the override cannot reach. Decisive either way: if it answers
+    # at all, no weaker source gets to overrule it.
+    _hsp_kfd=$(_kfd_gfx_targets | awk 'NF')
+    if [ -n "$_hsp_kfd" ]; then
+        if [ "$_hsp_kfd" = "$_hsp_inferred" ]; then
+            echo "  [WARN] KFD topology sysfs reports $_hsp_inferred -- $_hsp_probed is a spoof." >&2
+            printf '%s\n' "$_hsp_inferred"
+        else
+            # On a real gfx1100 card in a Ryzen AI Max chassis this is the CORRECT outcome.
+            echo "  [WARN] The kernel does not corroborate a spoof; keeping $_hsp_probed." >&2
+        fi
+        # Several GPU nodes: the single-arch premise was wrong (the spoof collapsed a
+        # mixed host into one apparent arch). Decline.
+        return 0
+    fi
+
+    # 2. The runtime, asked again without the override (ROCr getenv()s it while building
+    # agent names, so stripping it retracts the spoofed name) and without the visible
+    # masks, so a mask cannot hide the second GPU that would veto the correction. A
+    # re-probe that still answers $_hsp_probed is evidence FOR the probe: the name did
+    # not move, so it is real silicon. That is what keeps a genuine gfx1100 dGPU in a
+    # Ryzen AI Max chassis on its own wheels.
+    _hsp_re=""
+    if command -v rocminfo >/dev/null 2>&1; then
+        _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
+                    rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
+    fi
+    # rocminfo FAILS on the very host this exists for: strip the override on a ROCm stack
+    # predating the physical arch and ROCr has no ISA entry for it, so hsa_init errors and
+    # no agent is listed. amd-smi reads the driver and is override-immune, and
+    # _detect_amd_gfx_codes falls through to it, so mirror that here.
+    if [ -z "$_hsp_re" ] && command -v amd-smi >/dev/null 2>&1; then
+        _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
+                    amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
+        if [ -z "$_hsp_re" ]; then
+            _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
+                        amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
+        fi
+    fi
+    if [ -z "$_hsp_re" ]; then
+        echo "  [WARN] Nothing left to re-probe and no KFD sysfs; keeping $_hsp_probed." >&2
+    elif [ "$_hsp_re" = "$_hsp_inferred" ]; then
+        echo "  [WARN] $_hsp_inferred reported with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
+        printf '%s\n' "$_hsp_inferred"
+    else
+        echo "  [WARN] the re-probe does not corroborate a spoof; keeping $_hsp_probed." >&2
+    fi
+    return 0
 }
 
 # Reads the AMD gfx arch for wheel-index decisions: a user-set
@@ -3731,17 +3867,51 @@ _maybe_bootstrap_rocm_wsl() {
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
     # copy counts only for a --local checkout run, since this executes with no prompt and
     # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
+    #
+    # PINNED, never a branch: this runs unattended and installs with sudo, so a moving ref
+    # would turn any rewrite of that branch into root code on every affected WSL box. Bump
+    # it whenever the helper changes; lagging only means an older helper, and the gate below
+    # rejects one too old to be safe.
+    _ROCM_WSL_HELPER_REF="d3367edd9a1de7a0ac15aa899bd9cb97173679dc"
+    # librocdxg pin (v1.2.2), forwarded to the helper. The ref IS the commit, so an older
+    # helper that ignores the SHA still resolves this exact revision: its `--branch <sha>`
+    # attempt fails and the full clone plus checkout land on it. Kept equal to the helper's
+    # defaults; a test enforces that. A user-set ref wins and, with no SHA of its own, turns
+    # the helper's check off rather than failing against our pin.
+    _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
+    _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
+    if [ -z "$_rw_dxg_ref" ]; then
+        _rw_dxg_ref="4955d12888a3ec57057f1cf8660c2485e415e74c"
+        [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="$_rw_dxg_ref"
+    fi
+    # A known SHA is authoritative, so forward it AS the ref: an operator pinning a branch
+    # plus its expected commit would otherwise have that symbolic ref cloned unverified by a
+    # helper old enough to ignore the SHA.
+    if [ -n "$_rw_dxg_sha" ]; then
+        _rw_dxg_ref="$_rw_dxg_sha"
+    fi
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
-        if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
+        if download "https://raw.githubusercontent.com/unslothai/unsloth/${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
         else
             substep "Could not fetch the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
             [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
             return 0
         fi
+    fi
+
+    # Run ONLY a helper declaring the contract (defined in its header): verifies the clone
+    # against the pinned SHA, and treats an unresolvable checkout as fatal. One without it
+    # swallows that failure and would build the repo's default HEAD as root once the pinned
+    # ref stopped existing. Gating on the declaration is what makes this fail closed whatever
+    # the pin, or a user's older checkout, supplies.
+    if ! grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper" 2>/dev/null; then
+        substep "ROCm-on-WSL helper predates the pinned-source check; using CPU fallback." "$C_WARN"
+        [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
+        return 0
     fi
 
     # Consent: the narrow guarded case is exactly the GPU setup the user ran the
@@ -3759,7 +3929,9 @@ _maybe_bootstrap_rocm_wsl() {
     if [ "$_rw_go" = "1" ]; then
         # Helper does its own sudo + is idempotent. SMOKE_TEST=0: install.sh
         # installs torch itself right after, into the real venv.
-        if UNSLOTH_WSL_SMOKE_TEST=0 bash "$_rw_helper"; then
+        if UNSLOTH_WSL_SMOKE_TEST=0 \
+           UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha" \
+           bash "$_rw_helper"; then
             # Pull the helper's persisted env into THIS shell so detection
             # (rocminfo) now enumerates the GPU and routes to gfx1151.
             if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
@@ -4007,6 +4179,16 @@ case "$_torch_index_leaf" in
                     _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
+        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
+        # hand rocminfo the SPOOFED ISA, so a gfx1151 host reports gfx1100 and the Strix
+        # case below never matches (unslothai#7331). Correct the reading back to the
+        # physical arch first, only in the narrow shape that cannot be a real mixed host.
+        _spoof_physical=""
+        if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && [ -n "$_gfx_all" ]; then
+            _spoof_inferred=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            _spoof_physical=$(_hsa_spoofed_physical_gfx "$_spoof_inferred" "$_gfx_all")
+            [ -n "$_spoof_physical" ] && _gfx_all="$_spoof_physical"
+        fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
             _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -4065,6 +4247,23 @@ case "$_torch_index_leaf" in
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
+            # Routing the wheels is only half of unslothai#7331: ROCr rebuilds the agent
+            # from HSA_OVERRIDE_GFX_VERSION in every LATER process (and this shell execs
+            # Studio further down), so leaving it set hands the freshly installed per-gfx
+            # wheels a device whose reported ISA matches none of their code. Only on this
+            # branch, where the spoof was corroborated and native $_strix_gfx wheels are
+            # going in; paths that keep generic wheels need the override as their only
+            # source of kernels. SKIP_TORCH is the other half of "the wheels are going in":
+            # --no-torch reaches this branch and installs nothing, so clearing the override
+            # there would strand the host with generic wheels AND no override.
+            # Mirrors _clear_confirmed_hsa_spoof in studio/install_python_stack.py.
+            if [ -n "$_spoof_physical" ] && [ "$SKIP_TORCH" = false ]; then
+                unset HSA_OVERRIDE_GFX_VERSION
+                echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
+                echo "  [WARN] the $_strix_gfx wheels carry $_strix_gfx kernels, so the runtime has" >&2
+                echo "  [WARN] to report the real arch. Remove the export from your shell profile" >&2
+                echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
+            fi
         fi
         # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
         # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
@@ -4184,7 +4383,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_gpu_disp_mkt" in
-            *9070*|*9080*)                                                                                 _gpu_disp_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9070*|*9080*|*"R9700"*)                                                                       _gpu_disp_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
             *9060*)                                                                                        _gpu_disp_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)

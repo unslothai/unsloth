@@ -36,7 +36,6 @@ import install_manifest  # noqa: E402
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -980,7 +979,10 @@ def _detect_windows_gfx_arch() -> str | None:
 # prebuilts / AMD Windows torch indexes support; unknown names return None
 # (callers then fall back cleanly to CPU).
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
-    (r"9070|9080", "gfx1201"),  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080)
+    # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700).
+    # R9700 is listed separately: its name holds neither 9070 nor 9080, so it matched
+    # nothing and fell through to CPU torch (#7624, #7307).
+    (r"9070|9080|R9700", "gfx1201"),
     (r"9060", "gfx1200"),  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
     # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
     (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
@@ -1457,7 +1459,11 @@ def _has_usable_nvidia_gpu() -> bool:
 _LAST_AMD_GFX_PROBE: "str | None" = None
 
 
-def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
+def _detect_amd_gfx_codes(
+    dedup: bool = True,
+    ignore_hsa_override: bool = False,
+    ignore_visible_masks: bool = False,
+) -> list[str]:
     """Return the AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
 
     Probes rocminfo, then falls back to ``amd-smi list`` and ``amd-smi
@@ -1474,6 +1480,16 @@ def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
 
     Records the answering probe in _LAST_AMD_GFX_PROBE, since only rocminfo is
     filtered by a visible-device mask (and only by ROCR_VISIBLE_DEVICES).
+
+    ignore_hsa_override=True strips HSA_OVERRIDE_GFX_VERSION from the probe's
+    environment. ROCr applies it in userland, so rocminfo reports the SPOOFED ISA
+    while it is set (unslothai#7331); re-probing without it is the one way to see
+    the physical arch. amd-smi reads the driver, so stripping it there is a no-op.
+
+    ignore_visible_masks=True additionally strips ROCR_VISIBLE_DEVICES and
+    HIP_VISIBLE_DEVICES so the re-probe sees the WHOLE machine: a mask would
+    otherwise hide the very second GPU whose presence is the reason to decline the
+    correction. install.sh's re-probe unsets all three together.
     """
     global _LAST_AMD_GFX_PROBE
     _LAST_AMD_GFX_PROBE = None
@@ -1506,6 +1522,19 @@ def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
         probes.append(["amd-smi", "list"])
         probes.append(["amd-smi", "static", "--asic"])
     for cmd in probes:
+        _env = _amd_smi_env() if cmd[0] == "amd-smi" else None
+        _strip = set()
+        if ignore_hsa_override:
+            _strip.add("HSA_OVERRIDE_GFX_VERSION")
+        if ignore_visible_masks:
+            _strip.update(("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"))
+        if _strip & set(os.environ):
+            # env=None means "inherit", so drop the variables from an explicit copy.
+            _env = {
+                k: v
+                for k, v in (_env if _env is not None else os.environ).items()
+                if k not in _strip
+            }
         try:
             result = subprocess.run(
                 cmd,
@@ -1513,7 +1542,7 @@ def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 15,
-                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
+                env = _env,
             )
         except Exception:
             continue
@@ -1524,6 +1553,202 @@ def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
             _LAST_AMD_GFX_PROBE = cmd[0]
             return codes
     return []
+
+
+# Arches the product name can establish on Linux whose wheels differ from the arch
+# people spoof them to: exactly what _linux_amd_gfx_from_cpuinfo() returns, RDNA 3.5
+# APUs ROCm did not support natively, so HSA_OVERRIDE_GFX_VERSION=11.0.0 became the
+# circulated workaround. The correction below only ever fires for these.
+_HSA_SPOOFABLE_PHYSICAL_GFX: frozenset[str] = frozenset({"gfx1151", "gfx1150", "gfx1152"})
+
+
+def _hsa_override_gfx_arch(value: "str | None") -> "str | None":
+    """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
+
+    ROCr reads the variable as a major.minor.stepping triple and builds the target
+    name as gfx<major><minor><stepping in hex>, which is why 9.0.10 is gfx90a:
+    11.0.0 -> gfx1100, 11.5.1 -> gfx1151, 10.3.0 -> gfx1030.
+    """
+    if not value:
+        return None
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits
+    # ("١١.0.0" would read as 11.0.0 here and be rejected by install.sh's awk).
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
+        return None
+    major, minor, step = (int(p) for p in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
+    if not (0 <= step <= 15) or major <= 0 or minor > 9:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
+def _kfd_gfx_targets() -> list[str]:
+    """gfx arches of the AMD GPUs the KERNEL sees, from KFD topology sysfs.
+
+    /sys/class/kfd/kfd/topology/nodes/<n>/properties carries gfx_target_version,
+    written by amdkfd itself, so it is immune to HSA_OVERRIDE_GFX_VERSION (which
+    ROCr applies in userland) and is the ground truth for #7331. Encoding is
+    major * 10000 + minor * 100 + stepping, the stepping in hex: 110000 -> gfx1100,
+    110501 -> gfx1151, 90010 -> gfx90a.
+
+    CPU nodes carry no gfx_target_version (or 0) and drop out; the vendor_id 4098
+    (0x1002) guard mirrors _has_rocm_gpu() and keeps NVIDIA's open-driver KFD nodes
+    out. Returns one entry per GPU node, in node order.
+    """
+    if sys.platform == "win32":
+        return []
+    nodes_dir = "/sys/class/kfd/kfd/topology/nodes"
+    targets: list[str] = []
+    try:
+        entries = sorted(os.listdir(nodes_dir), key = lambda e: (len(e), e))
+    except OSError:
+        return []
+    for entry in entries:
+        try:
+            with open(os.path.join(nodes_dir, entry, "properties"), encoding = "utf-8") as fh:
+                props = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not re.search(r"\bvendor_id\s+4098\b", props):
+            continue
+        _m = re.search(r"\bgfx_target_version\s+(\d+)\b", props)
+        if not _m:
+            continue
+        raw = int(_m.group(1))
+        if raw <= 0:
+            continue
+        major, minor, step = (raw // 10000) % 100, (raw // 100) % 100, raw % 100
+        if major <= 0 or minor > 9 or step > 15:
+            continue  # not a shape the gfx name concatenation can represent
+        targets.append(f"gfx{major}{minor}{step:x}")
+    return targets
+
+
+def _hsa_spoofed_physical_gfx(
+    inferred_gfx: "str | None", gfx_devices: "list[str] | None" = None
+) -> "str | None":
+    """Physical arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof (#7331).
+
+    Returns None -- "believe the probe", today's behaviour -- unless all of:
+
+      * HSA_OVERRIDE_GFX_VERSION is set. Without it there is nothing to doubt, so
+        the deliberate #7305 precedence (a mixed Strix APU + dGPU host with the
+        dGPU selected must not get APU wheels) is untouched.
+      * The product name inferred an arch that people spoof and the probe reports
+        a DIFFERENT one. An override naming the arch the hardware already is masks
+        nothing.
+      * The probe saw exactly one arch. A pre-filter, not the safety property:
+        install.sh can only count DISTINCT tokens (its probe greps rocminfo, which
+        repeats the token per agent), so counting arches here keeps the two
+        implementations at the same verdict.
+      * The variable names EXACTLY the reported arch. ROCr can only spoof to the
+        target the variable names, so any other reading is real silicon.
+      * A source the override cannot reach corroborates it, strongest first:
+
+        1. KFD topology sysfs (_kfd_gfx_targets). amdkfd writes gfx_target_version
+           from the kernel's own IP-version table and ROCr, which applies the
+           override in userland, never touches it. If the kernel names the
+           inferred arch, the matter is settled.
+        2. Re-probing rocminfo with HSA_OVERRIDE_GFX_VERSION stripped (and the
+           visible masks with it, so the re-probe sees the whole machine): ROCr
+           getenv()s the override while building agent names, so without it the
+           runtime itself retracts the spoofed name.
+
+    Corroboration is REQUIRED, with deliberately no "the variable names the
+    reported arch, so assume a spoof" fallback: that shape is indistinguishable
+    from a truthful host (a real gfx1100 dGPU in a Ryzen AI Max chassis whose owner
+    set the override for unrelated reasons), and rerouting a working machine to the
+    wrong wheels is worse than #7331 itself. Two independent readings have to agree
+    against the one spoofed reading before anything is overridden.
+    """
+    global _LAST_AMD_GFX_PROBE
+
+    raw = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+    if not raw or not inferred_gfx or inferred_gfx not in _HSA_SPOOFABLE_PHYSICAL_GFX:
+        return None
+    if gfx_devices is None:
+        gfx_devices = _detect_amd_gfx_codes(dedup = False)
+    if len(set(gfx_devices)) != 1:
+        return None
+    probed = gfx_devices[0]
+    if probed == inferred_gfx:
+        return None
+    # Only the arch the variable names can be a spoof of that variable's doing.
+    if _hsa_override_gfx_arch(raw) != probed:
+        return None
+
+    _safe_print(
+        f"   HSA_OVERRIDE_GFX_VERSION={raw} is set; ROCm reports {probed} but this host's\n"
+        f"   product name is {inferred_gfx}. Checking whether the ISA is being spoofed.\n"
+    )
+
+    def _confirm(physical: "list[str]", source: str) -> "str | None":
+        """Decisive only when the source names the product arch and nothing else: a
+        second arch means the single-arch premise was wrong (a mixed host whose
+        second GPU the spoofed probe collapsed away), so decline. install.sh
+        compares the same two strings, hence the verbatim KFD list and deduplicated
+        re-probe."""
+        if physical == [inferred_gfx]:
+            _safe_print(
+                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
+                f"physical arch.\n"
+            )
+            return inferred_gfx
+        # Say so rather than leaving "Checking whether..." hanging: on a real gfx1100
+        # card in a Ryzen AI Max chassis this is the CORRECT outcome.
+        _safe_print(
+            f"   {source} does not corroborate a spoof "
+            f"({physical or 'no answer'}); keeping {probed}.\n"
+        )
+        return None
+
+    # 1. The kernel, which the override cannot reach. Decisive either way: if it
+    # answers at all, no weaker source overrules it.
+    kfd = _kfd_gfx_targets()
+    if kfd:
+        return _confirm(kfd, "KFD topology sysfs")
+
+    # 2. The runtime, asked again without the override and without the visible
+    # masks, so a mask cannot hide the second GPU that would veto the correction.
+    _saved_probe = _LAST_AMD_GFX_PROBE
+    try:
+        reprobed = _detect_amd_gfx_codes(
+            dedup = False, ignore_hsa_override = True, ignore_visible_masks = True
+        )
+    except Exception:
+        reprobed = []
+    finally:
+        _LAST_AMD_GFX_PROBE = _saved_probe
+    # A re-probe that still answers `probed` is evidence FOR the probe: the override
+    # went away and the name did not move, so it is real silicon. Declining here is
+    # why a genuine gfx1100 dGPU in a Ryzen AI Max chassis keeps its own wheels.
+    return _confirm(list(dict.fromkeys(reprobed)), "rocminfo with HSA_OVERRIDE_GFX_VERSION unset")
+
+
+def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
+    """Drop a CONFIRMED HSA_OVERRIDE_GFX_VERSION spoof from this process's env.
+
+    Routing the wheels is only half of #7331. ROCr reads the variable afresh in
+    every LATER process -- libhsakmt writes props->EngineId straight from it while
+    building the agent, so the agent's ISA name becomes the spoofed arch -- while
+    AMD's per-gfx index ships code objects for the physical arch alone. Leave it set
+    and the new wheel is handed a device whose name matches none of its code, so the
+    first allocation fails exactly as before.
+
+    Only ever called after corroboration and only on the branch installing native
+    wheels for ``physical_gfx``, so the variable is provably lying about this host's
+    only GPU and nothing on this path still needs it. A shell profile that exports
+    it will set it again next login, which no installer can undo from here, so name
+    the variable and say to remove it.
+    """
+    if os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None) is None:
+        return
+    _safe_print(
+        f"   Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install: the\n"
+        f"   {physical_gfx} wheels carry {physical_gfx} kernels, so the runtime has to\n"
+        f"   report the real arch. Remove the export from your shell profile\n"
+        f"   (~/.bashrc, ~/.profile) as well, or the next terminal restores it.\n"
+    )
 
 
 def _first_set_visible_mask() -> "str | None":
@@ -2801,6 +3026,13 @@ def _ensure_rocm_torch() -> None:
         # picks the wrong card when two GPUs share an arch (gfx1100,gfx1100,gfx1151
         # would read index 1 as the Strix).
         gfx_devices = _detect_amd_gfx_codes(dedup = False)
+        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
+        # hand rocminfo the SPOOFED ISA, so a gfx1151 host reports gfx1100 and every
+        # check below misses it (unslothai#7331). Correct the reading back to the
+        # physical arch first, only in the narrow shape that cannot be a real mixed host.
+        _physical_gfx = _hsa_spoofed_physical_gfx(_inferred_linux_gfx, gfx_devices)
+        if _physical_gfx is not None:
+            gfx_devices = [_physical_gfx]
         gfx_codes = list(dict.fromkeys(gfx_devices))
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -2841,6 +3073,12 @@ def _ensure_rocm_torch() -> None:
                     f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
                     f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
+                # Only on this branch: these wheels carry _selected_gfx kernels, so
+                # the runtime must stop reporting the spoofed arch or they have no
+                # code for the device (#7331). Never on the paths that keep generic
+                # wheels, where the override is the only source of usable kernels.
+                if _physical_gfx is not None:
+                    _clear_confirmed_hsa_spoof(_selected_gfx)
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
                 _safe_print(
@@ -3393,6 +3631,48 @@ NO_TORCH_SKIP_PACKAGES = {
     "librosa",
 }
 
+# Requirements with NO wheel on PyPI at any version, so the installer has always built
+# them from source. antlr4-python3-runtime arrives transitively: omegaconf==2.3.1 pins it
+# below the 4.13.2 wheel.
+#
+# A user-level `no-build = true` (uv.toml) or `only-binary = :all:` (pip.conf) makes all
+# of them unresolvable and fails the whole extras step (#8530). A PACKAGE-SCOPED
+# --no-binary overrides that policy for these names only, so the user's binary-only
+# policy still applies everywhere it can be honoured -- a blanket --no-build or
+# `:none:` override would discard it entirely.
+#
+# Keep in sync with the CI `nobuild` allowlists asserting the same contract:
+# .github/scripts/clean-machine-assert.sh and .github/scripts/assert-nobuild.ps1.
+SDIST_ONLY_PACKAGES = (
+    "openai-whisper",
+    "argbind",
+    "randomname",
+    "antlr4-python3-runtime",
+)
+
+
+def _sdist_only_build_args(*names: str) -> list[str]:
+    """``--no-binary`` for each named wheel-less requirement, for uv and pip alike.
+
+    Naming a package that the resolution never reaches is harmless (verified), so this
+    is safe next to the NO_TORCH / Windows requirement filtering.
+    """
+    args: list[str] = []
+    for name in names:
+        args += ["--no-binary", name]
+    return args
+
+
+def _extras_sdist_only_packages() -> tuple[str, ...]:
+    """SDIST_ONLY_PACKAGES plus any this interpreter alone resolves to an sdist."""
+    names = list(SDIST_ONLY_PACKAGES)
+    # extras.txt pins MeCab==0.996.5 on macOS cp314+, the last release carrying an sdist.
+    # Conditional because MeCab is a C extension: everywhere else 0.996.13 resolves to a
+    # wheel, and exempting it there would force a compiler-dependent build.
+    if IS_MACOS and sys.version_info >= (3, 14):
+        names.append("MeCab")
+    return tuple(names)
+
 
 def _select_flash_attn_version(torch_mm: str) -> str | None:
     return flash_attn_package_version(torch_mm)
@@ -3413,28 +3693,56 @@ def _flash_attn_install_disabled() -> bool:
     return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
 
 
+# Matches worker._is_importable_isolated: the same untrusted import, bounded the same way.
+_FLASH_ATTN_IMPORT_PROBE_TIMEOUT = 300
+
+
+def _flash_attn_importable() -> bool:
+    """Whether flash_attn imports, checked out of process.
+
+    A wrong-arch/ABI wheel installs fine and raises on import, so a zero pip exit code is
+    not proof the install is usable. In a child, so a half-loaded native extension cannot
+    poison the installer, and bounded, since initialisation can hang rather than fail.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import flash_attn"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _remove_rejected_flash_attn() -> bool:
+    """Uninstall a flash-attn that installed but will not import. True iff it is gone.
+
+    Targets the interpreter install_wheel installed into, always ``sys.executable``: its uv
+    command passes --python as well as --system, and its pip fallback runs that interpreter.
+    --system ALONE would remove from the system Python, leaving the rejected wheel in the
+    venv while setup reported it gone.
+    """
+    if USE_UV and shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall"]
+        if UV_NEEDS_SYSTEM:
+            cmd.append("--system")
+        cmd.extend(["--python", sys.executable, "flash-attn"])
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
+    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    return removed.returncode == 0
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
     if NO_TORCH:
         return
-    if has_blackwell_gpu():
-        _step(
-            "warning",
-            "Skipping flash-attn: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-            _cyan,
-        )
-        return
     if IS_WINDOWS or IS_MACOS:
         return
-    if (
-        subprocess.run(
-            [sys.executable, "-c", "import flash_attn"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        ).returncode
-        == 0
-    ):
+    if _flash_attn_importable():
         return
 
     env = probe_torch_wheel_env()
@@ -3447,7 +3755,28 @@ def _ensure_flash_attn() -> None:
             uv_needs_system = UV_NEEDS_SYSTEM,
         ):
             if wheel_result.returncode == 0:
-                return
+                # Verify rather than trust the exit code, so setup reports what happened.
+                if _flash_attn_importable():
+                    return
+                # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
+                # it by metadata (_package_available) and then imports the native module
+                # in process, so a wheel that killed the probe would kill training too.
+                if _remove_rejected_flash_attn():
+                    _step(
+                        "warning",
+                        "flash-attn wheel installed but is not importable on this GPU; removed it",
+                        _cyan,
+                    )
+                else:
+                    # Say so plainly: it is still importable in process, so this is not the
+                    # same state as never having installed it.
+                    _step(
+                        "warning",
+                        "flash-attn wheel is not importable on this GPU and could not be "
+                        "removed; uninstall flash-attn manually before training",
+                        _cyan,
+                    )
+                break
             _print_optional_install_failure(
                 f"Installing flash-attn prebuilt wheel with {installer}",
                 wheel_result,
@@ -3626,6 +3955,40 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
+# Restrictive policy a pinned install must not inherit from the ENVIRONMENT. The pinned
+# branch neutralises the config FILES (UV_NO_CONFIG=1 + PIP_CONFIG_FILE=devnull), but an
+# env var outranks a config file, so a hardened shell could still fail a torch repair the
+# pin was supposed to make deterministic (#8530).
+_PM_POLICY_ENV_VARS = (
+    "UV_NO_BUILD",
+    "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "UV_REQUIRE_HASHES",
+    "UV_EXCLUDE_NEWER",
+    "PIP_ONLY_BINARY",
+    "PIP_NO_BINARY",
+    "PIP_REQUIRE_HASHES",
+)
+
+
+def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
+    """Overrides that stop a hardened user pip config failing the installer's own pip.
+
+    Empty for anything that is not a `pip install` / `pip download` this module drives,
+    every `uv` command included, so the "non-pinned installs inherit the caller env
+    unchanged" contract holds on a machine with no hostile pip config.
+
+    `require-hashes = true` makes pip reject any requirement without a --hash, which is
+    every requirements file we ship; that is what took the pip FALLBACK down in #8530
+    once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
+    overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+    """
+    if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
+        return {}
+    return {"PIP_REQUIRE_HASHES": "0"}
+
+
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
@@ -3633,11 +3996,22 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the user's mirror. For pinned commands, the uv index/backend vars are removed,
     UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
     pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
+
+    A non-pinned `pip` command also gets hash-required mode switched off, the one
+    relaxation with no command-line equivalent; the wheel-less requirements go through
+    the package-scoped --no-binary in _sdist_only_build_args() instead.
     """
     if not _is_pinned_index_cmd(cmd):
-        return None
+        relaxed = _relaxed_pip_policy_env(cmd)
+        if not relaxed:
+            return None
+        env = os.environ.copy()
+        env.update(relaxed)
+        return env
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
+        env.pop(name, None)
+    for name in _PM_POLICY_ENV_VARS:
         env.pop(name, None)
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
@@ -4148,6 +4522,9 @@ def install_python_stack() -> int:
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
+        # extras.txt is where the wheel-less requirements live, so a user-level
+        # no-build/only-binary policy fails this step first (#8530).
+        *_sdist_only_build_args(*_extras_sdist_only_packages()),
         req = REQ_ROOT / "extras.txt",
     )
 
@@ -4284,6 +4661,11 @@ def install_python_stack() -> int:
     pip_install(
         "Installing the pinned Diffusers revision",
         "--no-cache-dir",
+        # The pin is a source ARCHIVE, which uv refuses to build under a user-level
+        # no-build, so a hardened host failed here even once extras.txt succeeded
+        # (#8530). Guarded: python < 3.10 resolves a released wheel from this file that
+        # must not be forced through a source build.
+        *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 

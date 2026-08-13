@@ -4476,7 +4476,10 @@ const ComposerToolsMenu: FC<{
   const mcpDisabled = modelLoaded && !supportsTools;
   // Match Search and Code: allow pre-selection before a local model loads.
   const researchDisabled =
-    !researchAvailable || Boolean(externalSelection) || incognito;
+    !researchAvailable ||
+    (Boolean(externalSelection) &&
+      selectedExternalProvider?.providerType !== "openai_codex") ||
+    incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]

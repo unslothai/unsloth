@@ -779,8 +779,16 @@ exit 1
 
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
+        // Tied to the owner on purpose: the secret comes from the desktop spawn,
+        // so an ownerless (terminal-started) backend can never report it. Both at
+        // once describes a backend that cannot exist.
+        let leases = if include_owner {
+            r#""native_path_leases_supported":true,"#
+        } else {
+            ""
+        };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -866,7 +874,7 @@ exit 1
         // protocol-compatible backend into a conflict the user has to kill.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -902,6 +910,76 @@ exit 1
         .await;
 
         assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn terminal_started_backend_without_native_path_leases_stays_adoptable() {
+        // What EVERY terminal-started server looks like, not an edge case.
+        // Refusing it would drop the attach use-tauri-backend.ts supports on
+        // purpose, to grey out one button that use-linked-folders.ts already
+        // greys out from the same capability.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn backend_predating_the_lease_capability_field_stays_adoptable() {
+        // Absent, not false: a backend predating the field reports nothing, and
+        // Option<bool> makes that indistinguishable from `false` untested.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn owned_backend_without_native_path_leases_is_stale_not_a_conflict() {
+        // A defect in our own spawn, and ours to restart, so Stale (repairable)
+        // rather than a conflict the user has to resolve by hand.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old { reason, .. } if reason == "native_path_leases_unsupported"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_is_still_reported_as_a_version_problem() {
+        // Ordering guard: the lease check used to run first, so a backend that
+        // really needed an update reported the wrong cause to diagnostics.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_backend_version_too_old"
+        ));
     }
 
     #[tokio::test]

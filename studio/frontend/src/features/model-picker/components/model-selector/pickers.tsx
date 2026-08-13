@@ -2064,7 +2064,7 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "lastModified", label: "Recent" },
 ];
 
-// Sort for the On Device / Custom (local) lists. "recent" = last loaded;
+// Sort for the On Device lists. "recent" = last loaded;
 // "downloaded" = file download date.
 type LocalSortKey = "recent" | "downloaded" | "size" | "name";
 
@@ -2262,7 +2262,7 @@ export function HubModelPicker({
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
-  section?: "downloaded" | "recommended" | "custom" | "connected";
+  section?: "downloaded" | "recommended" | "connected";
   /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
   onEject?: () => void;
@@ -4315,7 +4315,7 @@ export function HubModelPicker({
       <span className="truncate">{label}</span>
     </span>
   );
-  // On Device / Custom rows are already on disk, so the device-fit filter
+  // On Device rows are already on disk, so the device-fit filter
   // only applies to the Unsloth listing.
   const sectionSortDropdown =
     section === "recommended" ? (

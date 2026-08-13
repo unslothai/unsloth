@@ -519,6 +519,35 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
 
+    def test_confirm_tool_calls_allowed_for_codex_studio_tools(self, monkeypatch):
+        from routes import inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+
+        async def fake_proxy(*_args, **_kwargs):
+            return {"ok": True}
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", fake_proxy)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "search docs"}],
+                "provider_type": "openai_codex",
+                "external_model": "gpt-5.6-sol",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "permission_mode": "ask",
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
             is_loaded = False
@@ -2683,6 +2712,89 @@ class TestGgufVisionToolRouting:
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_gated_tool_start_gets_a_separate_prompt_flush(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            stopped = threading.Event()
+
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                yield {"type": "status", "text": "Waiting for approval: Python"}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "arguments": {"code": "print(1)"},
+                    "awaiting_confirmation": True,
+                    "approval_id": "approval_0",
+                }
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                stopped.set()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+            monkeypatch.setattr(inf_mod, "TOOL_APPROVAL_FLUSH_DELAY_S", 0.01)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "run python"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            try:
+                for _ in range(8):
+                    chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                    if '"tool_start"' in chunk:
+                        break
+                else:
+                    pytest.fail("gated tool_start was not emitted")
+
+                next_turn = [False]
+                asyncio.get_running_loop().call_soon(next_turn.__setitem__, 0, True)
+                flush = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert flush == ": keep-alive\n\n"
+                assert next_turn[0] is True
+            finally:
+                await iterator.aclose()
+
+            assert stopped.is_set()
 
         asyncio.run(_run())
 
