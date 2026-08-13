@@ -910,9 +910,7 @@ def test_same_tool_noop_feedback_still_rides_its_own_result(monkeypatch):
                             "arguments": json.dumps(args),
                         },
                     }
-                    for index, args in enumerate(
-                        [{"query": "a"}, {"query": "a"}, {"query": "b"}]
-                    )
+                    for index, args in enumerate([{"query": "a"}, {"query": "a"}, {"query": "b"}])
                 ]
             }
         ),
@@ -936,9 +934,7 @@ def test_same_tool_noop_feedback_still_rides_its_own_result(monkeypatch):
 
     messages = payloads[1]["messages"]
     assert not [m for m in messages[1:] if m.get("role") == "user"]
-    assert any(
-        m.get("role") == "tool" and "not executed" in m["content"] for m in messages
-    )
+    assert any(m.get("role") == "tool" and "not executed" in m["content"] for m in messages)
 
 
 def test_tool_loop_does_not_mutate_the_caller_s_messages(monkeypatch):
