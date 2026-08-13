@@ -776,6 +776,41 @@ class TestSetupShReportBlamesTheRightCard:
         verdict = _run_setup_report(tmp_path, [_RX_5700, _RX_7900], "AMD Radeon Graphics")
         assert verdict == "GENERIC"
 
+    @pytest.mark.parametrize(
+        "lines",
+        [[_RX_5700, _RX_7900], [_RX_7900, _RX_5700]],
+        ids = ["5700-first", "7900-first"],
+    )
+    def test_a_named_hit_is_guarded_by_the_peers_too(self, tmp_path, lines):
+        """amd-smi reports ONE market name, the first device's, so on a mixed host the
+        name itself is the uncovered card. Accepting it before the peer scan put the
+        false verdict back through the other door."""
+        verdict = _run_setup_report(tmp_path, lines, "AMD Radeon RX 5700 XT")
+        assert verdict == "GENERIC", (
+            f"a named hit skipped the covered-peer guard: {verdict!r}"
+        )
+
+    def test_a_named_hit_survives_a_host_with_no_lspci(self, tmp_path):
+        """The guard must not become a silencer: with no adapter list there is no peer to
+        find, and the single-card host this report exists for still has to be told."""
+        source = _SETUP_SH.read_text(encoding = "utf-8")
+        funcs = "\n".join(
+            textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS
+        )
+        out = subprocess.run(
+            [
+                "sh",
+                "-c",
+                f'{funcs}\n_setup_unsupported_gfx_any "AMD Radeon RX 5700 XT"\n',
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 30,
+            env = {"PATH": os.path.dirname(shutil.which("sh") or "/bin")},
+        )
+        assert out.stdout.strip() == "gfx1010"
+
     def test_the_supported_matcher_still_answers(self, tmp_path):
         """Positive control on the extracted table: without it the guard above would be
         vacuous, since a matcher that never matches also keeps the report quiet."""

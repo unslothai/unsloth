@@ -1903,6 +1903,23 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
+        # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market
+        # name, the first device's, so on a host whose RX 5700 precedes an RX 7900 the
+        # name IS the 5700 and "no override can help" is false there. Only when lspci can
+        # answer -- with no adapter list there is no peer to find, and suppressing on that
+        # would silence the single-card host this report exists for.
+        _setup_unsup_pci=""
+        if command -v lspci >/dev/null 2>&1; then
+            _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            while IFS= read -r _setup_unsup_ln; do
+                [ -n "$_setup_unsup_ln" ] || continue
+                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                    return 1
+                fi
+            done <<EOF
+$_setup_unsup_pci
+EOF
+        fi
         # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
         # from rocminfo) used to end the lookup here, so the lspci scan below never ran
         # and the report fell through to the plain "AMD ROCm" line this change replaces.
@@ -1910,20 +1927,7 @@ elif [ "$_setup_amd_detected" = true ]; then
             echo "$_setup_unsup_named"
             return 0
         fi
-        command -v lspci >/dev/null 2>&1 || return 1
-        _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
-        # First match wins, so on a host whose RX 5700 enumerates before an RX 7900 this
-        # would name the 5700 and say no override can help, which is false: selecting the
-        # 7900 and setting its arch reaches the supported path. Say nothing when ANY
-        # adapter is covered, matching the guard install.sh's CPU summary carries.
-        while IFS= read -r _setup_unsup_ln; do
-            [ -n "$_setup_unsup_ln" ] || continue
-            if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
-                return 1
-            fi
-        done <<EOF
-$_setup_unsup_pci
-EOF
+        [ -n "$_setup_unsup_pci" ] || return 1
         while IFS= read -r _setup_unsup_ln; do
             [ -n "$_setup_unsup_ln" ] || continue
             if _setup_unsup_hit=$(_setup_unsupported_gfx_from_name "$_setup_unsup_ln"); then
