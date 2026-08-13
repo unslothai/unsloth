@@ -39,6 +39,10 @@ _FATAL_SIGNALS = frozenset({4, 6, 7, 8, 11})
 # it uses on Windows, and SIGALRM from the kernel-enforced deadline everywhere else.
 _WATCHDOG_EXIT_STATUS = 70
 _SIGALRM_NUMBER = 14
+# What the MSVC CRT abort() leaves behind on Windows. It is a plain exit status rather than
+# an NTSTATUS, so nothing else here would recognise it. Same value LlamaCppBackend
+# ._is_abort_exit already matches for GGML_ASSERT deaths.
+_WINDOWS_ABORT_EXIT_STATUS = 3
 
 # Anything that changes which physical device a device string names, or which kernels the
 # runtime emits for it. A change invalidates a cached verdict, since the same "cuda" or
@@ -70,8 +74,15 @@ import threading
 # never returns to the interpreter loop to release it. SIGALRM with NO handler installed is
 # enforced by the kernel instead, so it does not run Python and does not need the GIL.
 # Windows has no alarm, so the timer stays as the fallback there.
+#
+# The disposition is restored first because exec keeps an inherited SIG_IGN and an inherited
+# blocked mask, so a supervisor that ignores or blocks SIGALRM would otherwise leave this
+# deadline unenforceable and an orphaned probe running against a hung driver forever.
 _deadline = float(sys.argv[2])
 if hasattr(signal, "alarm"):
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    if hasattr(signal, "pthread_sigmask"):
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
     signal.alarm(int(_deadline) or 1)
 else:
     _watchdog = threading.Timer(_deadline, lambda: os._exit(70))  # _WATCHDOG_EXIT_STATUS
@@ -138,10 +149,19 @@ def _died_by_signal(returncode: int) -> bool:
     all produce them, and condemning a healthy GPU for the life of the process because
     something else shot the probe is the wrong trade. Matches the hard-fault set
     ``LlamaCppBackend._is_signal_crash`` already uses for the same reason.
+
+    On Windows a native abort() takes both shapes: an NTSTATUS for an access violation,
+    and the CRT's plain exit status 3 when torch or a ROCm library calls abort() itself.
+    The second reads as an ordinary non-zero exit, so without it a crashing device was
+    reported as usable and the parent went on to repeat the crash in its own process.
     """
     if returncode < 0:
         return -returncode in _FATAL_SIGNALS
-    return os.name == "nt" and (returncode & 0xC0000000) == 0xC0000000
+    if os.name != "nt":
+        return False
+    if returncode == _WINDOWS_ABORT_EXIT_STATUS:
+        return True
+    return (returncode & 0xC0000000) == 0xC0000000
 
 
 def _hit_its_own_deadline(returncode: int) -> bool:

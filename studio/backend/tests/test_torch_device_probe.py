@@ -260,6 +260,42 @@ def test_the_windows_watchdog_status_is_a_failed_probe(monkeypatch):
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
+def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
+    # A native abort() on Windows leaves plain exit status 3, not an NTSTATUS, so nothing
+    # else here recognises it and the crashing device was being reported as usable.
+    monkeypatch.setattr(torch_device_probe.os, "name", "nt")
+    _patch_popen(
+        monkeypatch,
+        _FakeProcess(returncode = torch_device_probe._WINDOWS_ABORT_EXIT_STATUS),
+    )
+    assert torch_device_probe.device_can_allocate("cuda") is False
+
+
+def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
+    # Elsewhere 3 is just an exit status a child chose, and an abort arrives as SIGABRT.
+    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    assert (
+        torch_device_probe._died_by_signal(torch_device_probe._WINDOWS_ABORT_EXIT_STATUS) is False
+    )
+
+
+def test_the_abort_status_matches_the_one_llama_cpp_already_uses():
+    # Same CRT convention, two readers; a divergence here would be silent.
+    source = Path(torch_device_probe.__file__).parents[1] / "core" / "inference" / "llama_cpp.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    (function,) = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_is_abort_exit"
+    ]
+    statuses = {
+        node.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Constant) and isinstance(node.value, int)
+    }
+    assert statuses == {torch_device_probe._WINDOWS_ABORT_EXIT_STATUS}
+
+
 def test_the_windows_watchdog_uses_the_status_the_parent_looks_for(monkeypatch):
     # The child writes the number and the parent matches on the constant; they have to agree.
     assert (
@@ -286,6 +322,28 @@ def test_the_kernel_enforces_the_child_deadline():
         pytest.skip("POSIX only")
     done = subprocess.run(
         [sys.executable, "-c", "import signal, time; signal.alarm(1); time.sleep(30)"],
+        capture_output = True,
+        timeout = 60,
+    )
+    assert done.returncode == -int(signal.SIGALRM)
+
+
+def test_an_inherited_sigalrm_disposition_cannot_disarm_the_deadline():
+    # exec keeps an inherited SIG_IGN and an inherited blocked mask, so a supervisor that
+    # ignores or blocks SIGALRM would leave the deadline unenforceable and an orphaned probe
+    # running against a hung driver forever. The child restores the disposition itself.
+    if not hasattr(signal, "alarm"):
+        pytest.skip("POSIX only")
+    prologue = torch_device_probe._PROBE_SCRIPT.split("if sys.platform")[0]
+    child = prologue + "\nimport time\ntime.sleep(30)\n"
+    hostile = (
+        "import os, signal, sys\n"
+        "signal.signal(signal.SIGALRM, signal.SIG_IGN)\n"
+        "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})\n"
+        "os.execv(sys.executable, [sys.executable, '-c', sys.argv[1], 'cpu', '1'])\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", hostile, child],
         capture_output = True,
         timeout = 60,
     )
