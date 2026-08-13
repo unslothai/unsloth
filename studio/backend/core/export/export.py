@@ -156,10 +156,10 @@ def _cpu_offloaded_modules(model) -> int:
 
 
 def _accepts_by_keyword(params, name):
-    """True if `name` can actually be passed as a keyword, not merely named.
+    """True if `name` is passable as a keyword, not merely named.
 
-    A positional-only parameter is named and unusable: every call site here passes by
-    keyword, so counting one as support turns a clean refusal into a TypeError.
+    Every call site passes by keyword, so counting a positional-only parameter as support
+    turns a clean refusal into a TypeError.
     """
     import inspect
 
@@ -247,12 +247,11 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
 
 
 def _is_imatrix(path, imatrix_path):
-    """True when `path` is the materialized imatrix, asking the filesystem rather than `==`.
+    """True when `path` is the materialized imatrix, asked of the filesystem rather than `==`.
 
-    The on-disk spelling is the filesystem's to choose: a case-insensitive mount folds case
-    and APFS stores NFD, so the name `rglob` returns need not be the one derived from the
-    request. `Path.__eq__` is byte-exact under posix, so it misses, and the importance matrix
-    is then relocated into the user's export directory and reported as a converted model.
+    The on-disk spelling is the filesystem's to choose: a folding mount changes case and APFS
+    stores NFD, so `rglob` need not return the name derived from the request. Byte-exact
+    `Path.__eq__` then misses and the imatrix is relocated as if it were a converted model.
     """
     if imatrix_path is None:
         return False
@@ -1128,9 +1127,9 @@ class ExportBackend:
                 )
                 os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
             except Exception:
-                # Not just ImportError: a half-built unsloth_zoo surfaces as RuntimeError or
-                # AttributeError, and this pin is an optimisation. Letting it escape would
-                # take down every GGUF export, imatrix or not.
+                # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or
+                # AttributeError, and this pin is an optimisation, so letting either escape
+                # would fail every GGUF export.
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
                         "Unsloth: installed unsloth_zoo does not honor "

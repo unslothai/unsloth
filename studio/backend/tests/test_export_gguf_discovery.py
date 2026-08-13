@@ -645,12 +645,12 @@ def test_disabled_imatrix_does_not_reach_an_older_exporter(monkeypatch, tmp_path
     assert calls["save"] == "q4_k_m"
 
 
-# A probe that says "supported" has to be right about the call it is authorising, and the
-# imatrix it materializes has to stay an input: whichever name the filesystem gave it.
+# A probe that says "supported" must be right about the call it authorises, and the
+# materialized imatrix must stay an input under whichever name the filesystem gave it.
 
 
 def test_a_positional_only_imatrix_parameter_is_not_support(monkeypatch, tmp_path):
-    """Named is not the same as passable by keyword, and every call site uses a keyword."""
+    """Named is not passable by keyword, and every call site passes one."""
     module, _b, _s, _cwd = _backend(monkeypatch, tmp_path, object())
 
     namespace: dict = {}
@@ -667,11 +667,7 @@ def test_a_positional_only_imatrix_parameter_is_not_support(monkeypatch, tmp_pat
 
 
 class _ImatrixNamingModel:
-    """Writes the imatrix under the name the filesystem chose, not the one we asked for.
-
-    A case-insensitive mount folds case and APFS stores NFD, so this is what `rglob` hands
-    back on those hosts.
-    """
+    """Writes the imatrix under the name the filesystem chose, as a folding or NFD mount does."""
 
     def __init__(self, on_disk_name):
         self.on_disk_name = on_disk_name
@@ -721,11 +717,9 @@ def test_the_materialized_imatrix_is_never_exported_as_a_model(
 
 
 def test_a_broken_unsloth_zoo_does_not_fail_a_plain_export(monkeypatch, tmp_path):
-    """The llama.cpp scripts pin is an optimisation, so it must not be able to fail an export.
+    """The scripts pin is an optimisation, so a half-built zoo must not fail the export.
 
-    A half-built unsloth_zoo surfaces as RuntimeError (missing native dependency) or
-    AttributeError (partially initialised module), neither of which `except ImportError`
-    caught, so it took down every GGUF export -- imatrix or not.
+    It raises RuntimeError or AttributeError, which `except ImportError` did not catch.
     """
 
     class _Exploding(types.ModuleType):
