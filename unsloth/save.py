@@ -3471,7 +3471,11 @@ def _gguf_child_was_oom_killed(exc):
     return False
 
 
-def _gguf_failure_looks_like_disk(exc, save_directory = None, needed_bytes = None):
+def _gguf_failure_looks_like_disk(
+    exc,
+    save_directory = None,
+    needed_bytes = None,
+):
     """Is this GGUF failure plausibly about running out of disk?
 
     Two independent signals, either alone sufficient: each can be absent for a

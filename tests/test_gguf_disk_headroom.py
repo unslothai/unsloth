@@ -230,9 +230,9 @@ def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save
     _with_free(monkeypatch, save_mod, 20)
     _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)
     for name in stale:
-        assert os.path.isfile(os.path.join(merge, name)), (
-            f"{name} belonged to an earlier save and was deleted"
-        )
+        assert os.path.isfile(
+            os.path.join(merge, name)
+        ), f"{name} belonged to an earlier save and was deleted"
 
 
 def test_a_consolidated_file_the_merge_did_not_write_is_kept(tmp_path, monkeypatch, save_mod):
@@ -248,12 +248,15 @@ def test_a_consolidated_file_the_merge_did_not_write_is_kept(tmp_path, monkeypat
         fh.truncate(GB)
     _with_free(monkeypatch, save_mod, 20)
     _reclaim(
-        save_mod, merge, gguf, bases,
+        save_mod,
+        merge,
+        gguf,
+        bases,
         preexisting_weights = frozenset(["consolidated.safetensors"]),
     )
-    assert os.path.isfile(os.path.join(merge, "consolidated.safetensors")), (
-        "a consolidated checkpoint this export never wrote was deleted"
-    )
+    assert os.path.isfile(
+        os.path.join(merge, "consolidated.safetensors")
+    ), "a consolidated checkpoint this export never wrote was deleted"
 
 
 def test_unknown_provenance_reclaims_nothing(tmp_path, monkeypatch, save_mod):
@@ -285,13 +288,9 @@ def test_a_small_output_with_modest_free_space_is_not_called_a_full_disk(save_mo
     try:
         failure = RuntimeError("unknown model architecture")
         # 400MB of output: 1.5GB free is ample, so this is not a disk problem.
-        assert not save_mod._gguf_failure_looks_like_disk(
-            failure, ".", needed_bytes = int(0.4 * GB)
-        )
+        assert not save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = int(0.4 * GB))
         # 4GB of output into 1.5GB free is.
-        assert save_mod._gguf_failure_looks_like_disk(
-            failure, ".", needed_bytes = 4 * GB
-        )
+        assert save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = 4 * GB)
         # A caller that cannot say what it needed still gets the fixed floor.
         assert save_mod._gguf_failure_looks_like_disk(failure, ".")
     finally:

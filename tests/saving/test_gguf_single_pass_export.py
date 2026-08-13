@@ -240,7 +240,8 @@ def test_a_disposable_merge_is_reclaimed_when_the_disk_is_tight(monkeypatch, tmp
     weights = _merge_weights(tmp_path)
     _tight_disk(monkeypatch)
     _run(
-        tmp_path, ["q4_k_m"],
+        tmp_path,
+        ["q4_k_m"],
         merge_is_disposable = True,
         preexisting_weights = frozenset(),
     )
@@ -258,7 +259,8 @@ def test_the_ownership_record_survives_the_same_trip(monkeypatch, tmp_path):
     weights = _merge_weights(tmp_path)
     _tight_disk(monkeypatch)
     _run(
-        tmp_path, ["q4_k_m"],
+        tmp_path,
+        ["q4_k_m"],
         merge_is_disposable = True,
         preexisting_weights = frozenset([weights.name]),
     )
