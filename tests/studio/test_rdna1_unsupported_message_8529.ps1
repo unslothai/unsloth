@@ -373,7 +373,29 @@ foreach ($pair in @(
         Check "$($pair.F) does not count CUDA_VISIBLE_DEVICES" (
             -not $decl.Contains('CUDA_VISIBLE_DEVICES')
         )
+        # Yielding to the mask is only safe while the label is the pinned card: both label
+        # sources keep adapter 0, so the masked branch has to fall silent once a peer it
+        # never indexed exists.
+        $window = $text.Substring($i, [Math]::Min(1200, $text.Length - $i))
+        Check "$($pair.F) drops the verdict when the mask may name another adapter" (
+            $window -match '(ROCmPeerLabels|wmiAmdNames)\.Count -gt (1|\$gpuNames\.Count)'
+        )
     }
+}
+
+# Get-WmiObject is gone from PowerShell 7, and the scans below catch silently, so a supported
+# Radeon named only by Windows took the CPU torch path there. Ask the parser for real calls;
+# the name still appears in prose. Every adapter scan in these files is on CIM.
+foreach ($pair in @(
+    @{ F = "install.ps1";      A = $installAst },
+    @{ F = "studio/setup.ps1"; A = $setupAst }
+)) {
+    $wmiCalls = @($pair.A.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and
+        $n.GetCommandName() -eq 'Get-WmiObject'
+    }, $true))
+    Check "$($pair.F) scans adapters with Get-CimInstance, not Get-WmiObject" ($wmiCalls.Count -eq 0)
 }
 
 Invoke-Expression (Get-AssignmentSource $installPath '$nameArchTable')
@@ -401,6 +423,15 @@ $guardCases = @(
     # The amd-smi paths never enter the WMI scan, so the peer list is empty there.
     @{ N = "an empty peer list does not suppress the verdict"
        L = "AMD Radeon RX 5700 XT"; A = @(); E = 'gfx1010' }
+    # Under a mask the peers no longer speak for the named card, but both label sources take
+    # adapter 0, so the label is only the SELECTED card when there is nothing else to pick.
+    @{ N = "a masked lone RX 5700 XT is still named"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); M = "0"; E = 'gfx1010' }
+    @{ N = "a mask beside a second adapter claims nothing"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 7900 XTX"); M = "1"; E = $null }
+    # Even two uncovered peers: the arch named would still be adapter 0's, not the pinned one.
+    @{ N = "a mask beside a second uncovered adapter claims nothing"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 580"); M = "1"; E = $null }
 )
 $guardSource = $guardBlocks[0].Extent.Text
 foreach ($case in $guardCases) {
@@ -408,7 +439,9 @@ foreach ($case in $guardCases) {
     $ROCmUnsupportedGfxArch = $null
     $ROCmGpuLabel = $case.L
     $wmiAmdNames = @($case.A)
+    if ($case.M) { $env:HIP_VISIBLE_DEVICES = $case.M } else { Remove-Item Env:HIP_VISIBLE_DEVICES -ErrorAction SilentlyContinue }
     Invoke-Expression $guardSource
+    Remove-Item Env:HIP_VISIBLE_DEVICES -ErrorAction SilentlyContinue
     Check $case.N ($ROCmUnsupportedGfxArch -eq $case.E)
 }
 

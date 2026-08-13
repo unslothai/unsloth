@@ -2512,14 +2512,20 @@ if (-not $HasNvidiaSmi) {
                 # stays null either way, so only the wording of the report below moves.
                 # Stay quiet when a PEER is covered: "no override can help" is false beside a
                 # card that has wheels. Read-only; never reaches $gpuNames or the inference.
-                # Not under a mask, as the arch-borrowing rule above: the user named the card,
-                # so a masked-out peer cannot answer for it. HIP/ROCR only, unlike
-                # Test-VisibleDevicesPinned: CUDA_VISIBLE_DEVICES says nothing about which
-                # Radeon was chosen, and counting it would fire the verdict beside a covered card.
+                # HIP/ROCR only, unlike Test-VisibleDevicesPinned: CUDA_VISIBLE_DEVICES says
+                # nothing about which Radeon was chosen, and counting it would fire the verdict
+                # beside a covered card.
                 $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
                     Where-Object { $null -ne $_ }
                 $unsupPeerCovered = $false
-                if (-not $unsupMasked) {
+                if ($unsupMasked) {
+                    # Under a mask a peer cannot answer for the named card, as the
+                    # arch-borrowing rule above. But $gpuNames is one synthesized label on the
+                    # amd-smi path, and $nameIdx cannot index a card it never saw, so a mask
+                    # onto a supported peer would be blamed on adapter 0. Unseen peer, no
+                    # verdict: Win32_VideoController does not promise HIP's order to guess with.
+                    $unsupPeerCovered = ($script:ROCmPeerLabels.Count -gt $gpuNames.Count)
+                } else {
                     foreach ($peerName in $script:ROCmPeerLabels) {
                         if (Get-GfxArchFromGpuName -Name $peerName -Table $nameArchTable) {
                             $unsupPeerCovered = $true

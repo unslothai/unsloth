@@ -3312,9 +3312,12 @@ exit 0
                 } catch {}
             }
         }
-        # Unchanged on purpose: this scan fills the LABEL the arch inference reads, so its
-        # gate and cmdlet are load-bearing. Widening either turned a CPU install into a ROCm
-        # one on hosts amd-smi had already claimed.
+        # This scan fills the LABEL the arch inference reads, so its gate is load-bearing:
+        # widening it turned a CPU install into a ROCm one on hosts amd-smi had already
+        # claimed. CIM, not Get-WmiObject, which PowerShell 7 removed: the catch below is
+        # silent, so a supported Radeon named only by Windows took the CPU path there, and
+        # the report-only peer scan cannot undo that. Same class and fields as every other
+        # adapter scan in this file, and identical output under Windows PowerShell 5.1.
         if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
@@ -3325,7 +3328,7 @@ exit 0
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
@@ -3334,8 +3337,7 @@ exit 0
             } catch {}
         }
         # Peer names for the REPORT ONLY, kept apart from the scan above: that one feeds the
-        # inference, this one only the uncovered-card verdict. CIM because Get-WmiObject is
-        # gone from PowerShell 7, and a missed message is the worst this can cost.
+        # inference and runs only without a runtime, this one only the uncovered-card verdict.
         $wmiAmdNames = @()
         if (-not $ROCmGfxArch) {
             try {
@@ -3410,19 +3412,25 @@ exit 0
                 #    arm, which says exactly that. studio/setup.ps1 already scores every
                 #    adapter before it reaches its own lookup.
                 if (-not $ROCmGfxArch) {
-                    # Not under a visible-device mask: the user named the card, so the verdict
-                    # is about that one and a masked-out peer cannot answer for it. Same rule
-                    # studio/setup.ps1 applies to its own peer check.
-                    $coveredPeer = $false
                     # HIP/ROCR only: CUDA_VISIBLE_DEVICES masks NVIDIA devices and says
                     # nothing about which Radeon was chosen.
                     $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
                         Where-Object { $null -ne $_ }
-                    foreach ($peerName in $(if ($unsupMasked) { @() } else { $wmiAmdNames })) {
-                        foreach ($row in $nameArchTable) {
-                            if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                    $coveredPeer = $false
+                    if ($unsupMasked) {
+                        # A masked-out peer cannot answer for the card the user named, but the
+                        # label is only that card when there is nothing else to select: both
+                        # sources above keep adapter 0, so HIP_VISIBLE_DEVICES=1 beside a
+                        # supported peer would blame the wrong GPU. Stay quiet, rather than
+                        # guess an order Win32_VideoController does not promise matches HIP's.
+                        $coveredPeer = ($wmiAmdNames.Count -gt 1)
+                    } else {
+                        foreach ($peerName in $wmiAmdNames) {
+                            foreach ($row in $nameArchTable) {
+                                if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                            }
+                            if ($coveredPeer) { break }
                         }
-                        if ($coveredPeer) { break }
                     }
                     if (-not $coveredPeer) {
                         foreach ($row in $unsupportedNameArchTable) {
