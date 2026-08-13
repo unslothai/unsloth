@@ -199,10 +199,11 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "if (!isTauri)" in projects
     # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in data_tab
-    assert 'accept=".jsonl,.ndjson,.csv"' in data_tab
+    # Open WebUI exports are .json arrays, so the picker takes that too.
+    assert 'accept=".json,.jsonl,.ndjson,.csv"' in data_tab
 
     native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
-    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"]' in native_dialogs
+    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"]' in native_dialogs
     assert "InvokeBody::Raw" in native_dialogs
 
     assert ".tempfile_in(parent)" in native_dialogs

@@ -1865,6 +1865,8 @@ def save_to_gguf(
     is_gpt_oss: bool = False,
     imatrix = None,
     gguf_directory: Optional[Union[str, os.PathLike]] = None,
+    merge_is_disposable: bool = False,
+    preexisting_weights = None,
 ):
     """
     Orchestrates the complete GGUF conversion process.
@@ -1872,6 +1874,12 @@ def save_to_gguf(
     `imatrix` is a local importance-matrix path (already resolved); it is forwarded to
     llama-quantize and is required for the IQ low-bit quant types.
     `gguf_directory` can place outputs separately from the model input directory.
+    `merge_is_disposable` says `model_directory` was written by this export purely to
+    feed the converter, so its weights may be reclaimed if the quants would not
+    otherwise fit. Off by default: a caller pointing this at a real checkpoint keeps it.
+    `preexisting_weights` is what `model_directory` held before the merge wrote it,
+    so reclamation can take only what this export produced. `None` means the caller
+    cannot say, and nothing is reclaimed.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -2078,6 +2086,24 @@ def save_to_gguf(
             m for m in dict.fromkeys(quantization_method) if m != first_conversion
         ]
 
+        # The merge is not read again -- llama-quantize reads the GGUF, already
+        # written and moved -- and on a disk holding merge, base GGUF and quants
+        # at once those bytes are what runs it out. Only fires when the room is
+        # not there, so an export that would have worked keeps the merge.
+        # Nemotron-3-Nano-30B-A3B on a 132GB disk: 63GB merge + 60GB BF16 GGUF +
+        # ~18GB Q4_K_M = 141GB, and llama-quantize died at tensor 88 of 401 with
+        # `basic_ios::clear: iostream error`, its own `fout.exceptions(failbit)`
+        # firing on a write with nowhere to go.
+        _free_merge_if_disk_is_tight(
+            model_directory,
+            gguf_directory,
+            initial_files,
+            quant_methods = methods_to_quantize,
+            first_conversion = first_conversion,
+            merge_is_disposable = merge_is_disposable,
+            preexisting_weights = preexisting_weights,
+        )
+
         def _quantize_one(quant_method, n_threads = None):
             output_location = os.path.join(
                 gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
@@ -2109,10 +2135,43 @@ def save_to_gguf(
                         quant_kwargs["n_threads"] = n_threads
                     return quantize_gguf(**quant_kwargs)
             except Exception as e:
+                # What this pass was going to write, so "no room" is judged
+                # against the output rather than a constant. Priced as a lower
+                # bound, not the reclamation estimate: that one is deliberately
+                # generous, and here a size that comes out high calls a disk full
+                # that had the room and hides the rebuild advice below. Best
+                # effort -- an unreadable base, or a type with no known width,
+                # just falls back to the fixed floor.
+                try:
+                    _ratio = _gguf_output_size_ratio(
+                        quant_method,
+                        first_conversion,
+                        upper_bound = False,
+                    )
+                    _needed = (
+                        None
+                        if _ratio is None
+                        else int(
+                            sum(
+                                os.path.getsize(f)
+                                for f in initial_files
+                                if os.path.isfile(f)
+                                and "-mmproj" not in os.path.basename(f).lower()
+                            )
+                            * _ratio
+                        )
+                    )
+                except OSError:
+                    _needed = None
                 # Same gate as above: a broken quantizer with 19GB free is not
                 # a disk problem, and the outer handler cannot undo an
                 # explanation already baked into this message.
-                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, gguf_directory):
+                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                    e,
+                    gguf_directory,
+                    needed_bytes = _needed,
+                    partial_output = output_location,
+                ):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
                         "You are in a Kaggle environment, which might be the reason this is failing.\n"
@@ -2122,6 +2181,31 @@ def save_to_gguf(
                         "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"
                         "You can try saving it to the `/tmp` directory for larger disk space.\n"
                         "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
+                        f"Error: {e}"
+                    ) from e
+                elif _gguf_failure_looks_like_disk(
+                    e,
+                    gguf_directory,
+                    needed_bytes = _needed,
+                    partial_output = output_location,
+                ):
+                    # Kaggle is not the only place a disk fills. The rebuild
+                    # advice below is only correct when the quantizer is the
+                    # problem; on a full disk it is a long compile that fixes
+                    # nothing, so say what actually happened instead.
+                    try:
+                        _free_gb = shutil.disk_usage(gguf_directory).free / 1024**3
+                        _where = f" ({_free_gb:.1f}GB free at {gguf_directory})"
+                    except OSError:
+                        _where = ""
+                    raise RuntimeError(
+                        f"Unsloth: Quantization failed for {output_location}\n"
+                        f"This looks like the disk running out, not a problem "
+                        f"with llama.cpp{_where}.\n"
+                        "The GGUF export needs room for the 16-bit merge, the "
+                        "base GGUF and the quantized output at the same time.\n"
+                        "Free some space, or save to a larger filesystem, then "
+                        "run the quantization again.\n"
                         f"Error: {e}"
                     ) from e
                 else:
@@ -2963,6 +3047,7 @@ def unsloth_save_pretrained_gguf(
     maximum_memory_usage: float = 0.85,
     save_method: str = None,
     imatrix_file = None,
+    merge_is_disposable: bool = True,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -2971,6 +3056,11 @@ def unsloth_save_pretrained_gguf(
     imatrix_file: importance matrix for llama-quantize. None = off; a path = use that file
     (a *.gguf_file is renamed to *.gguf); True = download the upstream unsloth/<base>-GGUF
     imatrix. Required for the IQ low-bit quants (iq2_xxs, iq4_xs, ...).
+
+    merge_is_disposable: the 16-bit merge written into `save_directory` exists only to feed
+    the converter, so it may be reclaimed if the quants would otherwise not fit. Pass False
+    to keep the weights when `save_directory` is part of the caller's own deliverable (the
+    SentenceTransformer export writes its module directory there).
 
     Choose for `quantization_method` to be:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
@@ -3084,6 +3174,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["base_model_name"]
     del arguments["is_processor"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
+    del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input.
     gguf_directory = f"{save_directory}_gguf"
@@ -3099,9 +3190,29 @@ def unsloth_save_pretrained_gguf(
     # merge, and a failed auto-resolution never reaches the IQ-quant gate.
     imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
 
+    # Who owns what, settled before a byte is written. Reclamation may only take
+    # files this export produced, and that is not a question the directory can
+    # answer afterwards: a caller reusing an output directory can already hold a
+    # finished sharded save, index and every shard it names, self-consistent and
+    # entirely present. transformers removes neither (its stale sweep does not
+    # match `model.safetensors.index`, and it only prunes shards under the stem it
+    # is writing), so after the merge that set is indistinguishable from one this
+    # run wrote. Recorded here instead, where the difference still exists.
+    try:
+        preexisting_weights = frozenset(os.listdir(save_directory))
+    except FileNotFoundError:
+        # Nothing there yet, so everything that appears is this export's own.
+        preexisting_weights = frozenset()
+    except OSError:
+        # Provenance unreadable. Proving nothing, the reclamation takes nothing.
+        preexisting_weights = None
+
     # Step 4: Save/merge model to 16-bit format
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
+    # The flag holds for both branches that write the weights themselves; the middle
+    # branch reuses the user's own checkpoint instead and clears it, whatever the
+    # caller asked for.
     if is_peft_model:
         print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
@@ -3119,6 +3230,10 @@ def unsloth_save_pretrained_gguf(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
             save_directory = original_path
+            # The user's own checkpoint, not an intermediate: without this an
+            # ordinary save_pretrained_gguf on a tight disk would delete the
+            # model it was handed.
+            merge_is_disposable = False
             # Persist tokenizer fixes (e.g. BOS token stripping) to disk
             # so the GGUF converter picks up the corrected chat template.
             if tokenizer is not None:
@@ -3217,6 +3332,8 @@ def unsloth_save_pretrained_gguf(
             is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
             imatrix = imatrix_path,
             gguf_directory = gguf_directory,
+            merge_is_disposable = merge_is_disposable,
+            preexisting_weights = preexisting_weights,
         )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
@@ -3376,29 +3493,343 @@ def _gguf_child_was_oom_killed(exc):
     return False
 
 
-def _gguf_failure_looks_like_disk(exc, save_directory = None):
+def _gguf_failure_looks_like_disk(
+    exc,
+    save_directory = None,
+    needed_bytes = None,
+    partial_output = None,
+):
     """Is this GGUF failure plausibly about running out of disk?
 
     Two independent signals, either alone sufficient: each can be absent for a
     good reason. The message may name ENOSPC after the directory was cleaned
     up, and the disk may be genuinely full while a subprocess surfaced
     something vaguer. Never raises; an unreadable path just means "not disk".
+
+    `needed_bytes` is what the write that failed was actually going to take.
+    Room is a relation between the two, not a constant: a 400MB quant with 1.5GB
+    free has all the room it needs, and a caller that knows the size says so
+    rather than being measured against a fixed floor that has nothing to do with
+    it. The floor remains for callers that cannot say.
+
+    `partial_output` is the file the failed write was filling. llama-quantize
+    streams straight into it (`llama-quant.cpp` opens the `ofstream` up front and
+    writes each tensor as it finishes one), so a pass that dies partway leaves
+    those bytes on disk -- out of the free space measured here, while
+    `needed_bytes` still describes the whole output. Crediting them back asks
+    "was there room for this output", not "is there room for a second copy of
+    it": without it a 10GB export that starts with 12GB free and dies on an
+    unsupported tensor after 5GB reads as a full disk and loses the rebuild
+    advice that would have addressed the real failure.
     """
     text = f"{type(exc).__name__}: {exc}".lower()
     if any(p in text for p in _DISK_FULL_PATTERNS):
         return True
     if getattr(exc, "errno", None) == 28:
         return True
+    # The output directory holds the file, so the first path that answers decides
+    # and the working directory is only a fallback. A roomy output disk called
+    # full because some unrelated filesystem is short would blame the disk for a
+    # quantizer failure and hide the advice that would have fixed it.
+    threshold = needed_bytes if needed_bytes and needed_bytes > 0 else _DISK_HEADROOM_BYTES
+    written, written_device = 0, None
+    if partial_output:
+        try:
+            _stat = os.stat(partial_output)
+            written, written_device = _stat.st_size, _stat.st_dev
+        except OSError:
+            # No partial output, or unreadable: nothing to credit back.
+            written = 0
     for path in (save_directory, os.getcwd()):
         if not path:
             continue
         try:
-            if shutil.disk_usage(path).free < _DISK_HEADROOM_BYTES:
-                return True
+            free = shutil.disk_usage(path).free
         except OSError:
             # Never let the diagnostic be the thing that raises.
             continue
+        if written:
+            # Only on the filesystem that actually holds the partial file --
+            # bytes on one device are not room on another.
+            try:
+                if os.stat(path).st_dev == written_device:
+                    free += written
+            except OSError:
+                pass
+        return free < threshold
     return False
+
+
+# The full-precision output types. Everything else llama-quantize writes is
+# quantized and carries its nominal width as the leading digit of the name
+# (`q4_k_m`, `iq3_xxs`).
+_GGUF_BITS_PER_WEIGHT = {"f32": 32.0, "f16": 16.0, "bf16": 16.0}
+
+# k- and i-quants store block scales and mins beside the weights, so a type is
+# wider than its name. llama.cpp's published 7B sizes keep that overhead under a
+# bit a weight (Q4_K_M near 4.5, Q6_K near 6.6), so 1.5 bounds every type here.
+_QUANT_OVERHEAD_BITS = 1.5
+
+_QUANT_NOMINAL_BITS = re.compile(r"^i?q(\d+)")
+
+
+def _gguf_type_bits(dtype):
+    """Nominal bits a weight of a GGUF type, or None if the name is unknown."""
+    name = str(dtype).lower()
+    if name in _GGUF_BITS_PER_WEIGHT:
+        return _GGUF_BITS_PER_WEIGHT[name]
+    nominal = _QUANT_NOMINAL_BITS.match(name)
+    return float(nominal.group(1)) if nominal else None
+
+
+def _gguf_output_size_ratio(
+    quant_method,
+    first_conversion,
+    upper_bound = True,
+):
+    """One output's size as a multiple of the base GGUF's, rounded either way.
+
+    Both directions cost something. Charging every quantized pass a whole copy of
+    the base deletes a merge an export with room to spare would have kept (a
+    Q4_K_M off a 60GB base needs about 21GB); charging `f32` one copy under-counts
+    by half, since f32 off an f16 base writes four bytes a weight against two, and
+    under-counting costs the export outright.
+
+    So price each pass by its own width, and measure the base the same way rather
+    than assuming it: q8_0 is a direct-convert outtype, so `first_conversion` is
+    not always 16-bit.
+
+    `upper_bound` picks which way that price is rounded, because the two callers
+    are hurt by opposite errors and cannot share one number. Reclamation must not
+    under-count -- too small an estimate keeps a merge the quants then have no
+    room for -- so it adds each k-quant's block overhead and charges an
+    unrecognised type a whole copy of the base. Diagnosis must not over-count:
+    an inflated estimate reports a full disk for a failure that was nothing of
+    the sort and swallows the llama.cpp rebuild advice, so it takes each type's
+    nominal width (Q4_K_M really lands near 4.5 bits, never below 4) and returns
+    None for a type it cannot measure, which leaves the caller on the fixed floor.
+    """
+    base = _gguf_type_bits(first_conversion) or 16.0
+    target = _gguf_type_bits(quant_method)
+    if target is None:
+        # Unrecognised: charge a whole copy of the base, as every method used to
+        # get -- or, for a diagnosis, admit the size is unknown.
+        return 1.0 if upper_bound else None
+    if upper_bound and str(quant_method).lower() not in _GGUF_BITS_PER_WEIGHT:
+        target += _QUANT_OVERHEAD_BITS
+    return target / base
+
+
+# The names a disposable merge is written under, and only those. Both writers of
+# one produce safetensors: the PEFT branch goes through unsloth_zoo's
+# `merge_and_overwrite_lora`, which rewrites the base safetensors shards (and the
+# `consolidated.safetensors` some repos ship), and the non-PEFT fallback calls
+# `save_pretrained` with no arguments, so transformers' `SAFE_WEIGHTS_NAME`.
+#
+# Neither the stem nor the extension is decoration. transformers clears stale
+# shards only when both hold (`modeling_utils`:
+# `filename.startswith(weights_no_suffix)` and `r"(.*?)-\d{5}-of-\d{5}"`), so a
+# shard set under another stem, and a `pytorch_model.bin` from an earlier save in
+# the other serialization, are files `save_pretrained` neither writes nor removes.
+# This helper deletes permanently, so it leaves both alone. A merge under a name
+# this misses is still reclaimed whenever it wrote an index, because the index
+# names its own shards.
+_MERGE_WEIGHT_NAME = re.compile(r"^(model|consolidated)(-\d{5}-of-\d{5})?\.safetensors$")
+# The index `save_pretrained` writes for a sharded save. Safetensors only, for
+# the same reason the matcher is: a `pytorch_model.bin.index.json` belongs to an
+# earlier save in the other serialization, which transformers leaves in place,
+# and reading it would hand its shards to the deletion.
+_WEIGHT_INDEX_NAMES = ("model.safetensors.index.json",)
+# One shard of a sharded save, under any stem. Only ever applied to names an
+# index already listed -- on its own this is far too wide, and dropping it from
+# the matcher above is exactly what stopped a user's `backup-00001-of-00002`
+# being read as the merge.
+_INDEX_SHARD_NAME = re.compile(r"^(?P<stem>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})\.safetensors$")
+
+
+def _merge_weight_files(model_directory, names):
+    """The weight files a 16-bit merge writes, out of everything in a directory.
+
+    Deleting by extension alone is what this exists to avoid: the merge lands in
+    a directory the caller named, routinely a training `output_dir` already
+    holding `training_args.bin`, `optimizer.pt` or `rng_state.pth`, artifacts
+    this export did not create and cannot recreate. So match the names
+    `save_pretrained` actually produces -- the index names its shards outright
+    when it wrote one, and the naming convention answers when it did not.
+    """
+    indexed, spent_indexes = set(), set()
+    for index_name in _WEIGHT_INDEX_NAMES:
+        if index_name not in names:
+            continue
+        try:
+            with open(os.path.join(model_directory, index_name), encoding = "utf-8") as index_file:
+                weight_map = json.load(index_file).get("weight_map") or {}
+            # Basenames: only this directory is listed, so a path never matches.
+            listed = {os.path.split(str(shard))[-1] for shard in weight_map.values()}
+        except (OSError, ValueError, AttributeError):
+            # A missing or malformed index just means the names decide instead.
+            continue
+        if _is_one_whole_shard_set(listed, names):
+            indexed.update(listed)
+            # The index goes with the shards it named. `names` is already
+            # filtered to what this export wrote, so reaching here means this
+            # export wrote this index too, and leaving it behind is not neutral:
+            # it points at files that are about to be deleted, and on the next
+            # export into the same directory the provenance snapshot calls that
+            # leftover preexisting and filters it out, taking with it the only
+            # way a shard set under a stem `_MERGE_WEIGHT_NAME` misses is ever
+            # found again.
+            spent_indexes.add(index_name)
+    return sorted(
+        n for n in names if n in indexed or n in spent_indexes or _MERGE_WEIGHT_NAME.match(n)
+    )
+
+
+def _is_one_whole_shard_set(listed, names):
+    """Does this index describe one complete shard set that is all still here?
+
+    The index is the one way a name the convention misses still gets reclaimed,
+    which makes it the one way a file the convention *protects* gets deleted. An
+    index left behind by an earlier save is the case that matters: transformers
+    writes one only when a save shards, and its stale sweep never removes an
+    index (`model.safetensors.index` does not match the shard shape it looks
+    for), so an unsharded merge lands beside a previous save's index and inherits
+    whatever that one names.
+
+    A live index is self-consistent in a way a stale one has no reason to be: it
+    lists `-00001-of-000NN` through `-000NN-of-000NN` under a single stem, and
+    every shard is on disk because the save just wrote them. Requiring that
+    rejects a mixed or partial listing, which is what a stale index beside a
+    fresh save looks like, while still reclaiming a sharded merge written under
+    a stem `_MERGE_WEIGHT_NAME` does not know.
+    """
+    if not listed:
+        return False
+    stems, totals = set(), set()
+    for name in listed:
+        shard = _INDEX_SHARD_NAME.match(name)
+        if shard is None:
+            return False
+        stems.add(shard.group("stem"))
+        totals.add(shard.group("total"))
+    if len(stems) != 1 or len(totals) != 1:
+        return False
+    # `of-000NN` states the count outright, so a listing missing shards -- or
+    # naming extra ones -- is not the set it claims to be.
+    if len(listed) != int(totals.pop()):
+        return False
+    return listed <= set(names)
+
+
+def _free_merge_if_disk_is_tight(
+    model_directory,
+    gguf_directory,
+    initial_files,
+    quant_methods = (),
+    first_conversion = None,
+    merge_is_disposable = False,
+    preexisting_weights = None,
+):
+    """Reclaim the intermediate 16-bit merge when the quants will not fit.
+
+    Returns the bytes freed, 0 if nothing was touched. Never raises: it runs to
+    make an export succeed and must not be the thing that fails it.
+
+    `merge_is_disposable` is the whole safety story and defaults to off. It is
+    true only when this export wrote `model_directory` itself as a throwaway on
+    the way to the GGUF. A non-PEFT `save_pretrained_gguf` instead points the
+    converter at the checkpoint the model was loaded from, where deleting weights
+    would destroy the user's input model rather than an intermediate.
+
+    Only the weight files go: config.json and the tokenizer are small and later
+    steps (the Modelfile, a push) may still want them.
+    """
+    if not merge_is_disposable:
+        return 0
+    # The other half of the safety story. `merge_is_disposable` says the export
+    # wrote this directory; this says which files in it the export wrote. A
+    # caller that cannot say gets no reclamation rather than a guess, because
+    # the guess is permanent.
+    if preexisting_weights is None:
+        return 0
+    if not model_directory or not os.path.isdir(model_directory):
+        return 0
+    quant_methods = list(quant_methods)
+    if not quant_methods:
+        return 0
+    try:
+        # llama-quantize copies a VLM's `-mmproj` projector rather than quantizing
+        # it, so it is not part of what a pass writes and charging it once per
+        # quant would call a disk tight that has the room. Filtered the same way
+        # the RAM budget above filters it.
+        base_bytes = sum(
+            os.path.getsize(f)
+            for f in initial_files
+            if os.path.isfile(f) and "-mmproj" not in os.path.basename(f).lower()
+        )
+    except OSError:
+        return 0
+    if base_bytes <= 0:
+        return 0
+
+    target_directory = gguf_directory or model_directory
+    # `gguf_directory` can point anywhere, and freeing bytes on one filesystem
+    # does nothing for a quantize pass writing to another: without this the merge
+    # could be deleted for a destination it cannot help, data gone and the export
+    # still out of space.
+    try:
+        if os.stat(model_directory).st_dev != os.stat(target_directory).st_dev:
+            return 0
+    except OSError:
+        return 0
+
+    # Every output stays on disk, so the passes add up. Overestimating costs a
+    # deletion that was not strictly required; underestimating costs the export.
+    needed = (
+        base_bytes * sum(_gguf_output_size_ratio(m, first_conversion) for m in quant_methods)
+        + _DISK_HEADROOM_BYTES
+    )
+    try:
+        free = shutil.disk_usage(target_directory).free
+    except OSError:
+        return 0
+    if free >= needed:
+        return 0
+
+    weights = []
+    try:
+        names = os.listdir(model_directory)
+    except OSError:
+        # Unreadable is no reason to fail an export that no longer needs it.
+        return 0
+    # Anything that was already here is the caller's, whatever it is named. This
+    # is what stops a reused output directory losing a finished sharded save, or
+    # a `consolidated.safetensors` the merge never wrote: both are answers the
+    # names alone cannot give, since they are exactly the names a merge uses.
+    # It also drops a stale index out of the reading below, so the shards it
+    # names are never inherited.
+    names = [name for name in names if name not in preexisting_weights]
+    for name in _merge_weight_files(model_directory, names):
+        path = os.path.join(model_directory, name)
+        if os.path.isfile(path):
+            weights.append(path)
+    freed = 0
+    for path in weights:
+        try:
+            size = os.path.getsize(path)
+            os.remove(path)
+            freed += size
+        except OSError:
+            continue
+    if freed:
+        print(
+            f"Unsloth: Freed {freed / 1024**3:.1f}GB of intermediate 16-bit "
+            f"weights from {model_directory} so the quantization has room "
+            f"({free / 1024**3:.1f}GB free, about "
+            f"{needed / 1024**3:.1f}GB needed). The GGUF files are already "
+            f"written and do not need them."
+        )
+    return freed
 
 
 def unsloth_push_to_hub_gguf(
