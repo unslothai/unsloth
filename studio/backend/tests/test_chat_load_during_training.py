@@ -1157,10 +1157,9 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 class TestRemoteGgufComputeReserve(unittest.TestCase):
     """The compute reserve a remote GGUF estimate carries.
 
-    Every caller of it in this file patches it to zero so an exact GB total can be asserted, the
-    way they already hold _estimate_gguf_kv_gb at zero, which leaves the arithmetic itself with
-    nothing asserting it -- and it decides whether a load is refused. These pin the shape rather
-    than the magnitude, so retuning a safety factor does not break them but dropping a term does.
+    Every other caller here patches it to zero to assert exact GB totals, so its arithmetic goes
+    unasserted even though it decides whether a load is refused. These pin the shape, not the
+    magnitude: retuning a safety factor keeps them passing, dropping a term does not.
     """
 
     @classmethod
@@ -1168,10 +1167,8 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         cls.route = _load_inference_route()
 
     def _reserve(self, **kwargs):
-        # The effective micro-batch comes from _extra_args_n_ubatch, which reads LLAMA_ARG_BATCH /
-        # LLAMA_ARG_UBATCH off os.environ. A host that exports either would move it away from
-        # _DEFAULT_N_UBATCH and fail these assertions for a reason that has nothing to do with the
-        # slot count under test, so drop them for the call.
+        # Drop LLAMA_ARG_BATCH / LLAMA_ARG_UBATCH: a host exporting either moves the effective
+        # micro-batch off _DEFAULT_N_UBATCH and fails these for reasons unrelated to slot count.
         import os
         env = {
             key: value
@@ -1182,15 +1179,13 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
             return self.route._remote_gguf_compute_reserve_gb(max_seq_length = 4096, **kwargs)
 
     def test_a_single_slot_still_reserves_an_output_buffer(self):
-        """llama-server allocates an output buffer for the one slot it runs, so a single-slot
-        estimate that reserves nothing for it under-reserves. The count was max(0, n_parallel - 1),
-        which is zero exactly there.
+        """llama-server allocates an output buffer for its one slot, but the old
+        max(0, n_parallel - 1) count reserved nothing there.
 
-        The total is spelled out rather than compared against a neighbouring call: the reserve is
-        linear in the slot count, so any two samples are one buffer apart under BOTH the old
-        formula and the new one, and only an absolute anchor can see the floor. The mask half is
-        the anchor; the constants come from the module, so retuning a safety factor moves this
-        test with the code while dropping a term still fails it.
+        The total is spelled out absolutely rather than compared against a neighbouring call: the
+        reserve is linear in slot count, so any two samples are one buffer apart under both the
+        old formula and the new one, and only an absolute anchor sees the floor. Constants come
+        from the module, so retuning a safety factor moves this test with the code.
         """
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -1199,14 +1194,16 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         per_slot = (
             self.route._ASSUMED_MAX_VOCAB * ubatch * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
         )
-        self.assertAlmostEqual(self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6)
-        # And one more buffer for a second slot, which pins the count as well as the floor.
+        self.assertAlmostEqual(
+            self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6
+        )
+        # One more buffer for a second slot, pinning the count as well as the floor.
         self.assertAlmostEqual(
             self._reserve(n_parallel = 2), (mask + 2 * per_slot) / (1024**3), places = 6
         )
 
     def test_diffusion_reserves_nothing(self):
-        """The default micro-batch is a llama-server notion. A diffusion estimate has no ubatch to
+        """The default micro-batch is a llama-server notion: a diffusion estimate has no ubatch to
         assume, and charging one would refuse loads that fit."""
         self.assertEqual(self._reserve(n_parallel = 1, is_diffusion = True), 0.0)
 
