@@ -79,21 +79,20 @@ export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
  */
 export function settleVramBudgetSave(): Promise<unknown> | null {
   // The newest write, not the chain: the chain swallows rejections so one failed
-  // save cannot strand the ones behind it, and a caller waiting on it would be
-  // told the save succeeded. Only the newest write can have re-staged a retry
-  // (the generation check sees to that), and writes settle in order, so waiting
-  // on it covers every open write and still reports the failure that matters.
+  // save cannot strand those behind it, and a caller waiting on it would be told
+  // the save succeeded. Only the newest can have re-staged a retry, and writes
+  // settle in order, so it still covers every open write.
   return (
     flushVramBudgetSave() ??
     (vramBudgetWritesOpen > 0 ? vramBudgetNewestWrite : null)
   );
 }
 
-// A load waits on the budget it is about to launch against, so an edit made while
-// it waits would be flushed by the picker teardown alongside the load request and
-// either fraction could size the child. Settling again in a loop only shrinks that
-// window; closing the control closes it. Held here for the same reason the staged
-// fraction is: the row unmounts, the load does not.
+// A load waits on the budget it is about to launch against, so an edit made in
+// that window is flushed by the teardown alongside the load request and either
+// fraction could size the child. Settling in a loop only shrinks that window;
+// closing the control closes it. Held here because the row unmounts and the load
+// does not.
 let vramBudgetLocked = false;
 
 export function setVramBudgetLocked(locked: boolean) {
@@ -168,10 +167,9 @@ export async function loadVramBudgetSettings(
   const pendingWrites =
     vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
   // Waiting behind the writes open now says nothing about a save issued while the
-  // GET is in the air: that PUT can publish the new fraction first and this answer
-  // would then repaint the slider, and the Reload state, with what the server held
-  // before it. Reachable from the post-load refresh, where the control is live
-  // again while the load runs.
+  // GET is in the air: that PUT can publish first, and this answer would repaint
+  // the slider, and the Reload state, with what the server held before it. The
+  // post-load refresh is the way in, since the control is live while the load runs.
   const generationAtRead = vramBudgetWriteGeneration;
   if (options.force) {
     // reloadRequired describes the running child, so a read that started before a
@@ -184,12 +182,10 @@ export async function loadVramBudgetSettings(
       .then(fetchVramBudgetSettings)
       .then((settings) => {
         // Answer only while this is still the current read and nothing newer has
-        // been written. A read displaced by a forced one describes the child being
-        // replaced, and a read overtaken by a save describes the fraction that save
-        // replaced; either would restore state the newer answer had just corrected.
-        // Refused rather than merely left unpublished, because the caller applies
-        // the return value directly and would put back the same stale isStored and
-        // reloadRequired the publish was held back for.
+        // been written. A displaced read describes the child being replaced, an
+        // overtaken one the fraction a save replaced; either restores state the
+        // newer answer just corrected. Refused, not merely unpublished: the caller
+        // applies the return value by hand and would put the same answer back.
         if (
           inFlightVramBudget !== read ||
           generationAtRead !== vramBudgetWriteGeneration

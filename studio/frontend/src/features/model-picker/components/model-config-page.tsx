@@ -667,11 +667,9 @@ function GpuMemorySettings({
         </Select>
       </div>
       {/* A fixed manual layer count is the one placement the budget cannot move,
-          and a CPU-only host has no GPU to act on, so promising "applies on the
-          next load" would be false. Manual + Auto is included: it leaves the
-          planner no device list, but --fit-target still carries the budget to
-          llama.cpp's fitter, so the setting applies and its notice has to be
-          reachable. */}
+          and a CPU-only host has no GPU to act on, so "applies on the next load"
+          would be false. Manual + Auto is included: it leaves the planner no device
+          list, but --fit-target still carries the budget to llama.cpp's fitter. */}
       {!isDiffusion && (!isManual || autoLayers) && gpuDevices.length > 0 && (
         <VramBudgetRow />
       )}
@@ -1393,11 +1391,10 @@ export function ModelConfigPage({
   // Held for the window where Run is waiting on a budget PUT rather than on the
   // load it looks like it started.
   const [budgetSettling, setBudgetSettling] = useState(false);
-  // The budget is server-wide and on no per-model field, so changing it leaves this
-  // page at its baseline and the Reload button disabled: the row's notice asked for
-  // a reload the user had no way to start. Read off the same publish the row uses,
-  // so nothing has to be threaded through GpuMemorySettings, and so a row that
-  // never mounts (Mac, no GPU, Manual) leaves this false.
+  // The budget is on no per-model field, so changing it leaves this page at its
+  // baseline and the Reload button disabled, with the row asking for a reload the
+  // user could not start. Read off the same publish the row uses, so nothing is
+  // threaded through GpuMemorySettings and a row that never mounts leaves it false.
   const [budgetReloadRequired, setBudgetReloadRequired] = useState(false);
   useEffect(
     () =>

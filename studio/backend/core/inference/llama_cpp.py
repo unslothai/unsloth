@@ -1953,8 +1953,7 @@ _MTP_VRAM_RESERVE_FRAC = 0.05
 _VRAM_FLOOR_RESERVE_MIB = 512.0
 
 # llama-server's own --fit-target default ("target margin per device for --fit,
-# ... default: 1024"), i.e. what the fallback fitter leaves per device when we
-# pass nothing. Manual + Auto overrides it with the tighter 512 above.
+# ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 
 
@@ -10782,8 +10781,8 @@ class LlamaCppBackend:
             # evict the resident child for a budget it then fails to apply.
             _vram_frac = _active_vram_fraction()
             # How far this budget moves llama.cpp's own fitter margin, set once the
-            # devices are known. Signed: a lowered budget holds more back, a raised
-            # one lets the fitter pack closer to the card. Zero at the default.
+            # devices are known. Signed: lowering holds more back, raising packs
+            # closer to the card. Zero at the default.
             _fit_target_delta_mib = 0.0
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
@@ -10807,9 +10806,8 @@ class LlamaCppBackend:
                     return _vram_frac
                 # Manual + Auto empties gpus to bypass the planner, but --fit-target
                 # still carries the budget to llama.cpp's fitter, so that child IS
-                # priced against it. Without this, a later change to the setting
-                # would report no reload needed and the duplicate check would adopt
-                # a child still fitting to the old margin.
+                # priced. Without this a later change reports no reload needed and
+                # the duplicate check adopts a child on the old margin.
                 return _vram_frac if _fit_target_priced else None
 
             # Armed before the duplicate check, not merely cleared: on an inactive
@@ -11601,23 +11599,19 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
-                    # The --fit fallback is llama.cpp's fitter, and it knows nothing
-                    # about this budget: it leaves its own margin per device and packs
-                    # everything else on, so the slider did not reach the one path that
-                    # runs when the fit is tightest. Hand it the difference the user
-                    # asked for, in both directions. Measured from the default, not
-                    # from zero, so the command at the default fraction is byte-
-                    # identical to before and the margin tracks the slider.
-                    # One value, broadcast: --fit-target does take a per-device list,
-                    # but in llama.cpp's enumeration order, which the visible-device
-                    # pin and the ROCr/Vulkan ordinal quirks make not ours to assume.
-                    # Misaligning that list would quietly hand a card the wrong
-                    # margin, which is worse than one value chosen to be safe on
-                    # every card. So the direction picks the card: lowering scales by
-                    # the largest, since no device may end up under the margin it
-                    # asked for; raising scales by the smallest, since no device may
-                    # be taken below its own. Mixed cards therefore gain a little
-                    # less, and hold back a little more, than a per-device list would.
+                    # The --fit fallback is llama.cpp's own fitter, which knows nothing
+                    # about this budget: it keeps its own margin and packs the rest on,
+                    # so the slider never reached the path that runs when the fit is
+                    # tightest. Hand it the difference, both directions, measured from
+                    # the default so an untouched slider leaves the command alone.
+                    # One broadcast value: --fit-target does take a per-device list, but
+                    # in llama.cpp's enumeration order, which the visible-device pin and
+                    # the ROCr/Vulkan ordinal quirks make not ours to assume, and a
+                    # misaligned list hands a card the wrong margin. So the direction
+                    # picks the card: lowering scales by the largest, so no device ends
+                    # up under the margin it asked for, raising by the smallest, so none
+                    # is taken below its own. Mixed cards gain a little less, and hold
+                    # back a little more, than a per-device list would.
                     if _vram_frac != _CTX_FIT_VRAM_FRACTION and gpus:
                         # Free stands in for an unreported total, the same scale
                         # _vram_usable_mib falls back to: MIG/vGPU and the two-column
@@ -13057,9 +13051,9 @@ class LlamaCppBackend:
                     server_caps,
                     fit_target_delta_mib = _fit_target_delta_mib,
                 )
-                # Read from the flags themselves, not from the inputs: --fit off, an
-                # older server without the capability, or a budget at the default all
-                # leave the child unpriced, and each is decided inside that call.
+                # From the flags, not the inputs: --fit off, an older server without
+                # the capability and a budget at the default all leave the child
+                # unpriced, and each is decided inside that call.
                 _fit_target_priced = "--fit-target" in _integrity_flags
                 cmd.extend(_integrity_flags)
                 offload_overridden = _extra_args_set_any_flag(
@@ -15174,11 +15168,10 @@ class LlamaCppBackend:
         # (manual, or no discrete GPU), where a reload would change nothing.
         _launched_frac = self._vram_fraction_launched
         # The pending marker, not a fresh read: a load in flight captured its budget
-        # under the lock, and re-reading here could decide against a different number
-        # than the plan that follows. The route's fast path has no load to inherit
-        # from and finds it unset, so it resolves live as before. Taking the marker
-        # rather than a parameter keeps the signature every caller and test double
-        # already has.
+        # under the lock, and re-reading could decide against a different number than
+        # the plan that follows. The route's fast path finds it unset and resolves
+        # live as before. Reading the marker rather than taking a parameter keeps the
+        # signature every caller and test double already has.
         _pending_frac = self._vram_fraction_pending
         _active_frac = _pending_frac if _pending_frac is not None else _active_vram_fraction()
         if _launched_frac is not None and float(_launched_frac) != _active_frac:
@@ -16575,11 +16568,11 @@ class LlamaCppBackend:
                 flags.extend(["--fit-ctx", "8192"])
         if use_fit and caps.get("supports_fit_target"):
             # Each path keeps its own starting margin: the tighter 512 under Manual
-            # + Auto, so llama.cpp packs more of the model on before spilling to
-            # system RAM, and llama.cpp's own 1024 on the legacy path, which passes
-            # nothing today. The budget moves that margin from where the path
-            # already sits, so the default fraction changes neither, and a raised
-            # budget stops at the same 512 floor every other reserve here respects.
+            # + Auto, so llama.cpp packs more on before spilling to system RAM, and
+            # llama.cpp's own 1024 on the legacy path, which passes nothing today.
+            # The budget moves that margin from where the path already sits, so the
+            # default changes neither, and a raise stops at the same 512 floor every
+            # other reserve here respects.
             _base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
             _target = max(_VRAM_FLOOR_RESERVE_MIB, _base + fit_target_delta_mib)
             # The legacy path stays silent when it would only restate llama.cpp's
