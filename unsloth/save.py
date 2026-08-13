@@ -3006,7 +3006,6 @@ def _destination_holds_torchao_staging(destination, need_bytes, staging_bytes):
     error.
     """
     import tempfile
-
     try:
         if staging_bytes <= 0:
             return True
