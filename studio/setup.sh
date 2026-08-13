@@ -1597,6 +1597,13 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                     continue
                 fi
                 chmod +x "$_siup_stage" 2>/dev/null || true
+                # Validate before publishing, as install.sh does: the rename destroys whatever is
+                # at the destination, so a binary that cannot run here must never replace one that
+                # could.
+                if [ "$_siup_exe" = "uv" ] && ! "$_siup_stage" --version >/dev/null 2>&1; then
+                    rm -f "$_siup_stage" 2>/dev/null || true
+                    continue
+                fi
                 if ! mv -f "$_siup_stage" "$_siup_dest/$_siup_exe" 2>/dev/null; then
                     rm -f "$_siup_stage" 2>/dev/null || true
                     continue
@@ -1607,12 +1614,8 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         break
     done
     rm -rf "$_siup_work"
-    # Placed is not installed, and the executable bit is not proof it runs: a host whose loader is
-    # not where a GNU binary looks for it passes every static check and fails on first use. The
-    # archive is digest-verified astral uv here, so ask it directly.
-    if [ ! -x "$_siup_dest/uv" ] || ! "$_siup_dest/uv" --version >/dev/null 2>&1; then
-        _siup_rc=1
-    fi
+    # The staged binary already answered --version above, before it replaced anything.
+    [ -x "$_siup_dest/uv" ] || _siup_rc=1
     [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
     return "$_siup_rc"
 }

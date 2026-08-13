@@ -318,6 +318,35 @@ else
     ok "a uv that cannot execute declines to the fallback"
 fi
 
+# And it must not have destroyed the uv the host was already using. The rename publishes over the
+# destination, so validating the new binary only after that point would leave a host whose loader
+# is missing with neither its old working uv nor a usable new one, while _uv_present_before still
+# says one is installed.
+mkdir -p "$WORK/home_keep/.local/bin"
+printf '#!/bin/sh\necho "uv 0.9.9 (incumbent)"\n' > "$WORK/home_keep/.local/bin/uv"
+chmod +x "$WORK/home_keep/.local/bin/uv"
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-bad.tar.gz $BAD_EXEC_SHA"; }
+    download() { cp -f "$WORK/uv-bad.tar.gz" "$2"; }
+    HOME="$WORK/home_keep"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+) >/dev/null 2>&1 || true
+if "$WORK/home_keep/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
+    ok "a uv that cannot execute never replaces the working one"
+else
+    bad "a uv that cannot execute replaced the working one"
+fi
+if [ -z "$(find "$WORK/home_keep/.local/bin" -name '.uv.*' 2>/dev/null)" ]; then
+    ok "the rejected staging file is cleaned up"
+else
+    bad "the rejected staging file is cleaned up"
+fi
+
 # Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
 # installing at all, so every host must either get its own triple or decline to the fallback.
 # $4 libc: musl | none (no ldd and no getconf) | a glibc version | rosetta (Darwin only)

@@ -2568,6 +2568,15 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                     continue
                 fi
                 chmod +x "$_uip_stage" 2>/dev/null || true
+                # Validate BEFORE publishing. The rename destroys whatever is at the destination,
+                # and a host whose loader is missing or a noexec mount cannot run the new binary,
+                # so testing after the rename would already have taken out a working uv the host
+                # was relying on. The staging file sits on the destination filesystem, so this
+                # answers the noexec question too.
+                if [ "$_uip_exe" = "uv" ] && ! "$_uip_stage" --version >/dev/null 2>&1; then
+                    rm -f "$_uip_stage" 2>/dev/null || true
+                    continue
+                fi
                 if ! mv -f "$_uip_stage" "$_uip_dest/$_uip_exe" 2>/dev/null; then
                     rm -f "$_uip_stage" 2>/dev/null || true
                     continue
@@ -2575,14 +2584,8 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                 [ "$_uip_exe" = "uv" ] && _uip_placed=1
             fi
         done
-        # Placed is not installed, and the executable bit is not proof it runs. The archive is
-        # digest-verified astral uv at this point, so ask it: a host whose glibc version we could
-        # read but whose loader is not where a GNU binary looks for it (a stripped NixOS-derived
-        # image without nix-ld is the real case) would otherwise pass every static check and then
-        # fail on first use, with the fallback already skipped. One exec closes that whole class,
-        # including a wrong triple and a destination we could not actually write.
-        if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ] \
-           && "$_uip_dest/uv" --version >/dev/null 2>&1; then
+        # The staged binary already answered --version above, before it replaced anything.
+        if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ]; then
             export PATH="$_uip_dest:$PATH"
             _uip_rc=0
         fi
