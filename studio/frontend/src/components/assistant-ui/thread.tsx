@@ -4771,7 +4771,15 @@ const ComposerToolsMenu: FC<{
       });
       if (started) {
         setPromptStorageOpen(false);
+        return;
       }
+      // startQueue refuses synchronously when queueing is unavailable (the
+      // project new-chat composer sets disableQueue) and does not run the
+      // onAborted callback in that case, so without this the Run button and the
+      // bookmarked-list menu items would both just silently do nothing.
+      toast.error("Couldn't queue that list here", {
+        description: "Open a chat first, then run the list.",
+      });
     },
     [startQueue],
   );

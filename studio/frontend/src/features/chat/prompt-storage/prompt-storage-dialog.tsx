@@ -1403,7 +1403,7 @@ function PromptDetail({
           </>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1 border-t border-border/50 pt-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
         <button
           type="button"
           onClick={() => togglePinnedPrompt(entry.id)}
@@ -1463,7 +1463,7 @@ function NewPromptForm({
   onCreated,
 }: {
   onClose: () => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   onCreated: (id: string) => void;
 }): ReactElement {
   const [name, setName] = useState("");
@@ -1481,7 +1481,10 @@ function NewPromptForm({
       createdAt: ts,
       updatedAt: ts,
     });
-    onRefresh();
+    // Await the refresh before selecting: the keep-a-row-selected effect runs
+    // against whatever list is in state, and if the new id is not in it yet the
+    // effect bounces the selection to the first existing prompt instead.
+    await onRefresh();
     onCreated(id);
     onClose();
   }, [name, text, onClose, onRefresh, onCreated]);
@@ -1502,7 +1505,7 @@ function NewPromptForm({
         placeholder="Write your prompt here..."
         className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
       />
-      <div className="flex shrink-0 gap-2 justify-end border-t border-border/50 pt-3">
+      <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
           <XIcon className="size-3.5 mr-1" />Cancel
         </Button>
@@ -1612,7 +1615,7 @@ function PromptListDetail({
           </>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1 border-t border-border/50 pt-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
         <button
           type="button"
           onClick={() => togglePinnedList(entry.id)}
@@ -1674,7 +1677,7 @@ function NewPromptListForm({
   onCreated,
 }: {
   onClose: () => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   onCreated: (id: string) => void;
 }): ReactElement {
   const [name, setName] = useState("");
@@ -1692,7 +1695,8 @@ function NewPromptListForm({
       createdAt: ts,
       updatedAt: ts,
     });
-    onRefresh();
+    // See NewPromptForm: select only once the refreshed list contains the id.
+    await onRefresh();
     onCreated(id);
     onClose();
   }, [name, items, onClose, onRefresh, onCreated]);
@@ -1722,7 +1726,7 @@ function NewPromptListForm({
           <PlusIcon className="size-3.5" />Add another prompt
         </button>
       </div>
-      <div className="flex shrink-0 gap-2 justify-end border-t border-border/50 pt-3">
+      <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
           <XIcon className="size-3.5 mr-1" />Cancel
         </Button>
@@ -2064,7 +2068,11 @@ export function PromptStorageDialog({
           </div>
 
           {/* */}
-          <div className="flex-1 min-h-[420px] px-6 pb-6 grid grid-cols-[248px_minmax(0,1fr)] gap-4">
+          {/* The floor is capped against the viewport so it can never outgrow
+              the dialog's 94dvh on a short window, which would clip the detail
+              pane's actions behind DialogContent's overflow-hidden. Below `sm`
+              the rail stacks above the detail pane instead of squeezing it. */}
+          <div className="flex-1 min-h-[min(420px,50dvh)] px-4 sm:px-6 pb-6 grid gap-4 grid-cols-1 grid-rows-[minmax(96px,30%)_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
             <div className="flex min-h-0 flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
