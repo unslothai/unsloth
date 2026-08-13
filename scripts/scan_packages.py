@@ -180,6 +180,11 @@ _TOK_IGNORED = frozenset(
 # though it runs at import. requires-python is >=3.9, so the scanner has to
 # handle both; on 3.12+ this flag is False and the extra work never happens.
 _FSTRING_OPAQUE = not hasattr(tokenize, "FSTRING_START")
+# The three token types 3.12 splits an f-string into. `-1` never matches a real
+# token type, so the readers below can test against them unconditionally.
+_FSTRING_START = getattr(tokenize, "FSTRING_START", -1)
+_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", -1)
+_FSTRING_END = getattr(tokenize, "FSTRING_END", -1)
 # Longest quote first, so `"""` is not read as an empty `""`. A pre-3.12
 # f-string may not reuse the quote style that delimits it, which is what caps
 # how deep one opaque STRING token can nest them.
@@ -190,10 +195,6 @@ _MAX_FSTRING_NESTING = len(_FSTRING_QUOTES)
 # eight-character module name however it is escaped - and a member is allowed
 # to hold a 64 MiB one.
 _MAX_LITERAL_DECODE = 512
-# `b := importlib.import_module('builtins', package = None)` is the longest form
-# a walrus value can take and still be the module, so nothing beyond this many
-# tokens has to be read to decide one.
-_MAX_WALRUS_VALUE = 32
 # An escape sequence that resolves to a character: `'buil\x74ins'` names the
 # `builtins` module without spelling it, so a file that carries one has to be
 # read even though the plain word never appears in it.
@@ -436,7 +437,7 @@ def _name_index(toks: list, name: str) -> "int | None":
 
 
 def _string_body(literal: str) -> "str | None":
-    """The value of a string token, or None for bytes/f-strings/odd quoting.
+    """The value of a string token, or None for bytes/computed/odd quoting.
 
     Escapes are decoded, because the interpreter compares the module name the
     literal evaluates to, not the way it was spelled: `__import__('buil\\x74ins')`
@@ -444,25 +445,75 @@ def _string_body(literal: str) -> "str | None":
     text would read the two as different modules. Raw literals have no escapes
     to decode, and a literal far longer than any module name cannot be one, so
     both skip the parse.
+
+    An f-string with no replacement field evaluates to the same constant as the
+    plain literal - `__import__(f'builtins')` loads the module - so rejecting
+    every `f` prefix let one spelling of the module name through unread. One
+    holding a field is computed at runtime and stays unsupported.
     """
     i = 0
     while i < len(literal) and literal[i] not in "\"'":
         i += 1
-    prefix = literal[:i].lower()
-    if "b" in prefix or "f" in prefix:
+    raw_prefix = literal[:i]
+    prefix = raw_prefix.lower()
+    if "b" in prefix:
         return None
+    fstring = "f" in prefix
     body = literal[i:]
     for quote in ('"""', "'''", '"', "'"):
         if body.startswith(quote) and body.endswith(quote) and len(body) >= 2 * len(quote):
             body = body[len(quote) : -len(quote)]
+            if fstring and ("{" in body or "}" in body):
+                return None  # a replacement field, or the `{{` that escapes one
             if "\\" not in body or "r" in prefix or len(body) > _MAX_LITERAL_DECODE:
                 return body
+            # `literal_eval` refuses a JoinedStr however plain it is, so the `f`
+            # comes off before the escapes are decoded.
+            plain = literal if not fstring else _drop_f_prefix(raw_prefix) + literal[i:]
             try:
-                value = ast.literal_eval(literal)
+                value = ast.literal_eval(plain)
             except (ValueError, SyntaxError, MemoryError, RecursionError):
                 return body
             return value if isinstance(value, str) else None
     return None
+
+
+def _drop_f_prefix(prefix: str) -> str:
+    return prefix.replace("f", "").replace("F", "")
+
+
+def _fstring_const(toks: list, i: int) -> tuple:
+    """`(value, index past the literal)` for the f-string run starting at `i`.
+
+    3.12 splits an f-string into START / MIDDLE... / END instead of handing over
+    one STRING token, so a constant one has to be rejoined here rather than in
+    `_string_body`. Only MIDDLE text may sit in the run: a replacement field
+    arrives as `{` ... `}` OP tokens, and that value is computed at runtime.
+    `(None, i + 1)` for anything else, so the caller still makes progress.
+    """
+    parts = []
+    j = i + 1
+    while j < len(toks) and toks[j].type == _FSTRING_MIDDLE:
+        parts.append(toks[j].string)
+        j += 1
+    if j >= len(toks) or toks[j].type != _FSTRING_END:
+        return None, i + 1
+    body = "".join(parts)
+    opener = toks[i].string
+    q = 0
+    while q < len(opener) and opener[q] not in "\"'":
+        q += 1
+    prefix = opener[:q]
+    if "\\" not in body or "r" in prefix.lower() or len(body) > _MAX_LITERAL_DECODE:
+        # MIDDLE text already carries `{{` as the single brace it evaluates to;
+        # only backslash escapes are still spelled the source way.
+        return body, j + 1
+    quote = opener[q:]
+    try:
+        value = ast.literal_eval(_drop_f_prefix(prefix) + quote + body + quote)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return body, j + 1
+    return (value if isinstance(value, str) else None), j + 1
 
 
 def _collect_import_bindings(
@@ -628,12 +679,19 @@ def _const_string(toks: list) -> "str | None":
     if not toks:
         return None
     out = []
-    for tok in toks:
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
         if tok.type == tokenize.OP and tok.string == "+" and out:
+            i += 1
             continue
-        if tok.type != tokenize.STRING:
+        if tok.type == _FSTRING_START:
+            body, i = _fstring_const(toks, i)
+        elif tok.type == tokenize.STRING:
+            body = _string_body(tok.string)
+            i += 1
+        else:
             return None
-        body = _string_body(tok.string)
         if body is None:
             return None
         out.append(body)
@@ -661,8 +719,7 @@ def _loads_builtins(value: list, loaders: _Loaders) -> bool:
     open_at = _matching_opener(value, len(value) - 1)
     if open_at is None:
         return False
-    args = _split_top(value[open_at + 1 : -1])
-    if _const_string(args[0]) != "builtins":
+    if _const_string(_module_argument(_split_top(value[open_at + 1 : -1]))) != "builtins":
         return False
     call = value[:open_at]
     if len(call) == 1:
@@ -682,18 +739,57 @@ def _loads_builtins(value: list, loaders: _Loaders) -> bool:
     )
 
 
+def _bare_singleton(toks: list) -> "list | None":
+    """The sole element of an unbracketed one-tuple `x,`, or None.
+
+    `b, = (builtins,)` binds exactly what `[b] = [builtins]` binds; without the
+    brackets there is nothing for `_sequence_element` to strip, so the trailing
+    comma is read here instead.
+    """
+    if len(toks) < 2 or toks[-1].type != tokenize.OP or toks[-1].string != ",":
+        return None
+    head = toks[:-1]
+    return head if _name_index_op(head, ",") is None else None
+
+
+def _module_argument(args: list) -> list:
+    """The tokens naming the module a loader call loads.
+
+    Both loaders call that parameter `name`, and both accept it by keyword:
+    `__import__(name='builtins')` and `importlib.import_module(name='builtins')`
+    return the module just as the positional spelling does. Handing the whole
+    argument group to the constant reader made the leading `name` `=` tokens
+    reject it, so parking either call in a name and calling `exec` through it
+    read as an unknown module. An empty list for a call whose first argument is
+    some other keyword and which names no `name=`, since then nothing here says
+    what it loads.
+    """
+    for i, arg in enumerate(args):
+        eq = _name_index_op(arg, "=")
+        if eq == 1 and arg[0].type == tokenize.NAME:
+            if arg[0].string == "name":
+                return arg[2:]
+        elif eq is None and i == 0:
+            return arg
+    return []
+
+
 def _sequence_element(toks: list) -> "list | None":
     """The sole element of a one-element `[...]` or `(...)`, or None.
 
     Nothing is stripped unless the brackets really enclose the whole expression
     and hold exactly one item: `[builtins] + rest` is not a sequence display,
     and `[a, builtins]` does not put the module anywhere `[b] = ...` would find
-    it.
+    it. A single trailing comma still leaves one item - `(builtins,)` is the
+    one-tuple `(b,) = ...` unpacks - so it is the one comma allowed through;
+    rejecting it read a working spelling of the binding as a tuple target and
+    dropped the alias.
     """
     if len(toks) < 3 or toks[0].type != tokenize.OP or toks[-1].type != tokenize.OP:
         return None
     if (toks[0].string, toks[-1].string) not in (("[", "]"), ("(", ")")):
         return None
+    end = len(toks) - 1
     depth = 0
     for i, tok in enumerate(toks):
         if tok.type != tokenize.OP:
@@ -705,8 +801,10 @@ def _sequence_element(toks: list) -> "list | None":
             if depth == 0 and i != len(toks) - 1:
                 return None  # the opener closed early: not the outermost bracket
         elif tok.string == "," and depth == 1:
-            return None
-    return toks[1:-1]
+            if i != len(toks) - 2:
+                return None  # a second item, so this is not a one-element display
+            end = i
+    return toks[1:end] or None
 
 
 def _unwrapped_target(group: list) -> tuple:
@@ -717,13 +815,21 @@ def _unwrapped_target(group: list) -> tuple:
     subscript target and dropped the alias, so the `b.exec(...)` below went
     unflagged. `(name, False)` for the plain form, `(None, False)` for a target
     this pass cannot reduce to one name.
+
+    A trailing comma is what tells the two apart: `(b)` is `b` in parentheses,
+    while `(b,)` and `b,` are one-tuples that unpack a one-element sequence.
     """
     unpacked = False
-    while len(group) == 1 and group[0].type == tokenize.NAME:
+    if len(group) == 1 and group[0].type == tokenize.NAME:
         return group[0].string, unpacked
+    bare = _bare_singleton(group)
+    if bare is not None:
+        group, unpacked = bare, True
+        if len(group) == 1 and group[0].type == tokenize.NAME:
+            return group[0].string, unpacked
     inner = _sequence_element(group)
     while inner is not None:
-        if group[0].string == "[":
+        if group[0].string == "[" or (group[-2].type == tokenize.OP and group[-2].string == ","):
             unpacked = True  # a real destructuring, so the value is a sequence too
         group = inner
         if len(group) == 1 and group[0].type == tokenize.NAME:
@@ -748,6 +854,8 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     if len(stmt) < 3:
         return []
     last = stmt[-1]
+    if last.type == tokenize.OP and last.string == "," and len(stmt) > 3:
+        last = stmt[-2]  # `b, = builtins,`: the one-tuple ends in the module
     if last.type == tokenize.NAME:
         if last.string not in _BUILTINS_NAMES:
             return []
@@ -778,8 +886,15 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
                 if marker:
                     break
                 assign = True
-        elif ttype == tokenize.STRING:
-            body = _string_body(tok.string)
+        elif ttype == tokenize.STRING or ttype == _FSTRING_MIDDLE:
+            # 3.12 hands the inside of an f-string over as MIDDLE text with no
+            # quotes; wrapping it in a plain literal reuses the same decoder,
+            # so `f'buil\\x74ins'` spells the module here exactly as `'buil\\x74ins'`
+            # does. START and END carry no text and must not end the run, since
+            # `'built' f'ins'` concatenates just like two plain literals.
+            body = _string_body(
+                tok.string if ttype == tokenize.STRING else "'''" + tok.string + "'''"
+            )
             if joined is None or body is None or len(joined) + len(body) > _BUILTINS_LEN:
                 joined = None
             else:
@@ -788,7 +903,7 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
                 if assign:
                     break
                 marker = True
-        else:
+        elif ttype != _FSTRING_START and ttype != _FSTRING_END:
             joined = ""
     else:
         return []
@@ -811,8 +926,9 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
         # `[b] = [builtins]` binds exactly what `b = builtins` binds. It takes a
         # one-element sequence on BOTH sides to be that: `b = [builtins]` binds
         # the list itself, and `[b] = xs` takes an element out of something this
-        # pass never read.
-        value = _sequence_element(value)
+        # pass never read. `(builtins,)` and a bare `builtins,` are that
+        # sequence too, which is what `(b,) = (builtins,)` unpacks.
+        value = _sequence_element(value) or _bare_singleton(value)
         if value is None:
             return []
     if not _loads_builtins(value, loaders):
@@ -825,34 +941,44 @@ def _walrus_bindings(stmt: list, loaders: _Loaders) -> list:
 
     `if (b := builtins):` parks the module exactly as `b = builtins` does, and an
     assignment expression is legal wherever an expression is, so the plain-`=`
-    reader above never sees one. The value is read only as far as the bracket or
-    separator that ends it, and only for the few tokens any accepted form can
-    span - a right-nested chain of walruses would otherwise cost the sum of its
-    value lengths, on members allowed up to 64 MiB.
+    reader above never sees one.
+
+    Each value runs to the bracket or separator that really ends it. Capping it
+    at a fixed number of tokens instead was an evasion anyone could reach:
+    padding a working binding with redundant parentheses or extra loader
+    arguments pushed the module past the cutoff, `_loads_builtins` saw a
+    truncated expression, and the `b.exec(...)` under it fell to the
+    non-blocking obfuscation finding. The ends are found in ONE pass for the
+    whole statement, so a right-nested chain of walruses costs its length rather
+    than the sum of its values - which is what the cap was really guarding, on
+    members allowed up to 64 MiB.
     """
+    ends: dict = {}
+    pending: list = []
+    depth = 0
+    for j, tok in enumerate(stmt):
+        if tok.type != tokenize.OP:
+            continue
+        text = tok.string
+        if text == ":=":
+            if j and stmt[j - 1].type == tokenize.NAME:
+                pending.append((j, depth))
+            continue
+        if text in _OPENERS:
+            depth += 1
+        elif text in _CLOSERS:
+            depth -= 1
+            # This bracket ends every value opened inside it, deepest first.
+            while pending and pending[-1][1] > depth:
+                ends[pending.pop()[0]] = j
+        elif text in (",", ":") and pending and pending[-1][1] >= depth:
+            while pending and pending[-1][1] >= depth:
+                ends[pending.pop()[0]] = j
     names: list = []
-    for i, tok in enumerate(stmt):
-        if not (tok.type == tokenize.OP and tok.string == ":="):
-            continue
-        if not i or stmt[i - 1].type != tokenize.NAME:
-            continue
-        depth = 0
-        end = min(len(stmt), i + 1 + _MAX_WALRUS_VALUE)
-        for j in range(i + 1, end):
-            nxt = stmt[j]
-            if nxt.type != tokenize.OP:
-                continue
-            if nxt.string in _OPENERS:
-                depth += 1
-            elif nxt.string in _CLOSERS:
-                if depth == 0:
-                    end = j
-                    break
-                depth -= 1
-            elif depth == 0 and nxt.string in (",", ":"):
-                end = j
-                break
-        if _loads_builtins(stmt[i + 1 : end], loaders):
+    for i, _ in pending:
+        ends[i] = len(stmt)
+    for i in sorted(ends):
+        if _loads_builtins(stmt[i + 1 : ends[i]], loaders):
             names.append(stmt[i - 1].string)
     return names
 
@@ -1032,6 +1158,77 @@ def _collect_rebindings(
         cur.append(tok)
     for group in groups:
         _add_assignment_targets(group, rebound)
+
+
+def _comprehension_shadows(stmt: list, candidates: frozenset, offsets, local_shadows: dict) -> None:
+    """Record where a comprehension target hides an alias of the same name.
+
+    A comprehension runs in a scope of its own, so `[run(x) for run, x in cb]`
+    calls an element of `cb` and not the `from builtins import exec as run`
+    written above it. Skipping the target outright read that as the builtin,
+    which is a false HIGH on an ordinary callback table.
+
+    The one part NOT in that scope is the outermost iterable: it is evaluated
+    where the comprehension is written and passed in, so `[y for run in
+    run(marshal.loads(BLOB))]` really is the builtin and is left live. That is
+    why the shadow is two spans around it rather than the whole bracket.
+
+    Nothing is recorded for the ordinary statement: a bracket with no `for` in
+    it never allocates, and the whole pass is skipped unless the statement
+    mentions an alias.
+    """
+    for tok in stmt:
+        if tok.type == tokenize.NAME and tok.string in candidates:
+            break
+    else:
+        return
+    # Per open bracket: [opener index, targets, first iterable start, its end].
+    stack: list = []
+    for j, tok in enumerate(stmt):
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                stack.append([j, None, None, None])
+            elif tok.string in _CLOSERS and stack:
+                open_at, targets, iter_at, iter_end = stack.pop()
+                if not targets or iter_at is None or iter_at >= len(stmt):
+                    continue
+                if iter_end is None:
+                    iter_end = j
+                head = (offsets.of(*stmt[open_at].start), offsets.of(*stmt[iter_at].start))
+                tail = (offsets.of(*stmt[iter_end].start), offsets.of(*stmt[j].end))
+                for name in targets:
+                    local_shadows.setdefault(name, []).extend((head, tail))
+            continue
+        if tok.type != tokenize.NAME or not stack:
+            continue
+        frame = stack[-1]
+        if tok.string in ("for", "if", "async") and frame[2] is not None and frame[3] is None:
+            frame[3] = j  # the clause after the outermost iterable is what ends it
+        if tok.string == "for":
+            k = j + 1
+            depth = 0
+            while k < len(stmt):
+                nxt = stmt[k]
+                if nxt.type == tokenize.OP:
+                    if nxt.string in _OPENERS:
+                        depth += 1
+                    elif nxt.string in _CLOSERS:
+                        depth -= 1
+                elif not depth and nxt.type == tokenize.NAME and nxt.string == "in":
+                    break
+                k += 1
+            if k >= len(stmt):
+                continue
+            names: set = set()
+            _add_assignment_targets(stmt[j + 1 : k], names)
+            names &= candidates
+            if frame[1] is None:
+                frame[1] = names
+            else:
+                frame[1] |= names
+            if frame[2] is None:
+                frame[2] = k + 1  # the outermost iterable of THIS comprehension
+    return
 
 
 def _self_assigned(stmt: list) -> "set | None":
@@ -1390,6 +1587,21 @@ def _close_scope(
         return
     for name in names:
         declared_global.setdefault(name, []).append((scope[2], end))
+
+
+def _shadow_scope(scope: list, names) -> None:
+    """Record `names` as locals of `scope`, minus the ones it declared away.
+
+    `global b` and `nonlocal b` are the two statements that stop an assignment
+    creating a local, so a name under either goes on resolving outward and its
+    calls are not shadowed.
+    """
+    shadow = set(names).difference(scope[3] or (), scope[7] or ())
+    if not shadow:
+        return
+    if scope[6] is None:
+        scope[6] = set()
+    scope[6] |= shadow
 
 
 def _in_scope(spans: list, start: int) -> bool:
@@ -2093,8 +2305,9 @@ class _ExecEvalPattern:
                 # The `def` and `class` headers the statement sits under, as
                 # [indent, is a class, header offset, names declared global,
                 # aliases imported here, header end offset, names this body
-                # assigns]. Only those two open a scope, so this is what says
-                # whether a binding is a class attribute.
+                # assigns, names declared nonlocal]. Only those two open a
+                # scope, so this is what says whether a binding is a class
+                # attribute.
                 scopes: list = []
                 # Where an alias imported inside a function is visible, as the
                 # offsets of the scope that imported it.
@@ -2131,18 +2344,29 @@ class _ExecEvalPattern:
                                 None,
                                 offsets.of(*_header_end(stmt).end),
                                 None,
+                                None,
                             ]
                         )
-                    if head.type == tokenize.NAME and head.string == "global":
+                    if head.type == tokenize.NAME and head.string in ("global", "nonlocal"):
                         # `global b` in a nested function makes its `b` the
                         # module-level one, whatever the enclosing function did
                         # to its own local of that name. Recorded against the
                         # whole scope, because the declaration governs the body
                         # written above it as well as below.
+                        #
+                        # `nonlocal b` is the same statement about the enclosing
+                        # function's binding rather than the module's, so it
+                        # equally stops the assignments below it creating a
+                        # local: `nonlocal b` then `b.exec(BLOB)` then `b = x`
+                        # reads the outer alias and runs the builtin. It is kept
+                        # apart from `global` because it does NOT make the
+                        # rebinding a module-level one, which is the other thing
+                        # `declared_global` decides.
                         if scopes:
-                            names = scopes[-1][3]
+                            slot = 3 if head.string == "global" else 7
+                            names = scopes[-1][slot]
                             if names is None:
-                                names = scopes[-1][3] = set()
+                                names = scopes[-1][slot] = set()
                             for tok in stmt[1:]:
                                 if tok.type == tokenize.NAME:
                                     names.add(tok.string)
@@ -2179,6 +2403,7 @@ class _ExecEvalPattern:
                             else:
                                 by_value |= bound
                         continue
+                    _comprehension_shadows(stmt, candidates, offsets, local_shadows)
                     _collect_rebindings(stmt, rebound, candidates, scoped)
                     if scoped:
                         # Recorded one indent deeper than the header, which is
@@ -2192,6 +2417,21 @@ class _ExecEvalPattern:
                         ends = offsets.of(*stmt[-1].end)
                         for name in scoped:
                             _cancel_add(cancel, opened, levels, name, ends, col + 1)
+                        if scopes and opens is None and not in_class:
+                            # Python decides a name is local by scanning the
+                            # block, so a `for b in ...` or `except E as b`
+                            # written anywhere in a function makes `b` that
+                            # function's local THROUGHOUT it - a call above the
+                            # loop raises `UnboundLocalError` rather than
+                            # reaching an outer builtins alias. The suite span
+                            # above still stands on its own: it is what covers
+                            # the module level, where there is no local to make.
+                            #
+                            # A `def` header is skipped for the reason the
+                            # assignment path skips one: its parameters are the
+                            # new scope's, and that scope is the one the suite
+                            # span already covers.
+                            _shadow_scope(scopes[-1], scoped)
                         scoped.clear()
                     if not rebound:
                         continue
@@ -2244,13 +2484,7 @@ class _ExecEvalPattern:
                         # binds `f` in the enclosing scope, and the tail of a
                         # one-line suite is re-yielded as its own statement,
                         # where the body it really belongs to is the open one.
-                        declared = scopes[-1][3]
-                        shadow = rebound if declared is None else rebound - declared
-                        if shadow:
-                            names = scopes[-1][6]
-                            if names is None:
-                                names = scopes[-1][6] = set()
-                            names |= shadow
+                        _shadow_scope(scopes[-1], rebound)
                     for name in rebound:
                         # Statements arrive in source order, so the first
                         # rebinding seen at a given indent is the earliest one.
