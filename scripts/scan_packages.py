@@ -955,6 +955,24 @@ class _Aliases:
         self.loaders = frozenset(_DEFAULT_LOADER_FUNCS | (loader_funcs or set()))
 
 
+def _opens_scope(stmt: list) -> "str | None":
+    """`"class"`, `"def"`, or None for the scope `stmt` heads.
+
+    Decorators are their own statements, so the header is the first token; an
+    `async def` is read past the `async`. Every other compound statement - `if`,
+    `for`, `with`, `try` - keeps the namespace it is written in, which is why
+    only these two are worth tracking.
+    """
+    head = stmt[0]
+    if head.type != tokenize.NAME:
+        return None
+    if head.string in ("class", "def"):
+        return head.string
+    if head.string == "async" and len(stmt) > 1 and stmt[1].string == "def":
+        return "def"
+    return None
+
+
 def _cancel_add(cancel: dict, opened: dict, levels: list, name: str, at: int, col: int) -> None:
     """Record that `name` stops being the module at offset `at`, indent `col`.
 
@@ -1525,11 +1543,26 @@ class _ExecEvalPattern:
                 # The same spans grouped by indent, so a statement that closes
                 # nothing costs one comparison however many names are open.
                 levels: list = []
+                # The `def` and `class` headers the statement sits under, as
+                # (indent, is a class). Only those two open a scope, so this is
+                # what says whether a binding is a class attribute.
+                scopes: list = []
                 failed = []
                 for stmt in _statements(content, failed):
                     head = stmt[0]
+                    col = head.start[1]
                     if levels:
-                        _cancel_close(opened, levels, offsets.of(*head.start), head.start[1])
+                        _cancel_close(opened, levels, offsets.of(*head.start), col)
+                    while scopes and scopes[-1][0] >= col:
+                        scopes.pop()
+                    opens = _opens_scope(stmt)
+                    # A class body is the one scope a name does not cross: the
+                    # methods written in it do not see its bindings. Read before
+                    # this statement's own header is pushed, and true for the
+                    # header itself so a one-line `class C: b = model` counts.
+                    in_class = (scopes and scopes[-1][1]) or opens == "class"
+                    if opens is not None:
+                        scopes.append((col, opens == "class"))
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
                         if cancel:
                             # Only once something is cancelled can an import
@@ -1564,11 +1597,18 @@ class _ExecEvalPattern:
                             opened.pop(name, None)
                         rebound.clear()
                         continue
+                    if in_class:
+                        # `class C: b = model` binds an attribute of C, and the
+                        # methods under it still resolve `b` to the global. So
+                        # this rebinding cancels nothing they do; recording it
+                        # suppressed the real `b.exec(...)` in every one of them.
+                        rebound.clear()
+                        continue
                     at = offsets.of(*head.start)
                     for name in rebound:
                         # Statements arrive in source order, so the first
                         # rebinding seen at a given indent is the earliest one.
-                        _cancel_add(cancel, opened, levels, name, at, head.start[1])
+                        _cancel_add(cancel, opened, levels, name, at, col)
                     rebound.clear()
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or

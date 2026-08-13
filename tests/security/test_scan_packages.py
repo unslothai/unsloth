@@ -1021,6 +1021,41 @@ def test_an_exec_inside_an_fstring_is_still_the_builtin():
             assert got == [expected], f"{literal} must yield {expected!r}: {got}"
 
 
+def test_a_class_attribute_does_not_cancel_the_global_alias():
+    # `class C: b = model` binds an attribute of C. Python methods do not close
+    # over the class namespace, so a `b.exec(...)` written in one still resolves
+    # `b` to whatever `import builtins as b` bound - confirmed by running the
+    # shape: the class attribute is the model, and the method's call is the
+    # builtin. Treating the class binding as visible in the methods under it
+    # suppressed that real call and dropped the payload from HIGH to MEDIUM,
+    # which is the severity the enforced scan gates on.
+    head = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+    call = "b.exec(marshal.loads(BLOB))\n"
+    for body in (
+        f"class C:\n    b = model\n    def run(self):\n        {call}",
+        f"class C:\n    b = model\n    async def run(self):\n        {call}",
+        f"class C:\n    b = model\n    @deco\n    def run(self):\n        {call}",
+        f"class A:\n    class B:\n        b = model\n        def run(self):\n            {call}",
+        f"def outer():\n    class C:\n        b = model\n        def run(self):\n            {call}",
+        f"class C: b = model\ndef run():\n    {call}",
+    ):
+        findings = sp.check_py_file(head + body, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a class attribute must not cancel the global alias:\n{body}"
+
+    # The rebindings that really do reach the call must still cancel it, or the
+    # false positive this rule exists to remove comes straight back.
+    for body in (
+        f"b = model\n{call}",
+        f"def run():\n    b = model\n    {call}",
+        f"def outer():\n    b = model\n    def inner():\n        {call}",
+        f"class C:\n    def run(self):\n        b = model\n        {call}",
+    ):
+        findings = sp.check_py_file(head + body, "pkg/_infer.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high == [], f"a rebinding the call can see must still cancel:\n{body}"
+
+
 def test_a_deeply_nested_fstring_is_scanned_to_the_grammar_ceiling():
     # The pre-3.12 masker stopped after two levels of nested f-string, so the
     # third blanked a real call: `f'''{f\"\"\"{f'{f\"{exec(p)}\"}'}\"\"\"}'''` produced no
