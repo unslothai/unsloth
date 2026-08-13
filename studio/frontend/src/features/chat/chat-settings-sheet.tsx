@@ -762,9 +762,9 @@ export function ChatSettingsPanel({
     };
   }
 
-  // Lower a live Max Tokens that no longer fits the active connection's cap. The
-  // decision itself lives in `resolveExternalMaxTokensClamp`, which documents why a
-  // missing provider must NOT be read as the 32,768 fallback.
+  // Lower a live Max Tokens that no longer fits the connection's cap.
+  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
+  // read as the 32,768 fallback.
   useEffect(() => {
     const clampedMaxTokens = resolveExternalMaxTokensClamp({
       settingsHydrated,
@@ -798,9 +798,8 @@ export function ChatSettingsPanel({
     presetParams: Parameters<typeof applyPresetParams>[1],
   ): InferenceParams {
     const nextParams = applyPresetParams(params, presetParams);
-    // Same reason the clamp effect waits for a resolved provider: with none,
-    // `maxTokensMax` is the 32,768 fallback rather than this connection's real cap,
-    // and applying a preset then would lower the value for good.
+    // Same reason the effect waits for a provider: without one `maxTokensMax` is the
+    // fallback, so applying a preset here would lower the value for good.
     if (!isExternalModel || activeExternalProvider == null) return nextParams;
     return {
       ...nextParams,

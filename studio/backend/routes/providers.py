@@ -117,15 +117,12 @@ def _validate_max_output_tokens_contract(
     field_was_set: bool,
     value: Optional[int] = None,
 ) -> None:
-    """Reject a non-null override on a provider type that has its own documented caps.
+    """Reject a non-null override on a provider type with its own documented caps.
 
-    An explicit null is allowed through on every type. The dialog renders the Max Tokens
-    limit row from the UI provider type, which `resolveUiProviderTypeFromConfig` reports
-    as "custom" for rows STORED as `openai` with a custom name or base URL, and a blank
-    field serialises as null rather than as an omission. Rejecting the null too meant an
-    unrelated edit of such a connection -- a rename, a model change, a key rotation --
-    failed with an error about a field the user never touched. Clearing an override that
-    cannot exist is a no-op, so there is nothing to protect against here.
+    An explicit null is allowed through everywhere: the dialog shows the field for rows
+    it displays as Custom but the backend stores as `openai`, and a blank field
+    serialises as null, so rejecting it failed every unrelated edit of those rows.
+    Clearing an override that cannot exist is a no-op.
     """
     if field_was_set and value is not None and provider_type != "custom":
         raise HTTPException(

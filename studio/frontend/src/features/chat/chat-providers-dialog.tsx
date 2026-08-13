@@ -192,10 +192,8 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  // The override is keyed on the type the BACKEND stores, which is not always the
-  // type the UI shows. Creating a connection has no server row yet, so the stored type
-  // is unknown until the create call returns; `supportsCustomMaxOutputTokens` falls
-  // back to the outgoing mapping for that case.
+  // Keyed on the STORED type, not the displayed one. A connection being created has
+  // no server row yet, so the helper falls back to what the create call will send.
   const supportsMaxOutputTokens = supportsCustomMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
@@ -726,8 +724,7 @@ export function ChatProvidersSettings({
       const provider: ExternalProviderConfig = {
         id: created.id,
         providerType: uiProviderType,
-        // Recorded now rather than waiting for the next backend sync, so reopening
-        // this connection in the same session knows what the server actually stored.
+        // Now, not at the next sync, so reopening it this session knows the stored type.
         backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",

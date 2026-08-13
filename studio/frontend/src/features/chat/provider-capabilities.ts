@@ -178,22 +178,14 @@ export function getExternalMaxOutputTokens(
 }
 
 /**
- * The lowered Max Tokens a live settings panel should write back, or null to leave the
- * value alone.
+ * The lowered Max Tokens the settings panel should write back, or null to leave it be.
  *
- * Split out of the settings panel's effect so the decision is testable without a DOM.
- * The two availability guards are load-bearing, because the caller PERSISTS what this
- * returns and this only ever lowers. `isExternalModel` is derived from the checkpoint
- * string alone, while `maxTokensMax` comes from the resolved provider, and the two
- * disagree whenever the provider is momentarily unavailable: connections toggled off,
- * a cold browser where settings hydrate before the provider sync lands, or a
- * connection disabled or deleted while selected. In each of those the cap collapses to
- * the 32,768 fallback, and clamping there would silently destroy a configured
- * override the moment the provider list blinked. No provider means the cap is unknown,
- * not 32,768.
+ * The availability guards are load-bearing: the caller PERSISTS this and it only ever
+ * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider
+ * is momentarily unresolved (connections toggled off, cold hydration, a deleted
+ * connection). No provider means the cap is unknown, not 32,768.
  *
- * Returning the cap itself (never a smaller value) is what makes this converge in a
- * single pass: feeding the result back in yields null.
+ * Returning the cap itself is what makes it converge in one pass.
  */
 export function resolveExternalMaxTokensClamp(input: {
   settingsHydrated: boolean;

@@ -19,13 +19,9 @@ export interface ExternalProviderConfig {
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
   /**
-   * The provider type as the BACKEND stores it, when known.
-   *
-   * `providerType` above is the UI type, which `resolveUiProviderTypeFromConfig`
-   * reports as "custom" for rows saved as `openai` with a custom name or base URL.
-   * The Max Tokens limit override is keyed on the STORED type server-side, so
-   * anything deciding whether to send it has to look here rather than at the UI type.
-   * Absent for entries that predate this field; treat that as "unknown", not "custom".
+   * The provider type as the BACKEND stores it, which is not always `providerType`
+   * above: `resolveUiProviderTypeFromConfig` shows a row saved as `openai` with a
+   * custom name or base URL as "custom". Absent means unknown, not custom.
    */
   backendProviderType?: string;
   /** Optional maximum Max Tokens cap for a generic Custom connection. */
@@ -229,16 +225,10 @@ export function normalizeCustomMaxOutputTokens(
 /**
  * Whether a connection may carry a per-connection Max Tokens limit.
  *
- * Both types have to agree. `uiProviderType` decides what the dialog draws, and the
- * generic Custom editor is the only one with the field. `backendProviderType` decides
- * what the server accepts, and it is NOT always the same value: a row stored as
- * `openai` with a custom name or base URL is reported as "custom" by
- * `resolveUiProviderTypeFromConfig`, yet the backend still rejects an override on it.
- *
- * A null / undefined `backendProviderType` means "unknown" -- an entry synced before
- * the field existed, or a connection being created that has no server row yet. Those
- * fall back to the outgoing mapping, which is what the create call is about to send,
- * so a brand new Custom connection keeps working exactly as it did.
+ * Both types have to agree: the UI type decides what the dialog draws, the stored type
+ * decides what the server accepts, and they differ for a row saved as `openai` with a
+ * custom name or base URL. An unknown stored type (synced before this field, or a
+ * connection with no server row yet) falls back to what the create call will send.
  */
 export function supportsCustomMaxOutputTokens(
   uiProviderType: string | null | undefined,
@@ -468,8 +458,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
-    // Anything non-string that survived a hand-edited localStorage entry becomes
-    // undefined, which reads as "unknown backend type" and sends nothing.
+    // Junk from a hand-edited entry becomes undefined, i.e. unknown.
     backendProviderType:
       typeof raw.backendProviderType === "string" &&
       raw.backendProviderType.trim().length > 0

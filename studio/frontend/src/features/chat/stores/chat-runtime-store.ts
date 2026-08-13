@@ -1972,11 +1972,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        // Only when the connection is actually known. A checkpoint restored or
-        // selected before the provider store hydrates finds no provider here, and
-        // `getExternalMaxOutputTokens` then returns the 32,768 fallback instead of
-        // the connection's configured cap -- lowering a value nothing later puts
-        // back. No provider means the cap is unknown, not 32,768.
+        // Only when the connection is known. A checkpoint restored before the
+        // provider store hydrates would otherwise read the 32,768 fallback and lower
+        // a value nothing puts back. No provider means unknown, not 32,768.
         if (provider) {
           const cap = getExternalMaxOutputTokens(
             provider.providerType,
