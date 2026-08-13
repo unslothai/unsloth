@@ -1877,6 +1877,7 @@ export function ChatPage({
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
+  const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -2254,7 +2255,10 @@ export function ChatPage({
         ? (storedWebFetchToolsEnabled ?? false)
         : false,
     });
-  }, [externalProvidersForChat, inferenceParams.checkpoint]);
+    // Reruns once settings hydrate: this normalization reads the stored pills
+    // and clamps them to the model, and hydration refreshes what it reads, so
+    // it has to be the one applied last.
+  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
