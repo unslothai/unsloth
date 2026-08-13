@@ -2288,21 +2288,27 @@ def _explicit_cuda_torch_index_url() -> "str | None":
     return url if _is_cuda_family_leaf(_torch_index_leaf(url)) else None
 
 
+def _is_known_torch_family_leaf(leaf: str) -> bool:
+    """True when the leaf names a torch family the repair helpers can reason about.
+
+    Known = rocm* / gfx* / cpu / cuXXX. Anything else (a private mirror /simple,
+    /current) is UNKNOWN. Shared so the env pin and the recorded pin classify a leaf
+    the same way; they disagreeing is what let a recorded custom index be overwritten.
+    """
+    return _is_pip_rocm_family_leaf(leaf) or leaf == "cpu" or _is_cuda_family_leaf(leaf)
+
+
 def _explicit_unknown_family_torch_index_url() -> "str | None":
     """The pinned index URL when its leaf names NO known torch family, else None.
 
-    Known = rocm* / gfx* / cpu / cuXXX. Anything else (a private mirror /simple,
-    /current) is UNKNOWN: version-tag heuristics can't judge it, so the family
-    repair helpers must leave it alone (the install applied it verbatim).
+    Version-tag heuristics can't judge an unknown family, so the family repair
+    helpers must leave it alone (the install applied it verbatim).
     Matches install.sh / setup.ps1 / install.ps1.
     """
     url = _explicit_torch_index_url()
     if url is None:
         return None
-    leaf = _torch_index_leaf(url)
-    if _is_pip_rocm_family_leaf(leaf) or leaf == "cpu" or _is_cuda_family_leaf(leaf):
-        return None
-    return url
+    return None if _is_known_torch_family_leaf(_torch_index_leaf(url)) else url
 
 
 def _manifest_torch_index_url() -> "str | None":
@@ -2336,6 +2342,20 @@ def _recorded_non_rocm_torch_pin() -> "str | None":
     return None if _is_pip_rocm_family_leaf(_torch_index_leaf(url)) else url
 
 
+def _recorded_unknown_family_torch_pin() -> "str | None":
+    """The manifest counterpart of _explicit_unknown_family_torch_index_url.
+
+    Narrower than _recorded_non_rocm_torch_pin, which CUDA reconciliation must not
+    consult wholesale: a recorded cpu or cuXXX index still leaves the ROCm-poisoning
+    repair free to run. Only an unknown family is off limits, because the install
+    applied it verbatim and no heuristic here can judge what it serves.
+    """
+    url = _recorded_non_rocm_torch_pin()
+    if url is None:
+        return None
+    return None if _is_known_torch_family_leaf(_torch_index_leaf(url)) else url
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -2355,6 +2375,11 @@ def _ensure_cuda_torch() -> None:
         return
     # An explicit unknown-family pin was applied VERBATIM at install time; leave it alone.
     if _explicit_unknown_family_torch_index_url() is not None:
+        return
+    # Same guard from the manifest: the env pin belongs to the user, so it is already gone by
+    # the first `unsloth studio update`. Without this the ROCm plan honours the recorded custom
+    # index (it returns no plan) while this pass force-reinstalls CUDA straight over it.
+    if _recorded_unknown_family_torch_pin() is not None:
         return
     # No CUDA torch on macOS; Windows torch is owned by install.ps1 (KFD bug is Linux-only).
     if IS_MACOS or IS_WINDOWS or NO_TORCH:

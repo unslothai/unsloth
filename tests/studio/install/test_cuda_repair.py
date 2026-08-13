@@ -72,12 +72,15 @@ def _run_cuda_repair(
     cvd = None,
     index_family = None,
     index_url = None,
+    recorded_pin = None,
 ):
     """Invoke _ensure_cuda_torch under a fully mocked host; return the pip mock.
 
     cvd controls CUDA_VISIBLE_DEVICES: None removes it from the env, any string sets it.
     index_family sets UNSLOTH_TORCH_INDEX_FAMILY (the explicit wheel-index pin).
     index_url sets UNSLOTH_TORCH_INDEX_URL (the full-URL pin form).
+    recorded_pin is the index the manifest recorded at install time, which is all a
+    later `unsloth studio update` has: the env pin is the user's and is long gone.
     compute_caps is what nvidia-smi reports for --query-gpu=compute_cap; machine
     pins platform.machine() so the architecture policy behaves the same on any test
     host."""
@@ -103,6 +106,7 @@ def _run_cuda_repair(
         patch.object(stack_mod, "NO_TORCH", no_torch),
         patch.object(stack_mod.platform, "machine", return_value = machine),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
+        patch.object(stack_mod, "_RECORDED_TORCH_INDEX_URL", recorded_pin),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)),
         patch.object(stack_mod, "pip_install") as mock_pip,
@@ -263,6 +267,37 @@ class TestCudaRepairSkips:
     def test_rocm_install_marker_skips(self):
         mock_pip = _run_cuda_repair(rocm_marker = True, torch_state = "hip")
         mock_pip.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "pin",
+        ["https://mirror.internal/simple", "https://download.pytorch.org/whl/rocm7.2-private"],
+        ids = ["mirror", "suffixed-rocm"],
+    )
+    def test_a_recorded_unknown_family_pin_survives_a_later_update(self, pin):
+        # The ROCm plan already honours a recorded custom index, so on a mixed
+        # AMD/NVIDIA host this pass was the only thing left that could overwrite the
+        # wheels that index served. The env pin is gone by the first `studio update`.
+        mock_pip = _run_cuda_repair(torch_state = "hip", recorded_pin = pin)
+        mock_pip.assert_not_called()
+
+    def test_a_recorded_cuda_pin_still_allows_the_repair(self):
+        # Only an UNKNOWN family is off limits: a recorded cu* index names the very
+        # wheels this repair installs, so a ROCm-poisoned venv must still be fixed.
+        mock_pip = _run_cuda_repair(
+            torch_state = "hip",
+            recorded_pin = "https://download.pytorch.org/whl/cu128",
+        )
+        assert mock_pip.call_count == 1
+
+    def test_this_runs_pin_overrides_a_recorded_unknown_one(self):
+        # An env pin this run is authoritative; the recorded one must not shadow it.
+        mock_pip = _run_cuda_repair(
+            torch_state = "hip",
+            index_family = "cu128",
+            recorded_pin = "https://mirror.internal/simple",
+        )
+        assert mock_pip.call_count == 1
+        assert "cu128" in _index_url(mock_pip)
 
     def test_cvd_minus_one_skips(self):
         # CUDA_VISIBLE_DEVICES=-1 hides the NVIDIA GPU (mixed AMD+NVIDIA host on the AMD card).

@@ -16,36 +16,6 @@ if str(_STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(_STUDIO_DIR))
 
 
-# Every variable in this set steers torch routing, so a developer or a CI runner that
-# exports one -- which is exactly what an AMD host does -- silently changes what these
-# tests assert. Cleared per test rather than per session so a test that wants one can
-# still set it: monkeypatch.setenv in the test body runs after this fixture and wins.
-_ROUTING_ENV_VARS = (
-    "UNSLOTH_ROCM_GFX_ARCH",
-    "HSA_OVERRIDE_GFX_VERSION",
-    "HIP_VISIBLE_DEVICES",
-    "CUDA_VISIBLE_DEVICES",
-    "UNSLOTH_TORCH_INDEX_URL",
-    "UNSLOTH_TORCH_INDEX_FAMILY",
-    "UNSLOTH_ROCM_TORCH_INSTALLED",
-    "ROCM_PATH",
-)
-
-
-@pytest.fixture(autouse = True)
-def _isolate_torch_routing_env(monkeypatch):
-    """Run every install test against an unset routing environment.
-
-    Without this the suite reads the HOST's AMD configuration. Measured on a host
-    exporting one variable at a time, against the two pure-Python routing files:
-    UNSLOTH_ROCM_GFX_ARCH=gfx906 gave 47 failures, UNSLOTH_TORCH_INDEX_URL 30,
-    UNSLOTH_ROCM_TORCH_INSTALLED 27, ROCM_PATH 19, HSA_OVERRIDE_GFX_VERSION 3 and
-    CUDA_VISIBLE_DEVICES 1, against 604 passing on a clean environment.
-    """
-    for name in _ROUTING_ENV_VARS:
-        monkeypatch.delenv(name, raising = False)
-
-
 # Every variable here steers torch routing, so a developer or a CI runner that exports
 # one -- which is exactly what an AMD host does -- silently changes what these tests
 # assert. Cleared per test rather than per session so a test that wants one can still
