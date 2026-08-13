@@ -4018,10 +4018,9 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
-    from utils.models.gguf_metadata import read_gguf_general_metadata
+    from utils.models.gguf_metadata import read_gguf_architecture
 
-    arch = (read_gguf_general_metadata(path) or {}).get("general.architecture")
-    return arch.strip() if isinstance(arch, str) and arch.strip() else None
+    return read_gguf_architecture(path)
 
 
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:

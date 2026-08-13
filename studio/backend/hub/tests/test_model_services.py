@@ -7120,3 +7120,92 @@ def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch,
     )
 
     assert result["complete_on_disk"] is False, result
+
+
+def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
+    """Classification must not block unrelated event-loop work."""
+    from hub.services.models import local_inventory
+
+    idents: list[int] = []
+    loop_is_free = threading.Event()
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    def classify_row(row):
+        idents.append(threading.get_ident())
+        # Only a responsive event loop can set this event.
+        assert loop_is_free.wait(10), "the event loop was blocked while classification ran"
+        return "task"
+
+    async def scan(*_args):
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setitem(
+        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
+
+    async def run():
+        async def keep_the_loop_moving():
+            while not idents:
+                await asyncio.sleep(0.005)
+            loop_is_free.set()
+
+        listing = asyncio.create_task(local_inventory.list_local_models_response("./models"))
+        await asyncio.wait_for(
+            asyncio.gather(listing, keep_the_loop_moving()), timeout = 15
+        )
+        return threading.get_ident(), listing.result()
+
+    loop_ident, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["task"]
+    assert idents and loop_ident not in idents, "classification ran on the event loop thread"
+
+
+def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monkeypatch):
+    """The give-up path serves the freshest scan it has, and classifies it the same way."""
+    from hub.services.models import local_inventory
+
+    idents: list[int] = []
+    epoch = [0]
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    async def always_superseded(*_args):
+        epoch[0] += 1  # every walk is invalidated before it returns
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "routes.models",
+        SimpleNamespace(
+            _local_model_task = lambda row: idents.append(threading.get_ident()) or "task"
+        ),
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", always_superseded)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        listed = await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 15
+        )
+        return threading.get_ident(), listed
+
+    loop_ident, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["task"]
+    assert idents and loop_ident not in idents, "classification ran on the event loop thread"

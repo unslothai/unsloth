@@ -393,10 +393,9 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
             if not isinstance(cached, str):
                 return None
             path = Path(cached)
-        from utils.models.gguf_metadata import read_gguf_general_metadata
+        from utils.models.gguf_metadata import read_gguf_architecture
 
-        arch = (read_gguf_general_metadata(str(path)) or {}).get("general.architecture")
-        return arch.strip() if isinstance(arch, str) and arch.strip() else None
+        return read_gguf_architecture(str(path))
     except Exception:  # noqa: BLE001 -- a header read glitch just falls through to name detection
         return None
 

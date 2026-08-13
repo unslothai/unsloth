@@ -489,6 +489,16 @@ def read_gguf_chat_template(path: str) -> Optional[str]:
     return None
 
 
+def read_gguf_architecture(path: str) -> Optional[str]:
+    """``general.architecture``, or ``None`` when absent / unreadable / not a GGUF.
+
+    Reads only the requested key instead of walking the rest of the header."""
+    architecture = _read_gguf_string(path, "general.architecture")
+    if isinstance(architecture, str) and architecture.strip():
+        return architecture.strip()
+    return None
+
+
 def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's
     gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.

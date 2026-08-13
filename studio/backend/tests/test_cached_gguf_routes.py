@@ -4945,3 +4945,177 @@ def test_a_saved_inpaint_pipeline_is_not_tagged_as_its_base_family():
         "FluxImg2ImgPipeline",
     ):
         assert families.detect_family_by_pipeline_class(variant) is None, variant
+
+
+# Diffusers listing probes
+
+
+def _listing_families():
+    from core.inference.diffusion_families import detect_family, family_probe_class
+    from core.inference.video_families import detect_video_family
+
+    z_image = detect_family("unsloth/Z-Image-Turbo")  # ZImagePipeline, from 0.36.0
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")  # ModularPipeline, probed on its transformer
+    assert z_image is not None and h3 is not None
+    assert family_probe_class(h3) == "MiniMaxH3Transformer3DModel"
+    return z_image, h3
+
+
+def test_the_listing_probe_reads_the_installed_version_instead_of_importing_diffusers(monkeypatch):
+    """Listing models must not import diffusers' lazy pipeline modules."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    installed = ["0.39.0"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is False  # 0.40.0 is the first release with its transformer
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+    installed[0] = "0.40.0.dev0"  # a dev build of the release that has it
+    assert family_pipeline_available(h3) is True
+
+    installed[0] = "0.35.2"  # the last release before ZImagePipeline
+    assert family_pipeline_available(z_image) is False
+    assert "diffusers" not in sys.modules
+
+
+def test_the_listing_probe_fails_open_when_the_version_is_unknowable(monkeypatch):
+    """An unknown version must not hide models from listings."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+
+    def _not_installed(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _not_installed)
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+    # A None entry blocks importing diffusers.
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.30.0")
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+
+def test_the_listing_probe_still_judges_a_conventional_module_by_its_attributes(monkeypatch):
+    """A conventional module can still be checked by its exported attributes."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.40.0")
+    stub = types.ModuleType("diffusers")
+    stub.__version__ = "0.40.0"  # new enough for every class, and it exports none of them
+    monkeypatch.setitem(sys.modules, "diffusers", stub)
+
+    assert family_pipeline_available(z_image) is False
+    assert family_pipeline_available(h3) is False
+
+    stub.ZImagePipeline = object
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is False
+
+    # Classes without a version gate are still checked directly.
+    from core.inference.diffusion_families import detect_family
+
+    sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert sdxl is not None
+    assert family_pipeline_available(sdxl) is False
+    stub.StableDiffusionXLPipeline = object
+    assert family_pipeline_available(sdxl) is True
+
+
+def test_the_listing_probe_never_touches_a_lazy_modules_attributes(monkeypatch):
+    """Attribute reads on a lazy module would trigger imports."""
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, _h3 = _listing_families()
+
+    class _Lazy(types.ModuleType):
+        def __init__(self, version: str) -> None:
+            super().__init__("diffusers")
+            self.__version__ = version
+            self.resolved: list[str] = []
+
+        def __getattr__(self, item):  # only reached for names not already in the namespace
+            self.resolved.append(item)
+            raise AttributeError(item)
+
+    lazy = _Lazy("0.40.0")
+    monkeypatch.setitem(sys.modules, "diffusers", lazy)
+    assert family_pipeline_available(z_image) is True
+    assert lazy.resolved == [], lazy.resolved
+
+    lazy = _Lazy("0.35.2")
+    monkeypatch.setitem(sys.modules, "diffusers", lazy)
+    assert family_pipeline_available(z_image) is False
+    assert lazy.resolved == [], lazy.resolved
+
+
+def test_the_load_path_stays_the_authority_on_a_nonstandard_build(monkeypatch):
+    """The load path must reject a class omitted by a nonstandard build."""
+    import pytest
+
+    from core.inference.diffusion_families import (
+        assert_pipeline_class_available,
+        family_pipeline_available,
+    )
+
+    z_image, _h3 = _listing_families()
+
+    class _LazyMissingTheClass(types.ModuleType):
+        def __getattr__(self, item):
+            raise AttributeError(item)
+
+    nonstandard = _LazyMissingTheClass("diffusers")
+    nonstandard.__version__ = "0.40.0"
+    monkeypatch.setitem(sys.modules, "diffusers", nonstandard)
+
+    assert family_pipeline_available(z_image) is True
+    with pytest.raises(ValueError, match = "ZImagePipeline"):
+        assert_pipeline_class_available("ZImagePipeline", "z-image")
+
+
+def test_the_listing_probe_does_not_read_a_module_that_is_still_importing(monkeypatch):
+    """A partial module from a concurrent import must not hide model rows."""
+    import importlib.metadata
+    import importlib.util
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+
+    partial = types.ModuleType("diffusers")
+    spec = importlib.util.spec_from_loader("diffusers", loader = None)
+    spec._initializing = True
+    partial.__spec__ = spec
+    monkeypatch.setitem(sys.modules, "diffusers", partial)
+
+    installed = ["0.40.0"]
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    # Use package metadata while the module namespace is incomplete.
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+    # An old installed version still fails the gate.
+    installed[0] = "0.35.2"
+    assert family_pipeline_available(z_image) is False
+
+    # A fully imported conventional module is checked directly.
+    spec._initializing = False
+    installed[0] = "0.40.0"
+    assert family_pipeline_available(z_image) is False
+    partial.ZImagePipeline = object
+    assert family_pipeline_available(z_image) is True

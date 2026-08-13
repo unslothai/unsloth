@@ -795,7 +795,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
         lambda repo_id, filename, **kw: "/fake/cache/blobs/model.gguf",
     )
     monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
+        gguf_meta, "read_gguf_architecture", lambda path: "ltxv"
     )
     fam = _detect_load_family("someorg/opaque-quants", "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
@@ -809,7 +809,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
         huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/fake/cache/blobs/model.gguf"
     )
     monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "wan"}
+        gguf_meta, "read_gguf_architecture", lambda path: "wan"
     )
     assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
 
@@ -819,7 +819,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
     monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: "/fake/legacy")
     monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: "/fake/default")
     monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
+        gguf_meta, "read_gguf_architecture", lambda path: "ltxv"
     )
     monkeypatch.setattr(
         huggingface_hub,
@@ -2371,23 +2371,23 @@ def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
 
     # ltxv arch resolves to the ltx-2 family via the arch fallback.
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "ltxv"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "ltxv",
     )
     fam = vid._detect_load_family(str(d), "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
 
     # A video arch with no backend family (wan) stays None, so the loader 400s as before.
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "wan"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "wan",
     )
     assert vid._detect_load_family(str(d), "model.gguf", None) is None
 
     # An explicit family_override skips the arch read entirely (worker parity).
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "ltxv"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "ltxv",
     )
     assert vid._detect_load_family(str(d), "model.gguf", "ltx-2").name == "ltx-2"
 

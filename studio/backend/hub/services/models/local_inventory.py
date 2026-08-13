@@ -929,6 +929,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # These rows feed the same pickers as /api/models/local. Classified inside the
         # shared worker so retrying waiters do not repeat GGUF metadata reads, and only
         # for a response that is actually about to be served.
+        # Classification reads GGUF headers, so keep it off the event loop too.
         try:
             from routes.models import _local_model_task
             models = [
@@ -946,7 +947,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         response = await _scan_local_models_response(models_dir, custom_folders, sources)
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
-        return classify(response)
+        return await asyncio.to_thread(classify, response)
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[LocalModelListResponse] = None
@@ -979,7 +980,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     # current. Answer with the freshest one (the loop only reaches here through
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
-    return classify(superseded)
+    return await asyncio.to_thread(classify, superseded)
 
 
 def get_models_folder_response() -> dict:
