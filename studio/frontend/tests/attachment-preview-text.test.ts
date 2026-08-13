@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { strToU8, zipSync } from "fflate";
+
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -217,6 +219,112 @@ test("parseAttachmentText caps the body it copies out of a wrapper", () => {
   const bare = parseAttachmentText(body);
   assert.equal(bare.text.length, 200_000);
   assert.equal(bare.truncated, true);
+});
+
+// A File the preview only ever asks for its size and its bytes, so the read can
+// be observed without materializing a document-sized buffer.
+function fakeDocumentFile(
+  name: string,
+  size: number,
+  bytes: Uint8Array,
+  reads: string[],
+): File {
+  return {
+    name,
+    size,
+    arrayBuffer: () => {
+      reads.push(name);
+      return Promise.resolve(
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer,
+      );
+    },
+  } as unknown as File;
+}
+
+function docxBytes(documentXml: string): Uint8Array {
+  return zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": strToU8("<Relationships/>"),
+    "word/document.xml": strToU8(documentXml),
+  });
+}
+
+// unpdf and mammoth parse on the main thread, so an oversized document has to be
+// refused before its bytes are read, not after.
+test("readAttachmentText refuses an oversized pdf before reading it", async () => {
+  const reads: string[] = [];
+  const oversized = fakeDocumentFile(
+    "huge.pdf",
+    60 * 1024 * 1024,
+    new Uint8Array(0),
+    reads,
+  );
+  await assert.rejects(
+    readAttachmentText(oversized, oversized.name, "application/pdf"),
+    /PDF file is too large: huge\.pdf/,
+  );
+  assert.deepEqual(reads, []);
+});
+
+test("readAttachmentText refuses an oversized docx before reading it", async () => {
+  const reads: string[] = [];
+  const oversized = fakeDocumentFile(
+    "huge.docx",
+    60 * 1024 * 1024,
+    new Uint8Array(0),
+    reads,
+  );
+  await assert.rejects(
+    readAttachmentText(oversized, oversized.name, undefined),
+    /DOCX file is too large: huge\.docx/,
+  );
+  assert.deepEqual(reads, []);
+});
+
+// The bytes are requested synchronously, so the extractor is reached without
+// waiting on unpdf, which the preview test does not exercise.
+test("readAttachmentText reads a pdf under the ceiling", () => {
+  const reads: string[] = [];
+  const small = fakeDocumentFile(
+    "small.pdf",
+    64 * 1024,
+    new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+    reads,
+  );
+  const pending = readAttachmentText(small, small.name, "application/pdf");
+  pending.catch(() => undefined);
+  assert.deepEqual(reads, ["small.pdf"]);
+});
+
+// mammoth's node build takes a buffer rather than an arrayBuffer, so the small
+// case asserts the archive cleared both guards and reached mammoth itself.
+test("readAttachmentText lets a normal docx through to the extractor", async () => {
+  const reads: string[] = [];
+  const bytes = docxBytes("<w:document><w:body/></w:document>");
+  const small = fakeDocumentFile("notes.docx", bytes.length, bytes, reads);
+  const error = await readAttachmentText(small, small.name, undefined).then(
+    () => null,
+    (thrown: Error) => thrown,
+  );
+  assert.deepEqual(reads, ["notes.docx"]);
+  if (error) {
+    assert.doesNotMatch(error.message, /too large/);
+  }
+});
+
+// A DOCX is a zip, so a small upload can still declare a huge document.xml.
+test("readAttachmentText refuses a docx that declares an oversized document.xml", async () => {
+  const reads: string[] = [];
+  const bytes = docxBytes("a".repeat(11 * 1024 * 1024));
+  const bomb = fakeDocumentFile("bomb.docx", bytes.length, bytes, reads);
+  assert.equal(bomb.size < 1024 * 1024, true);
+  await assert.rejects(
+    readAttachmentText(bomb, bomb.name, undefined),
+    /DOCX XML file is too large: bomb\.docx:word\/document\.xml/,
+  );
 });
 
 test("parseAttachmentText keeps an unterminated tag as plain text", () => {

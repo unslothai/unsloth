@@ -30,10 +30,15 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
     if (!audio) return;
     if (isPlaying) {
       audio.pause();
-    } else {
-      audio.play();
+      setIsPlaying(false);
+      return;
     }
-    setIsPlaying(!isPlaying);
+    // An uploaded file can carry a codec the webview cannot decode, so the
+    // button only flips once playback has actually started.
+    audio.play().then(
+      () => setIsPlaying(true),
+      () => setIsPlaying(false),
+    );
   };
 
   const handleTimeUpdate = () => {
@@ -83,6 +88,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
+        onError={() => setIsPlaying(false)}
         preload="metadata"
       />
       <Button

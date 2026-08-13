@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { unzipSync } from "fflate";
+
 import {
+  MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
+  MAX_OPEN_DOCUMENT_XML_BYTES,
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
   readOpenDocumentAttachmentContent,
@@ -109,7 +113,43 @@ export function isOpenDocumentAttachment(
   );
 }
 
+// unpdf and mammoth decode the whole file on the main thread, so both refuse a
+// document past the ceiling the OpenDocument path already enforces, and refuse
+// it before the read rather than after.
+function assertDocumentAttachmentSize(file: File, label: "PDF" | "DOCX"): void {
+  if (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES) {
+    throw new Error(`${label} file is too large: ${file.name}`);
+  }
+}
+
+// mammoth takes no entry filter, so the sizes the archive declares are checked
+// first. This pass decompresses nothing.
+function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
+  const oversized: string[] = [];
+  try {
+    unzipSync(bytes, {
+      filter: (entry) => {
+        if (
+          entry.name.startsWith("word/") &&
+          entry.name.endsWith(".xml") &&
+          entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES
+        ) {
+          oversized.push(entry.name);
+        }
+        return false;
+      },
+    });
+  } catch {
+    // A malformed archive is mammoth's to report, not the size guard's.
+    return;
+  }
+  if (oversized.length > 0) {
+    throw new Error(`DOCX XML file is too large: ${filename}:${oversized[0]}`);
+  }
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
+  assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
     import("unpdf"),
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
@@ -120,10 +160,12 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
 }
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
+  assertDocumentAttachmentSize(file, "DOCX");
   const [{ default: mammoth }, arrayBuffer] = await Promise.all([
     import("mammoth"),
     file.arrayBuffer(),
   ]);
+  assertDocxXmlSizes(file.name, new Uint8Array(arrayBuffer));
   const { value } = await mammoth.extractRawText({ arrayBuffer });
   return value;
 }
