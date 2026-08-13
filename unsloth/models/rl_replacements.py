@@ -3329,7 +3329,16 @@ def vllm_generation_init_patch():
             guard = (
                 "    if getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
                 "getattr(self, 'unsloth_fast_inference_lora', False):\n"
-                "        # Unsloth fast inference LoRA shares weights with vLLM already.\n"
+                "        # Unsloth fast inference LoRA shares weights with vLLM already,\n"
+                "        # so there is nothing to push. But TRL >= 1.x only wakes the\n"
+                "        # engine from sleep mode inside this method, and generate()\n"
+                "        # delegates that wake-up to it, so still do it here or the next\n"
+                "        # generate runs against a sleeping engine. Unsloth's allocator\n"
+                "        # skips weights, so wake everything rather than a tag subset.\n"
+                "        if getattr(self, '_llm_weights_sleeping', False) and "
+                "getattr(self, 'llm', None) is not None:\n"
+                "            self.llm.wake_up()\n"
+                "            self._llm_weights_sleeping = False\n"
                 "        return\n\n"
             )
             return match.group("def_line") + guard + body
@@ -3341,42 +3350,117 @@ def vllm_generation_init_patch():
             )
         return patched_src
 
-    def patch_generate(src):
-        pattern = re.compile(
-            r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
-            re.MULTILINE,
-        )
+    # `generate` is deliberately NOT source-patched.
+    #
+    # It used to be, with two regexes: one anchored on a
+    # `self.llm.collective_rpc("reload_weights")` line, and one injecting
+    # `lora_request=...` into `self.llm.generate(...)`. Both anchors live inside a TRL
+    # method body, and both have already drifted:
+    #   * TRL >= 1.x deleted the `collective_rpc("reload_weights")` call from `generate`
+    #     entirely and calls `self.sync_weights()` instead
+    #     (https://github.com/vllm-project/vllm/issues/29341). The old anchor matched 0
+    #     times, raised, and - because the lora injection ran *after* it in the same
+    #     function - the adapter stopped being passed to vLLM at all. Since `_init_vllm`
+    #     and `sync_weights` had already been installed by then, weights were no longer
+    #     synced into vLLM either, so GRPO rollouts were silently sampled from the BASE
+    #     model with no error raised.
+    #   * `(self\.llm\.generate\([^\)]+)\)` is not paren-balanced, so it also mis-edits any
+    #     call whose arguments contain nested parentheses or span several lines.
+    #
+    # So intercept on the vLLM engine instead of on TRL's method body. `self.llm` is the
+    # vLLM `LLM` object in colocate mode in every TRL release that has `VLLMGeneration`,
+    # and `LLM.generate` / `LLM.chat` / `LLM.collective_rpc` are public, stable vLLM APIs
+    # (unchanged across vLLM 0.11.x - 0.15.x). TRL's method body is free to move around;
+    # whatever shape it takes, it has to reach the engine through those calls. The
+    # override is scoped to the dynamic extent of one `VLLMGeneration.generate` call and
+    # is undone in a `finally`, so `model.fast_generate` and any other user of the same
+    # engine are unaffected.
+    _UNSLOTH_GENERATE_WRAPPED = "_unsloth_vllm_generation_lora_wrapped"
 
-        def replace_reload_weights(match):
-            indent = match.group("indent")
-            # Chain getattr so server mode (no self.llm) is safe here too.
-            return (
-                f"{indent}if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
-                f"getattr(self, 'unsloth_fast_inference_lora', False)):\n"
-                f'{indent}    self.llm.collective_rpc("reload_weights")'
-            )
+    # Mirror the per-device naming in rl.py so two ranks on one node do not race on the
+    # same adapter directory.
+    lora_name = "vllm_gen_lora"
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        lora_name += "_" + os.environ.get("CUDA_VISIBLE_DEVICES", "0").replace(",", "")
 
-        patched_src, num_replacements = pattern.subn(replace_reload_weights, src, count = 1)
-        if num_replacements == 0:
-            raise RuntimeError(
-                "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
-            )
+    def install_generate_wrapper():
+        original_generate = getattr(vllm_generation.VLLMGeneration, "generate", None)
+        if original_generate is None:
+            logger.info("Unsloth: Could not find VLLMGeneration.generate")
+            return False
+        if getattr(original_generate, _UNSLOTH_GENERATE_WRAPPED, False):
+            return True
 
-        # Inject lora_request when sharing weights (vLLM needs the adapter)
-        lora_generate_pattern = re.compile(
-            r"(self\.llm\.generate\([^\)]+)\)",
-        )
+        def generate(self, *args, **kwargs):
+            llm = getattr(self, "llm", None)
+            sharing = getattr(llm, "shared_weights", False) or \
+                getattr(self, "unsloth_fast_inference_lora", False)
+            if llm is None or not sharing:
+                # Server mode, or a vLLM engine TRL created itself -> upstream behaviour.
+                return original_generate(self, *args, **kwargs)
 
-        def inject_lora_request(match):
-            return (
-                f"{match.group(1)}, lora_request="
-                f"self._unsloth_load_lora('vllm_gen_lora', load_tensors=True) "
-                f"if hasattr(self, '_unsloth_load_lora') else None)"
-            )
+            load_lora = getattr(self, "_unsloth_load_lora", None)
+            saved = []
 
-        patched_src = lora_generate_pattern.sub(inject_lora_request, patched_src)
-        return patched_src
+            def override(name, make_replacement):
+                bound = getattr(llm, name, None)
+                if bound is None: return
+                had_own = name in getattr(llm, "__dict__", {})
+                try:
+                    setattr(llm, name, make_replacement(bound))
+                except (AttributeError, TypeError):
+                    return
+                saved.append((name, had_own, bound))
 
+            def wrap_generation_call(bound):
+                def unsloth_generation_call(*args, **kwargs):
+                    # vLLM needs the adapter handed to it explicitly: the shared engine
+                    # holds the BASE weights, and sync_weights is a no-op when sharing.
+                    if load_lora is not None and kwargs.get("lora_request", None) is None:
+                        kwargs["lora_request"] = load_lora(lora_name, load_tensors = True)
+                    return bound(*args, **kwargs)
+                return unsloth_generation_call
+
+            def wrap_collective_rpc(bound):
+                def unsloth_collective_rpc(method, *args, **kwargs):
+                    # The engine already shares the live training weights, so
+                    # reload_weights would pull the ORIGINAL checkpoint back off disk.
+                    if method == "reload_weights": return None
+                    return bound(method, *args, **kwargs)
+                return unsloth_collective_rpc
+
+            override("generate", wrap_generation_call)
+            override("chat",     wrap_generation_call)
+            override("collective_rpc", wrap_collective_rpc)
+            try:
+                return original_generate(self, *args, **kwargs)
+            finally:
+                for name, had_own, bound in reversed(saved):
+                    try:
+                        if had_own: setattr(llm, name, bound)
+                        else:       delattr(llm, name)
+                    except AttributeError:
+                        pass
+
+        generate.__name__     = getattr(original_generate, "__name__", "generate")
+        generate.__qualname__ = getattr(original_generate, "__qualname__", "VLLMGeneration.generate")
+        generate.__doc__      = getattr(original_generate, "__doc__", None)
+        # inspect.getsource / inspect.signature unwrap this, so drift detectors and any
+        # other source-reading patch still see TRL's own `generate`.
+        generate.__wrapped__  = original_generate
+        setattr(generate, _UNSLOTH_GENERATE_WRAPPED, True)
+        vllm_generation.VLLMGeneration.generate = generate
+        return True
+
+    # Snapshot before patching: a HALF-patched VLLMGeneration is worse than an unpatched
+    # one. `_init_vllm` + `sync_weights` without the generate-side adapter injection means
+    # no weight sync AND no LoRA, i.e. rollouts from the base model with no error. If any
+    # one of the three fails, put all three back.
+    method_names = ("_init_vllm", "sync_weights", "generate")
+    originals = {
+        name: getattr(vllm_generation.VLLMGeneration, name, None)
+        for name in method_names
+    }
     try:
         init_patched = patch_vllm_generation_method(
             "_init_vllm",
@@ -3390,13 +3474,11 @@ def vllm_generation_init_patch():
             "if getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
             "sync_weights",
         )
-        generate_patched = patch_vllm_generation_method(
-            "generate",
-            patch_generate,
-            "if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
-            "generate",
-        )
+        generate_patched = install_generate_wrapper()
     except RuntimeError as e:
+        for name, original in originals.items():
+            if original is not None:
+                setattr(vllm_generation.VLLMGeneration, name, original)
         logger.warning(str(e))
         return
 
