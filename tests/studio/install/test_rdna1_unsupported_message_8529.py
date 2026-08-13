@@ -734,9 +734,9 @@ def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
     )
     assert opener is not None, "setup.ps1: the ROCm summary chain was renamed"
     chain = "\n".join(lines[opener : opener + 20])
-    assert "$script:ROCmUnsupportedGfxArch" in chain, (
-        "setup.ps1: the summary chain no longer has an uncovered-card arm"
-    )
+    assert (
+        "$script:ROCmUnsupportedGfxArch" in chain
+    ), "setup.ps1: the summary chain no longer has an uncovered-card arm"
     assert "-not $script:ROCmUnsupportedGfxArch" in lines[opener], (
         "setup.ps1: the ROCm summary reports an uncovered card as ordinary ROCm, so the "
         f"same run says 'ROCm' here and 'no wheels' below:\n{lines[opener]}"
