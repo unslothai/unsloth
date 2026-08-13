@@ -206,6 +206,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -1352,8 +1353,11 @@ function ProjectLanding({
           return [
             item.id,
             {
+              // A paste-only message carries its text in the attachment, so
+              // the row would otherwise be blank.
               snippet: firstUserMessage
-                ? extractMessageText(firstUserMessage.content)
+                ? extractMessageText(firstUserMessage.content) ||
+                  attachmentsSample(firstUserMessage.attachments)
                 : "",
               date: formatProjectChatDate(item.createdAt),
             },

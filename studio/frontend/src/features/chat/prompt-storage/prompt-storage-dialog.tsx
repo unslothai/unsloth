@@ -60,6 +60,7 @@ import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
@@ -254,7 +255,11 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
       if (!attachment?.content) continue;
-      const attText = contentBlocksToText(attachment.content);
+      // A paste carries a wrapper the same text never had when it fitted
+      // inline, so strip it rather than exporting the marker.
+      const attText = unwrapPastedTextContent(
+        contentBlocksToText(attachment.content),
+      );
       if (attText) parts.push(attText);
     }
   }
@@ -273,6 +278,10 @@ function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): st
         ...contentBlocksToMarkdownBlocks(
           attachment.content,
           normalizeToolResult,
+        ).map((block) =>
+          block.kind === "text"
+            ? { ...block, text: unwrapPastedTextContent(block.text) }
+            : block,
         ),
       );
     }
@@ -308,9 +317,14 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     ...blocks.map((b) => b as Record<string, unknown>),
     ...attachments.flatMap((a) => {
       const att = a as { content?: unknown };
-      return Array.isArray(att.content)
-        ? (att.content as Record<string, unknown>[])
-        : [];
+      if (!Array.isArray(att.content)) return [];
+      // Attachment text only: a message body is verbatim, and the paste
+      // wrapper is not something the user wrote.
+      return (att.content as Record<string, unknown>[]).map((part) =>
+        part?.type === "text" && typeof part.text === "string"
+          ? { ...part, text: unwrapPastedTextContent(part.text) }
+          : part,
+      );
     }),
   ];
 
@@ -610,10 +624,15 @@ function messageToPlainText(msg: {
   attachments?: unknown;
 }): string {
   const parts: string[] = [];
-  const collect = (blocks: unknown) => {
+  // Only attachment text is unwrapped: a message body is verbatim, and may
+  // legitimately quote the wrapper syntax in a code sample.
+  const collect = (blocks: unknown, fromAttachment = false) => {
+    const normalize = fromAttachment
+      ? unwrapPastedTextContent
+      : (text: string) => text;
     // Legacy and imported histories can store content as a plain string.
     if (typeof blocks === "string") {
-      if (blocks.trim()) parts.push(blocks);
+      if (blocks.trim()) parts.push(normalize(blocks));
       return;
     }
     if (!Array.isArray(blocks)) return;
@@ -623,14 +642,14 @@ function messageToPlainText(msg: {
       }
       const block = b as Record<string, unknown>;
       if (block.type === "text" && typeof block.text === "string" && block.text) {
-        parts.push(block.text);
+        parts.push(normalize(block.text));
       }
     }
   };
   collect(msg.content);
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
-      collect(attachment?.content);
+      collect(attachment?.content, true);
     }
   }
   return parts.join("\n\n").trim();
