@@ -103,6 +103,7 @@ const SPECULATIVE_TYPE_LABELS: Record<
   auto: "Auto",
   mtp: "MTP",
   dspark: "DSpark",
+  dflash: "DFlash",
   ngram: "Ngram",
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
@@ -703,11 +704,12 @@ function GgufAdvancedSettings({
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
             Faster generation. Auto picks the best strategy for the model and
-            platform: DSpark when the model ships a drafter sidecar, otherwise
-            MTP / ngram. Pick a strategy to force it, or Off to disable.
-            DSpark downloads a sidecar of about 11 GB and trades VRAM for speed;
-            on quantized targets its greedy output can differ from a non
-            speculative run. MTP and ngram do not change output.
+            platform: DSpark or DFlash when the model ships a drafter sidecar,
+            otherwise MTP / ngram. Pick a strategy to force it, or Off to
+            disable. DSpark downloads a sidecar of about 11 GB and DFlash one of
+            about 1.5 GB, both trading VRAM for speed; on quantized targets
+            their greedy output can differ from a non speculative run. MTP and
+            ngram do not change output.
           </InfoHint>
         </div>
         <Select
@@ -744,8 +746,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Max draft tokens per step. Leave blank for the default (MTP: 2 on
-              GPU, 3 on CPU/Mac; DSpark: 3).
+              Max draft tokens per step. Leave blank for the default (MTP and
+              DFlash: 2 on GPU, 3 on CPU/Mac; DSpark: 3).
             </InfoHint>
           </div>
           <input
