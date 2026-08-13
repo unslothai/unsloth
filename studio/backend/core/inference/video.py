@@ -1463,44 +1463,26 @@ class VideoBackend:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
 
-    def _run_load_h3_native(
-        self,
-        *,
-        fam: VideoFamily,
-        token: Optional[int],
-        cancel_event: threading.Event,
-        repo_id: str,
-        gguf_filename: Optional[str] = None,
-        hf_token: Optional[str] = None,
-        memory_mode: Optional[str] = None,
-        **_: Any,
-    ) -> None:
-        """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
-        from huggingface_hub import HfApi
+    def _h3_native_binary(
+        self, *, cancel_event: threading.Event
+    ) -> tuple[str, Optional[bool], str]:
+        """The sd-cli the H3 runtime will run on, and the device decision made around it.
 
-        from .sd_cpp_args import SdCppModelFiles, offload_flags
+        Its own method because it has to run BEFORE the four-file download and nothing in it
+        reads a resolved path -- keeping it inline put a block that acquires, installs and
+        probes a binary in the middle of a function whose subject is assets. Returns
+        ``(native_device, listed_accelerator, binary)``; ``listed_accelerator`` is None when
+        the decision never consulted it, which is what the claimed re-check keys on.
+        """
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
             ensure_h3_sd_cpp_binary,
             sd_cpp_lists_accelerator_device,
         )
-        from .sd_cpp_engine import SdCppEngine
-        from .video_minimax_h3 import (
-            H3_AUDIO_VAE,
-            H3_COMPONENT_REPO,
-            H3_GGUF_REPO,
-            H3_VIDEO_VAE,
-            h3_download_error,
-            h3_text_encoder_filename,
-        )
-        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
-
-        filename = gguf_filename or ""
-        qwen_filename = h3_text_encoder_filename(filename)
 
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
-        # predates H3 runs fine and so clears the version() gate below, then aborts on the first
+        # predates H3 runs fine and so clears the caller's version() gate, then aborts on the first
         # generation. That is the whole reason this gate exists, and running it after the four-file
         # bundle had already been fetched meant the user still paid tens of GB to be told no.
         #
@@ -1545,13 +1527,13 @@ class VideoBackend:
             # The baseline this branch is compared against is the DECISION, not a fresh probe of
             # what came back. An install can replace the returned CPU binary with a GPU build
             # between that ensure and this line, and probing here would record ITS answer -- after
-            # which the re-check under the claim below compares the replacement against itself,
+            # which the caller's re-check under the claim compares the replacement against itself,
             # passes, and commits CPU resource accounting around a CUDA executable that runs on
             # VRAM nothing accounted for. native_device is "cpu" precisely because the build must
             # offer no accelerator device, so that -- False -- is what the claim has to still find.
             listed_accelerator = False
-        # And refuse a preflight that produced nothing, HERE rather than at the claimed re-vet
-        # below. ensure_h3_sd_cpp_binary legitimately returns None -- auto-install switched off, an
+        # And refuse a preflight that produced nothing, HERE rather than at the caller's claimed
+        # re-vet. ensure_h3_sd_cpp_binary legitimately returns None -- auto-install switched off, an
         # unsupported platform, no network, or a stale managed copy something else is running out
         # of -- and leaving the only `not binary` check after the download loop meant every one of
         # those cases still fetched the four-file bundle first. The re-vet keeps its own check: it
@@ -1567,6 +1549,41 @@ class VideoBackend:
         # the download loop finally noticed.
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
+        return native_device, listed_accelerator, binary
+
+    def _run_load_h3_native(
+        self,
+        *,
+        fam: VideoFamily,
+        token: Optional[int],
+        cancel_event: threading.Event,
+        repo_id: str,
+        gguf_filename: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        memory_mode: Optional[str] = None,
+        **_: Any,
+    ) -> None:
+        """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
+        from huggingface_hub import HfApi
+
+        from .sd_cpp_args import SdCppModelFiles, offload_flags
+        from .sd_cpp_engine import SdCppEngine
+        from .video_minimax_h3 import (
+            H3_AUDIO_VAE,
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_VIDEO_VAE,
+            h3_download_error,
+            h3_text_encoder_filename,
+        )
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        filename = gguf_filename or ""
+        qwen_filename = h3_text_encoder_filename(filename)
+
+        native_device, listed_accelerator, binary = self._h3_native_binary(
+            cancel_event = cancel_event
+        )
 
         requests = (
             (repo_id, filename),
