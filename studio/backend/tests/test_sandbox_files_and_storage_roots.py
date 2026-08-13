@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1685,16 +1686,17 @@ def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
 def test_a_foreign_tool_result_keeps_its_own_fields():
     """Studio's wrapper always carries images; anything else with text and
     sessionId is someone else's result and must not be reduced to its text."""
-    adapter = (
+    # The predicate lives beside the rest of the sandbox contract, and the
+    # adapter and both tool cards share that one copy.
+    contract = (
         Path(__file__).resolve().parents[2]
         / "frontend"
         / "src"
-        / "features"
-        / "chat"
-        / "api"
-        / "chat-adapter.ts"
+        / "components"
+        / "assistant-ui"
+        / "sandbox-files.ts"
     ).read_text(encoding = "utf-8")
-    predicate = adapter.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
+    predicate = contract.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
     assert "Array.isArray(v.images)" in predicate, predicate
 
 
@@ -2221,14 +2223,16 @@ def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
     """The cards map over it, so anything else takes the chat view down."""
     root = Path(__file__).resolve().parents[2] / "frontend" / "src"
-    adapter = (root / "features" / "chat" / "api" / "chat-adapter.ts").read_text(encoding = "utf-8")
+    contract = (root / "components" / "assistant-ui" / "sandbox-files.ts").read_text(
+        encoding = "utf-8"
+    )
     python_card = (root / "components" / "assistant-ui" / "tool-ui-python.tsx").read_text(
         encoding = "utf-8"
     )
-    assert "export function isSandboxFileList" in adapter
+    assert "export function isSandboxFileList" in contract
     # Every entry, not just the array: the rows read name off each one.
-    assert 'typeof (entry as { name?: unknown }).name === "string"' in adapter
-    for source in (adapter, python_card):
+    assert 'typeof (entry as { name?: unknown }).name === "string"' in contract
+    for source in (contract, python_card):
         assert "isSandboxFileList(v.files)" in source
 
 
@@ -4801,6 +4805,37 @@ def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypat
     )
     assert result["path"] == str(sandbox)
     assert opened == [_Path(str(sandbox))]
+
+
+def test_a_sandbox_deleted_mid_request_does_not_reveal_the_root(tmp_path, monkeypatch):
+    """The Linux branch opens the parent when the target is not a directory, and
+    a sandbox's parent is the root holding every other chat's."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+
+    root = tmp_path / "sandbox"
+    sandbox = root / "thread-1"
+    sandbox.mkdir(parents = True)
+    opened = []
+
+    def resolve_then_delete(session_id, create):
+        # Stands in for the chat being deleted between the check and the open.
+        shutil.rmtree(sandbox, ignore_errors = True)
+        return str(sandbox)
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", resolve_then_delete)
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 404
+    assert opened == [], "the parent directory must never be opened"
 
 
 def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypatch):

@@ -15456,6 +15456,9 @@ async def reveal_sandbox_dir(
 
     try:
         await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir))
+    except FileNotFoundError:
+        # Deleted between resolving it and opening it, so there is nothing to show.
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
     except Exception:
         logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")

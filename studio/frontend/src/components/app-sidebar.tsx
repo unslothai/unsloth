@@ -1823,12 +1823,26 @@ export function AppSidebar() {
                       try {
                         // A chat moved between projects keeps the sandbox it wrote to,
                         // so its own history names the folder, not current membership.
-                        const recorded = await listStoredChatMessages(
-                          threadIds[0] ?? item.id,
-                        )
-                          .then(recordedSandboxSessionId)
-                          .catch(() => undefined);
-                        await revealSandbox(recorded ?? sandboxSessionId);
+                        // Every pane is read: a compare row moved into a project can
+                        // still hold one folder per pane, and there is no single
+                        // folder to offer for it.
+                        const recorded = await Promise.all(
+                          (threadIds.length > 0 ? threadIds : [item.id]).map(
+                            (threadId) =>
+                              listStoredChatMessages(threadId)
+                                .then(recordedSandboxSessionId)
+                                .catch(() => undefined),
+                          ),
+                        );
+                        const distinct = [...new Set(recorded.filter(Boolean))];
+                        if (distinct.length > 1) {
+                          toast.error("This chat wrote to more than one folder.", {
+                            description:
+                              "Its panes ran before it joined this project, so open the folder from a tool card instead.",
+                          });
+                          return;
+                        }
+                        await revealSandbox(distinct[0] ?? sandboxSessionId);
                       } catch (error) {
                         toast.error("Could not open the chat folder.", {
                           description:

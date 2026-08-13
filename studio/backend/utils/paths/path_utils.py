@@ -233,8 +233,17 @@ def _wsl_reveal_in_explorer(path: Path) -> bool:
 
 
 def reveal_in_file_manager(path: Path) -> None:
-    """Open the OS file manager with *path* selected (best effort per platform)."""
+    """Open the OS file manager with *path* selected (best effort per platform).
+
+    Raises ``FileNotFoundError`` when the target is already gone: the Linux
+    branch falls back to the parent directory, so a path deleted between the
+    caller's check and this call would open the directory holding it, which for
+    a sandbox is the root holding every other chat's.
+    """
     import subprocess
+
+    if not path.exists():
+        raise FileNotFoundError(str(path))
 
     target = str(path)
     if sys.platform == "darwin":
