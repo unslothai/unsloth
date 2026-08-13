@@ -1498,6 +1498,76 @@ class VideoBackend:
 
         filename = gguf_filename or ""
         qwen_filename = h3_text_encoder_filename(filename)
+
+        # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
+        # predates H3 runs fine and so clears the version() gate below, then aborts on the first
+        # generation. That is the whole reason this gate exists, and running it after the four-file
+        # bundle had already been fetched meant the user still paid tens of GB to be told no.
+        #
+        # Cancel first, though: the ensure below may download and extract the sd-cli prebuilt, and
+        # it takes no cancel_event, so a load cancelled before this thread got going would pay for
+        # an install nobody is waiting for. The download loop used to be the first check.
+        if cancel_event.is_set():
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+        target = resolve_diffusion_device_target()
+        allow_install = _install_allowed()
+        binary = ensure_h3_sd_cpp_binary(
+            allow_install = allow_install,
+            accelerator = _install_accelerator_for(target.backend),
+        )
+        native_device = target.device
+        # What the accelerator decision below was made on, or None when it was never asked (a CPU
+        # or MPS target never consults it). Re-checked under the reader claim, so a replacement
+        # that arrives mid-load cannot silently change the answer this device choice rests on.
+        listed_accelerator: Optional[bool] = None
+        if target.backend not in ("cpu", "mps"):
+            # Under the claim, like the recheck. This probe SPAWNS the managed sd-cli, so leaving
+            # it unclaimed lets an install started by another in-process load extract over the
+            # executing binary: on Windows that fails on the locked file, on Linux it can leave
+            # the replacement half-written. The later claimed recheck cannot undo damage this
+            # first probe already allowed.
+            from .sd_cpp_backend import _tree_reader as _claim_tree
+            with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
+                listed_accelerator = sd_cpp_lists_accelerator_device(binary)
+        if target.backend not in ("cpu", "mps") and not listed_accelerator:
+            # Upstream currently publishes no Linux CUDA archive. Keep the picker
+            # functional with the CPU prebuilt when the user has not supplied a
+            # locally compiled CUDA binary through the normal sd.cpp discovery path.
+            #
+            # The test is what the binary actually offers, not whether one was returned: the
+            # accelerator install fails only ONCE, and every later load finds the CPU binary this
+            # branch put there and gets it back unchanged. "binary is truthy" therefore skipped
+            # the fallback from the second load on, left native_device on the GPU, and applied GPU
+            # offload policy and held the VIDEO claim while sd-cli ran wholly on the CPU -- so the
+            # next chat/image acquire evicted a model to make room for one that was never there.
+            binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
+            native_device = "cpu"
+            # The baseline this branch is compared against is the DECISION, not a fresh probe of
+            # what came back. An install can replace the returned CPU binary with a GPU build
+            # between that ensure and this line, and probing here would record ITS answer -- after
+            # which the re-check under the claim below compares the replacement against itself,
+            # passes, and commits CPU resource accounting around a CUDA executable that runs on
+            # VRAM nothing accounted for. native_device is "cpu" precisely because the build must
+            # offer no accelerator device, so that -- False -- is what the claim has to still find.
+            listed_accelerator = False
+        # And refuse a preflight that produced nothing, HERE rather than at the claimed re-vet
+        # below. ensure_h3_sd_cpp_binary legitimately returns None -- auto-install switched off, an
+        # unsupported platform, no network, or a stale managed copy something else is running out
+        # of -- and leaving the only `not binary` check after the download loop meant every one of
+        # those cases still fetched the four-file bundle first. The re-vet keeps its own check: it
+        # guards a replacement arriving mid-download, which is a different question.
+        if not binary:
+            raise RuntimeError(
+                "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
+            )
+        # And again on the way out. The ensure above takes no cancel_event and can spend minutes
+        # downloading and extracting the prebuilt, so a cancel arriving during it is already late;
+        # without this a CPU or MPS target (which skips the claimed accelerator probe, the only
+        # other cancel-aware step here) would go on to make four sequential model_info calls before
+        # the download loop finally noticed.
+        if cancel_event.is_set():
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+
         requests = (
             (repo_id, filename),
             (self._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
@@ -1550,50 +1620,6 @@ class VideoBackend:
                     raise h3_download_error(repo, wanted, exc) from exc
             resolved.append(local)
 
-        target = resolve_diffusion_device_target()
-        allow_install = _install_allowed()
-        # The H3-gated ensure, not the plain one: a build that predates H3 runs fine and so clears
-        # the version() gate below, then aborts on the first generation, i.e. after the whole
-        # bundle has downloaded.
-        binary = ensure_h3_sd_cpp_binary(
-            allow_install = allow_install,
-            accelerator = _install_accelerator_for(target.backend),
-        )
-        native_device = target.device
-        # What the accelerator decision below was made on, or None when it was never asked (a CPU
-        # or MPS target never consults it). Re-checked under the reader claim, so a replacement
-        # that arrives mid-load cannot silently change the answer this device choice rests on.
-        listed_accelerator: Optional[bool] = None
-        if target.backend not in ("cpu", "mps"):
-            # Under the claim, like the recheck. This probe SPAWNS the managed sd-cli, so leaving
-            # it unclaimed lets an install started by another in-process load extract over the
-            # executing binary: on Windows that fails on the locked file, on Linux it can leave
-            # the replacement half-written. The later claimed recheck cannot undo damage this
-            # first probe already allowed.
-            from .sd_cpp_backend import _tree_reader as _claim_tree
-            with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
-                listed_accelerator = sd_cpp_lists_accelerator_device(binary)
-        if target.backend not in ("cpu", "mps") and not listed_accelerator:
-            # Upstream currently publishes no Linux CUDA archive. Keep the picker
-            # functional with the CPU prebuilt when the user has not supplied a
-            # locally compiled CUDA binary through the normal sd.cpp discovery path.
-            #
-            # The test is what the binary actually offers, not whether one was returned: the
-            # accelerator install fails only ONCE, and every later load finds the CPU binary this
-            # branch put there and gets it back unchanged. "binary is truthy" therefore skipped
-            # the fallback from the second load on, left native_device on the GPU, and applied GPU
-            # offload policy and held the VIDEO claim while sd-cli ran wholly on the CPU -- so the
-            # next chat/image acquire evicted a model to make room for one that was never there.
-            binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
-            native_device = "cpu"
-            # The baseline this branch is compared against is the DECISION, not a fresh probe of
-            # what came back. An install can replace the returned CPU binary with a GPU build
-            # between that ensure and this line, and probing here would record ITS answer -- after
-            # which the re-check under the claim below compares the replacement against itself,
-            # passes, and commits CPU resource accounting around a CUDA executable that runs on
-            # VRAM nothing accounted for. native_device is "cpu" precisely because the build must
-            # offer no accelerator device, so that -- False -- is what the claim has to still find.
-            listed_accelerator = False
         engine = SdCppEngine(binary)
         # Re-vet and take the identity under ONE reader claim. ensure_h3_sd_cpp_binary checked the
         # file it returned, but an install can start between that return and this line, and an
@@ -1601,7 +1627,11 @@ class VideoBackend:
         # checked for H3 support or the selected accelerator -- after which every generation
         # compares the replacement against itself and lets it through. Inside the claim no install
         # can start, so the build that answers --help here is the build whose identity is stored.
-        from .sd_cpp_backend import _tree_reader, sd_cpp_supports_minimax_h3
+        from .sd_cpp_backend import (
+            _tree_reader,
+            sd_cpp_accelerator_device_verdict,
+            sd_cpp_binary_vets_for_h3,
+        )
         from .sd_cpp_engine import is_managed_binary
 
         with _tree_reader(binary, cancel_event, VIDEO_CANCELLED_MSG):
@@ -1609,10 +1639,22 @@ class VideoBackend:
                 raise RuntimeError(
                     "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
                 )
-            if is_managed_binary(binary) and not sd_cpp_supports_minimax_h3(binary):
+            # EVERY binary, not just a managed one. The managed-only test was written when the
+            # ensure sat right here, so a user-supplied build had been vetted microseconds earlier
+            # and only a concurrent INSTALL could have moved underneath it. The preflight now runs
+            # before the multi-tens-of-GB download, so the window it has to cover is that whole
+            # download -- long enough for a user to rebuild or repoint their own SD_CLI_PATH copy,
+            # after which _sd_cli_identity below would record the replacement as the vetted build
+            # and every later generation would compare it against itself.
+            # Identity AND capability, the same pair the preflight applied. Capability alone is
+            # not enough: --ref-video is a plain option name unrelated reference-video tools also
+            # expose, so a swap to one of those would clear a marker-only re-check and then be
+            # recorded as the vetted identity.
+            if not sd_cpp_binary_vets_for_h3(binary):
                 raise RuntimeError(
-                    "The stable-diffusion.cpp binary was replaced by an install that does not "
-                    "support MiniMax-H3. Try the load again."
+                    "The stable-diffusion.cpp binary changed while this model was loading, and the "
+                    "one now at that path is not an sd.cpp build with MiniMax-H3 support. Try the "
+                    "load again."
                 )
             # And re-ask the question native_device was decided on. H3 support alone is not
             # enough: a replacement can be H3-capable and still be a different accelerator, and
@@ -1622,14 +1664,33 @@ class VideoBackend:
             #
             # Only when the decision actually consulted it. A CPU or MPS target never asked, so
             # there is no answer to have changed, and inventing one would refuse those loads.
+            #
+            # Ownership does not narrow it, for the same reason the H3 re-vet above dropped that
+            # test: the accelerator answer is recorded before the download now, so the window is
+            # the whole fetch, and a user's own build can be rebuilt inside it just as an install
+            # can land. The harm does not care who owns the file -- what gets committed is
+            # native_device, and a GPU one around a CPU binary is offload policy and an arbiter
+            # claim written against hardware nothing is running on.
+            # Only a DECISIVE re-reading, hence the verdict form rather than
+            # sd_cpp_lists_accelerator_device: that one folds "could not tell" into True, which
+            # against a recorded False would refuse the very CPU fallback that recorded it.
+            # Only when there is a baseline to compare against. A CPU or MPS target never asked
+            # the question, so this would spawn --list-devices for an answer the test below cannot
+            # use -- on every H3 load, and for the full probe timeout when the build hangs on it.
+            fresh_accelerator = (
+                sd_cpp_accelerator_device_verdict(binary)
+                if listed_accelerator is not None and binary
+                else None
+            )
             if (
                 listed_accelerator is not None
-                and is_managed_binary(binary)
-                and sd_cpp_lists_accelerator_device(binary) != listed_accelerator
+                and fresh_accelerator is not None
+                and fresh_accelerator != listed_accelerator
             ):
                 raise RuntimeError(
-                    "The stable-diffusion.cpp binary was replaced by an install for a different "
-                    "accelerator while this model was loading. Try the load again."
+                    "The stable-diffusion.cpp binary changed while this model was loading, and the "
+                    "one now at that path was built for a different accelerator. Try the load "
+                    "again."
                 )
             binary_identity = _sd_cli_identity(binary)
         requested_mode = normalize_memory_mode(memory_mode) or "auto"

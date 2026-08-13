@@ -10080,30 +10080,33 @@ class LlamaCppBackend:
 
     @staticmethod
     def _vulkan_prebuilt_was_auto_selected(binary: Optional[str]) -> bool:
-        """Whether setup chose this managed Vulkan bundle without an override.
+        """Whether this managed Vulkan bundle was detected rather than chosen.
 
-        Explicit selections set an override or marker. The managed marker also
-        excludes custom and PATH binaries.
+        Only an automatic Vulkan install may be quietly replaced with CPU placement
+        on a crash: someone who picked Vulkan in Settings > System (or exported
+        the variable) picked it over a GPU backend that presumably crashed too, and
+        silently undoing that would be the same bug in the other direction. The
+        managed marker also excludes custom and PATH binaries.
         """
         if not binary:
             return False
-        if os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            return False
-        if (os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND") or "").strip().lower() in {
-            "cpu",
-            "vulkan",
-            "hip",
-            "rocm",
-        }:
+        from utils.llama_cpp_update import _llama_install_root
+        from utils.prebuilt.llama_backend import (
+            environment_backend_override,
+            marker_backend_was_chosen,
+        )
+
+        # The same precedence the installer applied when it chose this bundle, so
+        # a stale UNSLOTH_FORCE_VULKAN cannot mark an install explicit that
+        # UNSLOTH_LLAMA_CPP_BACKEND=auto had setup detect. Only a concrete
+        # override is a choice; "auto" still has to pass the marker check below.
+        override = environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"),
+            os.environ.get("UNSLOTH_FORCE_VULKAN"),
+        )
+        if override is not None and override != "auto":
             return False
         try:
-            from utils.llama_cpp_update import _llama_install_root
-
             install_root = _llama_install_root(binary)
             if install_root is None:
                 return False
@@ -10112,11 +10115,8 @@ class LlamaCppBackend:
             )
         except (OSError, ValueError, TypeError):
             return False
-        return (
-            isinstance(marker, dict)
-            and not bool(marker.get("force_cpu"))
-            and marker.get("llama_backend") in (None, "", "auto")
-        )
+        # Reads new and pre-#7188 markers alike, including the force_cpu-only ones.
+        return isinstance(marker, dict) and not marker_backend_was_chosen(marker)
 
     @staticmethod
     def _strip_cpu_fallback_main_placement(args: Iterable[str]) -> list[str]:
