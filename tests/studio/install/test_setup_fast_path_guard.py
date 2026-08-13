@@ -121,9 +121,7 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
-@pytest.mark.parametrize(
-    "script", [INSTALL_SH, INSTALL_PS1], ids = ["install.sh", "install.ps1"]
-)
+@pytest.mark.parametrize("script", [INSTALL_SH, INSTALL_PS1], ids = ["install.sh", "install.ps1"])
 def test_the_installer_reports_duplicate_metadata_on_every_platform(script: pathlib.Path):
     """Both installers print the version they just installed.
 
@@ -137,6 +135,6 @@ def test_the_installer_reports_duplicate_metadata_on_every_platform(script: path
         f"{script.name} still reports the installed version through "
         "importlib.metadata.version(), which cannot see a duplicate record"
     )
-    assert "duplicate metadata found" in text, (
-        f"{script.name} detects the conflict but never says so"
-    )
+    assert (
+        "duplicate metadata found" in text
+    ), f"{script.name} detects the conflict but never says so"

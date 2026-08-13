@@ -776,18 +776,14 @@ class TestDuplicateCoreMetadataRepair:
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         order = []
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(
             ips, "_stage_replacement", lambda _name: order.append("stage") or "/staged"
         )
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: order.append("uninstall") or True)
-        monkeypatch.setattr(
-            ips, "pip_install_try", lambda *a, **k: order.append("install") or True
-        )
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: order.append("install") or True)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
         # Two records, so two uninstalls: pip removes one per invocation.
@@ -799,9 +795,7 @@ class TestDuplicateCoreMetadataRepair:
         probes = iter((["2026.8.12", "2026.8.15"],))
         removals = []
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips, "_stage_replacement", lambda _name: None)
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: removals.append(a) or True)
@@ -814,9 +808,7 @@ class TestDuplicateCoreMetadataRepair:
     def test_a_failed_reinstall_reports_instead_of_exiting(self, monkeypatch, capsys):
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], []))
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
@@ -829,9 +821,7 @@ class TestDuplicateCoreMetadataRepair:
     def test_a_failed_uninstall_reports_instead_of_exiting(self, monkeypatch, capsys):
         probes = iter((["2026.8.12", "2026.8.15"],))
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: False)
@@ -847,9 +837,7 @@ class TestDuplicateCoreMetadataRepair:
         staged.mkdir()
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(ips, "_stage_replacement", lambda _name: str(staged))

@@ -3535,7 +3535,12 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
-def _overlay_local_core_package(name: str, local_repo: str, *, strict: bool = True) -> bool:
+def _overlay_local_core_package(
+    name: str,
+    local_repo: str,
+    *,
+    strict: bool = True,
+) -> bool:
     """Install one core package from the source selected by --local.
 
     strict=False reports a failed install instead of exiting, which the metadata
@@ -3555,9 +3560,7 @@ def _overlay_local_core_package(name: str, local_repo: str, *, strict: bool = Tr
         return False
     _step(_LABEL, step_label)
     if not strict:
-        return pip_install_try(
-            install_label, "--no-cache-dir", "--no-deps", *args, constrain = False
-        )
+        return pip_install_try(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
     pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
     return True
 

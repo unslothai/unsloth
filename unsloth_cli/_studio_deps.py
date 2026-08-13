@@ -569,9 +569,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     for records in _installed_distribution_groups().values():
         # An unreadable record cannot be trusted to describe the package tree
         # any more than a duplicated one can.
-        ambiguous = len(records) > 1 or not all(
-            readable for _dist, _name, readable in records
-        )
+        ambiguous = len(records) > 1 or not all(readable for _dist, _name, readable in records)
         for dist, name, _readable in records:
             try:
                 record = dist.read_text("RECORD")

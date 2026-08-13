@@ -479,9 +479,7 @@ def test_a_foreign_lib64_venv_reports_no_duplicates(tmp_path, deps):
     real = venv / "lib" / "python3.13" / "site-packages"
     real.mkdir(parents = True)
     (venv / "lib64").symlink_to("lib")
-    (venv / "pyvenv.cfg").write_text(
-        "home = /usr/bin\nversion = 3.13.0\n", encoding = "utf-8"
-    )
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.13.0\n", encoding = "utf-8")
     dist_info = real / "unsloth-2026.8.15.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
@@ -502,7 +500,10 @@ def test_a_nameless_local_record_is_reported_as_a_conflict(tmp_path, monkeypatch
     site = tmp_path / "site-packages"
     site.mkdir()
     for name, metadata in (
-        ("unsloth-2026.8.15.dist-info", "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n"),
+        (
+            "unsloth-2026.8.15.dist-info",
+            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n",
+        ),
         ("unsloth-2026.8.12.dist-info", "Metadata-Version: 2.1\nVersion: 2026.8.12\n"),
     ):
         entry = site / name
