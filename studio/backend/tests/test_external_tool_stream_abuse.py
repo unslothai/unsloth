@@ -894,6 +894,15 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
     cancel_event = threading.Event()
 
     async def _drive():
+        # Anything already running before the loop starts belongs to this harness, not to
+        # the tool loop, so the census is taken against it. On Python 3.10 and 3.11
+        # ``asyncio.wait_for`` wraps the coroutine it is handed in a second task
+        # (``asyncio/tasks.py``), so ``all_tasks()`` below also holds the ``wait_for()``
+        # task driving this one, and that task is by construction not done: it is awaiting
+        # the census. 3.12 reimplemented ``wait_for`` on ``asyncio.timeout`` and awaits the
+        # coroutine directly, which is the whole reason this read green there and red on the
+        # two older interpreters. Neither is an orphan either way.
+        harness = asyncio.all_tasks()
         agen = stream_with_studio_tools(
             transport,
             run = ToolLoopRun(messages = [{"role": "user", "content": "hi"}], session_id = "s1"),
@@ -909,10 +918,13 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
         await agen.aclose()
         # Give the drain a tick to join its worker before the task census.
         await asyncio.sleep(0)
+        # ``not task.done()`` is the contract: a task that has finished has been joined and
+        # is not a leak. What must not survive is a task still running with nobody left to
+        # await it.
         return [
             task
             for task in asyncio.all_tasks()
-            if task is not asyncio.current_task() and not task.done()
+            if task not in harness and task is not asyncio.current_task() and not task.done()
         ]
 
     pending = asyncio.run(asyncio.wait_for(_drive(), timeout = 30.0))
