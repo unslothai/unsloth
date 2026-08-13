@@ -53,7 +53,7 @@ def _mock_auto(monkeypatch, *, gpus, binary):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: gpus))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: gpus))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
 
 
@@ -184,11 +184,15 @@ def test_gpu_available_reuses_studio_probe(monkeypatch):
 
     monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
     # Ample free VRAM -> GPU; nearly full -> CPU; none -> CPU.
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 40000)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: [(0, 40000)])
+    )
     assert LlamaServerBackend._gpu_available() is True
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 100)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: [(0, 100)])
+    )
     assert LlamaServerBackend._gpu_available() is False
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: []))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: []))
     assert LlamaServerBackend._gpu_available() is False
 
 

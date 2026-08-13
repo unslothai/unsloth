@@ -2793,6 +2793,44 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
         assert "Unload the model before deleting" in e.detail
 
 
+def test_delete_cached_rechecks_the_load_guard_after_reserving_the_scope(monkeypatch):
+    # The first guard runs before begin_delete reserves the repo, so a load starting in that gap
+    # publishes its claim too late to be seen, and begin_delete misses it too: video and image
+    # loads download directly rather than through a registry claim. Deleting anyway unlinks blobs
+    # under the running load, so the second read is what refuses it.
+    from fastapi import HTTPException
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(der, "get_active_diffusion_engine", _idle_diffusion_engine)
+
+    reads = {"n": 0}
+
+    def _backend():
+        def _loading_repo_ids():
+            reads["n"] += 1
+            # Idle for the pre-reservation read, loading by the time the scope is reserved.
+            return () if reads["n"] == 1 else ("unsloth/MiniMax-H3-GGUF",)
+
+        return SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = _loading_repo_ids,
+        )
+
+    monkeypatch.setattr(video_mod, "get_video_backend", _backend)
+
+    try:
+        asyncio.run(deletion.delete_cached_model_response("unsloth/MiniMax-H3-GGUF"))
+        assert False, "expected HTTPException refusing the delete admitted before the load claim"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Video model load is using this repo" in e.detail
+    assert reads["n"] >= 2, "the guard must be re-read after the delete scope is reserved"
+
+
 def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch):
     # status().loaded is still False while a background Images load downloads the repo, so loading_repo_ids() must refuse the delete.
     from fastapi import HTTPException

@@ -1227,9 +1227,7 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     that loads fine without it. It strips the spec group, and takes the child env with
     it."""
     src = _load_model_source()
-    retry = src[
-        src.index("_fb_tail = cmd[_spec_start") : src.index("fallback_cmd = cmd[:_spec_start]")
-    ]
+    retry = src[src.index("_fb_tail = cmd[_spec_at") : src.index("fallback_cmd = cmd[:_spec_at]")]
     # Whitespace-insensitive: the guard wraps across lines once both drafters are named.
     compact = "".join(retry.split())
     assert "_extra_args_requests_mtp(extra_args,env=_launch_spec_env)" in compact
