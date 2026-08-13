@@ -110,12 +110,14 @@ const useAttachmentTextPreview = (
   const [fileState, setFileState] = useState<TextPreviewState>({
     status: "loading",
   });
+  // Unwrapping runs on open too: a thread can hold several large sent
+  // attachments, and their payloads are scanned in full to strip the wrapper.
   const sentState = useMemo(
-    (): TextPreviewState => ({
-      status: "ready",
-      ...parseAttachmentText(text ?? ""),
-    }),
-    [text],
+    (): TextPreviewState =>
+      enabled
+        ? { status: "ready", ...parseAttachmentText(text ?? "") }
+        : { status: "loading" },
+    [enabled, text],
   );
 
   useEffect(() => {
