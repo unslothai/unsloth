@@ -317,9 +317,14 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     ...blocks.map((b) => b as Record<string, unknown>),
     ...attachments.flatMap((a) => {
       const att = a as { content?: unknown };
-      return Array.isArray(att.content)
-        ? (att.content as Record<string, unknown>[])
-        : [];
+      if (!Array.isArray(att.content)) return [];
+      // Attachment text only: a message body is verbatim, and the paste
+      // wrapper is not something the user wrote.
+      return (att.content as Record<string, unknown>[]).map((part) =>
+        part?.type === "text" && typeof part.text === "string"
+          ? { ...part, text: unwrapPastedTextContent(part.text) }
+          : part,
+      );
     }),
   ];
 
