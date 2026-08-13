@@ -15726,7 +15726,11 @@ async def reveal_sandbox_dir(
     from utils.paths.path_utils import reveal_in_file_manager
 
     try:
-        await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir))
+        # expect_dir: a sandbox is always a directory, and a running tool can
+        # replace its own with a file. Without this the reveal would take the
+        # file branch and show the parent, which here is the root holding every
+        # other chat's sandbox.
+        await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir), expect_dir = True)
     except FileNotFoundError:
         # Two different things raise this: the sandbox going between resolving
         # it and opening it, and Popen failing to find the file manager itself

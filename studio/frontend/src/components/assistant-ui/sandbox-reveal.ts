@@ -12,6 +12,22 @@ export function sandboxRevealPath(sessionId: string): string {
 }
 
 /**
+ * Whether this session's sandbox holds anything.
+ *
+ * Used to tell a candidate folder apart from one that was never written to.
+ * A sandbox that does not exist walks to nothing, so it reports no files
+ * rather than an error, which is what makes this usable as a probe.
+ */
+export async function sandboxHasFiles(sessionId: string): Promise<boolean> {
+  const { prefix, query } = sandboxRoutePrefix(sessionId);
+  const response = await authFetch(`${prefix}${query}`);
+  if (!response.ok) return false;
+  const body: unknown = await response.json();
+  const files = (body as { files?: unknown } | null)?.files;
+  return Array.isArray(files) && files.length > 0;
+}
+
+/**
  * Open a chat's sandbox folder in the OS file manager.
  *
  * The backend does the opening, so the folder lands on the user's own desktop

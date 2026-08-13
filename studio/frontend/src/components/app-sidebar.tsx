@@ -143,7 +143,10 @@ import {
   type SidebarItem,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
+import {
+  revealSandbox,
+  sandboxHasFiles,
+} from "@/components/assistant-ui/sandbox-reveal";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
@@ -1862,17 +1865,35 @@ export function AppSidebar() {
                         // rather than being read as "never ran a tool" and
                         // falling back to the current scope -- the very answer
                         // the recorded id exists to override.
+                        const ids =
+                          threadIds.length > 0 ? threadIds : [item.id];
                         const recorded: (string | undefined)[] = [];
-                        for (const threadId of threadIds.length > 0
-                          ? threadIds
-                          : [item.id]) {
+                        for (const threadId of ids) {
                           recorded.push(
                             recordedSandboxSessionId(
                               await listStoredChatMessages(threadId),
                             ),
                           );
                         }
-                        const distinct = [...new Set(recorded.filter(Boolean))];
+                        let distinct = [...new Set(recorded.filter(Boolean))];
+                        if (distinct.length === 0 && item.projectId) {
+                          // Chats stored before results carried a session
+                          // recorded nothing, so one that ran while it was
+                          // loose and has since joined a project would be sent
+                          // to the project workspace instead of its own
+                          // folder. Its thread sandbox is the only other
+                          // candidate we can name, and files in it are this
+                          // chat's. Only in this direction: a chat moved OUT
+                          // of a project wrote under project-<id>, and nothing
+                          // retains which project that was.
+                          const held: string[] = [];
+                          for (const threadId of ids) {
+                            if (await sandboxHasFiles(threadId)) {
+                              held.push(threadId);
+                            }
+                          }
+                          distinct = [...new Set(held)];
+                        }
                         if (distinct.length > 1) {
                           toast.error("This chat wrote to more than one folder.", {
                             description:

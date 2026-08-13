@@ -209,7 +209,7 @@ def reset_cache_case_resolution_state() -> None:
         _CACHE_CASE_RESOLUTION_STATS[key] = 0
 
 
-def _wsl_reveal_in_explorer(path: Path) -> bool:
+def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
     import subprocess
     if not _IS_WSL:
         return False
@@ -225,44 +225,53 @@ def _wsl_reveal_in_explorer(path: Path) -> bool:
         ).stdout.strip()
         if not windows_path:
             return False
-        argument = f"/select,{windows_path}" if path.is_file() else windows_path
+        argument = f"/select,{windows_path}" if is_file else windows_path
         subprocess.Popen(["explorer.exe", argument])
         return True
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-def reveal_in_file_manager(path: Path) -> None:
+def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     """Open the OS file manager with *path* selected (best effort per platform).
 
     Raises ``FileNotFoundError`` when the target is already gone: the Linux
     branch falls back to the parent directory, so a path deleted between the
     caller's check and this call would open the directory holding it, which for
     a sandbox is the root holding every other chat's.
+
+    ``expect_dir`` says the caller only ever reveals a directory, and refuses
+    anything else the same way. Deletion is not the only route to the parent: a
+    target swapped for a regular file takes the file branch on every platform,
+    and on Linux that branch names the parent, which for a sandbox is the root
+    holding every other chat's. macOS and Windows show the parent too, with the
+    file selected. A caller that knows what it is revealing need not race the
+    swap. Off by default: the cached-model reveal legitimately points at a file.
     """
     import subprocess
 
     if not path.exists():
         raise FileNotFoundError(str(path))
+    # Decided ONCE and then only read. Each branch used to re-stat, so a swap
+    # landing between two of them could still take a path the guard above had
+    # already ruled out; with one decision there is no window left to lose.
+    is_dir = path.is_dir()
+    if expect_dir and not is_dir:
+        raise FileNotFoundError(str(path))
+    is_file = not is_dir and path.is_file()
+    if not is_dir and not is_file:
+        # Neither, so there is nothing to show and no parent worth widening to.
+        raise FileNotFoundError(str(path))
 
     target = str(path)
     if sys.platform == "darwin":
-        cmd = ["open", "-R", target] if path.is_file() else ["open", target]
+        cmd = ["open", "-R", target] if is_file else ["open", target]
         subprocess.Popen(cmd)
     elif os.name == "nt":
-        if path.is_file():
+        if is_file:
             subprocess.Popen(["explorer", f"/select,{target}"])
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
-    elif not _wsl_reveal_in_explorer(path):
+    elif not _wsl_reveal_in_explorer(path, is_file):
         # No cross-desktop "select file" standard on Linux; open the directory.
-        if path.is_dir():
-            directory = target
-        elif path.is_file():
-            directory = str(path.parent)
-        else:
-            # Gone between the guard above and this branch, which are two
-            # separate stats. Widening to the parent here would open the root
-            # holding every other chat's sandbox, so fail closed instead.
-            raise FileNotFoundError(target)
-        subprocess.Popen(["xdg-open", directory])
+        subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])

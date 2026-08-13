@@ -4798,7 +4798,11 @@ def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypat
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(path_utils, "reveal_in_file_manager", opened.append)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
 
     result = asyncio.new_event_loop().run_until_complete(
         inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
@@ -4853,7 +4857,11 @@ def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypat
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(missing))
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(path_utils, "reveal_in_file_manager", opened.append)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
 
     with pytest.raises(HTTPException) as caught:
         asyncio.new_event_loop().run_until_complete(
@@ -4882,7 +4890,7 @@ def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, mo
     sandbox = tmp_path / "sandbox" / "thread-1"
     sandbox.mkdir(parents = True)
 
-    def no_launcher(path):
+    def no_launcher(path, expect_dir = False):
         raise FileNotFoundError(2, "No such file or directory", "xdg-open")
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
@@ -4895,6 +4903,42 @@ def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, mo
         )
     assert caught.value.status_code == 500
     assert sandbox.is_dir(), "the folder was there the whole time"
+
+
+def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
+    """A tool can replace its own sandbox with a regular file between the
+    route's isdir check and the open, and the file branch names the parent,
+    which here is the root holding every other chat's sandbox. The route says
+    up front that it only ever reveals a directory, rather than re-checking and
+    losing the same race again."""
+    import asyncio
+    import inspect
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    seen = []
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: seen.append((path, expect_dir)),
+    )
+
+    asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+    )
+    assert seen and seen[0][1] is True, "the sandbox reveal must demand a directory"
+
+    # The cached-model reveal shares the helper and legitimately points at a
+    # file, so it must NOT inherit the flag.
+    from routes import models
+
+    assert "expect_dir" not in inspect.getsource(models.reveal_cached_model)
 
 
 def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, monkeypatch):
@@ -4919,7 +4963,7 @@ def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, 
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", resolve)
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: None)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path, expect_dir = False: None)
 
     asyncio.new_event_loop().run_until_complete(
         inference.reveal_sandbox_dir("_", request = None, token = None, session = "thread/with/slashes")
@@ -5034,7 +5078,11 @@ def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, m
 
     opened = []
     monkeypatch.setattr(models, "_resolve_cached_model_path", lambda repo_id, variant: link)
-    monkeypatch.setattr(path_utils, "reveal_in_file_manager", opened.append)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
 
     result = asyncio.new_event_loop().run_until_complete(
         models.reveal_cached_model(

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 // login-page.tsx. See helpers/auth-stub.mjs.
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 
-const { sandboxRevealPath, revealSandbox } = await import(
+const { sandboxRevealPath, revealSandbox, sandboxHasFiles } = await import(
   "../src/components/assistant-ui/sandbox-reveal.ts"
 );
 
@@ -111,15 +111,56 @@ test("a failed history read is reported, not mistaken for a chat that ran no too
   // Catching per pane would make a read failure indistinguishable from "never
   // ran a tool", and the handler falls back to current project membership --
   // which is the answer the recorded session id exists to override.
-  const block = SIDEBAR.slice(
-    SIDEBAR.indexOf("const recorded: (string | undefined)[] = [];"),
-    SIDEBAR.indexOf("const distinct = "),
-  );
+  const start = SIDEBAR.indexOf("const recorded: (string | undefined)[] = [];");
+  const end = SIDEBAR.indexOf("let distinct = ");
+  assert.ok(start !== -1 && end > start, "the read block moved");
+  const block = SIDEBAR.slice(start, end);
   assert.ok(block.includes("recordedSandboxSessionId"), "the read block moved");
   assert.ok(
     !block.includes(".catch("),
     "a per-pane catch turns a failed read into a wrong folder",
   );
+});
+
+test("a sandbox holding files is told apart from one that was never written", async () => {
+  // The probe that recovers a legacy chat's folder. A sandbox that does not
+  // exist walks to nothing, so the backend answers 200 with an empty list
+  // rather than an error, and both cases have to read as "not this one".
+  globalThis.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ path: "/s/thread-1", files: [{ name: "a.csv" }] }),
+    }) as unknown as Response) as typeof fetch;
+  assert.equal(await sandboxHasFiles("thread-1"), true);
+
+  globalThis.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ path: "/s/thread-1", files: [] }),
+    }) as unknown as Response) as typeof fetch;
+  assert.equal(await sandboxHasFiles("thread-1"), false);
+
+  globalThis.fetch = (async () =>
+    ({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+    }) as unknown as Response) as typeof fetch;
+  assert.equal(await sandboxHasFiles("thread-1"), false);
+});
+
+test("the legacy probe runs only for a chat now inside a project", () => {
+  // A chat moved OUT of a project wrote under project-<id> and nothing retains
+  // which project that was, so there is no candidate to probe in that
+  // direction and the request would be spent for nothing.
+  const block = SIDEBAR.slice(
+    SIDEBAR.indexOf("let distinct = [...new Set(recorded.filter(Boolean))];"),
+    SIDEBAR.indexOf("if (distinct.length > 1)"),
+  );
+  assert.ok(block.includes("distinct.length === 0 && item.projectId"));
+  assert.ok(block.includes("sandboxHasFiles(threadId)"));
 });
 
 test("a sandbox tool result is wrapped even when it carries no envelope", () => {

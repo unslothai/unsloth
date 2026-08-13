@@ -304,6 +304,60 @@ def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
     assert spawned.popen == [], "the sandbox root must never be opened"
 
 
+class _SwappedForAFile:
+    """A directory the caller checked, replaced by a regular file before the open.
+
+    A tool runs inside its own sandbox and can delete it and write a file under
+    the same name. Deletion is not the only way to reach the parent: the file
+    branch names it on every platform.
+    """
+
+    def __init__(self, real: Path) -> None:
+        self._real = real
+
+    def exists(self) -> bool:
+        return True
+
+    def is_dir(self) -> bool:
+        return False
+
+    def is_file(self) -> bool:
+        return True
+
+    @property
+    def parent(self) -> Path:
+        return self._real.parent
+
+    def __str__(self) -> str:
+        return str(self._real)
+
+    def __fspath__(self) -> str:
+        return str(self._real)
+
+
+@pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
+def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp_path, request):
+    """``expect_dir`` is what the sandbox route passes, because the parent of a
+    sandbox is the root holding every other chat's."""
+    request.getfixturevalue(host)
+    root = tmp_path / "sandbox"
+    (root / "thread-1").mkdir(parents = True)
+    with pytest.raises(FileNotFoundError):
+        path_utils.reveal_in_file_manager(_SwappedForAFile(root / "thread-1"), expect_dir = True)
+    assert spawned.popen == []
+    assert spawned.startfile == []
+
+
+@pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
+def test_the_same_swap_is_still_revealed_without_expect_dir(host, spawned, tmp_path, request):
+    """The cached-model reveal points at a real file, so the flag is opt-in and
+    the default behaviour is unchanged."""
+    request.getfixturevalue(host)
+    target = tmp_path / "model.gguf"
+    path_utils.reveal_in_file_manager(_SwappedForAFile(target))
+    assert spawned.popen or spawned.startfile
+
+
 def test_a_missing_launcher_is_reported_as_a_missing_launcher(native_linux, spawned, tmp_path):
     """``xdg-open`` is absent on a headless or minimal host, and ``Popen``
     raises ``FileNotFoundError`` for the LAUNCHER exactly as it does for a
