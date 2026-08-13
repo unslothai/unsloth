@@ -776,7 +776,12 @@ def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
 
 
 def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studio, tmp_path):
-    """What `studio run` checks instead of the deleted stub, and only on Windows."""
+    """What `studio run` checks instead of the deleted stub, and only on Windows.
+
+    ``python.exe`` here is a plain file, so the import probe cannot run and the
+    on-disk layout is what answers -- the deliberate fallback for an interpreter
+    that produces no verdict at all.
+    """
     scripts = tmp_path / "Scripts"
     site_packages = tmp_path / "Lib" / "site-packages"
     scripts.mkdir(parents = True)
@@ -798,6 +803,85 @@ def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studi
     # POSIX proves a CLI with the console script itself; nothing changes there.
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     assert not studio._managed_cli_package_present(python)
+
+
+@pytest.fixture(scope = "module")
+def real_venv(tmp_path_factory):
+    """A real, empty interpreter to ask, rather than a file named python.exe.
+
+    Built without pip so site-packages starts genuinely empty; the layout is
+    POSIX here, which is the point -- the check must come from the interpreter,
+    not from guessing at Lib\\site-packages.
+    """
+    root = tmp_path_factory.mktemp("managed_cli_probe") / "venv"
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(root)],
+            check = True,
+            capture_output = True,
+            timeout = 300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+        pytest.skip(f"could not build a probe venv: {exc}")
+    python = root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    assert python.is_file()
+    site_packages = next(iter(root.glob("lib/python*/site-packages")), None) or (
+        root / "Lib" / "site-packages"
+    )
+    return python, site_packages
+
+
+def test_orphaned_install_metadata_is_not_a_runnable_cli(monkeypatch, studio, real_venv):
+    """Metadata is not an importable package, and this gate cannot accept it.
+
+    An interrupted install, or an editable install whose checkout has since
+    moved, leaves an ``unsloth-*.dist-info`` behind with nothing to import. This
+    check stands in front of the headless-public strip of .bootstrap_password,
+    so answering yes here lands exactly the lockout the gate's placement exists
+    to prevent: a public Studio with no login page and no recovery credential.
+    """
+    python, site_packages = real_venv
+    windows_layout = python.parent.parent / "Lib" / "site-packages"
+    windows_layout.mkdir(parents = True, exist_ok = True)
+    (windows_layout / "unsloth-2026.8.1.dist-info").mkdir(exist_ok = True)
+
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    assert not (site_packages / "unsloth_cli").exists(), "the probe venv must start empty"
+    assert not studio._managed_cli_package_present(python)
+
+
+def test_an_importable_package_still_answers_for_the_quarantined_stub(
+    monkeypatch, studio, real_venv
+):
+    """The quarantine case this fallback exists for keeps working.
+
+    Same venv as above, now with something the interpreter can actually resolve.
+    """
+    python, site_packages = real_venv
+    package = site_packages / "unsloth_cli"
+    package.mkdir(parents = True, exist_ok = True)
+    (package / "__init__.py").write_text("app = None\n", encoding = "utf-8")
+
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    assert studio._managed_cli_package_present(python)
+
+    # And POSIX is untouched: there the console script is what gets exec'd.
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    assert not studio._managed_cli_package_present(python)
+
+
+def test_the_import_probe_scrubs_the_cwd_exactly_as_the_trampoline_does(studio):
+    """A drift here would let a checkout in the caller's cwd answer for the venv.
+
+    `-c` puts the cwd on sys.path[0]; the trampoline drops it, so a probe that
+    did not would report a CLI the launch cannot then import.
+    """
+    scrub = (
+        "import sys, os; sys.path[:1] = [x for x in sys.path[:1] "
+        "if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    )
+    assert studio._WINDOWS_CLI_ENTRYPOINT.startswith(scrub)
+    assert studio._MANAGED_CLI_IMPORT_PROBE.startswith(scrub)
 
 
 def test_a_candidate_that_vanishes_mid_copy_does_not_stop_the_next_one(
