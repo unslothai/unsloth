@@ -108,6 +108,9 @@ async def video_download_plan(
 
     backend = get_video_backend()
     try:
+        # ONE ranking for the whole request, as the images plan does: a second call after the
+        # preflight can pick a different card than the precision was validated on.
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
@@ -147,12 +150,12 @@ async def video_download_plan(
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = request.memory_mode,
                 # Judged on the card this pick would load on, as the loader does.
-                gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids),
+                gpu_ordinal = gpu_ordinal,
             )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
-            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids),
+            gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,

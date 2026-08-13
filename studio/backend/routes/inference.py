@@ -22168,6 +22168,10 @@ async def diffusion_download_plan(
 
     backend = get_diffusion_backend()
     try:
+        # ONE ranking for the whole request: the preflight's smoke probe allocates on the card it
+        # tests, so a second call could rank a different winner and plan for a card the precision
+        # was never validated on.
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
         if kind == "pipeline" and not request.gguf_filename:
@@ -22212,7 +22216,7 @@ async def diffusion_download_plan(
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
                     # Judged on the card this pick would load on, as the loader does.
-                    gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids),
+                    gpu_ordinal = gpu_ordinal,
                 )
             else:
                 _assert_native_precision_unset(
@@ -22222,7 +22226,7 @@ async def diffusion_download_plan(
         plan = await asyncio.to_thread(
             planner.download_plan,
             request.model_path,
-            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids),
+            gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
