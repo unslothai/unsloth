@@ -405,6 +405,27 @@ test("a whole surrogate pair is a character, not a fault", () => {
   );
 });
 
+test("a multi-line quoted value is not a control-character fault", () => {
+  // _has_control_characters allows tab and newline on purpose: a grammar, a JSON
+  // schema or a chat template is routinely multi-line, and quoting one into a
+  // single argv token is what the box is for.
+  const grammar = "--grammar 'root ::= [0-9]+\n  | \"x\"'";
+  assert.ok(
+    !diagnoseExtraArgs(grammar, CATALOG).some((d) => d.level === "error"),
+    JSON.stringify(diagnoseExtraArgs(grammar, CATALOG)),
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--grammar", "a\nb\tc", "--top-k", "20"], new Set<string>()),
+    ["--grammar", "a\nb\tc", "--top-k", "20"],
+  );
+  // An escape sequence is still refused.
+  assert.ok(
+    diagnoseExtraArgs(`--grammar ${String.fromCharCode(0x1b)}x`, CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+});
+
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 
@@ -603,4 +624,38 @@ test("a diffusion classification retires the argument objection", () => {
     body,
     /if \(resolvedIsDiffusion\) \{ setExtraArgsLoadable\(true\); \}/,
   );
+});
+
+test("hydration asks under the keys the load path uses", () => {
+  const panel = pageSource.slice(
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  const body = panel.replace(/\s+/g, " ");
+  // A cached GGUF outside the active HF cache loads by its snapshot path while
+  // configId is the repo id, and the auto-switch loader reads the path-qualified
+  // key first, so an override left there is the one API loads apply.
+  assert.match(body, /modelOverrideKey\(loadId, target\.ggufVariant\), modelOverrideKey\(configId, target\.ggufVariant\), loadId,/);
+  // Including the filename-label key an early build wrote for a loose .gguf.
+  assert.match(body, /fileVariant \? \[`\$\{loadId\}:\$\{fileVariant\}`\] : \[\]/);
+});
+
+test("a rollback restores the previous model with its arguments", () => {
+  const runtime = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  // By the time this runs the TARGET is resident, so an omitted field inherits
+  // across models, which the route refuses, and the previous model would come back
+  // without the arguments it had been running.
+  assert.match(
+    runtime,
+    /stateBeforeUnload\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: stateBeforeUnload\.loadedLlamaExtraArgs \}/,
+  );
+  // And the snapshot is kept on every successful load, not only an explicit one.
+  assert.match(runtime, /loadedLlamaExtraArgs: loadLlamaExtraArgs !== undefined/);
 });

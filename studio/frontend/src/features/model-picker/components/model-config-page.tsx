@@ -79,6 +79,7 @@ import {
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
+import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
@@ -1468,7 +1469,23 @@ export function ModelConfigPage({
       setExtraArgsHydrating(false);
       return;
     }
-    const keys = [modelOverrideKey(configId, target.ggufVariant), configId];
+    // The order the auto-switch loader tries, and for the same reason: the settings
+    // UI keys a local row by the path it loads from, while configId is a derived
+    // alias, so reading the alias first lets an older entry stay the one API loads
+    // apply while the panel shows none of it. A loose .gguf was keyed by its
+    // filename label in an early build, which is the fourth candidate here.
+    const loadId = target.id;
+    const fileVariant =
+      !target.ggufVariant && loadId.toLowerCase().endsWith(".gguf")
+        ? ggufQuantLabel(loadId.replace(/\\/g, "/").split("/").pop() ?? loadId)
+        : null;
+    const keys = [
+      modelOverrideKey(loadId, target.ggufVariant),
+      modelOverrideKey(configId, target.ggufVariant),
+      loadId,
+      ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
+      configId,
+    ].filter((key, index, all) => all.indexOf(key) === index);
     // Joined because an array literal is a new value on every render.
     const identity = keys.join("\u0000");
     if (extraArgsHydrated.current === identity) {
@@ -1532,7 +1549,7 @@ export function ModelConfigPage({
       cancelled = true;
       clearTimeout(release);
     };
-  }, [configId, target.ggufVariant, target.isGguf]);
+  }, [configId, target.id, target.ggufVariant, target.isGguf]);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =

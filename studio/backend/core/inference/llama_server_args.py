@@ -14,6 +14,7 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 from __future__ import annotations
 
 import os
+import sys
 from typing import Iterable, Mapping, Optional
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
@@ -127,6 +128,21 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 # llama-server's own parser. Generous enough that a grammar or a JSON schema fits.
 MAX_EXTRA_ARG_TOKENS = 256
 MAX_EXTRA_ARGS_BYTES = 32 * 1024
+# Windows passes CreateProcess ONE string for the whole command line, capped at 32767
+# characters, and the model path, Unsloth's own flags and the quoting subprocess adds
+# all come out of the same budget. So the extras get a smaller share there: accepting
+# the full 32 KiB would pass every check here and then fail inside Popen, after the
+# load had already begun switching models.
+MAX_EXTRA_ARGS_BYTES_WINDOWS = 24 * 1024
+
+
+def max_extra_args_bytes() -> int:
+    """The size cap for this platform."""
+    return (
+        MAX_EXTRA_ARGS_BYTES_WINDOWS
+        if sys.platform == "win32"
+        else MAX_EXTRA_ARGS_BYTES
+    )
 
 
 def _flag_name(token: str) -> Optional[str]:
@@ -195,9 +211,10 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 "extra llama-server args cannot contain unpaired surrogate characters"
             ) from error
         total_bytes += len(encoded)
-        if total_bytes > MAX_EXTRA_ARGS_BYTES:
+        limit = max_extra_args_bytes()
+        if total_bytes > limit:
             raise ValueError(
-                f"extra llama-server args are too large (limit {MAX_EXTRA_ARGS_BYTES} bytes)"
+                f"extra llama-server args are too large (limit {limit} bytes)"
             )
         # execve rejects a NUL outright; the rest would reach the child's parser as
         # invisible characters and be blamed on the flag they are attached to.

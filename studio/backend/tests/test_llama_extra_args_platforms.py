@@ -203,3 +203,31 @@ def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypat
     # Not a general purge: a variable that is not a denied flag's twin, and that
     # no other reconciliation claims, is the user's own configuration and stays.
     assert env.get("LLAMA_ARG_NO_WARMUP") == "1"
+
+
+@pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+def test_the_size_cap_leaves_room_for_the_rest_of_a_windows_command(monkeypatch, platform):
+    # CreateProcess takes ONE string for the whole command line, capped at 32767
+    # characters, and the model path, Unsloth's own flags and subprocess's quoting
+    # come out of the same budget. A grammar that passed here and then failed inside
+    # Popen would do so after the load had begun switching models.
+    import sys as _sys
+
+    from core.inference import llama_server_args as lsa
+
+    _label, sys_platform, _os_name, _wsl = platform
+    monkeypatch.setattr(_sys, "platform", sys_platform, raising = False)
+    monkeypatch.setattr(lsa.sys, "platform", sys_platform, raising = False)
+
+    limit = lsa.max_extra_args_bytes()
+    if sys_platform == "win32":
+        assert limit == lsa.MAX_EXTRA_ARGS_BYTES_WINDOWS
+        assert limit < 32767 - 4096, "no room left for the command Unsloth builds"
+    else:
+        assert limit == lsa.MAX_EXTRA_ARGS_BYTES
+
+    # And the validator refuses at that cap, naming it.
+    with pytest.raises(ValueError, match = str(limit)):
+        lsa.validate_extra_args(["--grammar", "x" * (limit + 1)])
+    # Just under it is accepted on every platform.
+    assert lsa.validate_extra_args(["--grammar", "x" * (limit - 32)])

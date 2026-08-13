@@ -21,11 +21,19 @@ const DOUBLE_QUOTE_ESCAPES = /(["\\$`])/g;
 const DIGIT = /[0-9]/;
 const UNDERSCORE = /_/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: mirroring the backend's own check
-const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f\u007f]/;
+// The same rule as CONTROL_IN_ARGV below, and as the backend's own check.
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f]/;
 const INTEGER = /^-?[0-9]+$/;
-/** Control characters, which execve either refuses (NUL) or passes on as noise. */
+/**
+ * A NUL, or any other C0 control except tab and newline.
+ *
+ * The two exceptions are the backend's, from _has_control_characters, and they are
+ * not an oversight there: a grammar, a JSON schema or a chat template is routinely
+ * multi-line, and quoting one into a single argv token is exactly what the box is
+ * for. Refusing those here would disable Load over a value the launch accepts.
+ */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: that is exactly what this finds
-const CONTROL_IN_ARGV = /[\u0000-\u0008\u000A-\u001F\u007F]/;
+const CONTROL_IN_ARGV = /[\u0000-\u0008\u000B-\u001F]/;
 
 /**
  * Whether this token is something execve could not carry.

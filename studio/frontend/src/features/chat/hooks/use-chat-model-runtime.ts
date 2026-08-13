@@ -1460,6 +1460,17 @@ export function useChatModelRuntime() {
               loadedNParallel: committedSlots,
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
+              // What this model is running, for the rollback below. An omitted field
+              // inherited the resident process's list, so the last thing we knew
+              // still holds unless this was a different model.
+              loadedLlamaExtraArgs:
+                loadLlamaExtraArgs !== undefined
+                  ? loadLlamaExtraArgs.length > 0
+                    ? loadLlamaExtraArgs
+                    : null
+                  : resetsPerModelSettings
+                    ? null
+                    : (stateBeforeUnload.loadedLlamaExtraArgs ?? null),
               nUbatch: committedNUbatch,
               loadedNUbatch: committedNUbatch,
               customContextLength: keepCustomCtx,
@@ -1583,6 +1594,13 @@ export function useChatModelRuntime() {
                     : {}),
                   ...(stateBeforeUnload.loadedNUbatch != null
                     ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
+                    : {}),
+                  // Explicit, unlike the batch pair above: the failed switch left the
+                  // TARGET resident, so an omitted field here inherits across models,
+                  // which the route refuses, and the previous model would come back
+                  // without the arguments it was running.
+                  ...(stateBeforeUnload.loadedLlamaExtraArgs != null
+                    ? { llama_extra_args: stateBeforeUnload.loadedLlamaExtraArgs }
                     : {}),
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
