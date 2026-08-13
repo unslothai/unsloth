@@ -4628,7 +4628,20 @@ tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 if _has_usable_nvidia_gpu; then
-    step "gpu" "NVIDIA GPU detected"
+    # nvidia-smi is already known good here (_has_usable_nvidia_gpu ran it) and was never
+    # asked which card it found, so every NVIDIA host got the same line.
+    _nv_name=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _nv_idx=0
+        case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
+        _nv_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | awk -v idx="$_nv_idx" \
+            'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
+    fi
+    if [ -n "$_nv_name" ]; then
+        step "gpu" "$_nv_name"
+    else
+        step "gpu" "NVIDIA GPU detected"
+    fi
 elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
     _ensure_rocm_probe_env
@@ -4693,7 +4706,14 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         _gpu_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
-    if [ -n "$_gpu_disp_gfx" ]; then
+    # $_gpu_disp_mkt is already resolved above (rocminfo Marketing Name, else amd-smi
+    # Market Name) for the name -> arch inference, but the banner only ever printed the
+    # arch, so a good install named a target nobody recognises.
+    if [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ]; then
+        step "gpu" "$_gpu_disp_mkt ($_gpu_disp_gfx)"
+    elif [ -n "$_gpu_disp_mkt" ]; then
+        step "gpu" "$_gpu_disp_mkt"
+    elif [ -n "$_gpu_disp_gfx" ]; then
         step "gpu" "AMD ROCm ($_gpu_disp_gfx)"
     else
         step "gpu" "AMD ROCm"

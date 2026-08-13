@@ -3670,6 +3670,7 @@ exit 0
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
+    $NvidiaGpuName = $null
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
@@ -3688,10 +3689,27 @@ exit 0
             }
         }
     }
+    # nvidia-smi was already resolved above and never asked which card it found, so the
+    # banner said "NVIDIA GPU detected" on every NVIDIA host alike. Honour the same visible
+    # -device index the AMD probes do.
+    if ($HasNvidiaSmi -and $NvidiaSmiExe) {
+        try {
+            $nvNameOut = & $NvidiaSmiExe --query-gpu=name --format=csv,noheader 2>$null | Out-String
+            $nvNames = @($nvNameOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($nvNames.Count -gt 0) {
+                $nvIdx = if ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                $NvidiaGpuName = if ($nvIdx -lt $nvNames.Count) { $nvNames[$nvIdx] } else { $nvNames[0] }
+            }
+        } catch {}
+    }
     # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
     $HasROCm = $false
     $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
     $ROCmGpuLabel = $null
+    # Marketing name on its own ("AMD Radeon RX 9060 XT"), never decorated. Kept apart from
+    # $ROCmGpuLabel because that one doubles as the input to the name -> arch tables below;
+    # this one only ever reaches the banner.
+    $ROCmGpuName = $null
     $ROCmVersion = $null
     $ROCmGfxArch = $null
     # Declared with its neighbours, not inside the block below: the arms that read
@@ -3783,10 +3801,18 @@ exit 0
                     # Once the arch is printed, keep the ROCm wheel path.
                     $HasROCm = $true
                     $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
+                    # hipinfo prints "Name:" per device alongside gcnArchName. Anchored so
+                    # gcnArchName cannot match. Only trusted when the two lists line up, so a
+                    # format change can mislabel nothing -- the arch (which picks the wheel)
+                    # never reads this.
+                    $_hipAllNames = @([regex]::Matches($hipOut, "(?im)^\s*Name\s*:\s*(.+?)\s*$") | ForEach-Object { $_.Groups[1].Value.Trim() })
                     $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                     if ($_hipAllArches.Count -gt 0) {
                         $ROCmGfxArch  = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
                         $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                        if ($_hipAllNames.Count -eq $_hipAllArches.Count) {
+                            $ROCmGpuName = if ($_hipVisIdx -lt $_hipAllNames.Count) { $_hipAllNames[$_hipVisIdx] } else { $_hipAllNames[0] }
+                        }
                     } else {
                         $ROCmGpuLabel = "AMD ROCm"
                     }
@@ -3826,20 +3852,32 @@ exit 0
                         $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        # Market names, when this amd-smi prints them, indexed like the gfx
+                        # tokens above. Banner only; the arch that selects the wheel is never
+                        # taken from here.
+                        $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
                         if ($_smiGfxTokens.Count -gt 0) {
                             $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
                             $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                            if ($_smiNames.Count -eq $_smiGfxTokens.Count) {
+                                $ROCmGpuName = if ($_smiVisIdx -lt $_smiNames.Count) { $_smiNames[$_smiVisIdx] } else { $_smiNames[0] }
+                            }
                         } else {
                             # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
                             # including the GFX target needed for wheel index selection.
                             $smiAsicOut = ""
                             try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
                             $_asicGfxTokens = @([regex]::Matches($smiAsicOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                            $_asicNames = @([regex]::Matches($smiAsicOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
                             if ($_asicGfxTokens.Count -gt 0) {
                                 $ROCmGfxArch = if ($_smiVisIdx -lt $_asicGfxTokens.Count) { $_asicGfxTokens[$_smiVisIdx] } else { $_asicGfxTokens[0] }
                                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
-                            } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
-                                $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                                if ($_asicNames.Count -eq $_asicGfxTokens.Count) {
+                                    $ROCmGpuName = if ($_smiVisIdx -lt $_asicNames.Count) { $_asicNames[$_smiVisIdx] } else { $_asicNames[0] }
+                                }
+                            } elseif ($_asicNames.Count -gt 0) {
+                                $ROCmGpuName = if ($_smiVisIdx -lt $_asicNames.Count) { $_asicNames[$_smiVisIdx] } else { $_asicNames[0] }
+                                $ROCmGpuLabel = "AMD ROCm ($ROCmGpuName)"
                             } else {
                                 $ROCmGpuLabel = "AMD ROCm"
                             }
@@ -3869,7 +3907,7 @@ exit 0
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
-                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name; $ROCmGpuName = $wmiGpu.Name }
             } catch {}
         }
         # Peer names for the REPORT ONLY, kept apart from the scan above: that one feeds the
@@ -4250,19 +4288,31 @@ exit 0
         }
     }
 
+    # One banner string for the AMD arms below. The arch alone ("AMD ROCm (gfx1200)") named a
+    # target nobody shopping for a GPU recognises, while every probe above already had the
+    # marketing name in hand and threw it away; the backend then prints it at startup, so the
+    # installer was the only place it went missing.
+    $ROCmGpuDisplay =
+        if ($ROCmGpuName -and $ROCmGfxArch) { "$ROCmGpuName ($ROCmGfxArch)" }
+        elseif ($ROCmGpuName)               { $ROCmGpuName }
+        elseif ($ROCmGfxArch)               { "AMD ROCm ($ROCmGfxArch)" }
+        else                                { $ROCmGpuLabel }
+
+    $NvidiaGpuDisplay = if ($NvidiaGpuName) { $NvidiaGpuName } else { "NVIDIA GPU detected" }
+    $IntelGpuDisplay  = if ($IntelGpuLabel)  { $IntelGpuLabel }  else { "Intel GPU detected" }
+
     if ($HasNvidiaSmi) {
-        step "gpu" "NVIDIA GPU detected"
+        step "gpu" $NvidiaGpuDisplay
     } elseif ($script:IsIntelXpu) {
         # Ranks above every AMD branch: only true when AMD gets no GPU wheel ($AmdHasGpuWheels
         # gates the scan above), so those branches would all end on CPU.
-        step "gpu" "Intel GPU detected" "Green"
-        substep "$IntelGpuLabel"
+        step "gpu" $IntelGpuDisplay "Green"
         # The reroute below prints the index: only it knows the mirror URL and any pin.
     } elseif ($HasROCm -and -not $ROCmUnsupportedGfxArch) {
         # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
         # and only a market name, setting $HasROCm without an arch. Calling that card
         # "AMD ROCm" contradicts the wheel note this run also prints.
-        step "gpu" $ROCmGpuLabel
+        step "gpu" $ROCmGpuDisplay
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
@@ -4281,7 +4331,7 @@ exit 0
     } elseif ($ROCmGfxArch) {
         # Known arch: Unsloth setup installs AMD's bundled-runtime ROCm PyTorch wheels
         # (repo.amd.com), which ship their own runtime -- HIP SDK optional.
-        step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
+        step "gpu" $ROCmGpuDisplay "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
     } elseif ($ROCmUnsupportedGfxArch) {
