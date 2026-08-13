@@ -415,6 +415,22 @@ def _installed_llama_bundle() -> tuple[Optional[str], Optional[str]]:
         return None, None
 
 
+def slim_pairing_is_stale() -> bool:
+    """Whether a slim install still hardlinks the runtime of a different backend.
+
+    The same comparison ``run_repair_phase`` makes before it does any work, exposed
+    so the llama planner can tell a re-pair that is still owed from one already done.
+    A repair that failed retryably leaves exactly this state: llama has moved, whisper
+    has not."""
+    backend, _ = _installed_llama_bundle()
+    if backend is None:
+        return False
+    marker = read_install_marker(_find_binary())
+    if not marker or marker.get("install_kind") != "slim":
+        return False
+    return marker.get("backend") != backend
+
+
 def repair_pairing_plan() -> dict:
     """Whisper's half of a llama.cpp backend switch.
 

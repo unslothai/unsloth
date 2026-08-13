@@ -292,6 +292,51 @@ def test_switching_to_the_recorded_choice_is_refused(monkeypatch, tmp_path):
     assert action["reason"] == "already_selected"
 
 
+def test_a_failed_whisper_repair_can_be_retried_from_the_same_selection(monkeypatch):
+    """The one already-selected request that must still start a job.
+
+    The llama phase runs first and records the new backend, so a retryable whisper
+    failure (a dropped download, an install that was busy) ends with llama switched and
+    dictation still hardlinked to the old runtime. Retrying is then "already selected",
+    and refusing it leaves the reported failure unfixable except by switching llama.cpp
+    away and back.
+    """
+    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
+    monkeypatch.setattr(
+        whisper_upd, "repair_pairing_plan", lambda: {"phase": {"repair": True}}
+    )
+
+    plan = _whisper_phase_plan(
+        "cuda", llama_will_run = False, llama_skip_reason = "already_selected"
+    )
+
+    assert plan["phase"]["repair"] is True
+
+
+def test_an_already_selected_request_with_a_healthy_pairing_stays_refused(monkeypatch):
+    """Staleness is what separates an owed repair from an ordinary no-op.
+
+    Without it every already-selected request would start a whisper job that finds
+    nothing to do and reports success, replacing a clear refusal with a false one.
+    """
+    planned = []
+    monkeypatch.setattr(
+        whisper_upd, "repair_pairing_plan", lambda: planned.append(1) or {"phase": {"repair": True}}
+    )
+
+    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: False)
+    assert _whisper_phase_plan(
+        "cuda", llama_will_run = False, llama_skip_reason = "already_selected"
+    ) == {}
+
+    # Every other refusal stays refused whatever the pairing looks like.
+    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
+    assert _whisper_phase_plan(
+        "cuda", llama_will_run = False, llama_skip_reason = "local_link"
+    ) == {}
+    assert planned == []
+
+
 def test_re_selecting_a_backend_is_refused_even_when_its_asset_moved(monkeypatch, tmp_path):
     """The picker chooses a backend, not a bundle.
 

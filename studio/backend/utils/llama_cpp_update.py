@@ -962,21 +962,38 @@ def start_backend_switch(backend: str) -> dict:
     return _start_llama_job(backend_request = normalized)
 
 
-def _whisper_phase_plan(backend_request: Optional[str], *, llama_will_run: bool) -> dict:
+def _whisper_phase_plan(
+    backend_request: Optional[str],
+    *,
+    llama_will_run: bool,
+    llama_skip_reason: Optional[str] = None,
+) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or
     re-pair with the new backend for a switch.
 
     A switch that installs nothing leaves llama's ggml where it was, so there is
-    nothing to re-pair either: whisper never runs alone here, and a refused switch
-    stays refused instead of turning into a whisper-only job."""
+    nothing to re-pair either: a refused switch stays refused instead of turning into
+    a whisper-only job.
+
+    The exception is the state a failed re-pair leaves behind. The llama phase runs
+    first and records the new backend, so a retryable whisper failure (a download that
+    dropped, an install that was busy) ends with llama on the requested backend and
+    dictation still hardlinked to the old runtime. Retrying that selection is then
+    ``already_selected``, and refusing it strands the user: the only escape is to switch
+    away and back. So allow a repair-only job for that one refusal, and only while the
+    pairing is genuinely stale, which keeps an ordinary already-selected request a
+    refusal rather than a no-op job reporting success."""
     if backend_request is None:
         return (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
         )
-    if not llama_will_run:
-        return {}
     try:
         from utils import whisper_cpp_update
+        if not llama_will_run:
+            if llama_skip_reason != "already_selected":
+                return {}
+            if not whisper_cpp_update.slim_pairing_is_stale():
+                return {}
         return whisper_cpp_update.repair_pairing_plan()
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llama switch: whisper repair probe failed", error = str(exc))
@@ -1093,7 +1110,11 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 }
                 llama_spec = None
 
-        whisper_plan = _whisper_phase_plan(backend_request, llama_will_run = llama_spec is not None)
+        whisper_plan = _whisper_phase_plan(
+            backend_request,
+            llama_will_run = llama_spec is not None,
+            llama_skip_reason = llama_plan.get("skip_reason"),
+        )
         whisper_spec = (whisper_plan or {}).get("phase")
         if llama_spec is None and whisper_spec is None:
             # Nothing to run: answer with the llama refusal so the existing reasons
