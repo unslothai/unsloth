@@ -278,3 +278,36 @@ def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
 
     # Absent directory: must degrade quietly, it runs mid-install.
     im.set_no_torch_marker(True, root = install_root / "does" / "not" / "exist")
+
+
+def test_a_manifest_from_before_a_tracked_file_existed_is_not_stale(install_root, req_root):
+    """TRACKED_REQUIREMENT_FILES grows: overrides-win-arm64.txt joined it with the
+    ARM64 tier. Under plain dictionary equality every manifest written by an older
+    version would compare unequal the moment users upgraded, and every existing
+    install on every platform would take a full dependency pass on its first
+    `unsloth studio update`. A file the install never recorded says nothing about
+    whether that install is stale."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    recorded = data["requirement_files"]
+    assert recorded, "the fixture should record at least one requirement file"
+    dropped = sorted(recorded)[0]
+    del recorded[dropped]  # as if this file were added after the install
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["manifest_ok"] is True
+    assert state["reason"] != "studio_install_requirements_changed"
+
+
+def test_a_recorded_file_that_disappeared_is_still_stale(install_root, req_root):
+    """The other direction: forward tolerance must not become blindness."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    data["requirement_files"]["single-env/gone-since.txt"] = "0" * 64
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"

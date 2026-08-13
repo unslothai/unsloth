@@ -405,6 +405,28 @@ def missing_requirements(
     return missing
 
 
+def _requirements_changed(recorded: object, current: Dict[str, str]) -> bool:
+    """Has a requirement file this install was built from been edited since?
+
+    Not plain dictionary equality, because TRACKED_REQUIREMENT_FILES grows: adding
+    one (overrides-win-arm64.txt did) would otherwise make every manifest written by
+    an older version compare unequal, and every existing install on every platform
+    would take a full dependency pass on its first `unsloth studio update` after the
+    upgrade. A file the install never recorded says nothing about whether the
+    install is stale, so a key only the current version tracks is ignored.
+
+    Everything the manifest DID record still has to match, and a file that has since
+    disappeared still counts as a change, so a --local edit is caught exactly as
+    before.
+    """
+    if not isinstance(recorded, dict):
+        return True
+    for name, digest in recorded.items():
+        if current.get(name) != digest:
+            return True
+    return False
+
+
 def verify_install(
     root: Optional[Path] = None,
     req_root: Optional[Path] = None,
@@ -448,7 +470,7 @@ def verify_install(
         recorded = manifest.get("package_version")
         if current and recorded and current != recorded:
             reason = "studio_install_version_changed"
-        elif manifest.get("requirement_files") != requirement_digests(reqs):
+        elif _requirements_changed(manifest.get("requirement_files"), requirement_digests(reqs)):
             reason = "studio_install_requirements_changed"
         else:
             manifest_ok = True

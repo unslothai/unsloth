@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import sys
+import tempfile
 from unittest import mock
 from pathlib import Path
 
@@ -200,12 +201,69 @@ class TestRoutesAreGated:
         assert "require_datasets_http" not in source[index : index + 300]
 
 
+class TestTheVerdictIsKeyedOffTheTierNotTheLibrary:
+    """chat_only is a statement about the DEVICE: the frontend hides safetensors
+    models, Video and the Hub's Run button on it (pickers.tsx, model-inspector.tsx).
+
+    True on the ARM64 tier, which is a torch-less install. False on a GPU box whose
+    venv merely lost `datasets` to a half-finished update, and answering chat_only
+    there would strip features from a machine this change must not touch. So the
+    health verdict asks about the tier while the route gates ask about the library.
+    """
+
+    def test_a_missing_library_alone_is_not_the_tier(self, monkeypatch):
+        monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        monkeypatch.setattr(datasets_availability, "_is_arm64_windows", lambda: False)
+        monkeypatch.setattr(datasets_availability.sys, "prefix", tempfile.mkdtemp())
+        assert datasets_availability.datasets_available() is False
+        assert datasets_availability.is_inference_only_tier() is False
+
+    def test_a_native_arm64_windows_interpreter_is_the_tier(self, monkeypatch):
+        monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        monkeypatch.setattr(datasets_availability, "_is_arm64_windows", lambda: True)
+        assert datasets_availability.is_inference_only_tier() is True
+
+    def test_the_installer_marker_is_the_tier(self, monkeypatch):
+        """An x64 interpreter can carry the tier too: UNSLOTH_NO_DATASETS=1 is an
+        opt-in, and the marker is what survives the installer's own process."""
+        root = tempfile.mkdtemp()
+        (Path(root) / ".unsloth-no-datasets").write_text("", encoding = "utf-8")
+        monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        monkeypatch.setattr(datasets_availability, "_is_arm64_windows", lambda: False)
+        monkeypatch.setattr(datasets_availability.sys, "prefix", root)
+        assert datasets_availability.is_inference_only_tier() is True
+
+    def test_an_ordinary_install_is_never_the_tier(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        assert datasets_availability.is_inference_only_tier() is False
+
+    def test_the_force_hook_reaches_the_tier_path(self, monkeypatch):
+        """Otherwise the degraded UI could only be exercised on ARM64 Windows."""
+        monkeypatch.setenv("UNSLOTH_FORCE_NO_DATASETS", "1")
+        assert datasets_availability.is_inference_only_tier() is True
+
+
 class TestHealthVerdict:
     def test_snapshot_reports_datasets_unavailable(self):
-        """An install without datasets cannot train on ANY device, so the health
-        verdict must say so rather than repeat the hardware pass's answer."""
+        """The tier cannot train on ANY device, so the health verdict must say so
+        rather than repeat the hardware pass's answer."""
         source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
         assert 'return True, "datasets_unavailable", datasets_unavailable_detail()' in source
+
+    def test_the_verdict_asks_about_the_tier_and_the_gates_about_the_library(self):
+        """The one-line version of the class above, pinned against a future edit
+        that "simplifies" the predicate back to datasets_available()."""
+        source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+        function = source[source.index("def _hardware_snapshot(") :]
+        function = function[: function.index("\n\n\n")]
+        assert "is_inference_only_tier()" in function
+        assert "datasets_available()" not in function
+        gate = (_BACKEND / "utils" / "datasets_availability.py").read_text(encoding = "utf-8")
+        require = gate[gate.index("def require_datasets_http(") :]
+        assert "datasets_available()" in require
 
     def test_verdict_is_published_before_detection_settles(self):
         """It does not depend on the hardware pass and never changes, so gating it

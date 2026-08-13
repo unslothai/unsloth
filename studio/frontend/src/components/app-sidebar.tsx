@@ -642,7 +642,12 @@ export function AppSidebar() {
         ? // ARM64 Windows inference-only install: the datasets library (and pyarrow
           // under it) has no wheel for this architecture, so training is missing its
           // data layer whatever the GPU says. The fix is an x64 Python, not hardware.
-          "Training needs the datasets library, which has no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable Train."
+          // The backend picks the wording, as it does for MLX above: it knows whether
+          // this is the ARM64 tier or an environment that simply lost the library, and
+          // the remedy differs (a different interpreter versus `pip install datasets`).
+          chatOnlyDetail
+          ? `Training needs the datasets library. ${chatOnlyDetail}`
+          : "Training needs the datasets library, which has no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable Train."
         : chatOnlyReason === "intel_mac"
           ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
           : chatOnlyReason === "no_gpu"

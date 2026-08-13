@@ -478,3 +478,61 @@ def test_setup_bootstraps_x64_when_only_a_native_python_is_on_path():
     assert "-not $NoDatasetsMode" in block
     # And it has to run BEFORE the branch it unblocks.
     assert index < source.index("elseif (-not $HasPython) {")
+
+
+def test_the_filtered_requirements_copy_is_unique_and_removed():
+    """$PID is shared by every runspace in one PowerShell host, so two installs for
+    different Studio homes could rewrite this file while uv was reading the other
+    one's copy. And nothing deleted it, on success or failure."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    index = source.index("function Get-ArmFilteredRequirements")
+    body = source[index : source.index("\n    }", index)]
+    assert "[guid]::NewGuid()" in body
+    # The comment above the line explains why $PID was wrong, so look at the code.
+    code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+    assert "$PID" not in code
+    assert "$script:ArmFilteredRequirementFiles += $filtered" in body
+    # Cleanup removes only what this run wrote: outside the tier the function
+    # returns the CALLER's requirements file, and deleting that would take a file
+    # out of the installed wheel.
+    cleanup = source[source.index("function Remove-ArmFilteredRequirements") :][:400]
+    assert "foreach ($path in $script:ArmFilteredRequirementFiles)" in cleanup
+    assert source.count("Remove-ArmFilteredRequirements") >= 3  # definition + both call sites
+
+
+def test_setup_adopts_the_tier_for_an_arm64_venv_with_no_marker():
+    """Otherwise `unsloth studio update` dead-ends forever on an environment built
+    before the tier existed, or one whose install died before the marker landed:
+    the arch gate refuses the venv, and setup.ps1 cannot go and fetch an x64
+    interpreter the way install.ps1 can. The desktop app will not download a new
+    build until its backend update succeeds, so that loop strands the app too."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    index = source.index('if (-not $NoDatasetsMode -and (Get-HostMachineArch) -eq "arm64"')
+    block = source[index : index + 1200]
+    assert '(Get-PythonPlatformTag $ReusedSetupPython) -eq "win-arm64"' in block
+    assert "$NoDatasetsMode = $true" in block
+    assert '$env:UNSLOTH_NO_DATASETS = "1"' in block  # so the marker is written this time
+    # And it says so, with the remedy: this is a reduced install, not a silent one.
+    assert "inference-only" in block
+    assert "python.org" in block
+    # After the marker lookup, or a tier venv would take this path instead.
+    assert source.index(".unsloth-no-datasets") < index
+
+
+def test_setup_reads_the_tier_from_the_manifest_too():
+    """The marker can be lost on its own: set_no_datasets_marker swallows OSError,
+    and a copy or restore that skipped dotfiles leaves the manifest behind without
+    it. Get-PersistedNoTorch already reads the manifest for no-torch; the tier has
+    to be readable the same way or an update judges a tier venv by the full rule."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    index = source.index("$_payload.no_datasets")
+    block = source[max(0, index - 900) : index + 400]
+    assert "unsloth_install_manifest.json" in block
+    assert "$NoDatasetsMode = (" in block
+    # Env var, then marker, then manifest: the variable is what install.ps1 exports
+    # for its own run, and the marker is what survives an interrupted pass.
+    assert (
+        source.index("$NoDatasetsMode = ($null -ne $env:UNSLOTH_NO_DATASETS")
+        < source.index(".unsloth-no-datasets")
+        < index
+    )

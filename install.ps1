@@ -4310,6 +4310,18 @@ exit 0
     # path when the tier is off. install_python_stack.py does the same filtering for the
     # steps it owns, but this branch hands a requirements file straight to uv, so an
     # unfiltered sqlite-vec/datasets line here fails the whole install on ARM64.
+    # Only the copies THIS run wrote. Cleanup keys off the list rather than the path,
+    # because outside the tier the function returns the caller's own requirements file
+    # and deleting that would take a file out of the installed wheel.
+    $script:ArmFilteredRequirementFiles = @()
+
+    function Remove-ArmFilteredRequirements {
+        foreach ($path in $script:ArmFilteredRequirementFiles) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        }
+        $script:ArmFilteredRequirementFiles = @()
+    }
+
     function Get-ArmFilteredRequirements {
         param([string]$Path)
         if (-not $script:ArmInferenceOnly -or -not $Path -or -not (Test-Path -LiteralPath $Path)) { return $Path }
@@ -4332,8 +4344,12 @@ exit 0
             }
             $line
         }
-        $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f $PID)
+        # A fresh name per call, not per process. $PID is shared by every runspace in
+        # one PowerShell host, so two installs for different Studio homes could
+        # otherwise rewrite this file while uv was reading the other one's copy.
+        $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f ([guid]::NewGuid().ToString("N")))
         Set-Content -LiteralPath $filtered -Value $kept -Encoding UTF8
+        $script:ArmFilteredRequirementFiles += $filtered
         substep "windows on arm: dropped $($script:ArmInferenceSkipPackages -join ', ') (no win_arm64 wheels)"
         return $filtered
     }
@@ -4373,6 +4389,7 @@ exit 0
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
+                Remove-ArmFilteredRequirements
             }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
@@ -4512,6 +4529,7 @@ exit 0
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
+                Remove-ArmFilteredRequirements
             }
         } elseif ($script:ArmInferenceOnly) {
             # ARM64 inference-only: unsloth's released metadata declares datasets a hard

@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 import sysconfig
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,40 @@ def require_datasets() -> None:
 def unavailable_detail() -> str:
     """The user-facing reason, for a 503 body or the health payload."""
     return _UNAVAILABLE_MSG
+
+
+def is_inference_only_tier() -> bool:
+    """Is this the ARM64 inference-only INSTALL, rather than merely a venv that
+    happens to be missing ``datasets``?
+
+    The distinction decides one thing only: whether /api/health reports the whole
+    host as chat-only. `chat_only` means "this device can serve GGUF chat and
+    nothing else" -- the frontend hides safetensors models, Train, Video and the
+    Hub's Run button on it. That is the truth on the tier, which is a torch-less
+    ARM64 install. It is NOT the truth on an ordinary Linux or x64 Windows box
+    whose venv lost `datasets` to a half-finished update: that host still has its
+    GPU, still runs safetensors, and answering chat_only there would take features
+    away from a machine this change is not supposed to touch at all.
+
+    So the health verdict keys off the tier, while the 503 route gates key off the
+    library, which is the right question for each.
+
+    The tier is recognised the same two ways the installer records it: a native
+    ARM64 interpreter (which cannot install pyarrow at any version), or the marker
+    install_manifest writes, which also survives an interrupted pass.
+    """
+    if datasets_available():
+        return False
+    if os.environ.get("UNSLOTH_FORCE_NO_DATASETS") == "1":
+        # The test and reproduction hook: forcing the library absent forces the tier
+        # with it, so the degraded UI can be exercised off ARM64 Windows.
+        return True
+    if _is_arm64_windows():
+        return True
+    try:
+        return (Path(sys.prefix) / ".unsloth-no-datasets").exists()
+    except OSError:
+        return False
 
 
 def require_datasets_http() -> None:

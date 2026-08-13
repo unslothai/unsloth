@@ -184,7 +184,7 @@ from utils.native_tls import activate_native_tls
 
 # Cheap and import-safe without the library present: find_spec only, no datasets import.
 from utils.datasets_availability import (
-    datasets_available,
+    is_inference_only_tier,
     require_datasets_http,
     unavailable_detail as datasets_unavailable_detail,
 )
@@ -1456,15 +1456,20 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
     `device_type` as authoritative, and the sidebar's recovery poll runs only while it reads
     `chat_only_reason == "mlx_unavailable"`, so one such reply hides Train for the session.
     """
-    # Ahead of the detection guard, deliberately: an install without the datasets
-    # library cannot train on ANY device, so this verdict does not depend on the
-    # hardware pass and never changes once the install is in that tier. Reporting
-    # "still detecting" instead would leave the UI polling for a verdict that is
-    # already known, and reporting the hardware pass's own answer would tell an ARM64
-    # Windows box that training is available (issue #8495). Not inside
-    # detect_hardware(): every training-capable branch there returns early, and this
-    # is the one place the verdict is published.
-    if not datasets_available():
+    # Ahead of the detection guard, deliberately: the ARM64 inference-only install
+    # cannot train on ANY device, so this verdict does not depend on the hardware
+    # pass and never changes. Reporting "still detecting" instead would leave the UI
+    # polling for a verdict that is already known, and reporting the hardware pass's
+    # own answer would tell an ARM64 Windows box that training is available (issue
+    # #8495). Not inside detect_hardware(): every training-capable branch there
+    # returns early, and this is the one place the verdict is published.
+    #
+    # The TIER, not merely a missing `datasets`. chat_only takes safetensors models,
+    # Video and the Hub's Run button away from the whole UI, which is the truth on a
+    # torch-less ARM64 install and a lie on a GPU box whose venv lost the library to
+    # a half-finished update. Those hosts keep their own hardware verdict here and
+    # meet the 503 gate at the endpoints that actually need datasets.
+    if is_inference_only_tier():
         return True, "datasets_unavailable", datasets_unavailable_detail()
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
