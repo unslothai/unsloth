@@ -53,6 +53,15 @@ recorded and never asserted, and that is not an oversight.
   seen are captured and reported. An engine that returns N empty strings
   scores them all the same, so the reward checks alone would call that a
   clean run.
+* At least one logged `grad_norm` must be finite and non-zero. Under fp16 on
+  this card every step can overflow and be skipped while loss, reward and
+  reward_std are all still logged, so without this the leg passes on a run
+  that generated, scored and updated nothing.
+* The final `fast_generate` runs with the TRAINED adapter, transferred into
+  the engine with `save_lora` + `load_lora`. Generating with
+  `lora_request=None` reads the base weights and passes whether or not the
+  adapter can reach vLLM at all, which is the second of the two questions
+  above.
 
 `--probe` records everything and asserts nothing, for the deliberate one-off
 feasibility runs.
@@ -209,11 +218,28 @@ def build_dataset(rows: list[dict]):
     )
 
 
-def train(args) -> dict:
+def train(args, report: dict | None = None) -> dict:
+    """One GRPO cycle. Writes progress into ``report`` as it goes.
+
+    The second argument is what makes the feasibility verdict survive a
+    crash. Everything used to be returned at the end, so an exception
+    anywhere after the engine was built threw away the fact that it HAD been
+    built, and the report then said `engine_built: false` -- the opposite of
+    what happened, and the exact distinction this probe exists to draw
+    between "vLLM cannot start on sm_75" and "vLLM started and GRPO failed
+    later". Facts are published as soon as they are known instead.
+    """
     import torch
     from unsloth import FastLanguageModel
 
     result: dict = {}
+    if report is None:
+        report = {}
+
+    def record(key, value):
+        result[key] = value
+        report[key] = value
+
     t0 = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
@@ -223,8 +249,8 @@ def train(args) -> dict:
         max_lora_rank = args.lora_rank,
         gpu_memory_utilization = args.gpu_memory_utilization,
     )
-    result["load_seconds"] = round(time.time() - t0, 1)
-    result["engine_built"] = True
+    record("load_seconds", round(time.time() - t0, 1))
+    record("engine_built", True)
 
     # `unsloth/Qwen3-4B-Base` is a BASE model and ships no chat template, so
     # TRL's `maybe_apply_chat_template` raises on the first training step:
@@ -347,11 +373,34 @@ def train(args) -> dict:
     # Generation through the vLLM path after training. `fast_generate` is
     # what the notebook uses and it is a different code path from the
     # trainer's own rollouts, so a failure here is not covered above.
+    #
+    # WITH the trained adapter. `fast_generate` is the vLLM engine's own
+    # generate, and the trained LoRA reaches it only through a lora_request
+    # built by `save_lora` + `load_lora`; passing None generates from the base
+    # weights, which passes whether or not the adapter can be transferred into
+    # the engine at all. Getting the adapter across is the second of the two
+    # questions this leg exists to answer, so the request is built, what
+    # happened is recorded, and `failures_for` asserts on it.
+    lora_state: dict = {"requested": True, "applied": False}
+    lora_request = None
+    try:
+        lora_dir = str(Path(args.outdir) / "grpo_lora")
+        model.save_lora(lora_dir)
+        lora_request = model.load_lora(lora_dir)
+        lora_state.update(applied = lora_request is not None, path = lora_dir)
+        if lora_request is None:
+            lora_state["error"] = "load_lora returned None"
+    except BaseException as exc:  # noqa: BLE001
+        lora_state["error"] = f"{type(exc).__name__}: {str(exc)[:400]}"
+    record("fast_generate_lora", lora_state)
+
     try:
         from vllm import SamplingParams
 
         params = SamplingParams(temperature = 1.0, top_k = 50, max_tokens = 32, seed = SEED)
-        out = model.fast_generate([rows[0]["question"]], sampling_params = params, lora_request = None)
+        out = model.fast_generate(
+            [rows[0]["question"]], sampling_params = params, lora_request = lora_request
+        )
         result["fast_generate"] = out[0].outputs[0].text
     except BaseException as exc:  # noqa: BLE001
         result["fast_generate"] = None
@@ -366,10 +415,21 @@ def train(args) -> dict:
     return result
 
 
+def _is_finite(value) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
+
+
 def failures_for(result: dict, args) -> list[str]:
     """The GRPO assertions. See this file's docstring for why not the loss."""
     failures: list[str] = []
     history = result.get("log_history") or []
+    # The training steps, not every row: `train()` appends a summary entry
+    # carrying the run totals and no loss, and it is not a step.
+    steps = [e for e in history if "loss" in e]
     rewards = [e["reward"] for e in history if e.get("reward") is not None]
     if not rewards:
         failures.append(
@@ -378,6 +438,17 @@ def failures_for(result: dict, args) -> list[str]:
         )
     elif any(r != r or r in (float("inf"), float("-inf")) for r in rewards):
         failures.append(f"non-finite reward: {rewards}")
+    else:
+        # ON EVERY STEP, which is what this file's docstring claims. Any
+        # nonempty subset used to satisfy it, so a step whose reward functions
+        # never ran was filtered out and the remaining ones covered for it.
+        missing = [e.get("step") for e in steps if e.get("reward") is None]
+        if missing:
+            failures.append(
+                f"the reward functions did not run on every step: no reward was "
+                f"logged for step(s) {missing} of {len(steps)}. A reward on some "
+                f"steps is not the invariant this leg asserts."
+            )
 
     stds = [e["reward_std"] for e in history if e.get("reward_std") is not None]
     if not stds:
@@ -400,9 +471,30 @@ def failures_for(result: dict, args) -> list[str]:
             f"identical rewards above are not evidence of anything"
         )
 
-    if len(result.get("metrics") or []) != args.max_steps:
+    metrics = result.get("metrics") or []
+    if len(metrics) != args.max_steps:
+        failures.append(f"expected {args.max_steps} logged steps, got {len(metrics)}")
+
+    # Under fp16 on this card every step can overflow and be skipped while
+    # loss, reward and reward_std are all still logged, and base-model
+    # generation still returns text -- so the length check above is satisfied
+    # by a run that applied no optimizer update at all. Only decidable where
+    # grad_norm was logged: a trainer that stopped logging it says nothing.
+    norms = [m.get("grad_norm") for m in metrics if m.get("grad_norm") is not None]
+    applied = [g for g in norms if _is_finite(g) and float(g) != 0.0]
+    if norms and not applied:
         failures.append(
-            f"expected {args.max_steps} logged steps, got {len(result.get('metrics') or [])}"
+            f"no optimizer update was applied: every logged grad_norm is zero or "
+            f"non-finite ({norms}). The fp16 scaler skips the step it overflowed on, "
+            f"so this run generated, scored and updated nothing."
+        )
+
+    lora = result.get("fast_generate_lora")
+    if lora is not None and lora.get("requested") and not lora.get("applied"):
+        failures.append(
+            f"the trained adapter could not be handed to the vLLM engine, so the "
+            f"final generation ran on the base weights and proves nothing about "
+            f"training: {lora.get('error')}"
         )
 
     if result.get("fast_generate") is None:
@@ -596,7 +688,7 @@ def main() -> int:
 
     failures: list[str] = []
     try:
-        result = train(args)
+        result = train(args, report)
         report.update(result)
         failures = failures_for(report, args)
     except BaseException as exc:  # noqa: BLE001
