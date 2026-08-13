@@ -535,6 +535,10 @@ def _resolve_auto() -> str:
     -- or ST if its binary is missing. GPU check is torch-free (nvidia-smi)."""
     from core.inference.llama_cpp import LlamaCppBackend
 
+    # Unfiltered probe on purpose: the winner here runs under PyTorch, so the
+    # ROCm arch gate (which asks what the installed llama.cpp prebuilt was built
+    # for, #7624) must not apply. A device that prebuilt lacks kernels for is
+    # usually still a perfectly good sentence-transformers device.
     if LlamaCppBackend._get_gpu_free_memory():
         return "sentence-transformers"
     if LlamaCppBackend._find_llama_server_binary():

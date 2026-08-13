@@ -113,8 +113,8 @@ def _run_cpu_fallback_load(
     mmproj.write_bytes(b"projector")
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None: []
-    backend._get_gpu_free_memory = lambda _binary = None: []
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
@@ -1198,8 +1198,8 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None: [(0, 8_000, 16_000)]
-    backend._get_gpu_free_memory = lambda _binary = None: [(0, 8_000)]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 8_000, 16_000)]
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 8_000)]
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
