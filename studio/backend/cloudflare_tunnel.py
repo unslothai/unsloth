@@ -370,11 +370,13 @@ def _connector_reports_ready(address: str, timeout: float) -> bool:
     # Never proxy cloudflared's loopback readiness endpoint.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(f"http://{address}/ready", timeout = timeout) as response:
-            body = json.loads(response.read(4096))
+        # The endpoint answers 200 only while an edge connection is registered
+        # and 503 otherwise, which urllib raises on. Reaching the body is the
+        # whole answer, so the shape it reports the count in need not hold.
+        with opener.open(f"http://{address}/ready", timeout = timeout):
+            return True
     except Exception:
         return False
-    return int(body.get("readyConnections") or 0) > 0
 
 
 def _verify_through_edge(host: str, deadline: float) -> bool:
@@ -1848,6 +1850,11 @@ def _secure_credentials(source: Path, tunnel_id: str) -> Path:
     except OSError:
         target = source
     _chmod(target, 0o600)
+    if not target.is_file():
+        # Routing the hostname and writing an identity for a tunnel that has no
+        # credentials to run leaves setup blocked by the identity it wrote, with
+        # nothing that can start it.
+        raise ProvisioningError("credentials_missing", str(target))
     return target
 
 
@@ -1924,11 +1931,12 @@ def _reap_login_child(record: dict) -> bool:
         return not _pid_alive(pid)
 
 
-def _delete_our_certificate(record: dict, *, required: bool = False) -> None:
+def _delete_our_certificate(record: dict, *, required: bool = False) -> bool:
+    """Remove the certificate this run wrote. False when it is still there."""
     path = origin_cert_path()
     digest = record.get("cert_digest")
     if not digest:
-        return
+        return True
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(fd, "rb") as certificate:
@@ -1940,11 +1948,14 @@ def _delete_our_certificate(record: dict, *, required: bool = False) -> None:
                 current.st_ino,
             ):
                 _unlink(path, required = required)
+                return not path.exists()
     except FileNotFoundError:
-        return
+        return True
     except OSError:
         if required:
             raise
+        return False
+    return True
 
 
 def _settle(
@@ -1985,7 +1996,12 @@ def _settle(
         _abandon(binary, record.get("tunnel_names") or ())
         if record.get("credentials"):
             _unlink(Path(str(record["credentials"])))
-    _delete_our_certificate(record, required = teardown)
+    if not _delete_our_certificate(record, required = teardown):
+        # The digest in this record is the only proof that Studio wrote that
+        # account-wide certificate, so dropping the record now would strand a
+        # file no later run could delete. The next launch settles it instead.
+        logger.warning("Cloudflare certificate could not be removed; keeping its setup record.")
+        return False
     _discard(_RECORD, required = teardown)
     return teardown
 

@@ -142,6 +142,8 @@ const CUSTOM_ERROR_KEYS: Record<string, TranslationKey> = {
   // biome-ignore lint/style/useNamingConvention: backend error codes
   route_failed: "settings.general.remoteAccess.errorSetupFailed",
   // biome-ignore lint/style/useNamingConvention: backend error codes
+  credentials_missing: "settings.general.remoteAccess.errorSetupFailed",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
   connector_stop_failed: "settings.general.remoteAccess.errorTeardownFailed",
   // biome-ignore lint/style/useNamingConvention: backend error codes
   teardown_failed: "settings.general.remoteAccess.errorTeardownFailed",

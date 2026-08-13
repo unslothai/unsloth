@@ -1687,6 +1687,40 @@ def test_the_readiness_probe_ignores_an_ambient_proxy(monkeypatch):
     assert not any(proxies)
 
 
+def test_the_readiness_probe_answers_from_the_status_cloudflared_sends():
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    connections = [0]
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self):  # noqa: N802
+            # cloudflared's own /ready: 200 once a connection is registered, 503
+            # before that, and a body whose shape this probe does not depend on.
+            status = 200 if connections[0] else 503
+            body = json.dumps({"status": status, "readyConnections": connections[0]})
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    address = f"127.0.0.1:{server.server_port}"
+    try:
+        assert ct._connector_reports_ready(address, 5.0) is False
+        connections[0] = 1
+        assert ct._connector_reports_ready(address, 5.0) is True
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_the_watch_deadline_does_not_drift_outward(monkeypatch):
     monkeypatch.setattr(ct, "_tunnel_generation", 12)
     monkeypatch.setattr(ct, "_tunnel_url", "https://h.example.com")
@@ -1863,6 +1897,44 @@ def test_a_successful_run_records_the_identity_and_removes_the_certificate(cf):
     assert credentials.stat().st_mode & 0o777 == 0o600
     assert not any({"--overwrite-dns", "-f"} & set(call) for call in cf.calls)
     assert 999_000 not in process_lifetime._tracked_pids
+
+
+def test_a_tunnel_whose_credentials_never_arrived_is_refused_before_the_route(cf):
+    # Routing and writing an identity here would leave setup blocked by that
+    # identity while nothing could start the tunnel it names.
+    missing = cf.cert_dir / "creds" / f"{_TUNNEL_ID}.json"
+    cf.create_outcomes = [
+        (0, f"Created tunnel x with id {_TUNNEL_ID}\nTunnel credentials written to {missing}.")
+    ]
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "credentials_missing"
+    assert ct.read_identity() is None
+    assert not any(call[0] == "route" for call in cf.calls)
+    assert ct._string_list(ct._ORPHANS) == []
+
+
+def test_a_certificate_that_cannot_be_removed_keeps_the_record_that_owns_it(cf, monkeypatch):
+    # The digest is the only proof Studio wrote this account-wide file, so a
+    # failed deletion has to keep the record rather than strand the file.
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == _cert(cf) else real_unlink(path, **kw),
+    )
+
+    identity = _provision()
+    assert identity["hostname"] == _HOST
+    assert _cert(cf).exists()
+    record = ct._read(ct._RECORD)
+    assert record["cert_digest"]
+
+    # Once the file can be removed the retained record settles it at next launch.
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    _settle()
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
 
 
 def test_teardown_removes_only_local_credentials_for_manual_cloudflare_cleanup(cf):
