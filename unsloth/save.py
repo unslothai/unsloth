@@ -2136,16 +2136,23 @@ def save_to_gguf(
                     return quantize_gguf(**quant_kwargs)
             except Exception as e:
                 # What this pass was going to write, so "no room" is judged
-                # against the output rather than a constant. Best effort: an
-                # unreadable base just falls back to the fixed floor.
+                # against the output rather than a constant. Priced as a lower
+                # bound, not the reclamation estimate: that one is deliberately
+                # generous, and here a size that comes out high calls a disk full
+                # that had the room and hides the rebuild advice below. Best
+                # effort -- an unreadable base, or a type with no known width,
+                # just falls back to the fixed floor.
                 try:
-                    _needed = int(
+                    _ratio = _gguf_output_size_ratio(
+                        quant_method, first_conversion, upper_bound = False,
+                    )
+                    _needed = None if _ratio is None else int(
                         sum(
                             os.path.getsize(f)
                             for f in initial_files
                             if os.path.isfile(f) and "-mmproj" not in os.path.basename(f).lower()
                         )
-                        * _gguf_output_size_ratio(quant_method, first_conversion)
+                        * _ratio
                     )
                 except OSError:
                     _needed = None
@@ -3564,8 +3571,8 @@ def _gguf_type_bits(dtype):
     return float(nominal.group(1)) if nominal else None
 
 
-def _gguf_output_size_ratio(quant_method, first_conversion):
-    """Upper bound on one output's size as a multiple of the base GGUF's.
+def _gguf_output_size_ratio(quant_method, first_conversion, upper_bound = True):
+    """One output's size as a multiple of the base GGUF's, rounded either way.
 
     Both directions cost something. Charging every quantized pass a whole copy of
     the base deletes a merge an export with room to spare would have kept (a
@@ -3573,16 +3580,27 @@ def _gguf_output_size_ratio(quant_method, first_conversion):
     by half, since f32 off an f16 base writes four bytes a weight against two, and
     under-counting costs the export outright.
 
-    So price each pass by its own width, rounded so the answer can only come out
-    high, and measure the base the same way rather than assuming it: q8_0 is a
-    direct-convert outtype, so `first_conversion` is not always 16-bit.
+    So price each pass by its own width, and measure the base the same way rather
+    than assuming it: q8_0 is a direct-convert outtype, so `first_conversion` is
+    not always 16-bit.
+
+    `upper_bound` picks which way that price is rounded, because the two callers
+    are hurt by opposite errors and cannot share one number. Reclamation must not
+    under-count -- too small an estimate keeps a merge the quants then have no
+    room for -- so it adds each k-quant's block overhead and charges an
+    unrecognised type a whole copy of the base. Diagnosis must not over-count:
+    an inflated estimate reports a full disk for a failure that was nothing of
+    the sort and swallows the llama.cpp rebuild advice, so it takes each type's
+    nominal width (Q4_K_M really lands near 4.5 bits, never below 4) and returns
+    None for a type it cannot measure, which leaves the caller on the fixed floor.
     """
     base = _gguf_type_bits(first_conversion) or 16.0
     target = _gguf_type_bits(quant_method)
     if target is None:
-        # Unrecognised: charge a whole copy of the base, as every method used to get.
-        return 1.0
-    if str(quant_method).lower() not in _GGUF_BITS_PER_WEIGHT:
+        # Unrecognised: charge a whole copy of the base, as every method used to
+        # get -- or, for a diagnosis, admit the size is unknown.
+        return 1.0 if upper_bound else None
+    if upper_bound and str(quant_method).lower() not in _GGUF_BITS_PER_WEIGHT:
         target += _QUANT_OVERHEAD_BITS
     return target / base
 
@@ -3624,7 +3642,7 @@ def _merge_weight_files(model_directory, names):
     `save_pretrained` actually produces -- the index names its shards outright
     when it wrote one, and the naming convention answers when it did not.
     """
-    indexed = set()
+    indexed, spent_indexes = set(), set()
     for index_name in _WEIGHT_INDEX_NAMES:
         if index_name not in names:
             continue
@@ -3638,7 +3656,19 @@ def _merge_weight_files(model_directory, names):
             continue
         if _is_one_whole_shard_set(listed, names):
             indexed.update(listed)
-    return sorted(n for n in names if n in indexed or _MERGE_WEIGHT_NAME.match(n))
+            # The index goes with the shards it named. `names` is already
+            # filtered to what this export wrote, so reaching here means this
+            # export wrote this index too, and leaving it behind is not neutral:
+            # it points at files that are about to be deleted, and on the next
+            # export into the same directory the provenance snapshot calls that
+            # leftover preexisting and filters it out, taking with it the only
+            # way a shard set under a stem `_MERGE_WEIGHT_NAME` misses is ever
+            # found again.
+            spent_indexes.add(index_name)
+    return sorted(
+        n for n in names
+        if n in indexed or n in spent_indexes or _MERGE_WEIGHT_NAME.match(n)
+    )
 
 
 def _is_one_whole_shard_set(listed, names):

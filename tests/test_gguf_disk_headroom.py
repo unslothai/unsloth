@@ -776,3 +776,103 @@ def test_the_vlm_projector_is_not_charged_to_every_quant(tmp_path, monkeypatch, 
     _with_free(monkeypatch, save_mod, 20)
     assert _reclaim(save_mod, merge, gguf, bases + [str(mmproj)]) == 0
     assert [f for f in os.listdir(merge) if _is_merge_shard(f)]
+
+
+def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
+    """The two callers of the ratio are hurt by opposite errors.
+
+    Reclamation rounds up on purpose -- an estimate that comes out low keeps a
+    merge the quants then have no room for. Reusing that same number to decide
+    whether a *failure* was about disk inverts the cost: Q4_K_M is charged 5.5
+    bits a weight against a real 4.5, so a 60GB BF16 base is called 20.6GB when
+    the output is about 17GB, and an unrelated quantizer failure with 19GB free
+    is reported as a full disk while the rebuild advice that would have fixed it
+    is swallowed. Diagnosis therefore prices each type at its nominal width,
+    which no k-quant is ever under.
+    """
+    upper = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
+    lower = save_mod._gguf_output_size_ratio("q4_k_m", "bf16", upper_bound = False)
+    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the two bounds
+    # have to sit either side of it.
+    assert lower < 4.5 / 16 < upper
+
+    # Codex's case, run through the helper the way the call site does.
+    base_bytes = 60 * GB
+    failure = RuntimeError("unknown model architecture")
+    free = types.SimpleNamespace(total = 0, used = 0, free = int(19 * GB))
+    original = save_mod.shutil.disk_usage
+    save_mod.shutil.disk_usage = lambda *_a, **_k: free
+    try:
+        assert not save_mod._gguf_failure_looks_like_disk(
+            failure, ".", needed_bytes = int(base_bytes * lower)
+        ), "19GB free for a ~17GB output is not a full disk"
+        # A disk that genuinely cannot hold even the nominal output still is one.
+        short = types.SimpleNamespace(total = 0, used = 0, free = int(8 * GB))
+        save_mod.shutil.disk_usage = lambda *_a, **_k: short
+        assert save_mod._gguf_failure_looks_like_disk(
+            failure, ".", needed_bytes = int(base_bytes * lower)
+        )
+    finally:
+        save_mod.shutil.disk_usage = original
+
+    # Full-precision outtypes carry no block overhead, so both bounds agree.
+    for dtype in ("f16", "bf16", "f32"):
+        assert save_mod._gguf_output_size_ratio(dtype, "bf16") == (
+            save_mod._gguf_output_size_ratio(dtype, "bf16", upper_bound = False)
+        )
+    # A width the diagnosis cannot measure is not guessed at: None puts the
+    # caller back on the fixed floor rather than charging a whole base copy.
+    assert save_mod._gguf_output_size_ratio("something_new", "bf16") == 1.0
+    assert save_mod._gguf_output_size_ratio("something_new", "bf16", upper_bound = False) is None
+
+    # And the call site actually asks for the lower bound.
+    assert "upper_bound = False" in _save_to_gguf_source(save_mod)
+
+
+def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, save_mod):
+    """An index this export wrote goes with the shards it named.
+
+    Reading the index is the one way a shard set under a stem
+    `_MERGE_WEIGHT_NAME` does not know still gets reclaimed. Deleting those
+    shards and leaving the index behind breaks that on the second export into
+    the same directory: the provenance snapshot now sees the leftover index and
+    classifies it as the caller's, so it is filtered out before the reading, the
+    non-canonical shards are invisible to the name matcher, and a tight-disk
+    rerun reclaims nothing. It also leaves an index pointing at files that no
+    longer exist.
+    """
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    for name in os.listdir(merge):
+        if _is_merge_shard(name):
+            os.remove(os.path.join(merge, name))
+
+    shards = ["archive-00001-of-00002.safetensors", "archive-00002-of-00002.safetensors"]
+
+    def _write_merge():
+        for name in shards:
+            with open(os.path.join(merge, name), "wb") as fh:
+                fh.truncate(int(30 * GB))
+        index = {"weight_map": {f"layer.{i}": name for i, name in enumerate(shards)}}
+        with open(
+            os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8"
+        ) as fh:
+            json.dump(index, fh)
+
+    # First export: the directory is this export's own, so everything goes.
+    _write_merge()
+    _with_free(monkeypatch, save_mod, 20)
+    assert _reclaim(save_mod, merge, gguf, bases) > 0
+    for name in shards:
+        assert not os.path.exists(os.path.join(merge, name))
+    assert not os.path.exists(
+        os.path.join(merge, "model.safetensors.index.json")
+    ), "the index named the shards that were just deleted and cannot outlive them"
+
+    # Second export into the same directory, provenance snapshotted the way
+    # `unsloth_save_pretrained_gguf` does, before the merge writes.
+    preexisting = frozenset(os.listdir(merge))
+    _write_merge()
+    freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)
+    assert freed > 0, "the second export reclaimed nothing"
+    for name in shards:
+        assert not os.path.exists(os.path.join(merge, name))
