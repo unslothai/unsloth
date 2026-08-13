@@ -115,6 +115,7 @@ from .disk_utils import (
     estimate_gguf_export_bytes,
     free_bytes,
     kaggle_tmp_redirect,
+    model_16bit_bytes,
 )
 
 IS_COLAB_ENVIRONMENT = is_colab_environment()
@@ -2921,6 +2922,18 @@ def _hub_cache_prewarm_disabled(disable):
             os.environ[key] = previous
 
 
+def _compressed_scheme_weight_bits(scheme):
+    """Bits per weight of a compressed-tensors sibling checkpoint.
+
+    Four for every scheme that quantizes weights to 4 bits (`W4*`, and any
+    `*FP4` microscaling variant), eight for the rest. Rounded the way
+    unsloth_zoo rounds its GGUF table: over-estimating costs headroom,
+    under-estimating costs the whole export.
+    """
+    scheme = str(scheme).upper()
+    return 4 if scheme.startswith("W4") or "FP4" in scheme else 8
+
+
 def _preflight_merge_disk(
     model,
     save_directory,
@@ -2941,17 +2954,29 @@ def _preflight_merge_disk(
     """
     if push_to_hub:
         return save_directory
-    if str(save_method).lower() not in ("merged_16bit", "mxfp4"):
+    # `unsloth_save_model` normalizes spaces before it dispatches, so
+    # "merged 16bit" is the same full merge as "merged_16bit" and has to be
+    # measured as one. `_normalize_compressed_method` normalizes the same way.
+    method = str(save_method).lower().strip().replace("-", "_").replace(" ", "_")
+    try:
+        # Every compressed export keeps the 16-bit merge at `save_directory`
+        # and writes a quantized sibling next to it, so all of them belong
+        # here, not just mxfp4.
+        compressed = _normalize_compressed_method(method)
+    except Exception:
+        # An unsupported near-miss name raises later, where the message is.
+        return save_directory
+    if compressed is None and method != "merged_16bit":
         return save_directory
     try:
-        need = estimate_gguf_export_bytes(
-            model = model,
-            quantization_methods = (),
-            needs_merge = True,
-            keep_intermediate_gguf = False,
-        )
+        # A merge writes 2 bytes per logical parameter and no GGUF at all, so
+        # this is `model_16bit_bytes` and not the GGUF export estimate: that
+        # one always prices an intermediate GGUF conversion this never does.
+        need = model_16bit_bytes(model)
         if need <= 0:
             return save_directory
+        if compressed is not None:
+            need += int(need * _compressed_scheme_weight_bits(compressed[0]) / 16)
         new_directory, message = kaggle_tmp_redirect(
             save_directory,
             need_bytes = need,
@@ -2994,6 +3019,38 @@ def _normalize_quantization_methods(quantization_method):
             method = "q4_k_m"
         out.append(method)
     return out
+
+
+def _imatrix_is_enabled(imatrix_file):
+    """Whether an imatrix will really be applied, as `_resolve_imatrix_file` reads it.
+
+    None and False both disable it. The preflight has to agree: an imatrix
+    forces the two-pass route, so reading False as "enabled" sizes an
+    intermediate GGUF that a direct-convertible export never writes, and can
+    refuse an export that fits.
+    """
+    return imatrix_file is not None and imatrix_file is not False
+
+
+def _gguf_writes_16bit_checkpoint(model):
+    """Whether a GGUF export writes a full 16-bit checkpoint before converting.
+
+    A PEFT model is merged into one. A non-PEFT model reuses an existing
+    checkpoint when `_name_or_path` names a directory, and otherwise falls
+    back to `save_pretrained`, which writes the same two bytes per parameter
+    the merge would have. Sizing that fallback at zero is what lets an export
+    pass the preflight and then fill the disk with the checkpoint.
+
+    A module-level helper rather than a local, because the caller snapshots
+    `locals()` into the kwargs of `unsloth_generic_save`.
+    """
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return True
+    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    try:
+        return not (name_or_path and os.path.isdir(str(name_or_path)))
+    except Exception:
+        return True
 
 
 def _preflight_gguf_disk(
@@ -3049,10 +3106,17 @@ def _preflight_gguf_disk(
             needs_merge = needs_merge,
         )
         # The pre-warm only happens on the merge path, and only when it has
-        # not already been switched off.
-        prewarm_possible = needs_merge and os.environ.get(
-            "UNSLOTH_PREWARM_HUB_CACHE", "1"
-        ).strip().lower() not in ("0", "false", "no", "off")
+        # not already been switched off. Kaggle and Colab return before it
+        # ever runs (`_prewarm_base_model_hub_cache`), so pricing a cache copy
+        # there would send an export that fits in /kaggle/working to /tmp,
+        # which is not kept as notebook output.
+        prewarm_possible = (
+            needs_merge
+            and not IS_KAGGLE_ENVIRONMENT
+            and not IS_COLAB_ENVIRONMENT
+            and os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower()
+            not in ("0", "false", "no", "off")
+        )
         need_with_cache = (
             estimate_gguf_export_bytes(
                 model = model,
@@ -3297,8 +3361,8 @@ def unsloth_save_pretrained_gguf(
             save_directory = save_directory,
             quantization_method = quantization_method,
             first_conversion = first_conversion,
-            has_imatrix = imatrix_file is not None,
-            needs_merge = isinstance(self, (PeftModel, PeftModelForCausalLM)),
+            has_imatrix = _imatrix_is_enabled(imatrix_file),
+            needs_merge = _gguf_writes_16bit_checkpoint(self),
         )
 
     # Step 2: Prepare arguments for model saving
