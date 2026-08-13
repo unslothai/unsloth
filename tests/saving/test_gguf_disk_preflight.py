@@ -2594,7 +2594,11 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         target = str(tmp_path / "overlay" / "unsloth_saves" / "model")
         asked = []
 
-        def redirect(save_directory, need_bytes = 0, what = "export"):
+        def redirect(
+            save_directory,
+            need_bytes = 0,
+            what = "export",
+        ):
             asked.append(need_bytes)
             if tmp_free <= working_free or need_bytes <= 0:
                 return save_directory, None
