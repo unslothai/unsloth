@@ -163,6 +163,7 @@ def _save_pretrained_gguf(
     max_shard_size = "5GB",
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
+    imatrix_file = None,
     **kwargs,
 ):
     """
@@ -212,6 +213,7 @@ def _save_pretrained_gguf(
         max_shard_size = max_shard_size,
         temporary_location = temporary_location,
         maximum_memory_usage = maximum_memory_usage,
+        imatrix_file = imatrix_file,
     )
 
     # 5. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
@@ -298,6 +300,7 @@ def _push_to_hub_gguf(
     create_pr = False,
     revision = None,
     tags = None,
+    imatrix_file = None,
     **kwargs,
 ):
     """
@@ -389,6 +392,7 @@ def _push_to_hub_gguf(
             max_shard_size = max_shard_size,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            imatrix_file = imatrix_file,
         )
 
         gguf_files = result.get("gguf_files", [])
