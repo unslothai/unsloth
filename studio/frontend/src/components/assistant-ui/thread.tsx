@@ -2106,8 +2106,9 @@ const Composer: FC<{
     useImeComposerInputHandlers({ submitOnEnter: true });
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
-      // Bulk text pastes attach as a file instead of filling the input.
-      const attachedPastedText = pasteLongTextAsFile(
+      // Bulk text pastes attach as a file instead of filling the input, except
+      // in image-edit mode, whose submit path takes an inline instruction only.
+      const attachedPastedText = !overlay && pasteLongTextAsFile(
         event,
         (file) => aui.composer().addAttachment(file),
         () =>
@@ -2129,7 +2130,7 @@ const Composer: FC<{
           }),
       );
     },
-    [aui],
+    [aui, overlay],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
