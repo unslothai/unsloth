@@ -797,8 +797,58 @@ class TestCompatPlan:
         assert extras == () and blockers == []
 
 
+def test_get_snapshot_waits_for_inflight_fetch(monkeypatch):
+    """A caller arriving mid-fetch gets the running fetch's answer, not "no answer".
+
+    The Configure preview starts a check as soon as the tab renders, so a user who
+    presses Start while it is still running sends a second, concurrent check. Answering
+    that one None reads as "no upgrade needed" all the way up, and the run launches on a
+    model no installed transformers can load -- the exact failure this gate exists to
+    stop. The loser must wait for the snapshot instead.
+    """
+    import threading as _threading
+
+    tl.clear_caches()
+    monkeypatch.setattr(tl, "_load_snapshot_file", lambda: None)
+    monkeypatch.setattr(tl, "_save_snapshot_file", lambda snapshot: None)
+    fetch_started = _threading.Event()
+    release = _threading.Event()
+    calls = {"n": 0}
+
+    def slow_refresh():
+        calls["n"] += 1
+        fetch_started.set()
+        release.wait(10)
+        return {
+            "schema": tl._SNAPSHOT_SCHEMA,
+            "fetched_at": time.time(),
+            "pypi_version": "5.99.0",
+            "pypi_model_types": ["brandnew"],
+            "main_model_types": ["brandnew"],
+            "main_checked": True,
+        }
+
+    monkeypatch.setattr(tl, "_refresh_snapshot", slow_refresh)
+    answers: dict[str, dict | None] = {}
+    winner = _threading.Thread(target = lambda: answers.__setitem__("winner", tl._get_snapshot()))
+    winner.start()
+    assert fetch_started.wait(10)
+    loser = _threading.Thread(target = lambda: answers.__setitem__("loser", tl._get_snapshot()))
+    loser.start()
+    # The loser is parked on the in-flight fetch; nothing can land until it is released.
+    loser.join(0.5)
+    assert loser.is_alive()
+    release.set()
+    winner.join(10)
+    loser.join(10)
+    assert calls["n"] == 1
+    assert answers["winner"] is not None and answers["winner"]["pypi_version"] == "5.99.0"
+    assert answers["loser"] is not None and answers["loser"]["pypi_version"] == "5.99.0"
+    tl.clear_caches()
+
+
 def test_get_snapshot_dedupes_concurrent_fetch(monkeypatch):
-    """While one thread is fetching, other callers return None instead of stacking fetches."""
+    """A caller that finds a fetch in flight never starts a second one."""
     with tl._lock:
         tl._is_fetching = True
     calls = {"n": 0}

@@ -80,6 +80,14 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
+# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
+# fetch's answer instead of reporting "no answer" (see _get_snapshot).
+_fetch_done: threading.Event = threading.Event()
+_fetch_done.set()
+# Bounds that wait. A refresh is itself bounded (5 URLs, one retry each, 5s per attempt),
+# but a caller must never sit there for the worst case: past this it falls through to the
+# old graceful answer, which is what a failed refresh would have given anyway.
+_INFLIGHT_WAIT_SECONDS = 20.0
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -236,10 +244,13 @@ def _get_snapshot() -> dict | None:
     """Current support snapshot: memory -> disk -> network, with TTL and failure backoff.
 
     The network refresh runs outside the lock so a slow fetch cannot stall other
-    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes
-    (losers return None, the graceful fallthrough, rather than waiting).
+    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes, and a
+    loser waits (bounded) for the winner's answer rather than stacking a second fetch.
+    Waiting is what makes this safe to gate on: the Configure preview and the Start
+    button both ask, and a loser that answered "no answer" told the start there was no
+    upgrade, so the run launched on a model no installed transformers can load.
     """
-    global _memory_snapshot, _last_failure_at, _is_fetching
+    global _memory_snapshot, _last_failure_at, _is_fetching, _fetch_done
     with _lock:
         if _snapshot_is_fresh(_memory_snapshot):
             return _memory_snapshot
@@ -252,14 +263,22 @@ def _get_snapshot() -> dict | None:
         if time.time() - _last_failure_at < _FAILURE_BACKOFF_SECONDS:
             return None
         if _is_fetching:
-            return None
-        _is_fetching = True
+            in_flight = _fetch_done
+        else:
+            in_flight = None
+            _is_fetching = True
+            _fetch_done = done = threading.Event()
+    if in_flight is not None:
+        in_flight.wait(_INFLIGHT_WAIT_SECONDS)
+        with _lock:
+            return _memory_snapshot if _snapshot_is_fresh(_memory_snapshot) else None
     fresh = None
     try:
         fresh = _refresh_snapshot()
     finally:
         with _lock:
             _is_fetching = False
+            done.set()
             if fresh is None:
                 _last_failure_at = time.time()
             else:
@@ -278,6 +297,7 @@ def clear_caches() -> None:
         _memory_snapshot = None
         _last_failure_at = 0.0
         _is_fetching = False
+        _fetch_done.set()
     from utils.transformers_version import end_sidecar_swap
 
     end_sidecar_swap()
