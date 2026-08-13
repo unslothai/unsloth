@@ -2423,9 +2423,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         # unchanged, so a device the overlay declines still gets a real number.
         if IS_ROCM and index_kind == "physical" and platform.system() == "Linux":
             inventory = _torch_get_device_inventory(torch_indices)
-            probe = [
-                {"index": inv["index"], "vram_total_gb": inv["total_gb"]} for inv in inventory
-            ]
+            probe = [{"index": inv["index"], "vram_total_gb": inv["total_gb"]} for inv in inventory]
             resolved = _rocm_system_wide_vram_by_index(probe)
             if inventory and all(inv["index"] in resolved for inv in inventory):
                 devices = [

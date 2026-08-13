@@ -127,9 +127,7 @@ _PROBE = textwrap.dedent(
 def _run_child(call: str):
     """Run ``call`` in a fresh interpreter; return (leaked_devices, mib_or_None)."""
     src = _PROBE + _CHILD.format(backend = str(_BACKEND_DIR), call = call)
-    proc = subprocess.run(
-        [sys.executable, "-c", src], capture_output = True, text = True, timeout = 600
-    )
+    proc = subprocess.run([sys.executable, "-c", src], capture_output = True, text = True, timeout = 600)
     assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
     leaked, mib = None, None
     for line in proc.stdout.splitlines():
@@ -177,7 +175,12 @@ class _FakeProps:
         self.total_memory = total
 
 
-def _fake_mod(totals, names = None, *, with_mem_get_info = True):
+def _fake_mod(
+    totals,
+    names = None,
+    *,
+    with_mem_get_info = True,
+):
     mod = types.SimpleNamespace()
     names = names or [f"GPU{i}" for i in range(len(totals))]
     mod.get_device_properties = lambda o: _FakeProps(names[o], totals[o])
@@ -249,10 +252,20 @@ def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
         hw,
         "_torch_get_device_inventory",
         lambda ids: [
-            {"index": 0, "visible_ordinal": 0, "name": "MI300X", "total_gb": 192.0,
-             "used_gb": None},
-            {"index": 1, "visible_ordinal": 1, "name": "MI300X", "total_gb": 192.0,
-             "used_gb": None},
+            {
+                "index": 0,
+                "visible_ordinal": 0,
+                "name": "MI300X",
+                "total_gb": 192.0,
+                "used_gb": None,
+            },
+            {
+                "index": 1,
+                "visible_ordinal": 1,
+                "name": "MI300X",
+                "total_gb": 192.0,
+                "used_gb": None,
+            },
         ],
     )
     result = hw.get_backend_visible_gpu_info()
@@ -342,8 +355,7 @@ def _rocm_linux(monkeypatch, resolved):
         hw,
         "_torch_get_device_inventory",
         lambda ids: [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0,
-             "used_gb": None}
+            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": None}
             for i in ids
         ],
     )
@@ -376,8 +388,7 @@ def test_rocm_linux_sysfs_first_matches_the_old_torch_then_overlay_result(monkey
         hw,
         "_torch_get_per_device_info",
         lambda ids: [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0,
-             "used_gb": 0.02}
+            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 0.02}
             for i in ids
         ],
     )
@@ -414,8 +425,7 @@ def test_rocm_linux_falls_back_to_torch_when_sysfs_covers_only_some(monkeypatch)
         "_torch_get_per_device_info",
         lambda ids: used.append(ids)
         or [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0,
-             "used_gb": 1.0}
+            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 1.0}
             for i in ids
         ],
     )
@@ -434,8 +444,7 @@ def test_rocm_linux_falls_back_when_sysfs_knows_nothing(monkeypatch):
         "_torch_get_per_device_info",
         lambda ids: used.append(ids)
         or [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0,
-             "used_gb": 1.0}
+            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 1.0}
             for i in ids
         ],
     )
@@ -459,8 +468,9 @@ def test_nvidia_torch_fallback_keeps_using_occupancy(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: [{"index": 0, "visible_ordinal": 0, "name": "L40S", "total_gb": 44.0,
-                      "used_gb": 4.0}],
+        lambda ids: [
+            {"index": 0, "visible_ordinal": 0, "name": "L40S", "total_gb": 44.0, "used_gb": 4.0}
+        ],
     )
     result = hw.get_visible_gpu_utilization()
     assert result["devices"][0]["vram_used_gb"] == 4.0
@@ -478,8 +488,7 @@ def test_rocm_relative_index_skips_the_sysfs_shortcut(monkeypatch):
         "_torch_get_per_device_info",
         lambda ids: seen.append(ids)
         or [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0,
-             "used_gb": 1.0}
+            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 1.0}
             for i in ids
         ],
     )
@@ -495,8 +504,10 @@ def test_rocm_windows_does_not_take_the_linux_sysfs_path(monkeypatch):
         hw,
         "_rocm_windows_per_device_vram",
         lambda ids: (
-            [{"index": i, "visible_ordinal": i, "name": "RX", "used_gb": 2.0,
-              "total_gb": 24.0} for i in ids],
+            [
+                {"index": i, "visible_ordinal": i, "name": "RX", "used_gb": 2.0, "total_gb": 24.0}
+                for i in ids
+            ],
             4.0,
         ),
     )
