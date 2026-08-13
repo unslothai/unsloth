@@ -1770,15 +1770,33 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
             # The pass already wrote its success manifest (step 15, before this
             # check) and verify_install accepts a null recorded version, so the
             # marker must not survive: its presence means "install completed".
-            "$VENV_DIR/bin/python" -c "
-import sys
+            _MANIFEST_STATE=$("$VENV_DIR/bin/python" -c "
+import sys, time
 sys.path.insert(0, sys.argv[1])
 try:
     import install_manifest
-    install_manifest.remove_manifest()
 except Exception:
-    pass
-" "$SCRIPT_DIR" 2>/dev/null || true
+    print('MANIFEST=gone')
+    sys.exit(0)
+ok = False
+for _ in range(3):
+    if install_manifest.remove_manifest():
+        ok = True
+        break
+    time.sleep(0.2)
+if not ok:
+    # deletion blocked (AV lock, read-only): write is a different access right
+    # than delete on Windows, and a schema-busted manifest also reads incomplete
+    try:
+        install_manifest.manifest_path().write_text('{\"schema\": -1}', encoding='utf-8')
+        ok = True
+    except Exception:
+        pass
+print('MANIFEST=' + ('gone' if ok else 'stuck'))
+" "$SCRIPT_DIR" 2>/dev/null || echo "MANIFEST=stuck")
+            case "$_MANIFEST_STATE" in *stuck*)
+                substep "stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "$C_WARN" ;;
+            esac
             step "python" "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}" "$C_ERR"
             setup_fail 1 "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
         elif [ -z "$POST_VER" ]; then

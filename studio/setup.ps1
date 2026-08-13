@@ -4912,17 +4912,36 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
         # The pass already wrote its success manifest (step 15, before this check)
         # and verify_install accepts a null recorded version, so the marker must
         # not survive: its presence means "install completed".
+        $_manifestState = ""
         try {
-            & python -c "
-import sys
+            $_manifestState = (& python -c "
+import sys, time
 sys.path.insert(0, sys.argv[1])
 try:
     import install_manifest
-    install_manifest.remove_manifest()
 except Exception:
-    pass
-" "$PSScriptRoot" 2>$null
+    print('MANIFEST=gone')
+    sys.exit(0)
+ok = False
+for _ in range(3):
+    if install_manifest.remove_manifest():
+        ok = True
+        break
+    time.sleep(0.2)
+if not ok:
+    # deletion blocked (AV lock, read-only): write is a different access right
+    # than delete on Windows, and a schema-busted manifest also reads incomplete
+    try:
+        install_manifest.manifest_path().write_text(__import__('json').dumps({'schema': -1}), encoding='utf-8')
+        ok = True
+    except Exception:
+        pass
+print('MANIFEST=' + ('gone' if ok else 'stuck'))
+" "$PSScriptRoot" 2>$null | Out-String).Trim()
         } catch {}
+        if ($_manifestState -notmatch 'MANIFEST=gone') {
+            substep "[WARN] stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "Yellow"
+        }
         $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
         Write-StudioLine "[FAILED] update ran but $_PkgName is not installed$_expected" -ForegroundColor Red
         Exit-SetupFailure "update ran but $_PkgName is not installed$_expected"
