@@ -199,8 +199,12 @@ Check "an installer cpu tag is excluded"  ($report -match '\$InstallerTorchTag -
 Check "an absent tag is not read as cpu"  (-not ($reportCode -match '-not \$InstallerTorchTag|\$InstallerTorchTag -eq \$null'))
 # Scoped to the mask governing what was announced: an idle HIP mask must not mute a real mismatch.
 Check "the NVIDIA arm reads the CUDA mask" ($report -match 'NVIDIA\*.*[\s\S]{0,80}CUDA_VISIBLE_DEVICES')
-# All three, in hardware.py's order: ROCm layers HIP/ROCR on the CUDA mask and falls back to it.
-Check "the AMD arm reads the HIP masks"   ($report -match 'HIP_VISIBLE_DEVICES.*ROCR_VISIBLE_DEVICES.*CUDA_VISIBLE_DEVICES')
+# HIP then CUDA, the two masks clr declares, in hardware.py's order: ROCm layers HIP on
+# CUDA_VISIBLE_DEVICES and falls back to it.
+Check "the AMD arm reads the HIP masks"   ($reportCode -match 'HIP_VISIBLE_DEVICES.*CUDA_VISIBLE_DEVICES')
+# ROCR_VISIBLE_DEVICES belongs to the ROCr runtime, which Windows HIP does not have, so a stray
+# cross-platform ROCR var must not read as a hide here. setup.sh keeps it; this is the win32 gate.
+Check "the AMD arm ignores ROCR"          (-not ($reportCode -match 'ROCR_VISIBLE_DEVICES'))
 Check "the NVIDIA arm ignores HIP"        (-not ($report -match 'NVIDIA\*\) \{\s*\n\s*Test-VisibleMaskHidesAll \$env:HIP'))
 
 # The mask predicate itself is run: a [string[]] cast turns an unset $env: read into "", the
@@ -222,11 +226,62 @@ Check "an empty mask hides everything"    (Test-Mask "")
 Check "whitespace is trimmed"             (Test-Mask " -1 ")
 Check "a selected device is not hidden"   (-not (Test-Mask "0"))
 Check "a device list is not hidden"       (-not (Test-Mask "1,0"))
-# First-set-wins: an empty HIP mask shadows a ROCR mask that names a device.
+# First-set-wins: an empty HIP mask shadows a later mask that names a device.
 Check "the first set mask wins"           (Test-Mask @("", "0"))
 Check "and an unset one is skipped"       (-not (Test-Mask @($null, "0")))
-Check "a bare CUDA mask still hides"      (Test-Mask @($null, $null, "-1"))
-Check "a named AMD device wins over it"   (-not (Test-Mask @("0", $null, "-1")))
+Check "a bare CUDA mask still hides"      (Test-Mask @($null, "-1"))
+Check "a named AMD device wins over it"   (-not (Test-Mask @("0", "-1")))
+
+Write-Host "and the arms that pick the masks are run, not merely read"
+# Source text cannot tell a scoped exclusion from one that suppresses every host, and
+# always-suppress is the failure mode that would hide #8473 again, so the expression is executed.
+# Unset via the Env: drive, never [Environment]::SetEnvironmentVariable($n, $null): PowerShell
+# converts $null to "" when it binds a [string] parameter, so that leaves the variable SET and
+# empty, which is the hide-all value, and every "hides nothing" case below passed while asserting
+# the opposite. Values are "-1" and named indices only; the empty mask is covered above, where the
+# predicate takes its values directly and no env round trip can reinterpret them.
+$maskedPat = '(?ms)^\$_gpuCheckMasked = if \(.*?^\} else \{ \$false \}$'
+$maskedExpr = if ($report -match $maskedPat) { $Matches[0] } else { "" }
+Check "the mask arms were found"          ($maskedExpr -match 'Test-VisibleMaskHidesAll')
+function Test-Arm {
+    param([string] $Announced, [hashtable] $Vars)
+    $names = @("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "ZE_AFFINITY_MASK")
+    $saved = @{}
+    foreach ($n in $names) {
+        $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+        if (Test-Path "Env:\$n") { Remove-Item "Env:\$n" }
+    }
+    foreach ($n in $Vars.Keys) { Set-Item "Env:\$n" -Value $Vars[$n] }
+    try {
+        $sb = [scriptblock]::Create(@"
+param(`$_gpuCheckAnnounced)
+$maskFn
+$maskedExpr
+`$_gpuCheckMasked
+"@)
+        return [bool] (& $sb $Announced)
+    } finally {
+        foreach ($n in $names) {
+            if (Test-Path "Env:\$n") { Remove-Item "Env:\$n" }
+            if ($null -ne $saved[$n]) { Set-Item "Env:\$n" -Value $saved[$n] }
+        }
+    }
+}
+Check "a hidden AMD card is masked"       (Test-Arm "AMD GPU (gfx1201)" @{ HIP_VISIBLE_DEVICES = "-1" })
+Check "a selected AMD card is not"        (-not (Test-Arm "AMD GPU (gfx1201)" @{ HIP_VISIBLE_DEVICES = "0" }))
+Check "a bare CUDA mask hides AMD too"    (Test-Arm "AMD GPU (gfx1201)" @{ CUDA_VISIBLE_DEVICES = "-1" })
+# The two halves of the Windows ROCR gate. A dead ROCR var must neither mute a broken torch...
+Check "a lone ROCR mask hides nothing"    (-not (Test-Arm "AMD GPU (gfx1201)" @{ ROCR_VISIBLE_DEVICES = "-1" }))
+# ...nor, by winning first-set-wins, shadow the CUDA mask that does hide the card.
+Check "nor shadow a real CUDA hide"       (Test-Arm "AMD GPU (gfx1201)" @{ ROCR_VISIBLE_DEVICES = "0"; CUDA_VISIBLE_DEVICES = "-1" })
+Check "a hidden NVIDIA card is masked"    (Test-Arm "NVIDIA GPU" @{ CUDA_VISIBLE_DEVICES = "-1" })
+Check "a selected NVIDIA card is not"     (-not (Test-Arm "NVIDIA GPU" @{ CUDA_VISIBLE_DEVICES = "0" }))
+Check "an idle HIP mask mutes nothing"    (-not (Test-Arm "NVIDIA GPU" @{ HIP_VISIBLE_DEVICES = "-1" }))
+# No Intel arm on purpose: compute-runtime's parseAffinityMask returns early on an empty
+# ZE_AFFINITY_MASK exactly as it does when unset, so an empty mask hides nothing and torch.xpu
+# still answers True. Reading it with this predicate would mute the broken Intel runtimes instead.
+Check "an Intel host reads no mask"       (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "-1" }))
+Check "an unannounced host is not masked" (-not (Test-Arm "" @{ CUDA_VISIBLE_DEVICES = "-1" }))
 # Resolved here, not read off $TorchIndexPinned / $CuTag: those live inside the dependency-pass
 # branch and are $null on the run this check exists for.
 Check "the pin is resolved fresh"         ($report -match '\$_gpuCheckPinLeaf = Get-TorchIndexLeaf \(Get-PinnedTorchIndexUrl\)')

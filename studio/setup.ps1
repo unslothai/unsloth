@@ -5181,10 +5181,15 @@ $_gpuCheckPinLeaf = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
 # CUDA_VISIBLE_DEVICES and the AMD arch can come from a WMI name, so the card is announced while
 # torch is meant to see nothing. Scoped to the mask governing what was announced, so an idle HIP
 # mask cannot mute a genuine NVIDIA mismatch.
+# No ROCR_VISIBLE_DEVICES here, unlike setup.sh: that one is read by the ROCr runtime, which is
+# Linux only, and clr declares just HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES, so an inherited
+# cross-platform ROCR var hides nothing on Windows. Reading it would cut both ways: it would mute a
+# genuinely broken torch, and first-set-wins would let a benign ROCR=0 shadow a CUDA=-1 that really
+# does hide the card. Same win32 gate the backend already applies in llama_cpp.py.
 $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
     Test-VisibleMaskHidesAll $env:CUDA_VISIBLE_DEVICES
 } elseif ($_gpuCheckAnnounced -like "AMD*") {
-    Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
+    Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
 } else { $false }
 # The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose
 # CUDA is below 11 to the CPU index by design, then hands the tag over. $null is "did not say"
