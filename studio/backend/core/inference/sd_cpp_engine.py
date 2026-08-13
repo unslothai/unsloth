@@ -255,9 +255,7 @@ def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
         st = os.stat(binary)
     except OSError:
         return None
-    return (
-        str(Path(binary).resolve(strict = False)), st.st_mtime_ns, st.st_ctime_ns, st.st_size
-    )
+    return (str(Path(binary).resolve(strict = False)), st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
 
 def help_text_identifies_sd_cpp(help_text: str) -> bool:

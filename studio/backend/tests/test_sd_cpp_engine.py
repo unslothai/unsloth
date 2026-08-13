@@ -285,7 +285,9 @@ def test_identity_probe_does_not_memoize_a_candidate_it_cannot_stat(monkeypatch)
     # No key means no cache entry: a path that does not resolve yet must be re-probed once it does,
     # rather than being remembered as "not stable-diffusion.cpp" for the life of the process.
     _clear_env(monkeypatch)
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: "/nonexistent/sd" if stem == "sd" else None)
+    monkeypatch.setattr(
+        eng.shutil, "which", lambda stem: "/nonexistent/sd" if stem == "sd" else None
+    )
     runs = []
     monkeypatch.setattr(
         eng.subprocess,
@@ -731,9 +733,9 @@ def test_native_generation_timeout_matches_the_ui_settle_window():
 
     assert NATIVE_GENERATION_TIMEOUT_S == 6 * 60 * 60
     for fn in (SdCppEngine.generate, SdCppEngine.upscale):
-        assert (
-            inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S
-        ), fn.__name__
+        assert inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S, (
+            fn.__name__
+        )
     # The resident-server path shares the same ceiling, applied per request (see test_server_generate_splits_batches_above_server_limit).
     assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S
 

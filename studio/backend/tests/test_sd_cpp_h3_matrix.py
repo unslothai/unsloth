@@ -64,10 +64,18 @@ def h3_host(monkeypatch, tmp_path):
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
 
-    def _setup(*, platform: str, backend: str, device: str, help_text: str | None,
-               managed: bool = False, lists_accelerator: bool = True):
-        monkeypatch.setattr(sd_cpp_engine.sys, "platform", "linux" if platform == "wsl"
-                            else platform)
+    def _setup(
+        *,
+        platform: str,
+        backend: str,
+        device: str,
+        help_text: str | None,
+        managed: bool = False,
+        lists_accelerator: bool = True,
+    ):
+        monkeypatch.setattr(
+            sd_cpp_engine.sys, "platform", "linux" if platform == "wsl" else platform
+        )
         monkeypatch.setattr(
             video_mod,
             "resolve_diffusion_device_target",
@@ -78,9 +86,7 @@ def h3_host(monkeypatch, tmp_path):
         monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
 
         binary = None if help_text is None else "/opt/sd/sd-cli"
-        monkeypatch.setattr(
-            sd_cpp_backend, "ensure_sd_cpp_binary", lambda **_kwargs: binary
-        )
+        monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", lambda **_kwargs: binary)
 
         def _probe(_binary, *args):
             if args == ("--list-devices",):
@@ -169,12 +175,17 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
-@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] in ("cuda", "rocm")])
+@pytest.mark.parametrize(
+    "hw_label,backend,device", [h for h in HARDWARE if h[1] in ("cuda", "rocm")]
+)
 def test_h3_gpu_host_falls_back_to_the_cpu_build(h3_host, platform, hw_label, backend, device):
     """Upstream publishes no Linux CUDA archive, so a GPU host routinely ends up on the CPU
     prebuilt. It must still load, committed on the CPU rather than on a GPU it never ran on."""
     host = h3_host(
-        platform = platform, backend = backend, device = device, help_text = _H3_HELP,
+        platform = platform,
+        backend = backend,
+        device = device,
+        help_text = _H3_HELP,
         lists_accelerator = False,
     )
     backend_obj = host.run()
@@ -185,9 +196,7 @@ def test_h3_gpu_host_falls_back_to_the_cpu_build(h3_host, platform, hw_label, ba
 
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
-def test_h3_cancellation_precedes_the_binary_install(
-    h3_host, platform, hw_label, backend, device
-):
+def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label, backend, device):
     """The preflight can download and extract the sd-cli prebuilt and takes no cancel_event, so a
     load cancelled before its worker started must not reach it."""
     from core.inference import sd_cpp_backend
