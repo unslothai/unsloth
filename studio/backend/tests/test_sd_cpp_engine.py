@@ -793,9 +793,9 @@ def test_native_generation_timeout_matches_the_ui_settle_window():
 
     assert NATIVE_GENERATION_TIMEOUT_S == 6 * 60 * 60
     for fn in (SdCppEngine.generate, SdCppEngine.upscale):
-        assert inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S, (
-            fn.__name__
-        )
+        assert (
+            inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S
+        ), fn.__name__
     # The resident-server path shares the same ceiling, applied per request (see test_server_generate_splits_batches_above_server_limit).
     assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S
 
