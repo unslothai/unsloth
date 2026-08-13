@@ -578,6 +578,44 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
     assert sidecar.is_loading() is False
 
 
+def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch):
+    # Moving the engine out of process may not take dictation away from a host
+    # that cannot create a child at all. The accelerator attempt goes through
+    # the usual CPU retry first, so nobody is downgraded before that has run.
+    import core.inference.stt_transformers_worker as worker_module
+
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", "float16"))
+    spawned = []
+    loaded = []
+
+    class RefusedWorker:
+        def start(self, _snapshot_path, device, _dtype_name, _cancel_event = None):
+            spawned.append(device)
+            raise worker_module.SttWorkerSpawnError("spawn is not permitted here")
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", RefusedWorker, raising = True
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_whisper",
+        lambda path, device, dtype, _cancel = None: loaded.append((path, device, dtype))
+        or (_FakeModel(), object()),
+    )
+    monkeypatch.setattr(worker_module, "transcribe_window", lambda *_args, **_kwargs: "hello")
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    engine = sidecar.load("small")
+
+    assert spawned == ["cuda", "cpu"]
+    # In process only after both spawns failed, and only ever on the CPU.
+    assert loaded == [(str(Path("/cached/model")), "cpu", "float32")]
+    assert sidecar.device == "cpu"
+    assert sidecar.loaded_model == "small"
+    assert engine.transcribe_window(b"", {}) == "hello"
+
+
 def test_model_cache_preflight_uses_shared_offline_resolver(monkeypatch):
     seen = []
     monkeypatch.setattr(

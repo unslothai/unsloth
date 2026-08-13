@@ -1254,12 +1254,35 @@ class WhisperSttSidecar:
         Out of process because an accelerator context is never given back while
         the process holding it lives, so an in-process load made the backend
         permanently heavier even after unload.
+
+        A host that cannot create a child at all (a sandbox, or a frozen POSIX
+        build) falls back to loading here instead, on the CPU: this move may
+        take work out of the backend, never take dictation away from someone
+        who had it. The fallback waits for the CPU attempt, so a spawn failure
+        on an accelerator still goes through the caller's own CPU retry rather
+        than downgrading the user here.
         """
-        from core.inference.stt_transformers_worker import WhisperWorker
+        from core.inference.stt_transformers_worker import (
+            InProcessWhisperEngine,
+            SttWorkerSpawnError,
+            WhisperWorker,
+        )
 
         worker = WhisperWorker()
-        # start() kills its own child on any failure, including cancellation.
-        worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
+        try:
+            # start() kills its own child on any failure, including cancellation.
+            worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
+        except SttWorkerSpawnError as exc:
+            if device != "cpu":
+                raise
+            logger.warning(
+                "No dictation worker process could be started (%s); "
+                "loading the model in the backend on the CPU instead",
+                exc,
+            )
+            engine = InProcessWhisperEngine()
+            engine.start(str(snapshot_path), "cpu", _dtype_name(dtype), cancel_event)
+            return engine
         return worker
 
     def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:

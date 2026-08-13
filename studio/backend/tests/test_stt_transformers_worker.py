@@ -577,6 +577,32 @@ def test_closing_the_handle_ends_the_child_and_drops_its_pid(monkeypatch):
     assert handle._cmd_queue is None
 
 
+def test_a_child_that_survives_terminate_and_kill_keeps_its_pid_and_handle(monkeypatch):
+    # A child wedged in a driver call outlives SIGKILL and still holds its
+    # accelerator memory. Forgetting its pid would leave terminate_all and the
+    # next startup sweep nothing to find it by.
+    forgotten = []
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda pid: forgotten.append(pid))
+
+    class _Unkillable(_FakeProcess):
+        def terminate(self):
+            self.terminated = True  # neither signal reaches it
+
+        def kill(self):
+            self.killed = True
+
+    process = _Unkillable()
+    handle = _wired_worker(process)
+
+    closed = handle.close()
+
+    assert forgotten == []
+    assert closed is False
+    assert handle._process is process
+    assert handle.is_alive() is True
+    assert handle._cmd_queue is not None
+
+
 def test_closing_a_handle_that_ignores_shutdown_escalates_to_a_kill(monkeypatch):
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
@@ -591,3 +617,90 @@ def test_closing_a_handle_that_ignores_shutdown_escalates_to_a_kill(monkeypatch)
 
     assert process.terminated is True
     assert process.killed is True
+
+
+# ---------------------------------------------------------------------------
+# Hosts that cannot spawn
+# ---------------------------------------------------------------------------
+
+
+class _RefusingProcess:
+    """A child that cannot be created: a sandbox, or a frozen POSIX build."""
+
+    def __init__(self, error) -> None:
+        self.pid = None
+        self.exitcode = None
+        self._error = error
+
+    def is_alive(self):
+        return False
+
+    def start(self):
+        raise self._error
+
+    def join(self, _timeout = None):
+        return None
+
+
+class _RefusingContext:
+    def __init__(self, error = None) -> None:
+        self.error = error or PermissionError("spawn is not permitted here")
+
+    def Queue(self):
+        return queue.Queue()
+
+    def Event(self):
+        return threading.Event()
+
+    def Process(self, **_kwargs):
+        return _RefusingProcess(self.error)
+
+
+def test_dictation_still_loads_and_transcribes_when_no_child_can_be_started(monkeypatch):
+    # These changes may only move work out of the backend, never remove a
+    # working configuration: a host that forbids spawn had dictation before.
+    from core.inference.stt_sidecar import WhisperSttSidecar
+
+    monkeypatch.setattr(worker_module, "_CTX", _RefusingContext())
+    _calls, _model, _processor = _install_fake_transformers(monkeypatch)
+
+    engine = WhisperSttSidecar(keep_alive_seconds = 0)._build_model(
+        "/cached/model", "cpu", "float32", threading.Event()
+    )
+
+    assert isinstance(engine, worker_module.InProcessWhisperEngine)
+    assert engine.device == "cpu"
+    assert engine.is_alive() is True
+    assert engine.transcribe_window(np.zeros(4, dtype = np.float32).tobytes(), {}) == "hello"
+
+
+def test_a_spawn_failure_on_an_accelerator_leaves_the_cpu_retry_to_the_sidecar(monkeypatch):
+    # An in-process load takes the context this module exists to avoid, so the
+    # fallback is CPU only; the accelerator attempt must reach the sidecar's own
+    # CPU retry first rather than downgrade the user here.
+    from core.inference.stt_sidecar import WhisperSttSidecar
+
+    monkeypatch.setattr(worker_module, "_CTX", _RefusingContext())
+    monkeypatch.setattr(
+        worker_module,
+        "load_whisper",
+        lambda *_args, **_kwargs: pytest.fail("no in-process load on an accelerator"),
+    )
+
+    with pytest.raises(worker_module.SttWorkerSpawnError, match = "not permitted"):
+        WhisperSttSidecar(keep_alive_seconds = 0)._build_model(
+            "/cached/model", "cuda", "float16", threading.Event()
+        )
+
+
+def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeypatch):
+    _calls, model, _processor = _install_fake_transformers(monkeypatch)
+    model.generation_config = SimpleNamespace(is_multilingual = False)
+
+    engine = worker_module.InProcessWhisperEngine()
+    engine.start("/cached/model", "cpu", "float32")
+
+    # The sidecar reads this to drop the kwargs an English-only model rejects.
+    assert engine.generation_config.is_multilingual is False
+    engine.close()
+    assert engine.is_alive() is False

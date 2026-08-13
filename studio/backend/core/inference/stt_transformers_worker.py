@@ -64,6 +64,14 @@ class SttWorkerError(RuntimeError):
     """The dictation worker crashed, hung, or could not be reached."""
 
 
+class SttWorkerSpawnError(SttWorkerError):
+    """No child could be created at all: this host forbids or cannot spawn.
+
+    Distinct because it says nothing about the model or the device, so the
+    caller answers it by loading in process rather than by giving up.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Child process
 # ---------------------------------------------------------------------------
@@ -320,27 +328,36 @@ class WhisperWorker:
         from utils.process_lifetime import adopt_pid
 
         cache_env = get_hf_cache_paths().child_env({})
-        with (
-            child_environment_for_spawn(cache_env),
-            native_path_secret_removed_for_child_start(),
-        ):
-            self._cmd_queue = _CTX.Queue()
-            self._resp_queue = _CTX.Queue()
-            self._cancel_event = _CTX.Event()
-            self._process = _CTX.Process(
-                # The shared shim binds the child to this process's lifetime and
-                # applies the Hub cache environment before any import.
-                target = run_without_native_path_secret,
-                args = ("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
-                kwargs = {
-                    "cmd_queue": self._cmd_queue,
-                    "resp_queue": self._resp_queue,
-                    "cancel_event": self._cancel_event,
-                    "config": {},
-                },
-                daemon = True,
-            )
-            self._process.start()
+        try:
+            with (
+                child_environment_for_spawn(cache_env),
+                native_path_secret_removed_for_child_start(),
+            ):
+                self._cmd_queue = _CTX.Queue()
+                self._resp_queue = _CTX.Queue()
+                self._cancel_event = _CTX.Event()
+                self._process = _CTX.Process(
+                    # The shared shim binds the child to this process's lifetime and
+                    # applies the Hub cache environment before any import.
+                    target = run_without_native_path_secret,
+                    args = ("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
+                    kwargs = {
+                        "cmd_queue": self._cmd_queue,
+                        "resp_queue": self._resp_queue,
+                        "cancel_event": self._cancel_event,
+                        "config": {},
+                    },
+                    daemon = True,
+                )
+                self._process.start()
+        except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
+            # Nothing was started, so there is nothing to kill; drop the queues
+            # and say what happened in a class the caller can act on.
+            self._process = None
+            self._close_queues()
+            raise SttWorkerSpawnError(
+                f"Could not start the dictation worker process: {exc}"
+            ) from exc
         adopt_pid(self._process.pid)  # terminate_all backstop for graceful exits
         logger.info(
             "STT worker started (pid=%s) for %s on %s", self._process.pid, snapshot_path, device
@@ -391,7 +408,7 @@ class WhisperWorker:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
-    def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> None:
+    def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
         """Stop the child, which is what actually returns its accelerator memory.
 
         graceful_timeout is how long the child gets to consume the queued
@@ -399,9 +416,14 @@ class WhisperWorker:
         spent elsewhere -- the cancel grace in _await -- so go straight to
         terminate rather than restart the clock on a caller that is already
         out of patience.
+
+        Returns True only once the child is confirmed dead. A child that
+        survives terminate and kill (wedged in a driver call that outlives
+        SIGKILL) still holds its memory, so its handle and its adoption record
+        are KEPT: forgetting the pid would leave terminate_all and the next
+        startup sweep nothing to find it by.
         """
         process = self._process
-        self._process = None
         self.cancel()  # unblock a generation before asking the loop to exit
         if process is not None:
             try:
@@ -418,11 +440,23 @@ class WhisperWorker:
             if process.is_alive():
                 process.kill()
                 process.join(3)
+            if process.is_alive():
+                logger.error(
+                    "STT worker %s survived terminate and kill; keeping its handle and its "
+                    "pid record so the sweep can still reach it",
+                    process.pid,
+                )
+                return False
             try:
                 from utils.process_lifetime import forget_pid
                 forget_pid(process.pid)
             except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail an unload
                 logger.debug("Could not forget STT worker pid %s: %s", process.pid, exc)
+        self._process = None
+        self._close_queues()
+        return True
+
+    def _close_queues(self) -> None:
         for handle in (self._cmd_queue, self._resp_queue):
             try:
                 if handle is not None:
@@ -508,3 +542,72 @@ class WhisperWorker:
                 detail += "; the system may have killed it under memory pressure"
         what = "loading the dictation model" if phase == "load" else "transcribing"
         return f"The dictation worker stopped while {what} ({detail})."
+
+
+class InProcessWhisperEngine:
+    """The pre-spawn engine, kept for hosts where no child can be created.
+
+    A sandboxed deployment or a frozen POSIX build may refuse spawn outright,
+    and dictation worked there before this module existed, so it still has to.
+    Presents the same surface as WhisperWorker, so the sidecar cannot tell the
+    two apart.
+
+    CPU only, and deliberately so: the reason the model moved out of process is
+    that an accelerator context is never given back while the process holding
+    it lives. A CPU load in the backend takes no context, so this fallback
+    costs the backend nothing permanent.
+    """
+
+    def __init__(self) -> None:
+        self._model = None
+        self._processor = None
+        self.device: Optional[str] = None
+        self.generation_config = SimpleNamespace(is_multilingual = None)
+
+    def start(
+        self,
+        snapshot_path: str,
+        device: str,
+        dtype_name: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        if device != "cpu":
+            raise SttWorkerError("The in-process dictation fallback runs on the CPU only.")
+        model, processor = load_whisper(str(snapshot_path), "cpu", dtype_name, cancel_event)
+        self._model = model
+        self._processor = processor
+        self.device = "cpu"
+        generation_config = getattr(model, "generation_config", None)
+        is_multilingual = getattr(generation_config, "is_multilingual", None)
+        self.generation_config = SimpleNamespace(
+            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None
+        )
+        logger.info("STT model loaded in process on the CPU from %s", snapshot_path)
+
+    def transcribe_window(
+        self,
+        pcm: bytes,
+        generate_kwargs: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
+        if self._model is None:
+            raise SttWorkerError("The dictation worker has no model loaded.")
+        text = transcribe_window(
+            self._model, self._processor, pcm, dict(generate_kwargs), cancel_event
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            from core.inference.stt_sidecar import SttTranscriptionCancelledError
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
+        return text
+
+    def is_alive(self) -> bool:
+        return self._model is not None
+
+    def cancel(self) -> None:
+        """Nothing to signal: the caller's own event stops the generation."""
+
+    def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
+        self._model = None
+        self._processor = None
+        self.device = None
+        return True
