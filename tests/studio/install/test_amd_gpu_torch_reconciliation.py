@@ -579,7 +579,7 @@ def test_fast_path_and_repair_use_the_same_plan():
     ensure = source[source.index("def _ensure_rocm_torch()") :]
     main = source[source.index('if __name__ == "__main__":') :]
     assert "plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()" in ensure
-    assert "_linux_rocm_fast_path_exit_code(_linux_rocm_torch_plan()[0])" in main
+    assert "_run_linux_rocm_fast_path_probe()" in main
 
 
 def test_shell_bounds_and_diagnoses_the_delegated_probe():
@@ -866,6 +866,40 @@ def test_a_blocked_repair_keeps_the_ledger(monkeypatch, torch_ready):
     assert _run_ensure_rocm_torch(monkeypatch, blocked, torch_ready) == []
 
 
+def _run_fast_path_probe(monkeypatch, plan, torch_ready):
+    cleared = []
+    monkeypatch.setattr(stack, "_linux_rocm_torch_plan", lambda: (plan, torch_ready, False))
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "clear_rocm_repair_attempt",
+        lambda *_a, **_k: cleared.append(True),
+    )
+    return stack._run_linux_rocm_fast_path_probe(), cleared
+
+
+def test_the_fast_path_forgets_a_settled_repair(monkeypatch):
+    """setup.sh skips the dependency pass on exit 3, so without this the marker left by a
+    repair that WORKED never goes away and permanently suppresses the next one."""
+    assert _run_fast_path_probe(monkeypatch, None, True) == (3, [True])
+
+
+def test_the_fast_path_keeps_the_ledger_when_nothing_converged(monkeypatch):
+    """A preserved CUDA wheel, a non-AMD host and a blocked repair all exit 3 as well;
+    only a ROCm-ready host with no plan left is convergence."""
+    assert _run_fast_path_probe(monkeypatch, None, False) == (3, [])
+    blocked = stack._LinuxRocmTorchPlan(
+        index_url = "https://download.pytorch.org/whl/rocm7.2",
+        packages = ("torch", "torchvision", "torchaudio"),
+        label = "ROCm torch (rocm7.2)",
+        reason = "ROCm 7.2",
+        install_torch = False,
+        clear_hsa_spoof_gfx = None,
+        repair_key = "a" * 32,
+        blocked = True,
+    )
+    assert _run_fast_path_probe(monkeypatch, blocked, True) == (3, [])
+
+
 def test_the_repair_ledger_survives_the_manifest_being_dropped(tmp_path):
     """It records an attempt made DURING the pass that deletes the manifest."""
     import install_manifest
@@ -964,6 +998,34 @@ def test_the_recorded_pin_is_read_before_the_dependency_pass_drops_the_manifest(
     install_manifest.remove_manifest(root = tmp_path)
     assert stack._recorded_non_rocm_torch_pin() == pin
     assert stack._manifest_torch_index_url() == pin
+
+
+def test_the_recorded_pin_survives_an_interrupted_dependency_pass(monkeypatch, tmp_path):
+    """Reading it at import only carries the pin through THIS process. The replacement
+    manifest is written on success alone, so a pass that pip kills part-way loses it and
+    the next update reconciles a deliberate CPU or CUDA install to ROCm."""
+    import install_manifest
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    pin = "https://download.pytorch.org/whl/cpu"
+    install_manifest.write_manifest(root = tmp_path, req_root = tmp_path, torch_index_url = pin)
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", pin)
+    # What install_python_stack() does before any package work; then pip fails, so no
+    # manifest is ever written back.
+    install_manifest.set_torch_index_marker(stack._manifest_torch_index_url(), root = tmp_path)
+    install_manifest.remove_manifest(root = tmp_path)
+    assert install_manifest.recorded_torch_index_url(root = tmp_path) == pin
+
+
+def test_the_installer_records_the_pin_before_the_dependency_pass():
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert source.index("set_no_torch_marker(NO_TORCH)") < source.index(
+        "set_torch_index_marker(_manifest_torch_index_url())"
+    )
+    assert source.index("set_torch_index_marker(_manifest_torch_index_url())") < source.index(
+        "torch_index_url = _manifest_torch_index_url(),"
+    )
 
 
 def test_this_runs_explicit_pin_replaces_the_recorded_one(monkeypatch):

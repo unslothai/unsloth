@@ -278,6 +278,45 @@ def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_ro
     assert im.recorded_no_torch(root = install_root) is True
 
 
+def test_marker_preserves_the_torch_pin_across_the_manifest_drop(install_root, req_root):
+    # The manifest carrying the pin is written only once the pass succeeds, so any pip
+    # failure leaves the next update with no pin and free to reinstall ROCm torch over
+    # the CPU or CUDA index the user chose.
+    pin = "https://download.pytorch.org/whl/cpu"
+    im.set_torch_index_marker(pin, root = install_root)
+    im.write_manifest(root = install_root, req_root = req_root, torch_index_url = pin)
+    im.remove_manifest(root = install_root)
+    assert im.recorded_torch_index_url(root = install_root) == pin
+
+
+def test_a_completed_manifest_outranks_a_stale_torch_pin_marker(install_root, req_root):
+    # A deliberate backend switch must not be answered with the previous family.
+    im.set_torch_index_marker("https://download.pytorch.org/whl/cpu", root = install_root)
+    im.write_manifest(
+        root = install_root,
+        req_root = req_root,
+        torch_index_url = "https://download.pytorch.org/whl/rocm7.2",
+    )
+    assert (
+        im.recorded_torch_index_url(root = install_root)
+        == "https://download.pytorch.org/whl/rocm7.2"
+    )
+
+
+def test_set_torch_index_marker_clears_itself_and_never_raises(install_root):
+    im.set_torch_index_marker("https://download.pytorch.org/whl/cpu", root = install_root)
+    assert im.torch_index_marker_path(root = install_root).exists()
+
+    # Unpinned means unknown, never the family a previous install used.
+    im.set_torch_index_marker(None, root = install_root)
+    assert not im.torch_index_marker_path(root = install_root).exists()
+    assert im.recorded_torch_index_url(root = install_root) is None
+
+    # Absent directory: must degrade quietly, it runs mid-install.
+    im.set_torch_index_marker("https://download.pytorch.org/whl/cpu", root = install_root / "no" / "such")
+    assert im.recorded_torch_index_url(root = install_root / "no" / "such") is None
+
+
 def test_manifest_key_overrides_a_stale_marker(install_root, req_root):
     # Migrating out of no-torch must not be blocked by a marker left behind.
     im.set_no_torch_marker(True, root = install_root)

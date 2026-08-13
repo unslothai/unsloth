@@ -3367,6 +3367,22 @@ def _linux_rocm_fast_path_exit_code(plan: "_LinuxRocmTorchPlan | None") -> int:
     return 3
 
 
+def _run_linux_rocm_fast_path_probe() -> int:
+    """Resolve the plan for setup.sh, settling the repair ledger on the way.
+
+    The clear is the one _ensure_rocm_torch performs at convergence. A host whose
+    updates keep taking the fast path never runs the dependency pass, so this is the
+    only place a repair that SUCCEEDED can be forgotten; left recorded, a later and
+    genuinely new breakage landing on the same observed state is suppressed for good.
+    Gated on the plan rather than the exit code: a blocked repair also exits 3, and
+    clearing there would re-arm the reinstall the ledger exists to stop.
+    """
+    plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()
+    if plan is None and rocm_torch_ready:
+        install_manifest.clear_rocm_repair_attempt()
+    return _linux_rocm_fast_path_exit_code(plan)
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -4610,6 +4626,11 @@ def install_python_stack() -> int:
     # pass killed part-way. Otherwise the next update sees neither, reads the
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
+    # Same reasoning for the wheel index. The manifest that carries the pin is written
+    # only on success, so a pip failure (run() exits the process) leaves the next update
+    # with no pin at all and the ROCm reconciliation reinstalls over the CPU or CUDA
+    # index the user chose. Records what this pass is building against, as above.
+    install_manifest.set_torch_index_marker(_manifest_torch_index_url())
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
@@ -5085,5 +5106,5 @@ if __name__ == "__main__":
         #   5 = install torch and clear HSA override
         #
         # Other statuses remain startup/import failures for setup.sh to diagnose.
-        sys.exit(_linux_rocm_fast_path_exit_code(_linux_rocm_torch_plan()[0]))
+        sys.exit(_run_linux_rocm_fast_path_probe())
     sys.exit(install_python_stack())

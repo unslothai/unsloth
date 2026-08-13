@@ -46,6 +46,12 @@ NO_TORCH_MARKER = ".unsloth-no-torch"
 # afterwards re-reads as a wrong wheel and is re-downloaded on every update (#8473).
 ROCM_REPAIR_MARKER = ".unsloth-rocm-repair"
 
+# Companion to the torch_index_url manifest key, for the same reason again: the manifest
+# carrying the pin is written only once the pass succeeds, so any pip failure leaves the
+# next update with no recorded pin at all -- and on an AMD host the ROCm reconciliation
+# then reinstalls several GB over the CPU or CUDA index the user deliberately chose.
+TORCH_INDEX_MARKER = ".unsloth-torch-index"
+
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
 # Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
@@ -236,11 +242,41 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     return None
 
 
+def torch_index_marker_path(root: Optional[Path] = None) -> Path:
+    return (root or venv_root()) / TORCH_INDEX_MARKER
+
+
+def set_torch_index_marker(url: Optional[str], root: Optional[Path] = None) -> None:
+    """Record the pin outside the completion manifest. Never raises.
+
+    Written before the dependency pass, as set_no_torch_marker is, so a pass killed
+    part-way still knows which wheel index it was building against. Removed when there
+    is no pin, so a venv migrated off one does not keep answering with the old family.
+    """
+    path = torch_index_marker_path(root)
+    try:
+        if url and url.strip():
+            path.write_text(url.strip(), encoding = "utf-8")
+        else:
+            path.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def recorded_torch_index_url(root: Optional[Path] = None) -> Optional[str]:
     """The wheel index this venv was installed from, or None when unknown."""
     manifest = read_manifest(root)
     value = manifest.get("torch_index_url") if manifest is not None else None
-    return value.strip() or None if isinstance(value, str) else None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    # No manifest (dropped before the dependency pass, or the install was killed during
+    # it) or one predating the key: the marker is the durable answer. Same ordering as
+    # recorded_no_torch -- a completed manifest is the finished record and wins.
+    try:
+        marker = torch_index_marker_path(root).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    return marker or None
 
 
 def rocm_repair_marker_path(root: Optional[Path] = None) -> Path:
