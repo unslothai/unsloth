@@ -550,6 +550,251 @@ class TestMergeSizing:
         assert 'out_dir = base + "-" + suffix' in source
 
 
+class _FakeParameter:
+    """A parameter the sizing can measure without torch."""
+
+    def __init__(self, numel):
+        self._numel = numel
+
+    def numel(self):
+        return self._numel
+
+
+class _FakeModule:
+    """A module tree answering the two calls the sizing makes.
+
+    `parameters()` recurses, exactly as `torch.nn.Module.parameters()` does,
+    so a parent that matches an ignore pattern reports its children's weights
+    too and the deduplication has something to do.
+    """
+
+    def __init__(
+        self,
+        parameters = (),
+        children = None,
+    ):
+        self._parameters = list(parameters)
+        self._children = dict(children or {})
+
+    def parameters(self):
+        for parameter in self._parameters:
+            yield parameter
+        for child in self._children.values():
+            yield from child.parameters()
+
+    def named_modules(self, prefix = ""):
+        yield prefix, self
+        for name, child in self._children.items():
+            yield from child.named_modules(f"{prefix}.{name}" if prefix else name)
+
+
+class _ShapedModel(_FakeModule):
+    """A named module tree plus the embedding getters and a config."""
+
+    def __init__(
+        self,
+        children,
+        config,
+        input_embeddings = None,
+        output_embeddings = None,
+    ):
+        super().__init__(children = children)
+        self.config = config
+        self._input = input_embeddings
+        self._output = output_embeddings
+
+    def get_input_embeddings(self):
+        return self._input
+
+    def get_output_embeddings(self):
+        return self._output
+
+
+class _Config:
+    def __init__(self, **kwargs):
+        self.model_type = ""
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+def _embedding(numel):
+    """A module whose single weight is also what the getters return."""
+    parameter = _FakeParameter(numel)
+    module = _FakeModule(parameters = [parameter])
+    module.weight = parameter
+    return module
+
+
+def _sibling_bytes(merge_bytes, unquantized_bytes, weight_bits):
+    """The arithmetic `_quantized_sibling_bytes` does, written out."""
+    return int((merge_bytes - unquantized_bytes) * weight_bits / 16) + unquantized_bytes
+
+
+class TestTheRecipesIgnoredModulesStay16Bit:
+    """Everything `_compressed_quantize`'s recipe refuses to quantize is copied at 16 bits.
+
+    The recipe ignores `lm_head`, every module under a `linear_attn` or a
+    `visual`, anything named `*mtp*`, and on an MoE the router gates. Only the
+    embeddings were priced at 16 bits here, so a VLM's vision tower or a
+    hybrid's linear attention was charged 4 or 8 bits for bytes the export
+    writes at 16 - an under-count, which is the direction that loses the
+    Kaggle redirect an export needed.
+    """
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        return asked
+
+    def _vlm(self):
+        """A 10GB VLM: 2GB of input embeddings and a 1GB vision tower."""
+        embeddings = _embedding(1024**3)
+        visual = _FakeModule(
+            children = {
+                "blocks": _FakeModule(
+                    children = {
+                        "0": _FakeModule(
+                            children = {
+                                "attn": _FakeModule(parameters = [_FakeParameter(1024**3 // 2)]),
+                            }
+                        ),
+                    }
+                ),
+            }
+        )
+        return _ShapedModel(
+            children = {
+                "model": _FakeModule(children = {"embed_tokens": embeddings, "visual": visual}),
+            },
+            config = _Config(model_type = "qwen3_vl"),
+            input_embeddings = embeddings,
+        )
+
+    def test_a_vision_tower_is_not_priced_as_quantized(self, sized):
+        S._preflight_merge_disk(self._vlm(), "model", "fp8")
+        # 2GB embeddings + 1GB vision tower stay 16-bit; the other 7GB go to 8.
+        expected = 10 * GB + _sibling_bytes(10 * GB, 3 * GB, 8)
+        assert sized == [_with_merge_headroom(expected)]
+        # And strictly more than the embeddings-only figure this replaces, which
+        # is the whole point: the old estimate was short.
+        assert sized[0] > _with_merge_headroom(10 * GB + _sibling_bytes(10 * GB, 2 * GB, 8))
+
+    def test_the_vision_tower_is_counted_once(self):
+        """`re:.*\\.visual\\..*` matches the tower's children, not just the tower."""
+        model = self._vlm()
+        patterns = S._compressed_ignore_patterns(model)
+        assert S._unquantized_parameter_bytes(model, patterns) == 3 * GB
+
+    def test_a_torchao_export_is_charged_none_of_them(self, sized):
+        """torchao quantizes with no ignore list, so charging these over-counts."""
+        S._preflight_merge_disk(self._vlm(), "model", "torchao_fp8")
+        assert sized == [_with_merge_headroom(_sibling_bytes(10 * GB, 2 * GB, 8))]
+
+    def test_an_lm_head_module_is_not_counted_twice(self):
+        """`lm_head` is both `get_output_embeddings()` and an ignored name."""
+        embeddings = _embedding(1024**3)
+        head = _embedding(1024**3)
+        model = _ShapedModel(
+            children = {"model": _FakeModule(children = {"embed_tokens": embeddings}), "lm_head": head},
+            config = _Config(model_type = "llama"),
+            input_embeddings = embeddings,
+            output_embeddings = head,
+        )
+        patterns = S._compressed_ignore_patterns(model)
+        assert "lm_head" in patterns
+        assert S._unquantized_parameter_bytes(model, patterns) == 4 * GB
+
+    def test_the_moe_gates_are_counted_and_gate_proj_is_not(self):
+        """`re:.*\\.gate$` is anchored: it must not swallow `gate_proj`."""
+        embeddings = _embedding(1024**3)
+        layer = _FakeModule(
+            children = {
+                "mlp": _FakeModule(
+                    children = {
+                        "gate": _FakeModule(parameters = [_FakeParameter(1024**3 // 2)]),
+                        "gate_proj": _FakeModule(parameters = [_FakeParameter(1024**3)]),
+                    }
+                ),
+            }
+        )
+        model = _ShapedModel(
+            children = {
+                "model": _FakeModule(
+                    children = {
+                        "embed_tokens": embeddings,
+                        "layers": _FakeModule(children = {"0": layer}),
+                    },
+                ),
+            },
+            config = _Config(model_type = "qwen3_moe", num_experts = 128),
+            input_embeddings = embeddings,
+        )
+        patterns = S._compressed_ignore_patterns(model)
+        assert "re:.*\\.gate$" in patterns
+        # 2GB embeddings + 1GB router gate. `gate_proj` is 2GB and quantizes.
+        assert S._unquantized_parameter_bytes(model, patterns) == 3 * GB
+
+    def test_a_dense_model_gets_no_gate_patterns(self):
+        model = _ShapedModel(children = {}, config = _Config(model_type = "llama"))
+        assert "re:.*\\.gate$" not in S._compressed_ignore_patterns(model)
+
+    def test_a_model_whose_modules_cannot_be_walked_keeps_the_old_figure(self):
+        """Degrade to today's behaviour rather than raise."""
+        model = self._vlm()
+
+        def explode():
+            raise RuntimeError("no modules here")
+
+        model.named_modules = explode
+        assert S._unquantized_parameter_bytes(model, S._compressed_ignore_patterns(model)) == 2 * GB
+
+    def test_a_missing_recipe_symbol_leaves_the_estimate_alone(self, monkeypatch):
+        """A renamed or deleted `compressed_ignore_patterns` must not raise."""
+        import unsloth._compressed_quantize as Q
+
+        monkeypatch.delattr(Q, "compressed_ignore_patterns")
+        assert S._compressed_ignore_patterns(self._vlm()) == []
+
+    def test_an_unparseable_pattern_matches_nothing(self):
+        module = _FakeModule(parameters = [_FakeParameter(1024**3)])
+        assert not S._matches_ignore_pattern("model.visual.attn", module, ["re:*["])
+
+    def test_the_matcher_mirrors_compressed_tensors(self):
+        """`re:` is `re.match` (start-anchored, not full); plain is an exact name."""
+        module = _FakeModule()
+        assert S._matches_ignore_pattern("visual.blocks.0", module, ["re:visual.*"])
+        # Start-anchored: a mid-string match is not one.
+        assert not S._matches_ignore_pattern("model.visual.blocks", module, ["re:visual.*"])
+        assert S._matches_ignore_pattern("model.visual.blocks", module, ["re:.*\\.visual\\..*"])
+        # Not required to reach the end of the name.
+        assert S._matches_ignore_pattern("model.mtp.layers.0", module, ["re:.*mtp.*"])
+        # Plain entries are exact, never substrings.
+        assert S._matches_ignore_pattern("lm_head", module, ["lm_head"])
+        assert not S._matches_ignore_pattern("model.lm_head", module, ["lm_head"])
+        # Plain entries also match a parent class name, as `_match_class` does.
+        assert S._matches_ignore_pattern("anything", module, ["_FakeModule"])
+
+    def test_the_recipe_is_read_from_the_runner_not_restated(self):
+        """The drift this fixes is two copies of one list; keep there being one."""
+        import inspect
+
+        source = inspect.getsource(S._compressed_ignore_patterns)
+        assert "from unsloth._compressed_quantize import compressed_ignore_patterns" in source
+        import unsloth._compressed_quantize as Q
+
+        main_source = inspect.getsource(Q.main)
+        assert "compressed_ignore_patterns(config)" in main_source
+        assert "re:.*mtp.*" not in main_source, "main() must not rebuild the list"
+
+
 class TestTorchaoStagingSharesTheRedirectDestination:
     """The torchao staging merge is on /tmp, and so is the redirect target.
 

@@ -2947,7 +2947,51 @@ def _compressed_scheme_weight_bits(scheme):
     return 4 if scheme.startswith("W4") or "FP4" in scheme else 8
 
 
-def _unquantized_parameter_bytes(model):
+def _compressed_ignore_patterns(model):
+    """The compressed recipe's own `ignore` list for this model, or an empty list.
+
+    Read out of `_compressed_quantize.py` rather than restated here, so the
+    sizing cannot drift from the recipe the way it already had. That module is
+    otherwise only ever *executed* by file path; its module-level imports are
+    stdlib only, so importing it costs nothing and imports no llm-compressor.
+
+    Any failure (module renamed, symbol gone, a config that will not answer)
+    returns nothing, which leaves the estimate exactly as it was.
+    """
+    try:
+        from unsloth._compressed_quantize import compressed_ignore_patterns
+        return list(compressed_ignore_patterns(getattr(model, "config", None)))
+    except Exception:
+        return []
+
+
+def _matches_ignore_pattern(name, module, patterns):
+    """Mirror compressed-tensors' `is_match` for one module against `ignore`.
+
+    `compressed_tensors.utils.match._match_name` treats a `re:` prefix as
+    `re.match(pattern, name)` - anchored at the start of the fully qualified
+    module name, and not required to reach its end - and everything else as
+    `target == name`. `_match_class` additionally matches a plain entry
+    against the names of the module's parent classes, which is why the MRO is
+    walked here too.
+
+    An unparseable pattern matches nothing rather than raising.
+    """
+    for pattern in patterns:
+        try:
+            if isinstance(pattern, str) and pattern.startswith("re:"):
+                if re.match(pattern.removeprefix("re:"), name) is not None:
+                    return True
+            elif pattern == name:
+                return True
+            elif any(cls.__name__ == pattern for cls in type(module).__mro__):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _unquantized_parameter_bytes(model, ignore_patterns = ()):
     """Bytes a weight-only export leaves at 16 bits in the sibling checkpoint.
 
     compressed-tensors and torchao both quantize `Linear` weights only, so the
@@ -2955,8 +2999,17 @@ def _unquantized_parameter_bytes(model):
     dominant exclusion (a 4.5B model measured 0.5B of them), so pricing the
     whole sibling at the scheme's width under-sizes it by the embedding share.
 
-    Tied embeddings are one tensor and are counted once. Zero when the model
-    does not answer, which leaves the estimate exactly as it was.
+    `ignore_patterns` is the recipe's `ignore` list, and every module it names
+    stays 16-bit as well: the vision tower of a VLM, a Qwen3-Next hybrid's
+    linear-attention blocks, an MTP head, the MoE router gates. Those are the
+    same order of magnitude as the embeddings, and pricing them at 4 or 8 bits
+    under-sizes the merge, which is the direction that loses the redirect.
+    Empty for torchao, which quantizes with no ignore list of its own.
+
+    Tied embeddings are one tensor and are counted once, and a module already
+    counted through an embedding getter or through an enclosing ignored module
+    is not counted again. Zero when the model does not answer, which leaves
+    the estimate exactly as it was.
     """
     total = 0
     seen = set()
@@ -2969,17 +3022,40 @@ def _unquantized_parameter_bytes(model):
             total += weight.numel() * 2
         except Exception:
             continue
+    if not ignore_patterns:
+        return total
+    try:
+        named_modules = list(model.named_modules())
+    except Exception:
+        # A model whose modules cannot be walked keeps the embeddings-only figure.
+        return total
+    for name, module in named_modules:
+        try:
+            if not _matches_ignore_pattern(name, module, ignore_patterns):
+                continue
+            for parameter in module.parameters():
+                if id(parameter) in seen:
+                    continue
+                seen.add(id(parameter))
+                total += parameter.numel() * 2
+        except Exception:
+            continue
     return total
 
 
-def _quantized_sibling_bytes(model, merge_bytes, weight_bits):
+def _quantized_sibling_bytes(
+    model,
+    merge_bytes,
+    weight_bits,
+    ignore_patterns = (),
+):
     """Bytes of the quantized sibling written to `save_directory + "-<suffix>"`.
 
     `merge_bytes` is the 16-bit checkpoint size. Only the part of it that a
     weight-only scheme actually quantizes shrinks; the rest is copied across
     at 16 bits.
     """
-    unquantized = min(_unquantized_parameter_bytes(model), merge_bytes)
+    unquantized = min(_unquantized_parameter_bytes(model, ignore_patterns), merge_bytes)
     return int((merge_bytes - unquantized) * weight_bits / 16) + unquantized
 
 
@@ -3100,10 +3176,20 @@ def _preflight_merge_disk(
             # directory rather than `save_directory`, so the only thing landing
             # here is the 8-bit sibling.
             staging = need
+            # No ignore list: `_unsloth_save_torchao` quantizes with a bare
+            # `Float8WeightOnlyConfig()` / `Int8WeightOnlyConfig()`. Charging it
+            # the compressed recipe's exclusions would over-count, and
+            # over-counting relocates an export that fits into a /tmp Kaggle
+            # does not keep as notebook output.
             need = _quantized_sibling_bytes(model, need, _TORCHAO_SIBLING_WEIGHT_BITS)
         elif compressed is not None:
             need += _quantized_sibling_bytes(
-                model, need, _compressed_scheme_weight_bits(compressed[0])
+                model,
+                need,
+                _compressed_scheme_weight_bits(compressed[0]),
+                # Everything the recipe refuses to quantize is copied across at
+                # 16 bits: the vision tower, linear attention, MTP, MoE gates.
+                _compressed_ignore_patterns(model),
             )
         need = math.ceil(need / _MERGE_FREE_SPACE_RESERVE)
         new_directory, message = kaggle_tmp_redirect(
