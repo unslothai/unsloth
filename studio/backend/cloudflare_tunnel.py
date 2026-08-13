@@ -2082,6 +2082,7 @@ def teardown_custom_tunnel(*, clear_auto_start: Optional[Callable[[], object]] =
             hostname = str(identity.get("hostname") or "")
             name = identity.get("tunnel_name")
             credentials = identity.get("credentials")
+            stale = _read(_RECORD)
             record = {
                 "operation": "teardown",
                 "cloudflare_cleanup": "manual",
@@ -2089,6 +2090,10 @@ def teardown_custom_tunnel(*, clear_auto_start: Optional[Callable[[], object]] =
                 "tunnel_names": [name],
                 "credentials": credentials,
             }
+            if isinstance(stale, dict) and stale.get("cert_digest"):
+                # A setup that could not delete its certificate left the only
+                # proof of ownership here, and this record replaces that one.
+                record["cert_digest"] = stale["cert_digest"]
             _write(_RECORD, record)
             _settle(None, clear_auto_start = clear_auto_start)
             return True

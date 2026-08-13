@@ -1937,6 +1937,24 @@ def test_a_certificate_that_cannot_be_removed_keeps_the_record_that_owns_it(cf, 
     assert ct._read(ct._RECORD) is None
 
 
+def test_teardown_carries_the_digest_of_a_certificate_setup_could_not_remove(cf, monkeypatch):
+    # Teardown replaces the retained record, so dropping the digest here would
+    # leave the certificate on disk with nothing that could ever claim it.
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == _cert(cf) else real_unlink(path, **kw),
+    )
+    _provision()
+    assert _cert(cf).exists()
+
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    assert ct.teardown_custom_tunnel() is True
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
 def test_teardown_removes_only_local_credentials_for_manual_cloudflare_cleanup(cf):
     identity = _provision()
     calls = list(cf.calls)
