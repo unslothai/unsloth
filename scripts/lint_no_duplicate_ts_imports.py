@@ -50,6 +50,12 @@ _IMPORT = re.compile(
 )
 # A bare `import "./styles.css"` binds nothing; the `from` requirement skips it.
 
+# The `type` modifier, clause-level or per specifier. `\s+`, not a literal space:
+# any whitespace is legal after it, and a literal-space test on `type\n  Foo`
+# leaves the modifier in place and records `type` itself as the binding -- so two
+# such specifiers read as a duplicate and fail CI on a file tsc accepts.
+_TYPE_MODIFIER = re.compile(r"^type\s+")
+
 
 def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
@@ -58,9 +64,7 @@ def _bindings(clause: str) -> list[str]:
     # commented import as a duplicate of it -- a CI fail on ordinary TypeScript.
     clause = re.sub(r"/\*.*?\*/", " ", clause, flags = re.DOTALL)
     clause = re.sub(r"//[^\n]*", " ", clause)
-    clause = clause.strip()
-    if clause.startswith("type "):
-        clause = clause[len("type ") :]
+    clause = _TYPE_MODIFIER.sub("", clause.strip(), count = 1)
 
     names: list[str] = []
     braced = re.search(r"\{(?P<inner>.*)\}", clause, re.DOTALL)
@@ -70,8 +74,7 @@ def _bindings(clause: str) -> list[str]:
             if not piece:
                 continue
             # `a as b` binds b; `type T` binds T; `type T as U` binds U.
-            if piece.startswith("type "):
-                piece = piece[len("type ") :].strip()
+            piece = _TYPE_MODIFIER.sub("", piece, count = 1).strip()
             parts = piece.split()
             # `as` as a token, not `" as "`: DOTALL lets a specifier wrap around
             # the keyword, and a literal-space test then records the imported
@@ -194,6 +197,21 @@ def _self_test() -> int:
             'import {\n  // the primary widget\n  alpha,\n} from "m";\n'
             'import {\n  // again\n  alpha,\n} from "n";\n',
             ["alpha"],
+        ),
+        (
+            "an inline type modifier may be followed by any whitespace",
+            'import {\n  type\n  Foo,\n  type\tBar,\n} from "m";\n',
+            [],
+        ),
+        (
+            "a clause-level type modifier may be followed by any whitespace",
+            'import type\n{ Foo } from "m";\nimport type\n{ Bar } from "n";\n',
+            [],
+        ),
+        (
+            "a wrapped type modifier still reports its real duplicate",
+            'import {\n  type\n  Foo,\n} from "m";\nimport { Foo } from "n";\n',
+            ["Foo"],
         ),
         (
             "the word import inside a string is not an import",
