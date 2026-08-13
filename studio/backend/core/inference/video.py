@@ -1499,6 +1499,20 @@ class VideoBackend:
         filename = gguf_filename or ""
         qwen_filename = h3_text_encoder_filename(filename)
 
+        # Claimed before anything slow, the preflight below included. asset_repos is what stops the
+        # delete-cached guard admitting a delete of the H3 companion repos while this load is
+        # pulling from them, and the preflight can spend minutes installing the sd-cli prebuilt.
+        # Claiming only after it left that whole window open, and a delete admitted inside it is
+        # not revoked by claiming the repos afterwards. expected_bytes stays below, where the sizes
+        # are known.
+        with self._lock:
+            if self._load_token == token and self._loading is not None:
+                self._loading.base_repo = fam.base_repo
+                # The download list below pulls from the H3 companion repos too, and neither is
+                # repo_id or base_repo, so without this the delete-cached guard would let one be
+                # deleted out from under the in-flight load. The committed twin is loaded_repo_ids().
+                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
+
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
         # predates H3 runs fine and so clears the version() gate below, then aborts on the first
         # generation. That is the whole reason this gate exists, and running it after the four-file
@@ -1588,11 +1602,6 @@ class VideoBackend:
             total = 0
         with self._lock:
             if self._load_token == token and self._loading is not None:
-                self._loading.base_repo = fam.base_repo
-                # The download list below pulls from the H3 companion repos too, and neither is
-                # repo_id or base_repo, so without this the delete-cached guard would let one be
-                # deleted out from under the in-flight load. The committed twin is loaded_repo_ids().
-                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
                 self._loading.expected_bytes = total or None
 
         resolved: list[Path] = []
