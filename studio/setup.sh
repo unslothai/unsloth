@@ -1704,9 +1704,10 @@ _setup_persist_uv_path() {
     _supp_fish_dir="$HOME/.config/fish/conf.d"
     if mkdir -p "$_supp_fish_dir" 2>/dev/null; then
         _supp_fish="$_supp_fish_dir/unsloth.fish"
-        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qF "$_supp_dir"; then
-            # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
-            _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
+        _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
+        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
             echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
         fi

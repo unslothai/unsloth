@@ -1534,6 +1534,14 @@ exit 0
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
+            # A launcher on a UNC share is a REMOTE script to PowerShell, and RemoteSigned
+            # refuses an unsigned one, so a roaming profile would get a shortcut that exits
+            # without starting Studio. Bypass for that case only, and without -WindowStyle
+            # Hidden, since the hidden window beside a bypassed policy is the pair the
+            # detections key on. A console window on a UNC profile beats nothing launching.
+            if ($launcherPs1 -like "\\*") {
+                $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            }
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell

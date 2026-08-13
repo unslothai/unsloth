@@ -942,6 +942,40 @@ else
     bad "the uv PATH entry reaches every startup file astral wired, once each ($_missing)"
 fi
 
+# fish reads none of the POSIX files, so its drop-in is the only thing that puts uv on a fish
+# user's PATH. A different directory already in that file must not pass for this one.
+_fh="$WORK/fish_entry_home"
+mkdir -p "$_fh/.config/fish/conf.d" "$_fh/.local/bin" "$_fh/opt/uv"
+printf "# Added by Unsloth installer\nfish_add_path '%s/opt/uv-old'\n" "$_fh" > "$_fh/.config/fish/conf.d/unsloth.fish"
+(
+    set +e
+    step() { :; }
+    HOME="$_fh"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION ZDOTDIR UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -qxF "fish_add_path '$_fh/opt/uv'" "$_fh/.config/fish/conf.d/unsloth.fish"; then
+    ok "a different fish entry does not suppress this one"
+else
+    bad "a different fish entry does not suppress this one"
+fi
+
+# A launcher on a UNC share is a remote script to PowerShell, and RemoteSigned refuses an
+# unsigned one, so a roaming profile would get a shortcut that exits without starting Studio.
+_ps1="$SCRIPT_DIR/../../install.ps1"
+if grep -q 'if ($launcherPs1 -like "\\\\\*")' "$_ps1" \
+   && grep -q '"-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""' "$_ps1"; then
+    ok "a UNC launcher gets a policy that can actually load it"
+else
+    bad "a UNC launcher gets a policy that can actually load it"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

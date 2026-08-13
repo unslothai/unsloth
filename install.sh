@@ -5354,10 +5354,12 @@ _persist_fish_path_dir() {
     _pfp_dir_conf="$HOME/.config/fish/conf.d"
     mkdir -p "$_pfp_dir_conf" 2>/dev/null || return 0
     _pfp_file="$_pfp_dir_conf/unsloth.fish"
-    if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qF "$_pfp_dir"; then
-        # Single-quoted: an unquoted path with a space is two arguments to fish_add_path and
-        # neither exists. Inside fish single quotes only \\ and \' carry meaning.
-        _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+    # Single-quoted: an unquoted path with a space is two arguments to fish_add_path and
+    # neither exists. Inside fish single quotes only \\ and \' carry meaning.
+    _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+    # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
+    # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
+    if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
         echo "# Added by Unsloth installer" >> "$_pfp_file"
         echo "fish_add_path '$_pfp_quoted'" >> "$_pfp_file"
         step "path" "added $_pfp_label to PATH in $_pfp_file"
