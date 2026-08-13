@@ -10,6 +10,7 @@ import io
 import os
 import re
 import sys
+import types
 from pathlib import Path
 from unittest import mock
 
@@ -1002,6 +1003,102 @@ class TestDuplicateCoreMetadataRepair:
             "the duplicate-metadata repair must run again after the core-package "
             "install and before the manifest is written"
         )
+
+    def test_staging_relaxes_pip_hash_enforcement(self):
+        """require-hashes applies to pip wheel exactly as it does to pip install
+        (measured on pip 26.2: an unpinned name is refused before anything is
+        built), so a hardened machine could never stage a replacement and the
+        repair would abort on the very conflict it exists to remove."""
+        env = ips._install_env_for_cmd(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", "/staged", "unsloth"]
+        )
+        assert env is not None and env.get("PIP_REQUIRE_HASHES") == "0"
+
+    def test_staging_carries_the_uv_index_across_to_pip(self, monkeypatch):
+        """uv has no wheel subcommand, so staging runs pip, which reads none of
+        uv's index variables and would otherwise stage from public PyPI while
+        every other install came from the private mirror."""
+        monkeypatch.setattr(ips, "USE_UV", True)
+        for var in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS"):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple")
+        monkeypatch.setenv("UV_INDEX", "internal=https://mirror.corp/internal")
+        monkeypatch.setenv("UV_FIND_LINKS", "/opt/wheels")
+        env = ips._uv_index_env_for_pip()
+        assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple"
+        # A named uv index is `label=url`; pip takes the URL alone.
+        assert env["PIP_EXTRA_INDEX_URL"] == "https://mirror.corp/internal"
+        assert env["PIP_FIND_LINKS"] == "/opt/wheels"
+
+    def test_a_lone_uv_index_becomes_the_pip_default(self, monkeypatch):
+        """uv resolves --index entries ahead of the default index, so with
+        nothing else naming one the first entry is the closest pip equivalent."""
+        monkeypatch.setattr(ips, "USE_UV", True)
+        for var in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX_URL"):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setenv("UV_INDEX", "https://a.corp/simple https://b.corp/simple")
+        env = ips._uv_index_env_for_pip()
+        assert env["PIP_INDEX_URL"] == "https://a.corp/simple"
+        assert env["PIP_EXTRA_INDEX_URL"] == "https://b.corp/simple"
+
+    def test_an_explicit_pip_index_outranks_the_uv_translation(self, monkeypatch):
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.setenv("PIP_INDEX_URL", "https://pip.corp/simple")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv.corp/simple")
+        assert "PIP_INDEX_URL" not in ips._uv_index_env_for_pip()
+
+    def test_a_query_string_is_not_mistaken_for_a_named_index(self, monkeypatch):
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.delenv("PIP_INDEX_URL", raising = False)
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple?token=abc")
+        env = ips._uv_index_env_for_pip()
+        assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple?token=abc"
+
+    def test_no_uv_translation_when_pip_is_the_package_manager(self, monkeypatch):
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple")
+        assert ips._uv_index_env_for_pip() == {}
+
+    def test_the_staging_command_runs_with_the_translated_index(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return types.SimpleNamespace(returncode = 1, stdout = b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        monkeypatch.setattr(ips, "_uv_index_env_for_pip", lambda: {"PIP_INDEX_URL": "https://m/s"})
+        assert ips._stage_replacement("unsloth") is None
+        assert captured["env"]["PIP_INDEX_URL"] == "https://m/s"
+        # The hash relaxation for `pip wheel` survives the index merge.
+        assert captured["env"]["PIP_REQUIRE_HASHES"] == "0"
+
+    @pytest.mark.parametrize("label", ("_restore_from_staged", "the repair fallback"))
+    def test_the_staged_wheel_is_reinstalled_with_pip_not_uv(self, monkeypatch, label):
+        """UV_REQUIRE_HASHES would reject the unpinned name after the uninstall
+        loop has already removed every record, leaving the package uninstalled.
+        The wheel is already built, so pip is both safe and sufficient."""
+        installs = []
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ips,
+            "pip_install_try",
+            lambda _label, *args, **kwargs: installs.append(kwargs) or True,
+        )
+        if label == "_restore_from_staged":
+            ips._restore_from_staged("unsloth", "/staged", removed_any = True)
+        else:
+            probes = iter((["old", "new"], ["new"], [], ["new"]))
+            monkeypatch.setattr(
+                ips.install_manifest, "installed_versions", lambda _name: next(probes)
+            )
+            monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+            monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+            monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+            assert ips._repair_duplicate_core_metadata(("custom-package",))
+        assert len(installs) == 1
+        assert installs[0].get("force_pip") is True
 
     def test_ci_overlay_is_wired_into_duplicate_repair(self):
         source = inspect.getsource(ips.install_python_stack).replace(" ", "")

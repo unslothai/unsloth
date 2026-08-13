@@ -4087,6 +4087,10 @@ def _restore_from_staged(name: str, staged: str, removed_any: bool) -> None:
         "--find-links",
         staged,
         name,
+        # pip, not uv: the wheel is already built and sitting in staged, and uv would
+        # reject the unpinned name under UV_REQUIRE_HASHES with the package records
+        # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES relaxation.
+        force_pip = True,
     ):
         _safe_print(_red(f"   restored {name} from the staged replacement"), file = sys.stderr)
     else:
@@ -4107,14 +4111,22 @@ def _stage_replacement(name: str):
     install that follows runs --no-index, so its isolated build could not fetch
     setuptools and the package would stay uninstalled. Building here, while the
     index is still reachable, keeps that install offline-safe.
+
+    pip and not uv because uv has no `wheel` subcommand, so uv's own index
+    variables have to be handed across explicitly to keep the provenance.
     """
     staging = tempfile.mkdtemp(prefix = "unsloth_metadata_repair_")
     cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", staging, name]
+    env = _install_env_for_cmd(cmd)
+    index_env = _uv_index_env_for_pip()
+    if index_env:
+        env = dict(env if env is not None else os.environ)
+        env.update(index_env)
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
-        env = _install_env_for_cmd(cmd),
+        env = env,
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0 or not glob.glob(os.path.join(staging, "*.whl")):
@@ -4240,6 +4252,9 @@ def _repair_duplicate_core_metadata(
                     "--find-links",
                     staged,
                     name,
+                    # As _restore_from_staged: pip, so a uv hash policy cannot reject the
+                    # already-built wheel once every record has been removed.
+                    force_pip = True,
                 )
             if not restored:
                 _safe_print(
@@ -4390,18 +4405,67 @@ _PM_POLICY_ENV_VARS = (
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     """Overrides that stop a hardened user pip config failing the installer's own pip.
 
-    Empty for anything that is not a `pip install` / `pip download` this module drives,
-    every `uv` command included, so the "non-pinned installs inherit the caller env
-    unchanged" contract holds on a machine with no hostile pip config.
+    Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
+    module drives, every `uv` command included, so the "non-pinned installs inherit the
+    caller env unchanged" contract holds on a machine with no hostile pip config.
+
+    `wheel` is in that set because the duplicate-metadata repair stages its replacement
+    with `pip wheel`, and require-hashes applies there exactly as it does to install: an
+    unpinned name is rejected before anything is built, so the repair would abort on a
+    hardened machine and leave the conflict it exists to remove.
 
     `require-hashes = true` makes pip reject any requirement without a --hash, which is
     every requirements file we ship; that is what took the pip FALLBACK down in #8530
     once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
     overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
     """
-    if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
+    if cmd[:1] == ["uv"] or not any(arg in ("install", "download", "wheel") for arg in cmd):
         return {}
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+def _uv_index_values(name: str) -> "list[str]":
+    """Split one uv index variable into bare URLs.
+
+    uv accepts several whitespace separated entries, each optionally named as
+    `label=url`; pip takes the URL alone. A URL is only treated as named when the
+    text before the first `=` is not itself a scheme, so a query string is left alone.
+    """
+    values: list[str] = []
+    for part in os.environ.get(name, "").split():
+        label, separator, url = part.partition("=")
+        values.append(url if separator and "://" not in label else part)
+    return [value for value in values if value]
+
+
+def _uv_index_env_for_pip() -> "dict[str, str]":
+    """Translate uv's index configuration into the pip equivalents.
+
+    uv reads UV_DEFAULT_INDEX / UV_INDEX / UV_FIND_LINKS and pip reads none of them, so a
+    machine configured only through uv would stage a repair replacement from public PyPI
+    while every other install came from its private mirror. The repair then uninstalls the
+    private build and reinstalls the public wheel, silently changing provenance.
+
+    Only fills variables pip does not already have: an explicit pip setting is the more
+    specific instruction. Empty unless uv is the package manager in use.
+    """
+    if not USE_UV:
+        return {}
+    env: dict[str, str] = {}
+    default = _uv_index_values("UV_DEFAULT_INDEX") or _uv_index_values("UV_INDEX_URL")
+    extra = _uv_index_values("UV_INDEX") + _uv_index_values("UV_EXTRA_INDEX_URL")
+    if not default and extra:
+        # uv resolves --index entries ahead of the default index, so the first one is the
+        # closest pip equivalent of a default when nothing else names one.
+        default, extra = extra[:1], extra[1:]
+    if default and not os.environ.get("PIP_INDEX_URL"):
+        env["PIP_INDEX_URL"] = default[0]
+    if extra and not os.environ.get("PIP_EXTRA_INDEX_URL"):
+        env["PIP_EXTRA_INDEX_URL"] = " ".join(extra)
+    find_links = _uv_index_values("UV_FIND_LINKS")
+    if find_links and not os.environ.get("PIP_FIND_LINKS"):
+        env["PIP_FIND_LINKS"] = " ".join(find_links)
+    return env
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
