@@ -68,10 +68,10 @@ import {
 } from "../api/model-overrides";
 import {
   diagnoseExtraArgs,
-  dropManagedExtraArgs,
   extraArgsAreLoadable,
   formatExtraArgs,
   parseExtraArgs,
+  sanitizeStoredExtraArgs,
 } from "../model-config/llama-extra-args";
 import {
   useDefaultChatTemplate,
@@ -1467,11 +1467,25 @@ export function ModelConfigPage({
       return;
     }
     let cancelled = false;
-    // A request that never settles must not hold Load shut: the gate is there to
-    // win a race with a fast click, not to make the button depend on a service
-    // being up. Past this, a load simply behaves as it did before the feature.
-    const release = setTimeout(() => setExtraArgsHydrating(false), 4000);
-    Promise.all([fetchModelOverrides(), loadLlamaFlagCatalog()])
+    // The catalogue is only needed to sanitize what comes back, and its first read
+    // runs `llama-server --help` on a cold binary, which is far slower than the
+    // overrides request. Waiting on it without a deadline would hold Load shut on
+    // the probe; releasing the gate on that deadline instead would let a click
+    // through while the arguments were already in hand. So the DEADLINE IS ON THE
+    // CATALOGUE, not on the hydration: past it we sanitize with what we have and
+    // still apply the stored list.
+    let releaseCatalog: (value: LlamaFlagCatalog | null) => void = () => {};
+    const catalogOrNothing = Promise.race([
+      loadLlamaFlagCatalog(),
+      new Promise<LlamaFlagCatalog | null>((resolve) => {
+        releaseCatalog = resolve;
+      }),
+    ]);
+    const catalogDeadline = setTimeout(() => releaseCatalog(null), 4000);
+    // And a last-resort release, so an overrides request that never settles cannot
+    // disable Load for good: past this a load behaves as it did before the feature.
+    const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
+    Promise.all([fetchModelOverrides(), catalogOrNothing])
       .then(([overrides, catalog]) => {
         // Marked here rather than before the request: StrictMode replays the effect
         // (setup, cleanup, setup), so a key marked up front would leave the first
@@ -1488,7 +1502,7 @@ export function ModelConfigPage({
         // strictly instead of putting it through the carry-over paths that drop a
         // newly denied flag quietly. Without this, an install upgraded across a
         // denylist change stops loading a model that worked the day before.
-        const stored = dropManagedExtraArgs(
+        const stored = sanitizeStoredExtraArgs(
           resolveStoredExtraArgs(overrides, keys),
           catalog?.managed ?? new Set<string>(),
         );
@@ -1517,6 +1531,7 @@ export function ModelConfigPage({
     return () => {
       cancelled = true;
       clearTimeout(release);
+      clearTimeout(catalogDeadline);
     };
   }, [configId, target.ggufVariant]);
   // Compare against what the backend was asked for, not what it applied: staging a

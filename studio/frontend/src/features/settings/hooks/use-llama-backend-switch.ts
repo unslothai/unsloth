@@ -78,6 +78,11 @@ export function useLlamaBackendSwitch() {
       setApplying(false);
       // The install marker is authoritative after completion.
       setSelected(next.backendRequest);
+      // Here rather than where the switch is requested: that call only STARTS the
+      // install, so the binary whose --help the flag catalogue describes is still
+      // the old one, and a panel opened during the job would cache it again. Before
+      // the owned-job check, so a tab that merely watched the switch drops it too.
+      invalidateLlamaFlagCatalog();
       if (!outcome) {
         return;
       }
@@ -164,8 +169,6 @@ export function useLlamaBackendSwitch() {
     void (async () => {
       try {
         const started = await switchLlamaBackend(requested);
-        // A different build accepts a different set of flags.
-        invalidateLlamaFlagCatalog();
         if (!started.started) {
           if (!mounted.current) {
             return;

@@ -271,11 +271,17 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         # flag with it for the same reason a denied flag takes its value: a flag
         # left expecting one would eat the next token and change what that means.
         if _has_control_characters(token) or not _is_spawnable(token):
-            # The name, or a placeholder when the poisoned token is a value: this
-            # list is joined into a warning log, and a stored value carrying an ANSI
-            # escape would then rewrite whatever is reading that log.
-            dropped.append(flag or "<value>")
-            if flag is None and kept:
+            # A placeholder either way: this list is joined into a warning log, and
+            # the unusable characters are in the token itself, so echoing its name
+            # would rewrite whatever is reading that log just as echoing its value
+            # would.
+            dropped.append("<flag>" if flag is not None else "<value>")
+            if flag is not None:
+                # Its value goes too, exactly as a denied flag's does: an orphan left
+                # behind is a bare positional, which llama-server reads as the model
+                # path.
+                skip_next = _takes_next(index, token, flag)
+            elif kept:
                 owner = _flag_name(kept[-1])
                 if owner is not None:
                     dropped.append(owner)

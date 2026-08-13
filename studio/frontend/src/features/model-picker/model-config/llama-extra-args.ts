@@ -23,6 +23,13 @@ const UNDERSCORE = /_/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: mirroring the backend's own check
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 const INTEGER = /^-?[0-9]+$/;
+/**
+ * Characters execve cannot carry: a NUL or any other control character, and an
+ * unpaired surrogate, which the backend refuses because Popen raises while encoding
+ * argv rather than starting llama-server.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: that is exactly what this finds
+const UNUSABLE_IN_ARGV = /[\u0000-\u0008\u000A-\u001F\u007F]|[\uD800-\uDFFF]/;
 // Hoisted for the same reason as the patterns above: this runs on every keystroke.
 const TEXT_ENCODER = new TextEncoder();
 
@@ -47,6 +54,90 @@ export type ExtraArgsParse = {
  * Mirrors drop_managed_flags: a flag takes its value with it, or llama-server reads
  * the orphan as a positional model path.
  */
+/** Whether this token's value is the NEXT token rather than part of itself. */
+function takesNextToken(
+  token: string,
+  flag: string,
+  next: string | undefined,
+): boolean {
+  if (token.includes("=") || flag !== token.trim()) {
+    return false;
+  }
+  return next !== undefined && extraArgFlagName(next) === null;
+}
+
+/**
+ * A stored list reduced to what THIS build would accept.
+ *
+ * Mirrors drop_managed_flags: denied flags go, tokens carrying control characters or
+ * unpaired surrogates go, anything past the size bounds goes, and a flag never
+ * outlives the value that went with it (an orphaned value is a bare positional,
+ * which llama-server reads as the model path).
+ *
+ * The panel needs this because hydrating turns a stored list into an EXPLICIT
+ * request, which /load validates strictly instead of putting it through the very
+ * carry-over paths that exist to drop such a token quietly. Without it, an install
+ * upgraded across any of those rules stops loading a model that worked yesterday.
+ */
+export function sanitizeStoredExtraArgs(
+  tokens: readonly string[],
+  managed: ReadonlySet<string>,
+): string[] {
+  const kept: string[] = [];
+  let skipNext = false;
+  for (const [index, token] of tokens.entries()) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    const flag = extraArgFlagName(token);
+    const next = tokens[index + 1];
+    if (flag !== null && managed.has(flag)) {
+      skipNext = takesNextToken(token, flag, next);
+      continue;
+    }
+    if (UNUSABLE_IN_ARGV.test(token)) {
+      if (flag !== null) {
+        skipNext = takesNextToken(token, flag, next);
+      } else if (
+        kept.length > 0 &&
+        extraArgFlagName(kept[kept.length - 1]) !== null
+      ) {
+        // The flag this value belonged to.
+        kept.pop();
+      }
+      continue;
+    }
+    if (
+      flag !== null &&
+      takesNextToken(token, flag, next) &&
+      next !== undefined &&
+      UNUSABLE_IN_ARGV.test(next)
+    ) {
+      // Its value is about to be dropped, so the flag goes with it.
+      continue;
+    }
+    kept.push(token);
+  }
+  // Then the bounds, shed from the tail, never leaving a flag without its value.
+  while (
+    kept.length > EXTRA_ARGS_MAX_TOKENS ||
+    TEXT_ENCODER.encode(kept.join("")).length > EXTRA_ARGS_MAX_BYTES
+  ) {
+    kept.pop();
+    const last = kept[kept.length - 1];
+    if (
+      last !== undefined &&
+      extraArgFlagName(last) === last.trim() &&
+      !last.includes("=")
+    ) {
+      kept.pop();
+    }
+  }
+  return kept;
+}
+
+/** The denylist half of the sanitizer, for a caller that only has that to apply. */
 export function dropManagedExtraArgs(
   tokens: readonly string[],
   managed: ReadonlySet<string>,
@@ -63,12 +154,7 @@ export function dropManagedExtraArgs(
       kept.push(token);
       continue;
     }
-    const next = tokens[index + 1];
-    skipNext =
-      !token.includes("=") &&
-      flag === token.trim() &&
-      next !== undefined &&
-      extraArgFlagName(next) === null;
+    skipNext = takesNextToken(token, flag, tokens[index + 1]);
   }
   return kept;
 }
@@ -297,6 +383,19 @@ const INTEGER_VALUE_MINIMUM: Record<string, number> = {
 };
 
 /** Values the backend parses as integers, and refuses the load over. */
+/**
+ * Flags whose value the backend reads with _last_flag_value, which raises when it is
+ * missing or empty. Not integers, so only presence is checked here.
+ */
+const VALUE_REQUIRED_FLAGS = new Set([
+  "--cache-type-k",
+  "-ctk",
+  "--cache-type-v",
+  "-ctv",
+  "--split-mode",
+  "-sm",
+]);
+
 const INTEGER_VALUE_FLAGS = new Set([
   "--ctx-size",
   "-c",
@@ -381,7 +480,7 @@ export function diagnoseExtraArgs(
     // Before the de-duplication below, because llama.cpp reads the LAST occurrence:
     // in `-ngl 20 -ngl many` it is the second one the backend parses and refuses, so
     // checking only the first would leave Load enabled for a request that 400s.
-    if (INTEGER_VALUE_FLAGS.has(flag)) {
+    if (INTEGER_VALUE_FLAGS.has(flag) || VALUE_REQUIRED_FLAGS.has(flag)) {
       const attached = flag !== token.trim();
       const value = attached ? token.split("=")[1] : tokens[index + 1];
       // A flag whose value is the next token has none when that token is itself a
@@ -392,9 +491,14 @@ export function diagnoseExtraArgs(
         value === "" ||
         (!attached && extraArgFlagName(value) !== null);
       const minimum = INTEGER_VALUE_MINIMUM[flag];
+      const numeric = INTEGER_VALUE_FLAGS.has(flag);
       let message: string | null = null;
       if (missing) {
-        message = `${flag} needs a number after it.`;
+        message = numeric
+          ? `${flag} needs a number after it.`
+          : `${flag} needs a value after it.`;
+      } else if (!numeric) {
+        message = null;
       } else if (!INTEGER.test(value.trim())) {
         message = `${flag} takes a number, and "${value}" is not one.`;
       } else if (minimum !== undefined && Number(value.trim()) < minimum) {

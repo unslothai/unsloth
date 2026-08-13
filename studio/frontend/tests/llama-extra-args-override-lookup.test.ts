@@ -78,6 +78,36 @@ test("a Windows path folds", () => {
   );
 });
 
+test("a separator and a trailing slash do not make a different key", () => {
+  // _fold_case_insensitive_path replaces backslashes, then trims trailing
+  // separators down to the root, so all of these name one file to the server.
+  for (const key of [
+    "C:\\Models\\Foo.gguf",
+    "c:/models/foo.gguf",
+    "C:/Models/Foo.gguf/",
+  ]) {
+    assert.deepEqual(
+      resolveStoredExtraArgs({ [key]: { llama_extra_args: ARGS } }, [
+        "c:\\models\\foo.gguf",
+      ]),
+      ARGS,
+      key,
+    );
+  }
+});
+
+test("a UNC share folds however it is spelled", () => {
+  // Written with forward slashes it still starts "//", which is the shape the
+  // server tests; reading it as an ordinary POSIX path made it case-sensitive.
+  assert.deepEqual(
+    resolveStoredExtraArgs(
+      { "\\\\Server\\Share\\Foo.gguf": { llama_extra_args: ARGS } },
+      ["//server/share/foo.gguf"],
+    ),
+    ARGS,
+  );
+});
+
 test("a WSL drive mount folds like the Windows volume it is", () => {
   // _fold_case_insensitive_path treats /mnt/<letter> as a Windows path, because it
   // is one seen through Linux. Leaving it under the POSIX rule stranded an override

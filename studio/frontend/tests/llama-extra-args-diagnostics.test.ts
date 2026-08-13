@@ -10,6 +10,7 @@ import {
   diagnoseExtraArgs,
   dropManagedExtraArgs,
   extraArgsAreLoadable,
+  sanitizeStoredExtraArgs,
 } from "../src/features/model-picker/model-config/llama-extra-args.ts";
 
 // The row is the backend's judgement shown early. Where these disagree, the panel
@@ -312,33 +313,67 @@ test("a stored flag this build refuses is dropped with its value", () => {
   assert.deepEqual(dropManagedExtraArgs(clean, new Set<string>()), clean);
 });
 
-// --- which stored row a model reads ---------------------------------------------
-// The module itself imports through the "@/" alias, which the node runner does not
-// resolve, so this is pinned the way the sibling tests pin such modules.
-
-const overridesSource = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/model-picker/api/model-overrides.ts",
-      import.meta.url,
+test("a value-taking flag with nothing after it is an error too", () => {
+  // _last_flag_value raises for these groups from inside validate_extra_args, so a
+  // shadowing note on its own left Load enabled for a request that 400s.
+  for (const input of ["--cache-type-k=", "--top-k 20 -sm", "--split-mode="]) {
+    const out = diagnoseExtraArgs(input, CATALOG);
+    assert.ok(
+      out.some((d) => d.level === "error" && d.message.includes("needs a value")),
+      `${input}: ${JSON.stringify(out)}`,
+    );
+  }
+  // A value that is there says nothing about presence.
+  assert.ok(
+    !diagnoseExtraArgs("--cache-type-k q8_0", CATALOG).some(
+      (d) => d.level === "error",
     ),
-  ),
-  "utf8",
-);
-
-test("only a real quant suffix folds, never a colon inside a path", () => {
-  const fold = overridesSource.slice(
-    overridesSource.indexOf("function foldOverrideKey("),
   );
-  const body = fold.slice(0, fold.indexOf("\n}\n")).replace(/\s+/g, " ");
-  // "/models/foo:Bar.gguf" and "/models/foo:bar.gguf" are two real files on a
-  // case-sensitive filesystem. Splitting on the last colon folded them onto one key,
-  // and the panel would then hydrate from the wrong row and send that file's
-  // arguments on Load. splitQuantSuffix is the check the backend mirrors.
-  assert.match(body, /splitQuantSuffix\(key\)/);
-  assert.doesNotMatch(body, /lastIndexOf\(":"\)/);
-  // And a POSIX path still does not fold as a whole, only its quant.
-  assert.match(body, /POSIX_PATH\.test\(id\)/);
+});
+
+test("the stored sanitizer removes everything this build would refuse", () => {
+  // Not only denied flags: the bounds, control characters and unpaired surrogates
+  // are all new refusals that a list saved by the previous release can trip, and
+  // hydration turns that list into an explicit request. Each of these mirrors a
+  // case pinned against drop_managed_flags in the backend suite.
+  const managed = new Set(["--log-file"]);
+  const control = `${String.fromCharCode(0x1b)}[2Jx`;
+  const surrogate = String.fromCharCode(0xd800);
+
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(
+      ["--log-file", "/var/log/llama.log", "--numa", "distribute"],
+      managed,
+    ),
+    ["--numa", "distribute"],
+  );
+  // A poisoned value takes its flag with it, or the flag is left expecting one and
+  // eats the next token instead.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--chat-template", control, "--top-k", "20"], managed),
+    ["--top-k", "20"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(
+      ["--chat-template", surrogate, "--top-k", "20"],
+      managed,
+    ),
+    ["--top-k", "20"],
+  );
+  // And a poisoned flag takes its value, or the value is left as a bare positional
+  // that llama-server reads as a model path.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs([`--grammar${control}`, "root", "--top-k", "20"], managed),
+    ["--top-k", "20"],
+  );
+  // The bounds, shed from the tail exactly as the backend sheds them.
+  assert.equal(
+    sanitizeStoredExtraArgs(new Array(300).fill("--verbose"), managed).length,
+    256,
+  );
+  // A clean list is untouched.
+  const clean = ["--numa", "distribute"];
+  assert.deepEqual(sanitizeStoredExtraArgs(clean, managed), clean);
 });
 
 // The harness has no DOM renderer, so the row's contract is pinned the way the
@@ -383,7 +418,7 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // And through the denylist first: hydrating makes the stored list an explicit
   // request, which /load validates strictly rather than dropping a newly denied
   // flag the way the carry-over paths do.
-  assert.match(body, /dropManagedExtraArgs\( resolveStoredExtraArgs/);
+  assert.match(body, /sanitizeStoredExtraArgs\( resolveStoredExtraArgs/);
   // Into the config, not only the textarea. The load sends what the config holds,
   // and the route's omission path inherits from a resident process rather than
   // from this stored override, so a box that filled without the config would show
@@ -507,4 +542,8 @@ test("load waits for the stored arguments to be read", () => {
   // But never for good: a failed or hanging overrides read releases the gate.
   assert.match(body, /\.finally\(\(\) => \{ .*setExtraArgsHydrating\(false\)/);
   assert.match(body, /setTimeout\(\(\) => setExtraArgsHydrating\(false\), \d+\)/);
+  // And the short deadline is on the CATALOGUE, not on the gate: the first read of
+  // it runs --help on a cold binary, and releasing Load on that timer would let a
+  // click through while the stored arguments were already in hand.
+  assert.match(body, /setTimeout\(\(\) => releaseCatalog\(null\), \d+\)/);
 });

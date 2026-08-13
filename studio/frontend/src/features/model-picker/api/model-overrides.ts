@@ -76,28 +76,54 @@ export function modelOverrideKey(
  * the first edit would then replace a list nobody saw. Keys are tried most specific
  * first, then folded, mirroring that order.
  */
-/** A POSIX absolute path, which the backend keeps case-sensitive. */
-const POSIX_PATH = /^\//;
 /**
- * A WSL drive mount, which is a Windows volume seen through Linux and folds like
- * one. _fold_case_insensitive_path treats /mnt/<letter> this way, so leaving it
- * under the POSIX rule strands an override the server does apply.
+ * A path that names one file whatever the casing, folded for comparison, or null
+ * when the path is case-sensitive.
+ *
+ * The rules are _fold_case_insensitive_path's, and they have to be, because the
+ * server applies an override this resolver has to find: a Windows drive path, a UNC
+ * share and a WSL drive mount all fold, the separator is interchangeable, and
+ * trailing separators are trimmed down to the root. A POSIX path is not folded, or
+ * "/models/Foo.gguf" would collect the arguments stored for "/models/foo.gguf".
  */
+const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
 const WSL_DRIVE_PATH = /^\/mnt\/[a-zA-Z](\/|$)/;
 
+function foldCaseInsensitivePath(key: string): string | null {
+  const slashed = key.replace(/\\/g, "/");
+  let minimum: number;
+  if (WINDOWS_DRIVE_PATH.test(key)) {
+    minimum = 3;
+  } else if (slashed.startsWith("//")) {
+    minimum = 2;
+  } else if (WSL_DRIVE_PATH.test(slashed)) {
+    minimum = 6;
+  } else {
+    return null;
+  }
+  let trimmed = slashed;
+  while (trimmed.length > minimum && trimmed.endsWith("/")) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed.toLowerCase();
+}
+
 function foldOverrideKey(key: string): string {
+  // A path that folds does so whole, separators and casing together.
+  const path = foldCaseInsensitivePath(key);
+  if (path !== null) {
+    return path;
+  }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
   // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would
-  // fold it onto the real, different file "/models/foo:bar.gguf" and then send that
-  // file's arguments. This is the check the backend's split_quant_suffix makes.
+  // fold it onto the real, different file "/models/foo:bar.gguf". This is the check
+  // the backend's split_quant_suffix makes.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
-  // Only the quant folds for a POSIX path: "/models/Foo:Q4_K_M" has to be
-  // reachable from the browser's "/models/Foo:q4_k_m" without "/models/foo"
-  // matching "/models/Foo".
-  const caseSensitive = POSIX_PATH.test(id) && !WSL_DRIVE_PATH.test(id);
-  return caseSensitive ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
+  // A POSIX path keeps its case; only the quant folds, because the browser
+  // lowercases that before storing. A repo id folds whole.
+  return id.startsWith("/") ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
 }
 
 export function resolveStoredExtraArgs(

@@ -268,3 +268,25 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
     assert inference_route._resolve_inherited_extra_args(
         _Request(), _Config(), "local/x", _Request.llama_extra_args
     ) == ["--ctx-size", "8192"]
+
+
+def test_a_poisoned_flag_takes_its_value_with_it():
+    # The control characters are in the FLAG here. Dropping only that token leaves
+    # "root ::= ..." as a bare positional, which validate_extra_args accepts and
+    # llama-server reads as the model path.
+    kept, dropped = _lsa.drop_managed_flags(
+        ["--grammar\x1b[2J", "root ::= [0-9]", "--top-k", "20"]
+    )
+
+    assert kept == ["--top-k", "20"]
+    assert _lsa.validate_extra_args(kept) == kept
+    # And the name is not echoed into the log line either: the escape is IN it.
+    assert dropped == ["<flag>"]
+    assert all("\x1b" not in name for name in dropped)
+
+
+def test_a_poisoned_flag_with_an_attached_value_drops_alone():
+    kept, dropped = _lsa.drop_managed_flags(["--grammar\x1b=root", "--top-k", "20"])
+
+    assert kept == ["--top-k", "20"]
+    assert dropped == ["<flag>"]
