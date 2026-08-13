@@ -22430,6 +22430,36 @@ def _guard_diffusion_load_against_training() -> None:
     )
 
 
+async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optional[int]:
+    """The torch ordinal for a request's ``gpu_ids``, or None when there is nothing to honour.
+
+    Physical ids have no applicator off CUDA / ROCm, which the contract says to ignore rather than
+    refuse, so the resolver only runs once the target reports a CUDA device. Raises ValueError for
+    a bad pick, which every caller maps to a 400.
+
+    ``allow_ranking = False`` drops only the free-VRAM comparison, for the plan routes while a
+    trainer holds the cards: the ids are still validated and translated (mask plus nvidia-smi, no
+    CUDA context), so a bad pick is refused at the plan rather than tens of gigabytes later.
+    """
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
+
+    if not gpu_ids:
+        return None
+    device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+    if device != "cuda":
+        return None
+    # The keyword only when it is not the default, so the ordinary path calls the resolver with
+    # the same one-argument shape it always had (a monkeypatched seam still fits it).
+    if allow_ranking:
+        return await asyncio.to_thread(resolve_selected_cuda_ordinal, gpu_ids)
+    return await asyncio.to_thread(
+        lambda: resolve_selected_cuda_ordinal(gpu_ids, allow_ranking = False)
+    )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -22481,7 +22511,16 @@ async def diffusion_download_plan(
         # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
         # files during training is legitimate and needs no GPU, so the plan is answered without
         # the precision check; /images/load still refuses the same pick afterwards.
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
+        # Ranking reads free VRAM per candidate, which opens a CUDA context on each: exactly what
+        # the training guard below exists to prevent, so the RANKING waits until training is known
+        # idle. The ids are validated and translated either way -- that costs no CUDA context, and
+        # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
+        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
+        gpu_ordinal = None
+        training = fam is not None and await asyncio.to_thread(_training_is_active)
+        if fam is not None:
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
                     backend.assert_precision_available,
@@ -22493,6 +22532,8 @@ async def diffusion_download_plan(
                     # anything is measured, and an offloaded transformer skips the dense quant.
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    # Judged on the card this pick would load on, as the loader does.
+                    gpu_ordinal = gpu_ordinal,
                 )
             else:
                 _assert_native_precision_unset(
@@ -22502,6 +22543,7 @@ async def diffusion_download_plan(
         plan = await asyncio.to_thread(
             planner.download_plan,
             request.model_path,
+            gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
@@ -22572,7 +22614,10 @@ async def load_diffusion_model(
         resolve_local_single_file,
         resolve_model_kind,
     )
-    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
     from core.inference.diffusion_engine_router import (
         active_engine_name,
         annotate_status,
@@ -22610,6 +22655,10 @@ async def load_diffusion_model(
         # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
+        # Refuse a bad pick before anything is evicted or staged; begin_load re-checks, but only
+        # after the arbiter has taken the GPU. Only on CUDA / ROCm: physical ids have no applicator
+        # on XPU / MPS / CPU, which the request contract says to ignore rather than 400.
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
 
         def _preflight(target):
             # Gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
@@ -22647,6 +22696,7 @@ async def load_diffusion_model(
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = getattr(request, "memory_mode", None),
                 cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                gpu_ordinal = gpu_ordinal,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
             # The native engine accepts both knobs for interface parity and ignores them. It was
@@ -22696,6 +22746,7 @@ async def load_diffusion_model(
                     text_encoder_quant = request.text_encoder_quant,
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    gpu_ordinal = gpu_ordinal,
                 )
 
         def _start_engine_load():
@@ -22718,6 +22769,10 @@ async def load_diffusion_model(
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,
                 loras = [(s.id, s.weight) for s in request.loras] if request.loras else None,
+                gpu_ids = request.gpu_ids,
+                # The winner this route already ranked and preflighted, so the load cannot pick a
+                # different card from free VRAM that has moved since.
+                gpu_ordinal = gpu_ordinal,
             )
 
         def _begin_load():

@@ -30,6 +30,7 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
+import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import {
@@ -78,6 +79,7 @@ import {
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { NegativePromptField } from "@/components/negative-prompt-field";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -761,6 +763,7 @@ type VideoLoadAdvanced = Pick<
   | "attention_backend"
   | "transformer_cache"
   | "transformer_quant"
+  | "gpu_ids"
 >;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
@@ -887,6 +890,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   );
   // Advanced (load-time) options; "auto"/"off" map to the backend defaults. "Reapply" reloads with new values.
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  // "auto", or the physical index to pin this load to. Only offered on a multi-card CUDA / ROCm host.
+  // Persisted, unlike the selects around it: those are reseeded from the loaded build, and the
+  // status carries the device a pipeline is on but not which card, so a refresh would reset this
+  // one to Auto while the model stayed put and the next Reapply would move it to the default GPU.
+  // A stored id is only a hint; the send path below still drops one whose card is no longer there.
+  const [selectedGpu, setSelectedGpu] = usePersistedChoice(
+    "unsloth_video_gpu_choice",
+    "auto",
+  );
+  const gpuChoices = useDiffusionGpuChoices();
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
@@ -2124,6 +2137,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     attentionBackend,
     transformerCache,
     transformerQuant,
+    selectedGpu,
+    gpuChoices,
   });
   loadControlsRef.current = {
     memoryMode,
@@ -2131,6 +2146,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     attentionBackend,
     transformerCache,
     transformerQuant,
+    selectedGpu,
+    gpuChoices,
   };
   const currentLoadAdvanced = useCallback(
     (kind: "gguf" | "single_file" | "pipeline"): VideoLoadAdvanced => {
@@ -2145,6 +2162,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         transformer_quant:
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
+            : undefined,
+        // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
+        gpu_ids:
+          controls.selectedGpu !== "auto" &&
+          controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)
+            ? [Number(controls.selectedGpu)]
             : undefined,
       };
     },
@@ -2161,6 +2184,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
         memory_mode: advanced.memory_mode,
+        // The plan sizes its file set against the card the load will use, so it needs the pick.
+        gpu_ids: advanced.gpu_ids,
       });
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -2227,6 +2252,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather
           // than joining the pinned set.
           h3_task: opts.h3Task,
+          gpu_ids: advanced.gpu_ids,
         });
         await startRequest;
       } catch (err) {
@@ -2386,6 +2412,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // And the partition, for the same reason: the two H3 denoisers are separate downloads,
           // so a plan asked without it stages the default fl2va weights for a References pick.
           h3_task: opts.h3Task,
+          // The plan sizes its file set against the card the load will use, so it needs the pick.
+          gpu_ids: advanced.gpu_ids,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) return true;
@@ -3076,6 +3104,24 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           ["sage", "SageAttention (INT8)"],
         ]}
       />
+      {gpuChoices.length > 0 && (
+        <AdvancedSelect
+          label="GPU"
+          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. A video model is never split across cards, so this is one choice, not a pool."
+          value={selectedGpu}
+          onValueChange={setSelectedGpu}
+          options={[
+            ["auto", "Auto"],
+            ...gpuChoices.map(
+              (d) =>
+                [
+                  String(d.index),
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                ] as [string, string],
+            ),
+          ]}
+        />
+      )}
       <AdvancedSelect
         label="Step cache"
         hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per clip."
