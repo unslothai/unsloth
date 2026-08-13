@@ -532,7 +532,7 @@ class TestPinnedRocmLeafDigitParity:
     failure) or skipping the custom-index companion bounds, instead of the verbatim
     --default-index install. All installers must match the family EXACTLY: Python and
     install.sh via a shared _is_pip_rocm_family_leaf, setup.ps1 via Test-PipRocmFamilyLeaf,
-    install.ps1 via an anchored ^rocm[0-9]+(\\.[0-9]+)?$ reroute."""
+    install.ps1 via the same exact family helper."""
 
     def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -572,13 +572,15 @@ class TestPinnedRocmLeafDigitParity:
         assert (
             "_is_pip_rocm_family_leaf" in text
         ), "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
-        # gfx needs a following digit: gfx-private / gfxfoo are custom verbatim pins.
+        # Only published gfx families are recognized. A suffixed official-looking
+        # leaf is still a custom verbatim pin.
         assert re.search(
-            r'case "\$1" in\n\s*gfx\[0-9\]\*\) return 0', text
-        ), "install.sh _is_pip_rocm_family_leaf must treat only gfx<digit>* as a family"
+            r"gfx120x-all\|gfx1151\|gfx1150\|gfx1152\|gfx110x-all\|gfx103x-all\|gfx90a\|gfx908",
+            text,
+        ), "install.sh must enumerate the supported gfx families"
         assert not re.search(
-            r'case "\$1" in\n\s*gfx\*\) return 0', text
-        ), "install.sh _is_pip_rocm_family_leaf must not family-match a bare gfx* glob"
+            r"gfx\[0-9\]\*\) return 0", text
+        ), "install.sh must not family-match an arbitrary gfx-prefixed leaf"
 
     def test_stack_py_pip_rocm_family_requires_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
@@ -589,6 +591,8 @@ class TestPinnedRocmLeafDigitParity:
         assert (
             're.match(r"^rocm\\d"' not in text
         ), "install_python_stack.py must not gate a family on an unanchored re.match(^rocm\\d)"
+        assert "leaf in _ROCM_GFX_FAMILY_LEAVES" in text
+        assert 're.match(r"gfx\\d", leaf)' not in text
 
     def test_install_sh_rocm_side_effects_digit_gated(self):
         """The AMD bitsandbytes + 'repair ROCm torch' side effects must fire only on

@@ -394,6 +394,20 @@ def test_strix_matching_arch_wheel_keeps_the_fast_path(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("version", ["2.12.0+rocm7.13.0", "3.0.0+rocm7.13.0"])
+def test_strix_matching_arch_wheel_outside_supported_release_forces_the_pass(monkeypatch, version):
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = version,
+            gfx_devices = ["gfx1151"],
+            installed_rocm_family = "gfx1151",
+        )
+        is not None
+    )
+
+
 def test_matching_strix_wheel_with_a_confirmed_spoof_is_clear_only(monkeypatch):
     plan = _plan(
         monkeypatch,

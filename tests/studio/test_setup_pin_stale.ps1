@@ -75,6 +75,8 @@ Check "rocm6.4 pin + 2.10.0 (untagged) -> stale"   (IsStale "rocm6.4" "2.10.0")
 Check "gfx1151 pin + 2.11.0+rocm7.13.0 -> not stale"   (-not (IsStale "gfx1151" "2.11.0+rocm7.13.0"))
 Check "gfx1150 pin + 2.11.0+rocm7.13.0 -> not stale"   (-not (IsStale "gfx1150" "2.11.0+rocm7.13.0"))
 Check "gfx120x-all pin + 2.11.0+rocm7.13.0 -> not stale" (-not (IsStale "gfx120x-all" "2.11.0+rocm7.13.0"))
+Check "gfx1151 pin + 2.12.0+rocm7.13.0 -> stale"         (IsStale "gfx1151" "2.12.0+rocm7.13.0")
+Check "gfx1151 pin + 3.0.0+rocm7.13.0 -> stale"          (IsStale "gfx1151" "3.0.0+rocm7.13.0")
 Check "gfx1151 pin + 2.11.0+rocm7.2 (generic) -> stale" (IsStale "gfx1151" "2.11.0+rocm7.2")
 Check "gfx1151 pin + 2.10.0+rocm6.4 -> stale"           (IsStale "gfx1151" "2.10.0+rocm6.4")
 # Non-2.11 gfx pin (gfx110X-all/gfx90a/gfx908): a valid <2.11 wheel is NOT stale.
@@ -97,6 +99,10 @@ Check "rocm7 pin + 2.11.0+rocm7.2 -> not stale"       (-not (IsStale "rocm7" "2.
 Check "rocm7 pin + 2.11.0+rocm7.13.0 -> not stale"    (-not (IsStale "rocm7" "2.11.0+rocm7.13.0"))
 Check "rocm7 pin + 2.10.0 (untagged) -> stale"        (IsStale "rocm7" "2.10.0")
 Check "rocm7 pin + 2.10.0+rocm (unreadable) -> not stale" (-not (IsStale "rocm7" "2.10.0+rocm"))
+Check "rocm7.2 pin + 2.11.0+rocm (unreadable) -> not stale" (-not (IsStale "rocm7.2" "2.11.0+rocm"))
+Check "rocm7.2 pin + 2.12.0+rocm (unreadable) -> stale" (IsStale "rocm7.2" "2.12.0+rocm")
+Check "rocm6.4 pin + 2.10.0+rocm (unreadable) -> not stale" (-not (IsStale "rocm6.4" "2.10.0+rocm"))
+Check "rocm6.4 pin + 2.12.0+rocm (unreadable) -> stale" (IsStale "rocm6.4" "2.12.0+rocm")
 
 Write-Host "Test-RocmKnown211Version + KNOWN-2.11 fallback (rocm7.2 only; no speculative rocm7.3)"
 Check "rocm7.2 -> known 2.11"  (Test-RocmKnown211Version -Major 7 -Minor 2)

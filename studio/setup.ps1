@@ -928,14 +928,14 @@ function Test-CudaFamilyLeaf {
     return $Leaf -match '^cu[0-9]+$'
 }
 
-# True only for a real pip ROCm family leaf: EXACT rocm<digits>[.<digits>] or a gfx leaf. A leaf
-# that merely STARTS with rocm (rocm-rel-7.2.1, rocm7.2-private) is a custom pin the verbatim
-# path owns, so anchor the match. Mirrors _is_pip_rocm_family_leaf / install.sh.
+# True only for a real pip ROCm family leaf: EXACT rocm<digits>[.<digits>] or a supported gfx
+# index family. Suffixed leaves such as rocm7.2-private and gfx1151-private are custom pins the
+# verbatim path owns. Mirrors _is_pip_rocm_family_leaf / install.sh.
 function Test-PipRocmFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
-    # gfx must be followed by a digit (an architecture leaf); gfx-private is custom.
-    return ($Leaf -match '^gfx[0-9]') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
+    $gfxFamilies = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152', 'gfx110x-all', 'gfx103x-all', 'gfx90a', 'gfx908')
+    return ($gfxFamilies -contains $Leaf) -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
 }
 
 # Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns @{ Expected; Installed } so
@@ -954,20 +954,24 @@ function Get-RocmPinStaleTags {
     # A ROCm build MUST carry a +rocm tag; an untagged wheel can't satisfy any ROCm pin.
     $_instHasRocm = [regex]::IsMatch($TorchVersion, '\+rocm')
     $_instRel = [regex]::Match($TorchVersion, '^(\d+)\.(\d+)')
-    $_instIs211 = $false
+    $_instOn211 = $false
+    $_instIs211OrNewer = $false
     if ($_instRel.Success) {
-        $_instIs211 = ([int]$_instRel.Groups[1].Value -gt 2) -or ([int]$_instRel.Groups[1].Value -eq 2 -and [int]$_instRel.Groups[2].Value -ge 11)
+        $_instMajor = [int]$_instRel.Groups[1].Value
+        $_instMinor = [int]$_instRel.Groups[2].Value
+        $_instOn211 = $_instMajor -eq 2 -and $_instMinor -eq 11
+        $_instIs211OrNewer = $_instMajor -gt 2 -or ($_instMajor -eq 2 -and $_instMinor -ge 11)
     }
 
     if ($PinLeaf -like 'gfx*') {
         if (Test-RocmGfx211Leaf $PinLeaf) {
             # Expect the AMD per-arch (three-part) 2.11 wheel: satisfied only when BOTH
             # a 2.11 release AND a three-part rocm tag are installed.
-            $installed = if ($_instIs211 -and $_instPerArch) { "rocm-perarch(torch>=2.11)" } else { "rocm-generic-or-old" }
-            return @{ Expected = "rocm-perarch(torch>=2.11)"; Installed = $installed }
+            $installed = if ($_instOn211 -and $_instPerArch) { "rocm-perarch(torch2.11)" } else { "rocm-generic-or-unsupported" }
+            return @{ Expected = "rocm-perarch(torch2.11)"; Installed = $installed }
         }
         # Non-2.11 gfx leaf (<2.11 spec): stale on an untagged wheel or a 2.11+ build.
-        $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+        $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211OrNewer) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
         return @{
             Expected  = "rocm(torch<2.11)"
             Installed = $installed
@@ -1008,13 +1012,14 @@ function Get-RocmPinStaleTags {
         # Matches _ROCM_KNOWN_TORCH211_VERSIONS.
         $_pinNeeds211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
     }
-    # Fallback (installed rocm version unreadable): compare on the 2.11 line; an untagged
-    # wheel never satisfies a rocmX.Y pin -> stale.
-    $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
-    return @{
-        Expected  = if ($_pinNeeds211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
-        Installed = $installed
+    # Fallback (installed ROCm version unreadable): enforce the selected package
+    # release window anyway. An untagged wheel never satisfies a ROCm pin.
+    if ($_pinNeeds211) {
+        $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instOn211) { "rocm(torch2.11)" } else { "rocm(torch-off-2.11)" }
+        return @{ Expected = "rocm(torch2.11)"; Installed = $installed }
     }
+    $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211OrNewer) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+    return @{ Expected = "rocm(torch<2.11)"; Installed = $installed }
 }
 
 # Bounded "ask python a question" probe, shared by every torch probe below: a wedged torch import
@@ -3819,10 +3824,8 @@ function Mark-StudioOwned {
 # no other way to know. Two sources, because the completion manifest is dropped
 # before every dependency pass and so cannot answer for a run killed mid-pass:
 # the manifest key first, then .unsloth-no-torch, which outlives the pass. Neither
-# present normally reads as "install torch". The one legacy exception is a
-# structurally complete manifest from before the key existed whose venv has no
-# torch package or metadata. That is durable evidence of a completed GGUF-only
-# install, while either artifact means a damaged torch install remains repairable.
+# present reads as "install torch". Missing package contents cannot establish the
+# previous mode because they also describe a damaged normal installation.
 function Get-PersistedNoTorch {
     param([Parameter(Mandatory = $true)][string]$VenvPath)
     $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
@@ -3835,16 +3838,6 @@ function Get-PersistedNoTorch {
         }
         if ($null -ne $payload -and $null -ne $payload.no_torch) {
             return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
-        }
-        if ($null -ne $payload -and $payload.schema -eq 1 -and
-            $null -ne $payload.completed_at_ms -and $null -ne $payload.requirement_files) {
-            $sitePackages = Join-Path $VenvPath "Lib\site-packages"
-            $torchArtifact = Test-Path -LiteralPath (Join-Path $sitePackages "torch")
-            if (-not $torchArtifact -and (Test-Path -LiteralPath $sitePackages -PathType Container)) {
-                $torchArtifact = $null -ne (Get-ChildItem -LiteralPath $sitePackages -Filter "torch-*.dist-info" -ErrorAction SilentlyContinue |
-                    Select-Object -First 1)
-            }
-            if (-not $torchArtifact) { return $true }
         }
     }
     return (Test-Path -LiteralPath (Join-Path $VenvPath $NoTorchMarker) -PathType Leaf)
@@ -4702,8 +4695,8 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
         substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
     } elseif (Test-PipRocmFamilyLeaf $_pinLeaf) {
         # Other gfx / older rocm (<=7.1) ship torch <2.11; route via the ROCm path with
-        # bare specs. Only EXACT rocm<digits> and gfx* are --index-url families; a suffixed
-        # leaf stays on the verbatim path. Mirrors install.ps1 / _is_pip_rocm_family_leaf.
+        # bare specs. Only numeric ROCm releases and supported gfx leaves are --index-url
+        # families; a suffixed leaf stays verbatim. Mirrors install.ps1 / Python.
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
         $ROCmTorchSpec  = "torch"
         $ROCmVisionSpec = "torchvision"

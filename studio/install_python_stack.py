@@ -139,6 +139,22 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
     {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
 )
 
+# Exact repo.amd.com per-architecture index leaves. A suffixed leaf is a custom
+# index and must stay on the verbatim path rather than inherit official package
+# constraints or reconciliation behavior.
+_ROCM_GFX_FAMILY_LEAVES: frozenset[str] = frozenset(
+    {
+        "gfx120x-all",
+        "gfx1151",
+        "gfx1150",
+        "gfx1152",
+        "gfx110x-all",
+        "gfx103x-all",
+        "gfx90a",
+        "gfx908",
+    }
+)
+
 # pytorch.org rocmX.Y indexes KNOWN to ship torch 2.11 (rocm7.2 only today); don't
 # floor an unknown newer rocm speculatively. Match install.sh / setup.ps1 / install.ps1.
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
@@ -2002,13 +2018,11 @@ def _explicit_torch_index_url() -> "str | None":
 
 def _is_pip_rocm_family_leaf(leaf: str) -> bool:
     """True when a lowercased leaf names a pip --index-url ROCm family: an EXACT
-    rocm<digits>[.<digits>] leaf or a gfx leaf. A suffixed leaf (rocm-rel-7.2.1,
-    rocm7.2-private) starts with "rocm" but is a custom pin the verbatim path owns, so
-    match EXACTLY. Mirrors install.sh / setup.ps1.
+    rocm<digits>[.<digits>] leaf or a supported gfx leaf. Suffixed leaves such as
+    rocm7.2-private and gfx1151-private are custom pins the verbatim path owns.
+    Mirrors install.sh / setup.ps1.
     """
-    # gfx must be followed by a digit (gfx90a, gfx1151, gfx120X-all): a gfx-prefixed
-    # custom leaf (gfx-private) is a verbatim pin, like rocm7.2-private.
-    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(re.match(r"gfx\d", leaf))
+    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or leaf in _ROCM_GFX_FAMILY_LEAVES
 
 
 def _explicit_rocm_torch_index_url() -> "str | None":
@@ -2041,19 +2055,20 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     _inst_is_perarch = re.search(r"\+rocm\d+\.\d+\.\d+", installed_ver) is not None
     # A ROCm build MUST carry a +rocm tag; an untagged wheel never satisfies a ROCm pin.
     _inst_has_rocm = re.search(r"\+rocm", installed_ver) is not None
-    # Installed torch RELEASE (before "+") is 2.11+.
+    # Installed torch RELEASE (before "+").
     _inst_rel = re.match(r"^(\d+)\.(\d+)", installed_ver)
-    _inst_is_211 = (
-        (int(_inst_rel.group(1)), int(_inst_rel.group(2))) >= (2, 11) if _inst_rel else False
-    )
+    _inst_rel_key = (int(_inst_rel.group(1)), int(_inst_rel.group(2))) if _inst_rel else None
+    _inst_is_211 = _inst_rel_key == (2, 11)
+    _inst_is_211_or_newer = _inst_rel_key is not None and _inst_rel_key >= (2, 11)
 
     if leaf.startswith("gfx"):
         # 2.11-allowlist arches expect the AMD per-arch wheel (three-part +rocmA.B.C,
-        # torch 2.11+); a generic or pre-2.11 build is a mismatch.
+        # torch 2.11.x); a generic build or a release outside the supported line
+        # is a mismatch.
         if leaf in _ROCM_GFX_TORCH211_LEAVES:
             return not (_inst_is_211 and _inst_is_perarch)
         # Non-2.11 gfx leaf (<2.11 specs): mismatch on an untagged wheel or torch 2.11+.
-        return (not _inst_has_rocm) or _inst_is_211
+        return (not _inst_has_rocm) or _inst_is_211_or_newer
 
     # Major-only rocm pin (rocm7): compare majors only -- a +rocm6.4 wheel under a rocm7
     # pin is a mismatch, any +rocm7.x wheel satisfies it (there is no pinned minor to
@@ -2082,7 +2097,9 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     # wheel never satisfies a rocmX.Y pin -> mismatch.
     if not _inst_has_rocm:
         return True
-    return _pin_is_211 != _inst_is_211
+    if _pin_is_211:
+        return not _inst_is_211
+    return _inst_is_211_or_newer
 
 
 def _rocm_index_needs_reinstall(index_url: str, installed_ver: str) -> bool:
@@ -3260,17 +3277,15 @@ def _infer_no_torch() -> bool:
 
     Precedence: UNSLOTH_NO_TORCH (install.sh / install.ps1 export it, "false"
     included, so an explicit value always wins) -> the mode recorded in this
-    venv's install manifest (including legacy manifests whose completed venv has
-    no torch artifacts) -> platform detection, so Intel Macs use GGUF-only mode
+    venv's install manifest or marker -> platform detection, so Intel Macs use GGUF-only mode
     even when invoked from ``unsloth studio update``.
 
     The manifest tier is what keeps ``unsloth studio update`` in no-torch mode:
     it injects no env var, so without it every update reinstalls torch into a
-    GGUF-only venv. Legacy inference is deliberately limited to a complete old
-    manifest with neither a torch package nor torch metadata; a damaged torch
-    install still reaches reconciliation. Note setup.ps1 resolves the mode itself
-    and re-exports UNSLOTH_NO_TORCH, because it drops the manifest before invoking
-    this script.
+    GGUF-only venv. A legacy manifest without a recorded mode remains unknown:
+    missing torch is also consistent with a damaged normal install and must stay
+    repairable. Note setup.ps1 resolves the mode itself and re-exports
+    UNSLOTH_NO_TORCH, because it drops the manifest before invoking this script.
 
     An empty value counts as unset: PowerShell cannot represent a set-but-empty
     variable (assigning "" deletes it), so the two must mean the same thing here.

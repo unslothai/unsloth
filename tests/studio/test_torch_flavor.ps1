@@ -15,7 +15,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 
-foreach ($name in @("ConvertTo-TorchFlavorTag", "Get-ExpectedTorchFlavorTag", "Trim-IndexPathSlashes", "Redact-InstallOutput")) {
+foreach ($name in @("ConvertTo-TorchFlavorTag", "Test-PipRocmFamilyLeaf", "Get-ExpectedTorchFlavorTag", "Trim-IndexPathSlashes", "Redact-InstallOutput")) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
@@ -45,6 +45,8 @@ Check "cpu index -> cpu"             ((Get-ExpectedTorchFlavorTag -TorchIndexUrl
 Check "ROCm url -> rocm"             ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://download.pytorch.org/whl/cpu" -ROCmIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all/") -eq "rocm")
 Check "gfx index leaf -> rocm"        ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all/") -eq "rocm")
 Check "rocm7.2 leaf -> rocm"          ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://download.pytorch.org/whl/rocm7.2") -eq "rocm")
+Check "custom gfx suffix -> null"     ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://mirror/whl/gfx1151-private"))
+Check "unknown gfx leaf -> null"      ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://mirror/whl/gfx9999"))
 Check "mirror cu130 leaf -> cu130"   ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://my.mirror/whl/cu130") -eq "cu130")
 Check "unrecognized leaf -> null"    ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://my.mirror/whl/simple"))
 Check "empty url -> null"            ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl ""))

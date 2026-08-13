@@ -116,9 +116,10 @@ def _no_torch_resolution_script() -> str:
             # the case that made a GGUF-only venv look stale and get deleted.
             (None, {"no_torch": True}, "True|true"),
             (None, {"no_torch": False}, "False|false"),
-            # A complete legacy manifest and no torch artifacts identifies an old
-            # GGUF-only install. A package or metadata artifact leaves it repairable.
-            (None, LEGACY_MANIFEST, "True|true"),
+            # Legacy manifests cannot distinguish GGUF-only intent from a damaged
+            # normal install. With no affirmative state, every artifact shape stays
+            # in the repairable torch mode.
+            (None, LEGACY_MANIFEST, "False|false"),
             (None, {**LEGACY_MANIFEST, "torch_artifact": "package"}, "False|false"),
             (None, {**LEGACY_MANIFEST, "torch_artifact": "metadata"}, "False|false"),
             # Partial and unreadable manifests cannot establish the prior mode.

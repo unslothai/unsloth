@@ -1619,7 +1619,9 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # escaping on one would force a pass every update that changes nothing.
         _setup_known_nonxpu_leaf() {
             case "$1" in
-                cpu|gfx[0-9]*) return 0 ;;
+                cpu|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx110x-all|gfx103x-all|gfx90a|gfx908)
+                    return 0
+                    ;;
                 cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
                 rocm[0-9]*)
                     # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.

@@ -3829,6 +3829,15 @@ exit 0
         return 'cpu'
     }
 
+    # Exact official ROCm index families. A suffixed gfx/rocm leaf is a custom
+    # index whose package constraints and flavor cannot be inferred safely.
+    function Test-PipRocmFamilyLeaf {
+        param([string]$Leaf)
+        if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
+        $gfxFamilies = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152', 'gfx110x-all', 'gfx103x-all', 'gfx90a', 'gfx908')
+        return ($gfxFamilies -contains $Leaf) -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
+    }
+
     # Expected tag from the index leaf: cuXXX / cpu / rocm ($ROCmIndexUrl or a
     # gfx* leaf -> rocm). $null on an unknown leaf (odd mirror) so repair no-ops.
     function Get-ExpectedTorchFlavorTag {
@@ -3840,9 +3849,7 @@ exit 0
         if ($leaf -match '^cu\d+$') { return $leaf }
         if ($leaf -eq 'cpu')        { return 'cpu' }
         if ($leaf -eq 'xpu')        { return 'xpu' }
-        if ($leaf -match '^rocm')   { return 'rocm' }
-        # gfx must be followed by a digit (an architecture leaf); gfx-private is custom.
-        if ($leaf -match '^gfx[0-9]') { return 'rocm' }
+        if (Test-PipRocmFamilyLeaf $leaf) { return 'rocm' }
         return $null
     }
 
@@ -4119,9 +4126,10 @@ exit 0
             $PinnedRocmVisionSpec = "torchvision>=0.26.0,<0.27.0"
             $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
             substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
-        } elseif ($_pinLeaf -match '^gfx[0-9]' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
+        } elseif (Test-PipRocmFamilyLeaf $_pinLeaf) {
             # Other gfx / older rocm (<=7.1) ship torch <2.11; route via the ROCm path with
-            # bare specs. Only EXACT rocm<digits>/gfx* are families; a suffixed leaf is verbatim.
+            # bare specs. Only numeric ROCm releases and supported gfx leaves are families;
+            # a suffixed leaf is verbatim.
             $ROCmIndexUrl = $TorchIndexUrl
         }
     }

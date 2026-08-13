@@ -1156,6 +1156,8 @@ Agent 4
         # (no reinstall loop once the correct gfx wheel is present).
         assert f(f"{amd}/gfx120X-all", "2.11.0+rocm7.13.0") is False
         assert f(f"{amd}/gfx1150", "2.11.0+rocm7.13.0") is False
+        assert f(f"{amd}/gfx1151", "2.12.0+rocm7.13.0") is True
+        assert f(f"{amd}/gfx1151", "3.0.0+rocm7.13.0") is True
         # A NON-2.11 gfx pin (gfx110X-all/gfx90a/gfx908) tracks the default <2.11 spec: a
         # correct 2.10+rocm wheel is NOT a mismatch, a 2.11 build is.
         assert f(f"{amd}/gfx110X-all", "2.10.0+rocm6.4") is False
@@ -1173,6 +1175,11 @@ Agent 4
         assert f(f"{base}/rocm7", "2.11.0+rocm7.13.0") is False
         assert f(f"{base}/rocm7", "2.10.0") is True
         assert f(f"{base}/rocm7", "2.10.0+rocm") is False
+        # If only the release is readable, it must still satisfy the package window.
+        assert f(f"{base}/rocm7.2", "2.11.0+rocm") is False
+        assert f(f"{base}/rocm7.2", "2.12.0+rocm") is True
+        assert f(f"{base}/rocm6.4", "2.10.0+rocm") is False
+        assert f(f"{base}/rocm6.4", "2.12.0+rocm") is True
 
     def test_rocm_gfx_index_compares_the_installed_arch_family(self):
         """Same-tag AMD wheels need their runtime metadata to distinguish siblings."""
@@ -1364,6 +1371,7 @@ Agent 4
         assert leaf_f("rocm6.4") is True
         assert leaf_f("gfx120x-all") is True
         assert leaf_f("gfx1151") is True
+        assert leaf_f("gfx110x-all") is True
         # A bare rocm<digits> (no minor) is still an exact family.
         assert leaf_f("rocm7") is True
         # A Radeon find-links dir leaf, a custom mirror, cpu and cuda are NOT pip rocm.
@@ -1378,6 +1386,9 @@ Agent 4
         assert leaf_f("rocm7.2-private") is False
         assert leaf_f("rocm7-current") is False
         assert leaf_f("rocm7.2.1") is False  # two-part local suffix -> custom, not rocm7.2
+        assert leaf_f("gfx1151-private") is False
+        assert leaf_f("gfx110x-all-private") is False
+        assert leaf_f("gfx9999") is False
 
         radeon = "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1"
         pip_rocm = "https://download.pytorch.org/whl/rocm7.2"
@@ -1406,6 +1417,14 @@ Agent 4
         suffixed = "https://co.internal/whl/rocm7.2-private"
         assert _classify(suffixed, rocm_fn) is None
         assert _classify(suffixed, unk_fn) == suffixed
+        suffixed_gfx = "https://co.internal/whl/gfx1151-private"
+        assert _classify(suffixed_gfx, rocm_fn) is None
+        assert _classify(suffixed_gfx, unk_fn) == suffixed_gfx
+
+    def test_supported_gfx_family_leaves_match_the_arch_index_map(self):
+        assert stack_mod._ROCM_GFX_FAMILY_LEAVES == {
+            family.lower() for family in stack_mod._GFX_TO_AMD_INDEX_ARCH.values()
+        }
 
     @patch.object(stack_mod, "pip_install")
     def test_ensure_cpu_torch_broken_probe_reinstalls(self, mock_pip):

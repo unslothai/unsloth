@@ -138,7 +138,7 @@ check "cpu pin over xpu wheel"    "$(escape "$(make_venv '2.9.1+xpu' no C)" "htt
 check "gfx pin over xpu wheel"    "$(escape "$(make_venv '2.9.1+xpu' no D)" "https://repo.radeon.com/whl/gfx1151")" false
 check "FAMILY=cu128 over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no E)" "" "cu128")" false
 check "rocm7.2 dotted pin over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no B2)" "https://download.pytorch.org/whl/rocm7.2")" false
-# gfx is a PREFIX family on every side, because gfx120x-all is a real Radeon index leaf.
+# Supported gfx families are exact, including the compound gfx120x-all leaf.
 check "gfx120x-all pin over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no D2)" "https://repo.radeon.com/whl/gfx120x-all")" false
 # EXACT families only: a leaf that merely STARTS with one is a custom verbatim pin the shared
 # classifiers never repair, so escaping on it would force a pass every update for nothing. A
@@ -148,6 +148,7 @@ check "custom cu-private over xpu"      "$(escape "$(make_venv '2.9.1+xpu' no G)
 check "custom cu128-private over xpu"   "$(escape "$(make_venv '2.9.1+xpu' no G2)" "https://mirror/whl/cu128-private")" true
 check "custom cu128rc1 over xpu"        "$(escape "$(make_venv '2.9.1+xpu' no G3)" "https://mirror/whl/cu128rc1")" true
 check "custom rocm7.2-private over xpu" "$(escape "$(make_venv '2.9.1+xpu' no F2)" "https://mirror/whl/rocm7.2-private")" true
+check "custom gfx1151-private over xpu" "$(escape "$(make_venv '2.9.1+xpu' no F3)" "https://mirror/whl/gfx1151-private")" true
 check "custom rocm7. over xpu"          "$(escape "$(make_venv '2.9.1+xpu' no F3)" "https://mirror/whl/rocm7.")" true
 check "custom rocm7.2.1 over xpu"       "$(escape "$(make_venv '2.9.1+xpu' no F4)" "https://mirror/whl/rocm7.2.1")" true
 check "custom cpu-private over xpu"     "$(escape "$(make_venv '2.9.1+xpu' no F5)" "https://mirror/whl/cpu-private")" true
@@ -183,6 +184,7 @@ if [ -f "$PY_STACK" ] && command -v python3 >/dev/null 2>&1; then
     _corpus="cpu cu118 cu126 cu128 cu130 rocm6.3 rocm6.4 rocm7.0 rocm7.2 gfx90a gfx1151
              gfx120x-all xpu cu128-private cu128rc1 cu128.1 cu-private rocm-current rocm7.
              rocm7.2.1 rocm7.2-private rocm.4 cpu-private gfx-private private-xpu cu rocm gfx"
+    _corpus="$_corpus gfx1151-private gfx110x-all-private gfx9999"
     _pyout=$(cd "$(dirname "$PY_STACK")" && python3 -c '
 import sys, install_python_stack as m
 for leaf in sys.argv[1:]:
