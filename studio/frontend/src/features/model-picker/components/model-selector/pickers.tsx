@@ -477,7 +477,9 @@ const CAPABILITY_BADGES: {
   },
   {
     key: "audio",
-    title: "Generates audio",
+    // Direction-neutral, unlike the two above: `audio` covers ASR and audio classification as
+    // well as speech synthesis, so a Whisper row would be claiming to generate what it consumes.
+    title: "Audio",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
     ),
@@ -738,11 +740,16 @@ function isRuntimeLoadedModel(
 const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
-  // One capability / vision / downloaded badge. Used where the picker's scope allows at most one.
+  // The badge slot holds capability glyphs (18px), the vision badge (24px) and the Hub lists'
+  // "on disk" mark (12px), gap-1 between them. Each width below is the widest set its scope can
+  // draw, since anything wider makes min-w-min expand the slot and shift every column after it.
+  // Scope draws no glyph: the vision badge alone, or the disk mark alone.
   badge: "min-w-min min-[560px]:w-[24px]",
-  // Room for the pair a chat row can carry, a generation glyph plus audio (18px each, gap-1).
-  // Sized for one, such a row shifted every column after it.
-  badgeWide: "min-w-min min-[560px]:w-[40px]",
+  // One glyph plus the disk mark (18 + 4 + 12).
+  badgeMid: "min-w-min min-[560px]:w-[34px]",
+  // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
+  // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
+  badgeWide: "min-w-min min-[560px]:w-[68px]",
   // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
   vram: "min-w-min min-[560px]:w-[4em]",
   // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
@@ -844,12 +851,14 @@ function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
-  // Only hold the wide slot open where more than one glyph can land. The Images and Audio pickers
-  // draw none and Video draws one, so reserving the pair there is dead space on every row.
+  // Reserve only what this picker's scope can draw. The Images and Audio pickers draw no glyph and
+  // Video draws one, so holding the chat row's slot open there is dead space on every row.
   const badgeColumn =
-    capabilityScope && capabilityScope.length <= 1
-      ? META_COLUMN.badge
-      : META_COLUMN.badgeWide;
+    capabilityScope === null || capabilityScope.length > 1
+      ? META_COLUMN.badgeWide
+      : capabilityScope.length === 1
+        ? META_COLUMN.badgeMid
+        : META_COLUMN.badge;
   const aligned = alignMeta !== undefined;
   // One dot per row. A second format shares the first's colour anyway, so it
   // rides along in the tooltip instead of pushing the name out of line.
@@ -3116,6 +3125,20 @@ export function HubModelPicker({
       string,
       { meta: string | null; status: VramFitStatus | null; est: number }
     >();
+    const hasDeviceBudget =
+      inferenceGpu.budgetKnown ||
+      inferenceGpu.memoryTotalGb > 0 ||
+      inferenceGpu.systemRamAvailableGb > 0;
+    /** Size-based verdict, for rows whose real footprint we know. */
+    const exceedsSize = (sizeBytes?: number) =>
+      hasDeviceBudget &&
+      sizeBytes != null &&
+      !fitsDevice({
+        sizeBytes,
+        gpuGb: inferenceGpu.memoryTotalGb,
+        systemRamGb: inferenceGpu.systemRamAvailableGb,
+        budgetKnown: inferenceGpu.budgetKnown,
+      });
     // Community rows come from their own listing; without them folded in here
     // they render with no size or VRAM chip.
     for (const r of [
@@ -3153,23 +3176,24 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
-        const hasDeviceBudget =
-          inferenceGpu.budgetKnown ||
-          inferenceGpu.memoryTotalGb > 0 ||
-          inferenceGpu.systemRamAvailableGb > 0;
-        const exceeds =
-          hasDeviceBudget &&
-          sizeBytes != null &&
-          !fitsDevice({
-            sizeBytes,
-            gpuGb: inferenceGpu.memoryTotalGb,
-            systemRamGb: inferenceGpu.systemRamAvailableGb,
-            budgetKnown: inferenceGpu.budgetKnown,
-          });
         map.set(r.id, {
           meta,
-          status: exceeds ? "exceeds" : null,
+          status: exceedsSize(sizeBytes) ? "exceeds" : null,
           est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
+        });
+        continue;
+      }
+      // A curated pipeline is judged on the size the catalog states, the same precedence
+      // hfModelFitsDevice uses. The QLoRA estimator below reads a diffusion pipeline as a
+      // language model it can 4-bit quantize: Wan 2.2 TI2V is 30 GB, and 5B params says 5.9.
+      const curatedBytes = catalog
+        ? (r.curatedSizeBytes ?? curatedSizeBytesFor(r.id, catalog))
+        : r.curatedSizeBytes;
+      if (curatedBytes) {
+        map.set(r.id, {
+          meta,
+          status: exceedsSize(curatedBytes) ? "exceeds" : null,
+          est: Math.round(curatedBytes / 1024 ** 3),
         });
         continue;
       }
@@ -3185,6 +3209,7 @@ export function HubModelPicker({
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
+    catalog,
     isKnownGgufRepo,
     gpu,
     inferenceGpu,

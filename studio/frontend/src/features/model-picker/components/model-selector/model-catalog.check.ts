@@ -310,6 +310,22 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
   }
 }
 
+// A non-GGUF artifact that states a parameter count must state its size too. The picker's VRAM
+// badge falls back to the QLoRA estimator when it cannot size a row, and that formula reads a
+// diffusion pipeline as a language model it can quantize: 5B params says 5.9 GB where the Wan 2.2
+// TI2V pipeline is 30. The curated size is what keeps that fallback off these rows.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      if (!artifact.totalParams || artifact.format === "gguf") continue;
+      assert.ok(
+        artifact.approxSizeGb && artifact.approxSizeGb > 0,
+        `${artifact.repoId} declares totalParams but no approxSizeGb`,
+      );
+    }
+  }
+}
+
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 
 const GB = 1024 ** 3;

@@ -217,6 +217,32 @@ test("row meta falls back to the curated seeds", () => {
   assert.match(text, /if\s*\(map\.has\(r\.id\)\)\s*continue;/);
 });
 
+test("every pipeline tag the Images picker lists reads as image generation", () => {
+  // A row the picker lists has to draw the glyph whatever its repo is called, so the tags
+  // detectCapabilities knows cannot be a subset of the ones the picker filters on.
+  const tags = declarationText("IMAGE_GEN_TASKS").match(/"([^"]+)"/g) ?? [];
+  assert.ok(tags.length > 0, "no tags parsed out of IMAGE_GEN_TASKS");
+  for (const quoted of tags) {
+    const tag = quoted.slice(1, -1);
+    assert.equal(
+      detectCapabilities({ id: "someone/unfamiliar-name", pipelineTag: tag }).imageGen,
+      true,
+      `${tag} is listed by the Images picker but does not read as image generation`,
+    );
+  }
+});
+
+test("a curated pipeline's fit comes from its size, not the QLoRA estimator", () => {
+  const text = declarationText("recommendedMeta");
+  // The curated size has to be consulted BEFORE estimateLoadingVram, which assumes a language
+  // model it can 4-bit quantize and reads the 30 GB Wan 2.2 TI2V pipeline as 5.9 GB.
+  const curatedAt = text.indexOf("curatedSizeBytes");
+  const estimatorAt = text.indexOf("estimateLoadingVram");
+  assert.ok(curatedAt >= 0, "recommendedMeta ignores the curated size");
+  assert.ok(estimatorAt >= 0, "recommendedMeta no longer estimates VRAM at all");
+  assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs before the curated size");
+});
+
 test("capabilities fall back to the curated catalog", () => {
   assert.match(
     declarationText("capsById"),

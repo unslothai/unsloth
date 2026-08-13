@@ -37,6 +37,8 @@ const REASONING_TAGS = new Set(["reasoning"]);
 const IMAGE_GEN_TAGS = new Set([
   "text-to-image",
   "image-to-image",
+  // The Images picker's own IMAGE_GEN_TASKS accepts this, so a row it lists has to draw the glyph.
+  "image-text-to-image",
   "inpainting",
 ]);
 const VIDEO_GEN_TAGS = new Set([
