@@ -1236,6 +1236,7 @@ class TestManualSplitLaunchesRespectTheGate:
         backend = None,
         tensor_split = (1.0, 1.0),
         gpu_layers = 20,
+        tensor_parallel = False,
     ):
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(devices, vendor = "amd")
@@ -1251,6 +1252,7 @@ class TestManualSplitLaunchesRespectTheGate:
                 "gpu_memory_mode": "manual",
                 "gpu_layers": gpu_layers,
                 "tensor_split": tensor_split,
+                "tensor_parallel": tensor_parallel,
             },
         )
 
@@ -1330,6 +1332,68 @@ class TestManualSplitLaunchesRespectTheGate:
         )
         assert backend._tensor_split is None
         assert backend._arch_gate_dropped_tensor_split is None
+
+    def test_the_dropped_tensor_mode_is_recorded_too(self, tmp_path, monkeypatch, probe_env):
+        """The ratio is only half the normalization. Narrowing to one survivor also
+        drops --split-mode tensor, and ``_tensor_parallel_matches_loaded`` compares the
+        unchanged request against the layer-split server -- so without a record of the
+        drop every identical Apply reloads the same multi-GB model."""
+        capture: dict = {}
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176),
+            ],
+            capture = capture,
+            tensor_parallel = True,
+        )
+        backend = capture["backend"]
+        assert backend._tensor_parallel is False  # gone from the argv
+        assert backend._arch_gate_dropped_tensor_parallel is True  # but not forgotten
+
+    def test_a_covered_host_records_no_mode_drop(self, tmp_path, monkeypatch, probe_env):
+        """The record excuses a mismatch, so an unearned one would dedupe a genuine
+        layer-to-tensor change away."""
+        capture: dict = {}
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1031", free_mib = 12176),
+            ],
+            capture = capture,
+            tensor_parallel = True,
+        )
+        # Live, not normalized: the record would be unearned.
+        assert capture["backend"]._tensor_parallel is True
+        assert capture["backend"]._arch_gate_dropped_tensor_parallel is False
+
+    def test_a_forced_cpu_launch_records_both_drops(self, tmp_path, monkeypatch, probe_env):
+        """The forced-CPU arm strips the mode AND the ratio, so it has to record both:
+        it is the one arm that normalizes a manual tensor request all the way down to a
+        server with no visible device."""
+        capture: dict = {}
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            ["gfx908"],  # covers neither card
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176),
+            ],
+            capture = capture,
+            tensor_parallel = True,
+        )
+        backend = capture["backend"]
+        assert backend._arch_gate_forced_cpu is True
+        assert backend._tensor_parallel is False and backend._tensor_split is None
+        assert backend._arch_gate_dropped_tensor_parallel is True
+        assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)
 
     def test_a_narrowed_host_masks_and_drops_the_ratio(self, tmp_path, monkeypatch, probe_env):
         launches = self._manual_split(
@@ -2187,6 +2251,113 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         assert launches
         _cmd, env = launches[0]
         assert env.get("LLAMA_ARG_TENSOR_SPLIT") == "3,1"
+
+
+class TestTheForcedCpuLaunchAppliesThePageLock:
+    """The gate masks every device away, so the child runs from host RAM -- but
+    ``_weights_in_host_memory`` already answered for the ORIGINAL placement, where a
+    manual full offload onto discrete cards reads as not host-resident. Left alone the
+    page-lock the user asked for is skipped AND ``_memory_mlock_applicable`` records
+    the missing lock as deliberate, which no relaunch undoes."""
+
+    def _run(self, tmp_path, monkeypatch, *, targets):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
+        )
+        import utils.model_memory_settings as _mem_settings
+
+        monkeypatch.setattr(_mem_settings, "get_model_memory_settings", lambda: (True, False))
+        capture: dict = {}
+        backend = LlamaCppBackend()
+        # A known block count is what lets _offloads_every_layer answer True for the
+        # manual maximum below; without it every launch reads as host-resident anyway
+        # and the skip this test is about could never happen.
+        backend._n_layers = 32
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(
+                # Two DISCRETE cards: _amd_apu_wants_unified_memory answers False, so
+                # a full offload really does read as not host-resident.
+                [
+                    _device("gfx1030", free_mib = 40000),
+                    _device("gfx1031", free_mib = 30000),
+                ],
+                vendor = "amd",
+            ),
+            targets,
+            returncode = None,
+            capture = capture,
+            backend = backend,
+            # Manual full offload: every layer on the GPU.
+            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 33},  # n_layers + 1
+        )
+        return launches, capture
+
+    def test_the_masked_child_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
+        launches, capture = self._run(tmp_path, monkeypatch, targets = ["gfx908"])
+        assert launches
+        cmd, env = launches[0]
+        assert env.get("HIP_VISIBLE_DEVICES") == "-1", _visibility(env)
+        assert "--mlock" in cmd or "mmap+mlock" in " ".join(cmd), cmd
+        assert capture["backend"]._memory_mlock_applicable is True
+
+    def test_a_covered_host_still_skips_it(self, tmp_path, monkeypatch, probe_env):
+        """The recompute is the gate's doing. With the cards covered the launch really
+        is fully offloaded, so the pre-existing skip has to stand."""
+        launches, capture = self._run(tmp_path, monkeypatch, targets = GFX103X)
+        assert launches
+        cmd, env = launches[0]
+        assert env.get("HIP_VISIBLE_DEVICES") != "-1"
+        assert "--mlock" not in cmd
+        assert capture["backend"]._memory_mlock_applicable is False
+
+
+class TestForcedCpuNeedsRealArchEvidence:
+    """``_get_gpu_memory`` turns any probe error into [], so "gated empty, ungated not"
+    also describes a one-shot failure of the FIRST probe on a host the gate never
+    filters. Masking that launch onto the CPU is a silent, permanent performance
+    cliff, so the branch re-derives the gate's verdict instead of inferring it."""
+
+    def _run(self, tmp_path, monkeypatch, *, targets, flaky):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        real = LlamaCppBackend._get_gpu_memory
+        calls = {"n": 0}
+
+        def _probe(binary = None, *, for_llama_server = False):
+            calls["n"] += 1
+            if flaky and calls["n"] == 1:
+                return []  # the transient failure, on the gated call
+            return real(binary, for_llama_server = for_llama_server)
+
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_probe))
+        capture: dict = {}
+        _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch([_device("gfx1030", free_mib = 12049)], vendor = "amd"),
+            targets,
+            returncode = None,
+            capture = capture,
+        )
+        return capture["backend"]
+
+    def test_a_transient_probe_failure_does_not_force_cpu(self, tmp_path, monkeypatch, probe_env):
+        """The marker covers the only card, so nothing was filtered: an empty gated
+        result here is the probe, not the gate."""
+        backend = self._run(tmp_path, monkeypatch, targets = GFX103X, flaky = True)
+        assert backend._arch_gate_forced_cpu is False
+
+    def test_an_unmarked_install_does_not_force_cpu(self, tmp_path, monkeypatch, probe_env):
+        """No marker at all means unknown coverage, which the filter fails open on, so
+        the gate cannot have emptied anything."""
+        backend = self._run(tmp_path, monkeypatch, targets = None, flaky = True)
+        assert backend._arch_gate_forced_cpu is False
+
+    def test_a_genuinely_uncovered_host_still_forces_cpu(self, tmp_path, monkeypatch, probe_env):
+        backend = self._run(tmp_path, monkeypatch, targets = ["gfx908"], flaky = False)
+        assert backend._arch_gate_forced_cpu is True
 
 
 class TestTheApuRetryRecomputesThePageLock:
