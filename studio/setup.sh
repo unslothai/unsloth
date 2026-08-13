@@ -1787,6 +1787,31 @@ if [ "$_setup_torch_is_xpu" = true ]; then
     run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
 fi
+# The supported name table, as a matcher so the report below can ask it about a PEER
+# adapter without disturbing $_setup_gfx. Kept in sync with the table in install.sh
+# (and the PS nameArchTable). gfx1102 matched BEFORE gfx1100 so the spaceless
+# "RX 7700S" lands on gfx1102 (bash case has no negative lookahead like the PS tables).
+_setup_supported_gfx_from_name() {
+    _sup_gfx_in="$1"
+    _sup_gfx_out=""
+    case "$_sup_gfx_in" in
+        *9070*|*9080*|*"R9700"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
+        *9060*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
+        *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _sup_gfx_out="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
+        *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
+        *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
+        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+    esac
+    [ -n "$_sup_gfx_out" ] || return 1
+    printf '%s\n' "$_sup_gfx_out"
+}
+
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -1839,23 +1864,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
-        # Kept in sync with the table in install.sh (and the PS nameArchTable).
-        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
-        # gfx1102 (bash case has no negative lookahead like the PS tables).
-        case "$_setup_mkt" in
-            *9070*|*9080*|*"R9700"*)                                                                       _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
-            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
-            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
-            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
-            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
-            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _setup_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
-        esac
+        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -1902,6 +1911,18 @@ elif [ "$_setup_amd_detected" = true ]; then
         fi
         command -v lspci >/dev/null 2>&1 || return 1
         _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        # First match wins, so on a host whose RX 5700 enumerates before an RX 7900 this
+        # would name the 5700 and say no override can help, which is false: selecting the
+        # 7900 and setting its arch reaches the supported path. Say nothing when ANY
+        # adapter is covered, matching the guard install.sh's CPU summary carries.
+        while IFS= read -r _setup_unsup_ln; do
+            [ -n "$_setup_unsup_ln" ] || continue
+            if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                return 1
+            fi
+        done <<EOF
+$_setup_unsup_pci
+EOF
         while IFS= read -r _setup_unsup_ln; do
             [ -n "$_setup_unsup_ln" ] || continue
             if _setup_unsup_hit=$(_setup_unsupported_gfx_from_name "$_setup_unsup_ln"); then
@@ -1919,8 +1940,14 @@ EOF
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py), as the arms below say.
-        substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
-        substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
+        # Both lines are false under an explicit index pin, which install_python_stack.py
+        # honours for any arch, so a pinned run says what it is doing instead.
+        if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+            substep "The torch index you pinned is used as given, so torch is whatever it publishes."
+        else
+            substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
+            substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
+        fi
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."

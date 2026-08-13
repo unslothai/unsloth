@@ -968,10 +968,23 @@ def _detect_windows_gfx_arch() -> str | None:
                 # sends the user after a fix that does not exist (#8529, #8458).
                 _unsupported = _unsupported_gfx_arch_from_gpu_name(_names[_sel])
                 if _unsupported:
+                    # The CPU-only half is false under an explicit index pin, which is
+                    # honoured for any arch, so a pinned run says what it is doing instead.
+                    _pinned = bool(
+                        (os.environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
+                        or (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
+                    )
+                    _tail = (
+                        "so the torch index you pinned is used as given."
+                        if _pinned
+                        else (
+                            "so torch will be CPU-only. No HIP SDK install and "
+                            "no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
+                        )
+                    )
                     _safe_print(
                         f"   [WARN] '{_names[_sel]}' is {_unsupported}, which Unsloth's ROCm "
-                        f"PyTorch wheels do not cover, so torch will be CPU-only. No HIP SDK install and "
-                        f"no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
+                        f"PyTorch wheels do not cover, {_tail}"
                     )
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
                     # (#8458 ran an RX 580 through it). Saying WHEN matters -- the

@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -675,3 +676,77 @@ class TestInstallShCpuSummaryBlamesTheRightCard:
 
     def test_a_covered_card_alone_says_nothing_about_uncovered_arches(self, tmp_path):
         assert _run_summary_guard(tmp_path, [_RX_7900]) == "GENERIC"
+
+
+# ── setup.sh's KFD report must blame the right card too ──────────────────────
+
+
+_SETUP_SH_FUNCS = (
+    "_setup_supported_gfx_from_name",
+    "_setup_unsupported_gfx_from_name",
+    "_setup_unsupported_gfx_any",
+)
+
+
+def _run_setup_report(tmp_path, lspci_lines: "list[str]") -> str:
+    """setup.sh's lookup on the KFD path, where no market name is available and the
+    lookup falls back to lspci. Same fixtures as the install.sh summary above."""
+    source = _SETUP_SH.read_text(encoding = "utf-8")
+    funcs = "\n".join(
+        textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok = True)
+    fixture = tmp_path / "lspci.txt"
+    fixture.write_text("\n".join(lspci_lines) + "\n", encoding = "utf-8")
+    lspci = bin_dir / "lspci"
+    lspci.write_text(f'#!/bin/sh\ncat "{fixture}"\n', encoding = "utf-8")
+    lspci.chmod(0o755)
+    script = (
+        f'{funcs}\nif _g=$(_setup_unsupported_gfx_any ""); then echo "UNCOVERED $_g"; '
+        "else echo GENERIC; fi\n"
+    )
+    out = subprocess.run(
+        ["sh", "-c", script],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 60,
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    return out.stdout.strip()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this host")
+class TestSetupShReportBlamesTheRightCard:
+    """The KFD fallback detects the GPU with neither rocminfo nor amd-smi, so the report
+    reads lspci and takes the first uncovered adapter. On a host whose RX 5700 enumerates
+    before an RX 7900 that is the wrong card: selecting the 7900 and setting its arch
+    does reach the supported path, so "no override can help" is false there."""
+
+    @pytest.mark.parametrize("lines", [[_RX_5700], [_RX_580]], ids = ["rx5700", "rx580"])
+    def test_a_lone_uncovered_card_is_still_named(self, tmp_path, lines):
+        assert _run_setup_report(tmp_path, lines).startswith("UNCOVERED")
+
+    @pytest.mark.parametrize(
+        "lines",
+        [[_RX_5700, _RX_7900], [_RX_7900, _RX_5700], [_RX_580, _RX_7900]],
+        ids = ["5700-first", "7900-first", "580-plus-7900"],
+    )
+    def test_a_covered_peer_keeps_the_report_quiet(self, tmp_path, lines):
+        assert _run_setup_report(tmp_path, lines) == "GENERIC", (
+            "setup.sh named an uncovered card on a host that also carries a covered one"
+        )
+
+    def test_the_supported_matcher_still_answers(self, tmp_path):
+        """Positive control on the extracted table: without it the guard above would be
+        vacuous, since a matcher that never matches also keeps the report quiet."""
+        source = _SETUP_SH.read_text(encoding = "utf-8")
+        script = textwrap.dedent(
+            _sh_function_body(source, "_setup_supported_gfx_from_name")
+        ) + '\n_setup_supported_gfx_from_name "AMD Radeon RX 7900 XTX"\n'
+        out = subprocess.run(
+            ["sh", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30
+        )
+        assert out.stdout.strip() == "gfx1100"

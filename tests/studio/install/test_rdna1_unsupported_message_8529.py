@@ -196,6 +196,87 @@ def _wmi_detect(names):
     return result, buf.getvalue()
 
 
+class TestExplicitIndexPinIsHonoured:
+    """An explicit UNSLOTH_TORCH_INDEX_URL / _FAMILY reaches the ROCm install path for
+    ANY gfx/rocm leaf (install.ps1's pinned-index arm), so "torch stays CPU-only and
+    nothing changes that" is false on a pinned run. install.sh's CPU note already skips
+    its guidance when pinned; the other four sources now agree with it."""
+
+    _CPU_CLAIM = "torch will be CPU-only"
+
+    def test_the_python_warning_drops_the_cpu_claim_when_pinned(self):
+        with patch.dict(os.environ, {"UNSLOTH_TORCH_INDEX_URL": "https://example/gfx1010"}):
+            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert "gfx1010" in out, "the card is still named"
+        assert self._CPU_CLAIM not in out, (
+            f"a pinned index still gets the CPU-only verdict:\n{out}"
+        )
+
+    def test_the_claim_is_there_without_a_pin(self):
+        """The positive control: without it the test above passes on any wording."""
+        with patch.dict(os.environ, {}, clear = False):
+            for _v in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+                os.environ.pop(_v, None)
+            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert self._CPU_CLAIM in out
+
+    @pytest.mark.parametrize(
+        "path", [_INSTALL_PS1, _SETUP_PS1, _SETUP_SH], ids = lambda p: p.name
+    )
+    def test_each_shell_arm_reads_the_pin(self, path):
+        """The shell sources cannot be called from here, so require the arm to READ the
+        pin: the wording is only correct because it is conditional on it."""
+        lines = _normalised(path).splitlines()
+        hits = [
+            i
+            for i, line in enumerate(lines)
+            if "so torch stays" in line and not line.lstrip().startswith("#")
+        ] or [
+            i
+            for i, line in enumerate(lines)
+            if "torch stays CPU-only" in line and not line.lstrip().startswith("#")
+        ]
+        assert hits, f"{path.name}: the CPU-only claim was not found"
+        for i in hits:
+            # Backwards: the pin is read above the claim, which is what puts the claim
+            # in a branch. Bounded so an unrelated mention further up cannot satisfy it.
+            window = "\n".join(lines[max(i - 10, 0) : i])
+            assert "UNSLOTH_TORCH_INDEX_URL" in window, (
+                f"{path.name}:{i + 1}: claims CPU-only unconditionally, which a pinned "
+                f"index makes false:\n{window}"
+            )
+
+
+class TestWindowsArm64GetsNoVulkanAdvice:
+    """studio/setup.ps1 THROWS when the Vulkan variable is set on Windows ARM64 (no
+    bundle is published there), so telling an ARM64 user to set it and re-run aborts
+    the update instead of enabling GGUF acceleration."""
+
+    def test_the_throw_this_depends_on_is_still_there(self):
+        src = _normalised(_SETUP_PS1)
+        assert "no Windows ARM64 Vulkan bundle is published" in src, (
+            "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
+        )
+
+    @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
+    def test_every_vulkan_offer_is_behind_an_arch_check(self, path):
+        lines = _normalised(path).splitlines()
+        offers = [
+            i
+            for i, line in enumerate(lines)
+            if _SETTER[path.name] in line and not line.lstrip().startswith("#")
+        ]
+        assert offers, f"{path.name}: no Vulkan offer found"
+        for i in offers:
+            # Get-HostMachineArch itself, not a boolean named after it: a mutant that
+            # kept the branch and hardcoded $unsupArm64 = $false survived that spelling.
+            back = "\n".join(lines[max(i - 20, 0) : i])
+            assert "Get-HostMachineArch" in back, (
+                f"{path.name}:{i + 1}: offers the Vulkan variable without checking for "
+                f"Windows ARM64, where setting it throws:\n{back}"
+            )
+
+
 class TestWindowsWmiMessage:
     def test_rdna1_adapter_still_yields_no_arch(self):
         """CPU fallback unchanged. This is the assertion that keeps the fix honest."""
@@ -498,7 +579,7 @@ class TestAdviceIsNotEmittedForRdna1:
         assert len(hits) == 1, f"{path.name}: expected one arm anchored on {anchor!r}, got {hits}"
         window = "\n".join(
             line
-            for line in lines[hits[0] : hits[0] + 8]
+            for line in _arm_window(lines, hits[0])
             if not line.lstrip().startswith(("#", "//"))
         )
         assert "runs on CPU on this GPU" not in window, (
@@ -873,6 +954,28 @@ class TestShellLookupsRun:
 # ── The Vulkan pointer (#8458) ───────────────────────────────────────────────
 
 
+def _arm_window(lines: "list[str]", start: int) -> "list[str]":
+    """The rest of the branch the line at `start` belongs to, not a fixed line count.
+
+    The advice is now emitted from if/else arms (an index pin and Windows ARM64 each
+    change what is true), so a fixed window either stops mid-branch or spills into the
+    NEXT arm, which is the failure this test's docstring already warns about. Stop at
+    the first line that dedents past the anchor, which closes the arm in every language
+    here, and cap the span so a missing closer cannot swallow the file.
+    """
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    # One step out, not the anchor's own indent: the claim it anchors now sits in a
+    # nested if/else, and the Vulkan offer is its SIBLING branch, so stopping at the
+    # anchor's own level would cut the window before the thing under test.
+    floor = max(indent - 4, 0)
+    out = [lines[start]]
+    for line in lines[start + 1 : start + 25]:
+        if line.strip() and (len(line) - len(line.lstrip())) < floor:
+            break
+        out.append(line)
+    return out
+
+
 class TestVulkanAdvice:
     """#8458 is the same shape as #8529 -- a pre-RDNA 2 AMD card (RX 580, Polaris,
     gfx803) told it had no usable GPU -- but its reporter got the card working
@@ -1008,7 +1111,9 @@ class TestVulkanAdvice:
             # below also appears in the comment explaining the branch, so raw lines
             # stay green after the message is demoted to a comment (observed mutant).
             window = "\n".join(
-                line for line in lines[i : i + 8] if not line.lstrip().startswith(("#", "//"))
+                line
+                for line in _arm_window(lines, i)
+                if not line.lstrip().startswith(("#", "//"))
             )
             # The offer, not one phrasing of it: these arms are hard-wrapped to different
             # widths. Both halves are required -- a backend without what it buys, or GGUF

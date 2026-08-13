@@ -2677,15 +2677,27 @@ if ($HasNvidiaSmi) {
     # NotImplementedError at import (unsloth/device_type.py) -- no training path at all.
     # The Vulkan setter is single-quoted so PowerShell prints $env:... rather than
     # expanding it; a pasted VAR=value resolves as a command name here and sets nothing.
-    # Keep this block above the substeps, not between them: the tests read a fixed
-    # window from the first one.
-    substep "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
-    substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
-    substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
-    substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-    substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
-    substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
-    substep "until you install or update again." "Yellow"
+    # Both claims are conditional: an explicit index pin is honoured for any arch, and
+    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
+    # is published, so the usual advice would abort the next update instead of helping.
+    $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                   (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
+    if ($unsupPinned) {
+        substep "Unsloth ships no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, but the torch" "Yellow"
+        substep "index you pinned is used as given, so torch is whatever it publishes." "Yellow"
+    } else {
+        substep "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+        substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
+        substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
+    }
+    if ((Get-HostMachineArch) -eq "arm64") {
+        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+    } else {
+        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+        substep "until you install or update again." "Yellow"
+    }
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""

@@ -3731,21 +3731,35 @@ exit 0
         # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
         # unknown" arm below: the arch is known here, and that arm's advice cannot
         # succeed on this GPU (unslothai#8529).
-        step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
-        substep "Detected: $ROCmGpuLabel" "Yellow"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py) -- no training path at all.
         # The Vulkan setter is single-quoted so PowerShell prints $env:... rather than
         # expanding it; a pasted VAR=value resolves as a command name here and sets nothing.
-        # Keep this block above the substeps, not between them: the tests read a fixed
-        # window from the first one.
-        substep "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
-        substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
-        substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
-        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
-        substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
-        substep "no effect until you install or update again." "Yellow"
+        # Both claims below are conditional, and both conditions are read here rather than
+        # asserted: an explicit index pin reaches the ROCm install path further down even
+        # for an arch Unsloth has no wheels for, and Windows ARM64 has no Vulkan bundle at
+        # all, where studio/setup.ps1 THROWS on the very variable the advice names.
+        $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                       (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
+        $unsupArm64 = (Get-HostMachineArch) -eq "arm64"
+        step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        if ($unsupPinned) {
+            substep "Unsloth ships no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, but the torch index" "Yellow"
+            substep "you pinned is used as given, so torch is whatever that index publishes." "Yellow"
+        } else {
+            substep "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+            substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
+            substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
+        }
+        if ($unsupArm64) {
+            substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+        } else {
+            substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+            substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
+            substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
+            substep "no effect until you install or update again." "Yellow"
+        }
     } elseif ($ROCmGpuLabel) {
         step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -4234,8 +4248,14 @@ exit 0
                 substep "Installing CPU PyTorch -- Unsloth has no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch." "Yellow"
                 substep "Unsloth training and GPU inference are unavailable on CPU torch." "Yellow"
                 substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can give this GPU ROCm." "Yellow"
-                substep 'For GPU GGUF chat through Vulkan, set $env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"' "Yellow"
-                substep "and re-run this installer; the bundle is chosen at install time, not at launch." "Yellow"
+                if ((Get-HostMachineArch) -eq "arm64") {
+                    # No Windows ARM64 Vulkan bundle exists, and studio/setup.ps1 throws on the
+                    # variable, so the usual advice would abort the next update instead of helping.
+                    substep "GGUF chat would need Vulkan here, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+                } else {
+                    substep 'For GPU GGUF chat through Vulkan, set $env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"' "Yellow"
+                    substep "and re-run this installer; the bundle is chosen at install time, not at launch." "Yellow"
+                }
             } elseif ($ROCmGpuLabel) {
                 substep "Installing CPU-only PyTorch (AMD GPU arch unknown -- install the HIP SDK" "Yellow"
                 substep "or set UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm)." "Yellow"
