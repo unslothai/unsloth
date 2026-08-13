@@ -279,9 +279,7 @@ def main() -> int:
     # height, "streaming re-pinned a detached reader" passes on a tree where following is broken
     # in either direction. Recorded and unread was false-green; assert it.
     if not intent["grewWhileDetached"]:
-        failures.append(
-            "the content did not grow while detached; the re-pin check proved nothing"
-        )
+        failures.append("the content did not grow while detached; the re-pin check proved nothing")
     if not intent["stillDetached"]:
         failures.append("streaming re-pinned a detached reader")
     if not intent["reattached"]:
