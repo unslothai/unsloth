@@ -2203,9 +2203,11 @@ def test_every_reuse_path_syncs_the_arch_coverage():
     run: pinned beside sync_marker_rocm_gfx, which has exactly the same reach.
     """
     source = MODULE_PATH.read_text(encoding = "utf-8")
-    assert source.count("sync_marker_arch_coverage(install_dir,") == source.count(
-        "sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)"
-    ) == 3
+    assert (
+        source.count("sync_marker_arch_coverage(install_dir,")
+        == source.count("sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)")
+        == 3
+    )
 
 
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
