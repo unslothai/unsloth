@@ -9001,8 +9001,13 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                               never categorically
 #   API coverage differs per rewrite -> _makedirs calls _remap only, so the
 #                               generic fallback is open/io.open/os.open alone and
-#                               os.makedirs under a missing parent creates the REAL
-#                               host path. os.rename and os.symlink raise, while
+#                               os.makedirs under a missing parent targets the REAL
+#                               host path -- an attempt, not an outcome: measured
+#                               under this shim, makedirs into a mode-500 directory
+#                               raised PermissionError and created nothing, neither
+#                               on the host nor in the workdir, so the clause must
+#                               not promise creation any more than it promises a
+#                               prefix is absent. os.rename and os.symlink raise, while
 #                               shutil.copy writes the rewritten file through open
 #                               and then raises in copymode
 #   terminal                 -> the shell's own rules, except for Python it
@@ -9019,7 +9024,9 @@ _FULL_ACCESS_CLAUSE = {
         "unrelated file, though rewriting the same absolute path just replaces "
         "what your own earlier call left there. The convention rewrite covers "
         "open() and the mkdir calls; the other covers open() alone, so "
-        "os.makedirs under a missing absolute parent really does create it. "
+        "os.makedirs under a missing absolute parent is not rewritten at all and "
+        "attempts the real host path, which then succeeds or fails on the "
+        "filesystem's own permissions. "
         "Neither touches os.rename or os.symlink, which simply fail, and a helper "
         "such as shutil.copy can write the rewritten file and still raise on a "
         "later step. Report where a file actually landed rather than the path you "

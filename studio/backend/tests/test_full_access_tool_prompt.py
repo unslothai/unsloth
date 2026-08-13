@@ -18,6 +18,8 @@ other mode keeps the sandboxed wording verbatim.
 """
 
 import asyncio
+import json
+import os
 import sys
 
 import pytest
@@ -141,12 +143,12 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         # Only open/io.open/os.open and the mkdir family are wrapped. Measured:
         # os.rename and os.symlink raise, and shutil.copy writes the rewritten
         # file through open and then raises in copymode.
-        # Measured: os.makedirs under a missing absolute parent creates the REAL
+        # Measured: os.makedirs under a missing absolute parent targets the REAL
         # host path, because _makedirs calls _remap only and never the generic
         # fallback, so the two rewrites do NOT cover the same APIs.
         assert "The convention rewrite covers open() and the mkdir calls" in full
         assert "the other covers open() alone" in full
-        assert "os.makedirs under a missing absolute parent really does create it" in full
+        assert "os.makedirs under a missing absolute parent is not rewritten at all" in full
         assert "shutil.copy can write the rewritten file and still raise" in full
     else:
         assert "absolute paths do resolve as the shell resolves them" in full
@@ -426,3 +428,75 @@ def test_count_request_selection_matches_the_completion():
         )
     )
     assert _desc(_named(counted, "python")) == _desc(PYTHON_TOOL_FULL_ACCESS)
+
+
+def _sandbox_site_dir():
+    from pathlib import Path
+    return Path(tools.__file__).resolve().parent / "sandbox_site"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX directory modes")
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores a mode-500 directory")
+def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
+    """The unrewritten mkdir path is an attempt, and the clause may not promise more.
+
+    Full access keeps _SANDBOX_SITE_DIR on PYTHONPATH, so ``os.makedirs`` is
+    wrapped -- but ``_makedirs`` calls ``_remap`` alone, so outside a convention
+    prefix nothing is rewritten and the real host path is what the syscall gets.
+    A process that cannot create that path (a non-root write under a root-owned
+    directory, a read-only mount) raises instead, creating nothing anywhere. The
+    subprocess below is that measurement, not an assumption about os.makedirs:
+    the same shim the model runs under, a mode-500 parent, and a check that
+    neither the host path nor a workdir fallback appeared.
+
+    The clause is held to the standard the rest of this comment block already
+    keeps -- see the convention-prefix branch, which names /mnt/data only inside
+    a conditional and never categorically.
+    """
+    import subprocess
+
+    workdir = tmp_path / "work"
+    readonly = tmp_path / "readonly"
+    workdir.mkdir()
+    readonly.mkdir()
+    readonly.chmod(0o500)
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, os, sys\n"
+                "target = sys.argv[1] + '/missing/child'\n"
+                "try:\n"
+                "    os.makedirs(target)\n"
+                "    outcome = 'created'\n"
+                "except OSError as exc:\n"
+                "    outcome = type(exc).__name__\n"
+                "print(json.dumps({'outcome': outcome, 'host': os.path.exists(target),\n"
+                "                  'workdir': sorted(os.listdir('.'))}))\n",
+                str(readonly),
+            ],
+            cwd = workdir,
+            env = {**os.environ, "PYTHONPATH": str(_sandbox_site_dir())},
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    finally:
+        readonly.chmod(0o700)
+    assert probe.returncode == 0, probe.stderr
+    measured = json.loads(probe.stdout.strip().splitlines()[-1])
+    assert measured["outcome"] == "PermissionError", measured
+    assert measured["host"] is False, "nothing was created on the host"
+    assert measured["workdir"] == [], "and nothing fell back into the working directory"
+
+    full = tools._to_full_access(
+        "Execute Python code in a sandbox and return stdout/stderr."
+        + tools._build_sandbox_paths_note(),
+        "python",
+    )
+    assert "really does create it" not in full, (
+        "the clause promises a directory the filesystem may refuse to create"
+    )
+    assert "is not rewritten at all" in full
+    assert "attempts the real host path" in full
