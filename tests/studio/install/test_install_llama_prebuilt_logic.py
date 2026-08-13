@@ -3987,6 +3987,121 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
         assert "source_build=true" not in result["stdout"], result
 
 
+_SETUP_PS1_HARNESS = """
+$ErrorActionPreference = "Stop"
+$NeedLlamaSourceBuild = $false
+$script:LlamaCppDegraded = $false
+$StudioHomeIsCustom = $false
+$prebuiltOutput = "boom"
+function step { param($a, $b, $c) Write-Output "step: $b" }
+function substep { param($a, $b) Write-Output "substep: $a" }
+function Write-LlamaFailureLog { param($Output) }
+function Mark-StudioOwned { param($Path) }
+function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
+function Test-PathQuiet { param($p) return $false }
+function Exit-SetupFailure {
+    param($Message, $Code = 1)
+    Write-Output "setup_fail: $Code"
+    exit $Code
+}
+"""
+
+_SETUP_PS1_HARNESS_TAIL = """
+Write-Output "source_build=$($NeedLlamaSourceBuild.ToString().ToLower())"
+"""
+
+requires_pwsh = pytest.mark.skipif(
+    shutil.which("pwsh") is None, reason = "pwsh is required to execute the setup.ps1 routing block"
+)
+
+
+def _setup_ps1_routing_block() -> str:
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    return _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
+
+
+def _run_setup_ps1_routing(
+    status: int,
+    tmp_path: Path,
+    *,
+    install_exists: bool,
+    explicit_backend: str = "",
+) -> dict[str, str]:
+    """Drive the real setup.ps1 exit-code chain, the mirror of _run_setup_sh_routing."""
+    llama_dir = tmp_path / "llama.cpp"
+    if install_exists:
+        llama_dir.mkdir(parents = True, exist_ok = True)
+    else:
+        tmp_path.mkdir(parents = True, exist_ok = True)
+
+    script = "\n".join(
+        [
+            _SETUP_PS1_HARNESS,
+            f'$LlamaCppDir = "{llama_dir}"',
+            f"$prebuiltExit = {status}",
+            f'$explicitLlamaSourceBackend = "{explicit_backend}"',
+            _setup_ps1_routing_block(),
+            _SETUP_PS1_HARNESS_TAIL,
+        ]
+    )
+    script_path = tmp_path / "routing.ps1"
+    script_path.write_text(script, encoding = "utf-8")
+    completed = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script_path)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+@requires_pwsh
+@pytest.mark.parametrize("install_exists", [True, False], ids = ["installed", "fresh"])
+@pytest.mark.parametrize("explicit_backend", ["", "cuda", "rocm", "vulkan", "cpu"])
+@pytest.mark.parametrize("status", [0, 1, 2, 3, 4, 5, 137])
+def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_exists, tmp_path):
+    """Windows must route an installer exit exactly as Linux does.
+
+    The two scripts are maintained side by side and the assertions above compare their
+    SOURCE TEXT, which cannot catch a branch that reads the same and behaves differently
+    (a PowerShell `$false` string, an `exit` that does not propagate, a guard whose
+    variable was never set). Running both and comparing the decision is what makes
+    "the mirrored setup.ps1 does the same" a measurement rather than a claim.
+
+    The decision is two values: the process exit code, and whether a source build was
+    queued. Exit 5 must fail closed everywhere -- that is the point of the exit code --
+    while exit 2 stays the one automatic path allowed to fall back to a compile.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
+        pytest.skip("bash is required to compare against the setup.sh routing block")
+
+    sh_dir, ps_dir = tmp_path / "sh", tmp_path / "ps"
+    sh_dir.mkdir()
+    ps_dir.mkdir()
+    sh = _run_setup_sh_routing(
+        status, sh_dir, install_exists = install_exists, explicit_backend = explicit_backend,
+    )
+    ps = _run_setup_ps1_routing(
+        status, ps_dir, install_exists = install_exists, explicit_backend = explicit_backend,
+    )
+
+    assert ps["returncode"] == sh["returncode"], {"bash": sh, "pwsh": ps}
+    assert ("source_build=true" in ps["stdout"]) == ("source_build=true" in sh["stdout"]), {
+        "bash": sh, "pwsh": ps,
+    }
+    # Pin the two branches the backend selector depends on, so a future edit that keeps
+    # the halves in step but changes the contract still fails.
+    if status == 5:
+        assert ps["returncode"] == 1
+        assert "source_build=true" not in ps["stdout"]
+    if status == 2:
+        assert "source_build=true" in ps["stdout"]
+
+
 def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     """The new catch-all must fail loudly, not queue a compile, on both platforms."""
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
