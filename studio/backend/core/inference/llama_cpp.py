@@ -14586,11 +14586,11 @@ class LlamaCppBackend:
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
-                            # Same record the proactive gate keeps: the request still
-                            # carries the ratio and the next Apply re-sends it, so
-                            # without this every Apply reloads the same server.
-                            if self._tensor_split:
-                                self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)
+                            # No _arch_gate_dropped_tensor_split record here, unlike the
+                            # proactive gate: _tensor_split is non-None only in manual
+                            # mode, which empties the pool to bypass the planner and so
+                            # leaves gpu_indices None -- and this arm needs it truthy.
+                            # A ratio can never be live where this runs.
                             self._tensor_split = None
                         # A tensor split needs two devices, so narrowing to one makes
                         # --split-mode tensor a no-op still REPORTED as active

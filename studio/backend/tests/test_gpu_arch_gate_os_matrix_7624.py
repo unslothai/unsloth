@@ -1825,6 +1825,38 @@ class TestArchCrashRetryDropsDeadTensorMode:
             ]
             assert "tensor" not in _modes, f"the narrowed respawn kept tensor mode: {cmd}"
 
+    def test_the_retry_records_what_it_normalized(self, tmp_path, monkeypatch, probe_env):
+        """The reactive path has to keep the same record the proactive gate keeps. A
+        markerless build only ever reaches the gate reactively, so without it every
+        identical Apply reads the normalized server as new and reloads it."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        capture: dict = {}
+        _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(
+                [
+                    _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                    _device("gfx1030", free_mib = 30000),
+                ],
+                vendor = "amd",
+            ),
+            None,  # markerless: only the reactive retry can help
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            capture = capture,
+            intent_kwargs = {"tensor_parallel": True},
+        )
+        backend = capture["backend"]
+        assert backend._tensor_parallel is False  # normalized by the retry
+        assert backend._arch_gate_dropped_tensor_parallel is True  # and recorded
+
 
 class TestArchCrashRetryRechecksTheApuRamGuard:
     """The APU RAM preflight runs once, against the FIRST spawn's selection. On the

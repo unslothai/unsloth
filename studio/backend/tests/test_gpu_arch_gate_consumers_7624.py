@@ -1022,3 +1022,35 @@ class TestGatedSplitStillDeduplicates:
         backend = _post_gate_backend(None, live_split = [0.5, 0.5])
         no_split = dict(_GATED_REQUEST, tensor_split = None)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**no_split)) is False
+
+
+class TestGatedTensorModeStillDeduplicates:
+    """The same rule for the split MODE. ``_tensor_parallel_matches_loaded`` compares
+    the unchanged request against the layer-split server the gate left behind, so
+    without the recorded drop an identical Apply reloads the same normalized model."""
+
+    def _backend(self, dropped_mode):
+        backend = _post_gate_backend((0.5, 0.5))
+        backend._tensor_parallel = False  # normalized away at launch
+        backend._arch_gate_dropped_tensor_parallel = dropped_mode
+        return backend
+
+    def test_identical_repeat_request_matches(self):
+        request = dict(_GATED_REQUEST, tensor_parallel = True)
+        backend = self._backend(True)
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is True
+
+    def test_a_launch_that_dropped_nothing_still_reloads(self):
+        """No recorded drop means no excuse: a layer server has to reload for a
+        request that genuinely asks for tensor parallelism."""
+        request = dict(_GATED_REQUEST, tensor_parallel = True)
+        backend = self._backend(False)
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
+
+    def test_the_excuse_never_runs_the_other_way(self):
+        """One direction only. A server RUNNING tensor parallelism must still reload
+        for a request that asks for none, whatever an earlier launch recorded."""
+        backend = self._backend(True)
+        backend._tensor_parallel = True
+        request = dict(_GATED_REQUEST, tensor_parallel = False)
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
