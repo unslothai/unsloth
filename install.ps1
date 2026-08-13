@@ -3328,9 +3328,8 @@ exit 0
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                # Get-CimInstance, as everywhere else in this file: Get-WmiObject is gone from
-                # PowerShell 7, where the catch below would swallow it and leave the peer list
-                # empty. Same class and properties, and CIM ships with 5.1 too.
+                # CIM, as everywhere else here: Get-WmiObject is gone from PowerShell 7, where
+                # the catch below would swallow it and leave the peer list empty. CIM is 5.1+.
                 $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
