@@ -1674,7 +1674,14 @@ class VideoBackend:
             # Only a DECISIVE re-reading, hence the verdict form rather than
             # sd_cpp_lists_accelerator_device: that one folds "could not tell" into True, which
             # against a recorded False would refuse the very CPU fallback that recorded it.
-            fresh_accelerator = None if not binary else sd_cpp_accelerator_device_verdict(binary)
+            # Only when there is a baseline to compare against. A CPU or MPS target never asked
+            # the question, so this would spawn --list-devices for an answer the test below cannot
+            # use -- on every H3 load, and for the full probe timeout when the build hangs on it.
+            fresh_accelerator = (
+                sd_cpp_accelerator_device_verdict(binary)
+                if listed_accelerator is not None and binary
+                else None
+            )
             if (
                 listed_accelerator is not None
                 and fresh_accelerator is not None

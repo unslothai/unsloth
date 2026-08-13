@@ -89,8 +89,11 @@ def h3_host(monkeypatch, tmp_path):
         binary = None if help_text is None else "/opt/sd/sd-cli"
         monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", lambda **_kwargs: binary)
 
+        device_probes: list[str] = []
+
         def _probe(_binary, *args):
             if args == ("--list-devices",):
+                device_probes.append(_binary)
                 if lists_accelerator:
                     return "CUDA0\tNVIDIA H100 PCIe\nCPU\tIntel(R) Xeon(R)\n"
                 return "CPU\tIntel(R) Xeon(R)\n"
@@ -133,7 +136,12 @@ def h3_host(monkeypatch, tmp_path):
             )
             return backend_obj
 
-        return types.SimpleNamespace(run = run, downloads = downloads, asset_calls = asset_calls)
+        return types.SimpleNamespace(
+            run = run,
+            downloads = downloads,
+            asset_calls = asset_calls,
+            device_probes = device_probes,
+        )
 
     return _setup
 
@@ -379,6 +387,22 @@ def test_h3_revet_tolerates_an_unreadable_accelerator_reprobe(
     backend_obj = host.run()
     assert backend_obj._state is not None
     assert backend_obj._state.device == device
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
+def test_h3_probes_devices_only_where_the_answer_is_used(
+    h3_host, platform, hw_label, backend, device
+):
+    """--list-devices costs a subprocess, and the full probe timeout when a build hangs on it.
+
+    A CPU or MPS target never records a baseline, so neither the decision nor the re-check can use
+    the answer -- it must not be asked. A GPU target asks exactly twice: once to decide, once under
+    the claim to confirm the decision still holds."""
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host.run()
+    expected = 2 if backend not in ("cpu", "mps") else 0
+    assert len(host.device_probes) == expected
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
