@@ -544,14 +544,11 @@ def _scheme_supported(
             return False
     except Exception:
         return False
-    # Resolve the whole table in one throwaway child before falling back to the in-process
-    # probe. Nothing above this line allocates -- torch creates the primary CUDA context on the
-    # first ALLOCATION, not on is_available() or get_device_capability() (measured: 0 MiB after
-    # both, 614 MiB after the first tensor) -- so on a backend that has not loaded a model this
-    # is the difference between the process holding no VRAM and holding a context it can never
-    # give back. It matters because /images/download-plan calls assert_precision_available while
-    # the user is only STAGING a download, so a plan alone would cost the backend ~700 MiB for
-    # the life of the process.
+    # Resolve the whole table in one throwaway child, falling back in-process. Nothing above
+    # allocates: the context arrives on the first ALLOCATION, not on is_available() or
+    # get_device_capability() (0 MiB after both, 614 MiB after the first tensor). Worth a child
+    # because /images/download-plan calls assert_precision_available while the user is only
+    # STAGING, so a plan alone cost the backend ~700 MiB it can never give back.
     if (scheme, device) not in _SMOKE_CACHE:
         with _CHILD_PROBE_LOCK:
             # Re-checked under the lock: the route answers plans concurrently, and a burst of
@@ -625,12 +622,10 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
         # with no spawn support at all raises here, which is what the fallback is for.
         ctx = mp.get_context("spawn")
         with native_path_secret_removed_for_child_start():
-            # The queue is built INSIDE the scrub, as every other orchestrator here builds
-            # theirs. On POSIX the first spawn-context queue creates the named semaphores that
-            # start multiprocessing's resource tracker, and that tracker is exec'd with this
-            # process's environment and then outlives every child. Built above the scrub it
-            # would carry the native-path lease secret for the life of the backend, somewhere
-            # the child-side scrub can no longer reach.
+            # Inside the scrub, as every other orchestrator here builds theirs. The first
+            # spawn-context queue starts multiprocessing's resource tracker, which is exec'd
+            # with this environment and outlives every child, so building it above the scrub
+            # would strand the lease secret somewhere the child-side scrub cannot reach.
             queue = ctx.Queue()
             # The same entrypoint the inference worker is spawned through: it scrubs the lease
             # secret from the child and binds the child to this process's lifetime, so a wedged
@@ -649,12 +644,10 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
     except Exception as exc:  # noqa: BLE001 — no child here: probe in-process instead
         import logging
 
-        # An OSError here is the host being momentarily out of descriptors, process slots or
-        # /dev/shm, not a host that cannot spawn. Latching it would hold the backend on the
-        # in-process probe -- and so on the ~800 MiB this exists to avoid -- until Studio
-        # restarts, long after the pressure cleared. Only a deterministic failure (no spawn
-        # start method, a frozen build with no multiprocessing) latches on sight; a run of
-        # OSErrors latches too, so a host that always refuses is still paid for only briefly.
+        # An OSError is momentary pressure on descriptors, process slots or /dev/shm, not a
+        # host that cannot spawn; latching it would hold the backend on the in-process probe,
+        # and its ~800 MiB, until restart. Only a deterministic failure latches on sight, plus
+        # a run of OSErrors so a host that always refuses is paid for only briefly.
         transient = isinstance(exc, OSError)
         if transient:
             _CHILD_PROBE_SPAWN_ERRORS += 1
