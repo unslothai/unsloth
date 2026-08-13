@@ -44,6 +44,16 @@ Eligible invocations per week:
 `synchronize` is one event per push after the first and is bounded above by
 the commit count those PRs carry.
 
+`labeled` is a trigger too and contributes nothing to this table, which is a
+property of the gate rather than of the trigger. GitHub fires that action for
+EVERY label, so without the check it would add one draw per label applied to
+an eligible PR -- and once `kaggle-t4-ci` is present, one FORCED session per
+label, since the label stays in the list the override reads. The gate stands a
+`labeled` run down unless the label that arrived is the opt-in one, so the
+only label activity that costs anything is the label that is a request for it.
+Do not subscribe to another activity type without asking what it does to this
+table.
+
 ## The supply side
 
 Kaggle gives this account **60 GPU-hours/week** at time of writing. Kaggle's
