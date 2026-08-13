@@ -10,6 +10,7 @@ about the selection ladder rather than the GPU probe, so everything runs CPU-onl
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
@@ -373,9 +374,11 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
 def _reset_child_probe_state():
     tq._SMOKE_CACHE.clear()
     tq._CHILD_PROBE_UNAVAILABLE = False
+    tq._CHILD_PROBE_SPAWN_ERRORS = 0
     yield
     tq._SMOKE_CACHE.clear()
     tq._CHILD_PROBE_UNAVAILABLE = False
+    tq._CHILD_PROBE_SPAWN_ERRORS = 0
 
 
 def test_the_child_answers_for_every_scheme_in_one_go(monkeypatch):
@@ -574,6 +577,93 @@ def test_the_probe_child_is_adopted_so_a_shutdown_sweep_can_reach_it(
     )
     assert tq._child_probe_table("cuda") == {TQ_INT8: True}
     assert _probe_lifetime_records["adopted"] == [child.pid]
+
+
+def test_the_queue_is_built_with_the_lease_secret_already_scrubbed(
+    monkeypatch, _probe_lifetime_records
+):
+    # On POSIX the first spawn-context queue creates the named semaphores that start
+    # multiprocessing's resource tracker, and that tracker is exec'd with this process's
+    # environment and then outlives every child. Built above the scrub it carries the
+    # native-path lease secret for the life of the backend, where the child-side scrub can no
+    # longer reach it. Measured: the secret is in the tracker's /proc/<pid>/environ when the
+    # queue is built first, and absent when it is built here.
+    import multiprocessing
+
+    from utils.native_path_leases import LEASE_SECRET_ENV
+
+    secret = "x" * 64
+    monkeypatch.setenv(LEASE_SECRET_ENV, secret)
+    monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
+    seen = {}
+
+    class _WatchingContext(_FakeSpawnContext):
+        def Queue(self):
+            seen["at_queue"] = os.environ.get(LEASE_SECRET_ENV)
+            return super().Queue()
+
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda name: _WatchingContext(
+            _FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True})
+        ),
+    )
+    assert tq._child_probe_table("cuda") == {TQ_INT8: True}
+    assert seen["at_queue"] is None
+    # And the parent has it back once the child is started.
+    assert os.environ.get(LEASE_SECRET_ENV) == secret
+
+
+# ── a spawn that failed but may not fail next time ──────────────────────────────
+
+
+def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
+    monkeypatch, _probe_lifetime_records
+):
+    # Descriptors, process slots and /dev/shm all come back. Latching the OSError would hold the
+    # backend on the in-process probe -- and so on the ~800 MiB the child exists to avoid -- for
+    # every later miss, until Studio restarts.
+    import multiprocessing
+
+    calls = {"n": 0}
+
+    def _get_context(name):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(24, "Too many open files")
+        return _FakeSpawnContext(
+            _FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True})
+        )
+
+    monkeypatch.setattr(multiprocessing, "get_context", _get_context)
+    monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
+    assert tq._child_probe_table("cuda") is None
+    assert tq._CHILD_PROBE_UNAVAILABLE is False
+    # The pressure clears and the next miss gets its child back.
+    assert tq._child_probe_table("cuda") == {TQ_INT8: True}
+    assert calls["n"] == 2
+    assert tq._CHILD_PROBE_SPAWN_ERRORS == 0
+
+
+def test_a_host_that_refuses_every_spawn_stops_being_asked(monkeypatch):
+    # The retry is bounded: an OSError on every attempt is indistinguishable from a sandbox that
+    # will never spawn, so the latch still lands after a short run of them.
+    import multiprocessing
+
+    calls = {"n": 0}
+
+    def _always_refuses(name):
+        calls["n"] += 1
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(multiprocessing, "get_context", _always_refuses)
+    for _ in range(tq._CHILD_PROBE_SPAWN_ERROR_LIMIT):
+        assert tq._child_probe_table("cuda") is None
+    assert tq._CHILD_PROBE_UNAVAILABLE is True
+    settled = calls["n"]
+    assert tq._child_probe_table("cuda") is None
+    assert calls["n"] == settled
 
 
 def test_a_child_that_survives_terminate_is_killed(_probe_lifetime_records):

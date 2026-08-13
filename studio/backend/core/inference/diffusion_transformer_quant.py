@@ -581,6 +581,12 @@ _CHILD_PROBE_TIMEOUT = 180.0
 # rather than on every miss.
 _CHILD_PROBE_UNAVAILABLE = False
 
+# Consecutive OSErrors out of the spawn before that latch is set anyway. An OSError is resource
+# pressure and clears, so it is retried; a host that raises one every time still stops paying
+# for the attempt after a few misses. Reset by the first spawn that works.
+_CHILD_PROBE_SPAWN_ERROR_LIMIT = 3
+_CHILD_PROBE_SPAWN_ERRORS = 0
+
 _CHILD_PROBE_LOCK = _threading.Lock()
 
 
@@ -599,7 +605,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
     multiprocessing, a sandbox that refuses to spawn, a timeout -- and the caller then probes
     in-process exactly as before, since refusing a load over a missing subprocess would be worse
     than the VRAM it saves."""
-    global _CHILD_PROBE_UNAVAILABLE
+    global _CHILD_PROBE_UNAVAILABLE, _CHILD_PROBE_SPAWN_ERRORS
     if _CHILD_PROBE_UNAVAILABLE:
         return None
     import time
@@ -618,8 +624,14 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
         # a forked child inherits those locks, and fork does not exist on Windows at all. A build
         # with no spawn support at all raises here, which is what the fallback is for.
         ctx = mp.get_context("spawn")
-        queue = ctx.Queue()
         with native_path_secret_removed_for_child_start():
+            # The queue is built INSIDE the scrub, as every other orchestrator here builds
+            # theirs. On POSIX the first spawn-context queue creates the named semaphores that
+            # start multiprocessing's resource tracker, and that tracker is exec'd with this
+            # process's environment and then outlives every child. Built above the scrub it
+            # would carry the native-path lease secret for the life of the backend, somewhere
+            # the child-side scrub can no longer reach.
+            queue = ctx.Queue()
             # The same entrypoint the inference worker is spawned through: it scrubs the lease
             # secret from the child and binds the child to this process's lifetime, so a wedged
             # probe cannot outlive the backend.
@@ -633,16 +645,28 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
         # which is Linux only, and the Windows job object can fail to take when Studio already
         # runs inside an incompatible host job. This record is what is left in that case.
         _adopt_probe_pid(proc.pid)
+        _CHILD_PROBE_SPAWN_ERRORS = 0
     except Exception as exc:  # noqa: BLE001 — no child here: probe in-process instead
         import logging
 
+        # An OSError here is the host being momentarily out of descriptors, process slots or
+        # /dev/shm, not a host that cannot spawn. Latching it would hold the backend on the
+        # in-process probe -- and so on the ~800 MiB this exists to avoid -- until Studio
+        # restarts, long after the pressure cleared. Only a deterministic failure (no spawn
+        # start method, a frozen build with no multiprocessing) latches on sight; a run of
+        # OSErrors latches too, so a host that always refuses is still paid for only briefly.
+        transient = isinstance(exc, OSError)
+        if transient:
+            _CHILD_PROBE_SPAWN_ERRORS += 1
+        if not transient or _CHILD_PROBE_SPAWN_ERRORS >= _CHILD_PROBE_SPAWN_ERROR_LIMIT:
+            _CHILD_PROBE_UNAVAILABLE = True
         logging.getLogger(__name__).info(
             "diffusion.transformer_quant: out-of-process probe unavailable (%s: %s); "
-            "probing in-process",
+            "probing in-process%s",
             type(exc).__name__,
             exc,
+            "" if _CHILD_PROBE_UNAVAILABLE else " and retrying the child on the next miss",
         )
-        _CHILD_PROBE_UNAVAILABLE = True
         _close_probe_child(proc, queue)
         return None
 
