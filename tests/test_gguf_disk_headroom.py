@@ -333,7 +333,9 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             total = 0, used = 0, free = 7 * GB
         )
         assert not save_mod._gguf_failure_looks_like_disk(
-            failure, str(tmp_path), needed_bytes = 10 * GB,
+            failure,
+            str(tmp_path),
+            needed_bytes = 10 * GB,
             partial_output = str(output),
         )
 
@@ -343,14 +345,18 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             total = 0, used = 0, free = 1 * GB
         )
         assert save_mod._gguf_failure_looks_like_disk(
-            failure, str(tmp_path), needed_bytes = 10 * GB,
+            failure,
+            str(tmp_path),
+            needed_bytes = 10 * GB,
             partial_output = str(output),
         )
 
         # A pass that wrote nothing at all is unchanged, and so is a caller
         # that names an output which is not there.
         assert save_mod._gguf_failure_looks_like_disk(
-            failure, str(tmp_path), needed_bytes = 10 * GB,
+            failure,
+            str(tmp_path),
+            needed_bytes = 10 * GB,
             partial_output = str(tmp_path / "never-written.gguf"),
         )
     finally:
@@ -853,9 +859,7 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
             with open(os.path.join(merge, name), "wb") as fh:
                 fh.truncate(int(30 * GB))
         index = {"weight_map": {f"layer.{i}": name for i, name in enumerate(shards)}}
-        with open(
-            os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8"
-        ) as fh:
+        with open(os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8") as fh:
             json.dump(index, fh)
 
     # First export: the directory is this export's own, so everything goes.

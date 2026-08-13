@@ -2144,15 +2144,22 @@ def save_to_gguf(
                 # just falls back to the fixed floor.
                 try:
                     _ratio = _gguf_output_size_ratio(
-                        quant_method, first_conversion, upper_bound = False,
+                        quant_method,
+                        first_conversion,
+                        upper_bound = False,
                     )
-                    _needed = None if _ratio is None else int(
-                        sum(
-                            os.path.getsize(f)
-                            for f in initial_files
-                            if os.path.isfile(f) and "-mmproj" not in os.path.basename(f).lower()
+                    _needed = (
+                        None
+                        if _ratio is None
+                        else int(
+                            sum(
+                                os.path.getsize(f)
+                                for f in initial_files
+                                if os.path.isfile(f)
+                                and "-mmproj" not in os.path.basename(f).lower()
+                            )
+                            * _ratio
                         )
-                        * _ratio
                     )
                 except OSError:
                     _needed = None
@@ -2160,7 +2167,9 @@ def save_to_gguf(
                 # a disk problem, and the outer handler cannot undo an
                 # explanation already baked into this message.
                 if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
-                    e, gguf_directory, needed_bytes = _needed,
+                    e,
+                    gguf_directory,
+                    needed_bytes = _needed,
                     partial_output = output_location,
                 ):
                     raise RuntimeError(
@@ -2175,7 +2184,9 @@ def save_to_gguf(
                         f"Error: {e}"
                     ) from e
                 elif _gguf_failure_looks_like_disk(
-                    e, gguf_directory, needed_bytes = _needed,
+                    e,
+                    gguf_directory,
+                    needed_bytes = _needed,
                     partial_output = output_location,
                 ):
                     # Kaggle is not the only place a disk fills. The rebuild
@@ -3571,7 +3582,11 @@ def _gguf_type_bits(dtype):
     return float(nominal.group(1)) if nominal else None
 
 
-def _gguf_output_size_ratio(quant_method, first_conversion, upper_bound = True):
+def _gguf_output_size_ratio(
+    quant_method,
+    first_conversion,
+    upper_bound = True,
+):
     """One output's size as a multiple of the base GGUF's, rounded either way.
 
     Both directions cost something. Charging every quantized pass a whole copy of
@@ -3666,8 +3681,7 @@ def _merge_weight_files(model_directory, names):
             # found again.
             spent_indexes.add(index_name)
     return sorted(
-        n for n in names
-        if n in indexed or n in spent_indexes or _MERGE_WEIGHT_NAME.match(n)
+        n for n in names if n in indexed or n in spent_indexes or _MERGE_WEIGHT_NAME.match(n)
     )
 
 
