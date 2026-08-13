@@ -1546,9 +1546,9 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     # select reseeds to none, so after the user changes Speed and reloads, quantisation stays
     # pinned off for no reason they can see.
     resolved = status["resolved"]["transformer_quant"]
-    assert resolved["requested"] is None, (
-        f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
-    )
+    assert (
+        resolved["requested"] is None
+    ), f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
     assert resolved["source"] == "auto"
 
     # Control: with speed NOT off the auto precision promotion still engages, so the suppression above is specific to speed=off.
@@ -2963,9 +2963,9 @@ def test_the_h3_loader_optimises_the_partition_it_denoises_with():
         ]
         assert len(calls) == 1, f"{helper} is called {len(calls)} times"
         first = calls[0].args[0]
-        assert getattr(first, "id", None) == "speed_view", (
-            f"{helper} is handed {ast.dump(first)}, not the denoiser view"
-        )
+        assert (
+            getattr(first, "id", None) == "speed_view"
+        ), f"{helper} is handed {ast.dump(first)}, not the denoiser view"
 
 
 def test_download_plan_adds_no_prequant_entry_when_bfloat16_is_pinned(monkeypatch):
@@ -4332,9 +4332,9 @@ def test_unload_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_
 
     queued = _run_teardown_race(backend, backend.unload)
 
-    assert "out" not in queued, (
-        "a generation queued behind the unload barrier ran against a pipeline being torn down"
-    )
+    assert (
+        "out" not in queued
+    ), "a generation queued behind the unload barrier ran against a pipeline being torn down"
     assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
     assert backend._state is None
     assert backend._teardown_waiters == 0  # the fence drained
@@ -4347,9 +4347,9 @@ def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_run
 
     queued = _run_teardown_race(backend, lambda: _load_gguf(backend, tmp_path))
 
-    assert "out" not in queued, (
-        "a generation queued behind the load barrier ran against a pipeline being torn down"
-    )
+    assert (
+        "out" not in queued
+    ), "a generation queued behind the load barrier ran against a pipeline being torn down"
     assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
     assert backend._teardown_waiters == 0  # the fence drained
 
@@ -4590,9 +4590,9 @@ def test_the_h3_native_path_pins_cfg_scale_to_one():
     assert calls, "video.py no longer builds native video params"
     for call in calls:
         pinned = [kw for kw in call.keywords if kw.arg == "cfg_scale"]
-        assert pinned, (
-            "the H3 native path must pass cfg_scale explicitly, not fall back to a default"
-        )
+        assert (
+            pinned
+        ), "the H3 native path must pass cfg_scale explicitly, not fall back to a default"
         value = pinned[0].value
         assert isinstance(value, ast.Constant), (
             "cfg_scale must be a literal 1.0 on the H3 native path; forwarding the request's "
@@ -6468,9 +6468,9 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
             continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
-        assert calls[0]["model_dense_mib"] == int(sum(fam.bf16_components_gb) * _MIB_PER_GB), (
-            fam.name
-        )
+        assert calls[0]["model_dense_mib"] == int(
+            sum(fam.bf16_components_gb) * _MIB_PER_GB
+        ), fam.name
 
 
 def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypatch):
