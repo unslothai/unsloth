@@ -1505,7 +1505,6 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # these, and the block that assigns them is skipped in installer-driven/local/Colab
 # runs (mirrors $LatestVer = "" in setup.ps1).
 LATEST_VER=""
-LATEST_REQ_PY=""
 _PYPI_JSON=""
 # True only when the version-check gate ran: the post-update probe needs the venv
 # python and must stay off in installer-driven/local/Colab runs, but it must not
@@ -1514,17 +1513,14 @@ _VERIFY_UPDATE=false
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     _VERIFY_UPDATE=true
-    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
+    INSTALLED_VER=$("$VENV_DIR/bin/python" -I -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
     _PYPI_JSON=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null || echo "")
     LATEST_VER=$(printf '%s' "$_PYPI_JSON" \
-        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
-        || echo "")
-    LATEST_REQ_PY=$(printf '%s' "$_PYPI_JSON" \
-        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info'].get('requires_python') or '')" 2>/dev/null \
+        | "$VENV_DIR/bin/python" -I -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
@@ -1666,8 +1662,10 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
     if [ "$_VERIFY_UPDATE" = true ]; then
         # __MISSING__ only when the metadata positively reports no such package: a
-        # probe that merely crashed must not read as "not installed" and fail setup
-        POST_VER=$("$VENV_DIR/bin/python" -c "
+        # probe that merely crashed must not read as "not installed" and fail setup.
+        # -I so an inherited PYTHONPATH cannot satisfy the probe with same-name
+        # metadata from outside the managed venv
+        POST_VER=$("$VENV_DIR/bin/python" -I -c "
 import sys
 from importlib.metadata import version, PackageNotFoundError
 try:
@@ -1678,7 +1676,7 @@ except PackageNotFoundError:
         _UPDATE_OK=false
         if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
             _UPDATE_OK=true
-        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -c "
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -I -c "
 import re, sys
 def nums(v):
     m = re.match(r'\d+(\.\d+)*', v)
@@ -1694,7 +1692,7 @@ sys.exit(0 if ok else 1)
             # newer than announced is fine (a release can land mid-update); PEP 440
             # ordering so an installed pre/post/dev build never passes as the release
             _UPDATE_OK=true
-        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -c "
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -I -c "
 import json, sys
 raw = sys.stdin.read()
 try:
@@ -1746,7 +1744,7 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
             # the announced release cannot install on this interpreter (Requires-Python
             # bump): accept only the newest release this interpreter CAN install, so a
             # no-op pass below that bar still fails loudly
-            substep "$_PKG_NAME $POST_VER kept: $LATEST_VER needs Python $LATEST_REQ_PY"
+            substep "$_PKG_NAME $POST_VER kept: no $LATEST_VER artifact installs on this environment"
             _UPDATE_OK=true
         fi
         if [ "$_UPDATE_OK" = true ]; then

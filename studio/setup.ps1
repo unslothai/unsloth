@@ -4077,7 +4077,6 @@ function Fast-Download {
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
 $LatestVer = ""
-$LatestReqPy = ""
 # True only when the version-check gate ran: the post-update probe must stay off in
 # installer-driven/local runs, but it must not depend on the PyPI fetch succeeding --
 # a missing package is missing on any index.
@@ -4090,7 +4089,6 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
-        $LatestReqPy = "$($pypiJson.info.requires_python)".Trim()
     } catch { }
 
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
@@ -4791,14 +4789,16 @@ $_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$e
 if ($_verifyUpdate) {
     # __MISSING__ only when the metadata positively reports no such package: a probe
     # that merely crashed must not read as "not installed" and fail setup. Names are
-    # PEP 503-normalized on both sides, matching importlib.metadata's own lookup.
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
+    # PEP 503-normalized on both sides, matching importlib.metadata's own lookup, and
+    # PYTHONPATH entries are dropped from sys.path so same-name metadata outside the
+    # managed environment cannot satisfy the probe.
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p]; sys.path[:] = [_sp for _sp in sys.path if os.path.abspath(_sp or '.') not in _pp]; import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
     if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
         # newer than announced is fine (a release can land mid-update); PEP 440
         # ordering so an installed pre/post/dev build never passes as the release
-        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
+        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p]; sys.path[:] = [_sp for _sp in sys.path if os.path.abspath(_sp or '.') not in _pp]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
         if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
@@ -4827,7 +4827,9 @@ if ($_verifyUpdate) {
                 # end the generated Python string literal early
                 $_relPathB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_relPath))
                 $_bestCode = @"
-import base64, sys
+import base64, os, sys
+_pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p]
+sys.path[:] = [_sp for _sp in sys.path if os.path.abspath(_sp or '.') not in _pp]
 try:
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version, InvalidVersion
@@ -4877,7 +4879,7 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
                 $_b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_bestCode))
                 $_bestProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import base64; exec(base64.b64decode('$_b64').decode())"
                 if ($_bestProbe.Ok -and $_bestProbe.Output -match '(?m)^VERIFYVER=ok\s*$') {
-                    substep "$_PkgName $PostVer kept: $LatestVer needs Python $LatestReqPy"
+                    substep "$_PkgName $PostVer kept: no $LatestVer artifact installs on this environment"
                     $_updateOk = $true
                 }
             } finally {
