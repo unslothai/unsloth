@@ -393,9 +393,9 @@ def test_a_populated_audio_named_column_of_prose_still_answers_textual(monkeypat
     rows = [{"audio": f"a sentence {i}", "text": "hello"} for i in range(4)]
     dataset = _TypedDataset(_text_features(), rows = rows)
     _run(trainer, monkeypatch, dataset = dataset)
-    assert not any("tokenizer_config.json" in e for e in trainer.errors), (
-        f"a prose column named audio should not be refused: {trainer.errors}"
-    )
+    assert not any(
+        "tokenizer_config.json" in e for e in trainer.errors
+    ), f"a prose column named audio should not be refused: {trainer.errors}"
 
 
 def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
