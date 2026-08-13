@@ -1060,9 +1060,9 @@ class TestWindowsArm64WheelGapParity:
         assert '"$_req_minor" -lt 11' in message
         for plugin in ("data-designer-unstructured-seed", "data-designer-github-repo-seed"):
             pyproject = REPO_ROOT / "studio" / "backend" / "plugins" / plugin / "pyproject.toml"
-            assert 'requires-python = ">=3.11"' in pyproject.read_text(encoding = "utf-8"), (
-                f"{plugin} no longer needs 3.11; the gate's floor can move with it"
-            )
+            assert 'requires-python = ">=3.11"' in pyproject.read_text(
+                encoding = "utf-8"
+            ), f"{plugin} no longer needs 3.11; the gate's floor can move with it"
 
     def test_linux_arm64_is_not_swept_up(self):
         """aarch64 Linux has full wheel coverage and must keep installing natively;
