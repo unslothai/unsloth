@@ -45,6 +45,18 @@ OUT.mkdir(parents = True, exist_ok = True)
 DELTA_COUNT = int(os.environ.get("SMOKE_DELTA_COUNT", "240"))
 DELTA_GAP_MS = int(os.environ.get("SMOKE_DELTA_GAP_MS", "80"))
 
+# The budget that makes this file a regression test rather than a report. Numbers, all measured
+# on this harness against the fixed tree: the frame pump below runs at 62 callbacks/s, and a
+# self-chaining `requestAnimationFrame` loop - the shape of the bug - sits on that ceiling
+# exactly (310 callbacks in 5s). The fixed tree spends 29/s across three repeats (592, 597, 597
+# over a 20.4s window), because chaining is conditional. 45/s is the midpoint: above the
+# fixed cost, comfortably below anything that re-arms every frame.
+MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "45"))
+# Idle measures 0 across the same repeats: with the list quiet there is nothing to follow. A
+# couple of frames of slack covers a settle check landing just inside the window; anything more
+# means a loop that never let go, which is what left the reporter's window unresponsive.
+MAX_IDLE_RAF_PER_2S = int(os.environ.get("SMOKE_MAX_IDLE_RAF", "4"))
+
 # A report the size a real deep research run produces, with the three things that cost the most
 # to render: fenced code (shiki), a table, and display math (KaTeX).
 REPORT_SECTION = """
@@ -183,13 +195,18 @@ def run() -> dict:
             }""",
             [DELTA_COUNT, DELTA_GAP_MS],
         )
+        # The tail is part of the measurement: a loop that keeps re-arming after the last event
+        # is exactly the failure mode, so count those frames rather than stopping the clock.
         page.wait_for_timeout(1200)
+        stream_window_ms = DELTA_COUNT * DELTA_GAP_MS + 1200
+        stream_raf = page.evaluate("window.__rafCount")
         after = metrics(cdp)
         long_tasks = page.evaluate("window.__longTasks")
         results["stream"] = {
             "events": DELTA_COUNT,
-            "wall_ms": DELTA_COUNT * DELTA_GAP_MS,
-            "raf_callbacks": page.evaluate("window.__rafCount"),
+            "wall_ms": stream_window_ms,
+            "raf_callbacks": stream_raf,
+            "raf_per_second": round(stream_raf / (stream_window_ms / 1000), 1),
             "long_tasks": len(long_tasks),
             "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
             "layout_count": delta(before, after, "LayoutCount"),
@@ -308,6 +325,19 @@ def main() -> int:
     info(f"wrote {out}")
 
     failures: list[str] = []
+    stream = results["stream"]
+    # Without these two the file records the per-frame cost and passes regardless of it, which
+    # is how the original loop shipped: the numbers were there to read, nothing read them.
+    if stream["raf_per_second"] > MAX_STREAM_RAF_PER_SECOND:
+        failures.append(
+            f"{stream['raf_per_second']} rAF/s during the stream, budget "
+            f"{MAX_STREAM_RAF_PER_SECOND} (a per-frame loop is running)"
+        )
+    if results["idle_raf_callbacks_per_2s"] > MAX_IDLE_RAF_PER_2S:
+        failures.append(
+            f"{results['idle_raf_callbacks_per_2s']} rAF in 2s with the list idle, budget "
+            f"{MAX_IDLE_RAF_PER_2S} (the follow loop never let go)"
+        )
     modal = results["modal"]
     if not modal["dialog_opened"]:
         failures.append("plan review dialog never opened; the modal checks proved nothing")
