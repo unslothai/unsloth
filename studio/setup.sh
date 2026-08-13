@@ -1071,13 +1071,36 @@ _assert_studio_owned_or_absent() {
     fi
 }
 
+
+_packaged_frontend_available() {
+    # install.sh and `unsloth studio update` explicitly set 0 for PyPI installs.
+    # Wheel extraction mtimes do not preserve build ordering, so source files can
+    # appear newer than the release-built dist even though both came from the
+    # same wheel. Trust the packaged artifact when its entry point is present;
+    # local/source installs set 1 (or leave the mode unset) and still rebuild.
+    #
+    # The mode alone is not enough. It records where the Python package came
+    # from, not which tree this script is running out of, and an editable
+    # overlay separates the two: UNSLOTH_CI_SOURCE_OVERLAY (and a venv left
+    # editable by an earlier --local run) leaves the mode at 0 while
+    # $SCRIPT_DIR is a checkout, whose dist is a stale build artifact rather
+    # than a release one. A wheel ships no top-level files, so a pyproject.toml
+    # next to studio/ means source tree -- keep the mtime rebuild there.
+    [ "${STUDIO_LOCAL_INSTALL:-}" = "0" ] &&
+        [ ! -f "$REPO_ROOT/pyproject.toml" ] &&
+        [ -f "$SCRIPT_DIR/frontend/dist/index.html" ]
+}
+
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
-# Skip if SKIP_STUDIO_FRONTEND=1 (Tauri desktop app bundles its own frontend),
-# or if dist/ exists AND no tracked input is newer than dist/.
+# Tauri owns its frontend bundle. Standard PyPI installs use the release-built
+# dist shipped in the wheel. Only local/source installs use mtime-based rebuilds.
 if [ "${SKIP_STUDIO_FRONTEND:-0}" = "1" ]; then
     _NEED_FRONTEND_BUILD=false
     step "frontend" "bundled (Tauri)"
+elif _packaged_frontend_available; then
+    _NEED_FRONTEND_BUILD=false
+    step "frontend" "bundled (pip install)"
 else
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
@@ -1090,7 +1113,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
-fi  # end SKIP_STUDIO_FRONTEND guard
+fi  # end packaged/Tauri guard
 
 # OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
 # of dist staleness; provision Node when the frontend builds OR the OXC dir exists.
@@ -1819,7 +1842,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *9070*|*9080*)                                                                                 _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9070*|*9080*|*"R9700"*)                                                                       _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
             *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)

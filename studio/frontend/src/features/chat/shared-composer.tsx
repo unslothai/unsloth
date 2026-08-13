@@ -32,7 +32,11 @@ import {
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
+import {
+  AUDIO_ACCEPT,
+  fileToBase64,
+  getAudioSizeError,
+} from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
@@ -105,8 +109,11 @@ import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/prese
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
-  providerTypeSupportsVision,
+  providerModelSupportsVision,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
+import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -653,8 +660,9 @@ export function SharedComposer({
   const imageUnavailableReason = getImageInputUnavailableReason({
     activeModel,
     isExternalModel,
-    externalSupportsVision: providerTypeSupportsVision(
+    externalSupportsVision: providerModelSupportsVision(
       selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
     ),
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
@@ -780,11 +788,14 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
-  // Disable only when a loaded model can't run it; with no model the toggle
-  // can still be pre-selected, matching Web search/Code/MCP.
-  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
-  const showRagPill = !isExternalModel;
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
+  const ragDisabled =
+    modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
+  const showRagPill = !isExternalModel || externalUsesStudioTools;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
   // permissions always show; the rest are conditional. Narrow viewports
   // collapse too: the labelled row is wider than a phone-width composer.
@@ -900,11 +911,17 @@ export function SharedComposer({
       if (!files?.length) return;
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
+      let audioSizeError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
         // Handle audio files
-        if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
+        if (file.type.match(/^audio\//i)) {
+          const sizeError = getAudioSizeError(file.size);
+          if (sizeError) {
+            audioSizeError ??= sizeError;
+            continue;
+          }
           fileToBase64(file).then((base64) => {
             setPendingAudio({ name: file.name, base64, contentType: file.type });
             setPendingAudioStore(base64, file.name);
@@ -923,6 +940,9 @@ export function SharedComposer({
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
+      if (audioSizeError) {
+        toast.error(audioSizeError);
+      }
       setPendingImages((prev) => [...prev, ...next]);
     },
     [setPendingAudioStore, attachUnavailableReason],
@@ -933,9 +953,10 @@ export function SharedComposer({
       pasteClipboardFiles(
         event,
         async (files) => {
+          // Let addFiles report audio size errors.
           const supported = files.some(
             (file) =>
-              (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) ||
+              file.type.match(/^audio\//i) ||
               (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
                 file.size <= MAX_IMAGE_SIZE),
           );
@@ -1148,11 +1169,6 @@ export function SharedComposer({
         usePersistedPreference: true,
       });
       let loadedFromConfig = false;
-
-      function modelDisplayName(id: string): string {
-        const parts = id.split("/");
-        return parts[parts.length - 1] || id;
-      }
 
       // Warm the device cache before the snapshot below reconciles the GPU
       // pick: on a cold cache the reconcile passes a stale pick through.
@@ -1386,7 +1402,7 @@ export function SharedComposer({
           }
           if (!upgraded) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+              `${compareModelDisplayName(sel.id)} needs a newer transformers release to load.`,
             );
           }
         }
@@ -1405,7 +1421,7 @@ export function SharedComposer({
           });
           if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
+              `${compareModelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -1585,8 +1601,8 @@ export function SharedComposer({
       if (handle1) handle1.appendMessage(content);
       if (handle2) handle2.appendMessage(content);
 
-      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
-      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+      const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
+      const name2 = model2?.id ? compareModelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);

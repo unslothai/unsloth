@@ -17,7 +17,10 @@ export const zhCN = {
     modelSourceAriaLabel: "模型来源",
     hubSectionAriaLabel: "Hub 分区",
     pickModelFile: "从磁盘选择模型文件",
-    ejectLoadedModel: "卸载已加载的模型",
+    modelDropped: "已不再提供",
+    modelDroppedByProvider: "{provider} · 已不再提供",
+    modelDisabled: "未启用",
+    modelDisabledByProvider: "{provider} · 未启用",
     multipleMatches: "找到多个匹配的{noun}。请从列表中选择一个。",
     rateLimitedTitle: "已达到 Hugging Face 速率限制",
     rateLimitedBody: "请稍候，然后重试搜索{noun}。",
@@ -81,6 +84,9 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      audio: "音频",
+      trainChecking: "正在检查此设备是否支持训练...",
+      videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
       newBadge: "新",
@@ -360,6 +366,9 @@ export const zhCN = {
         keepKv: "空闲卸载后保留聊天上下文",
         keepKvDescription:
           "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+        apiOnly: "仅卸载由 API 加载的模型",
+        apiOnlyDescription:
+          "空闲卸载会将你在 Studio 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
@@ -385,6 +394,9 @@ export const zhCN = {
         showLlamaUpdates: "llama.cpp 更新通知",
         showLlamaUpdatesDescription:
           "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
+        showLoadedModels: "已加载模型指示器",
+        showLoadedModelsDescription:
+          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
       },
       startup: {
         sectionTitle: "启动",
@@ -394,10 +406,6 @@ export const zhCN = {
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
-      gettingStarted: "入门",
-      startOnboarding: "开始引导",
-      startOnboardingDescription: "重新打开设置向导，不会更改你的账号。",
-      startOnboardingAction: "开始引导",
       uploads: {
         sectionTitle: "上传",
         maxUploadSize: "训练数据集上传上限",
@@ -862,6 +870,11 @@ export const zhCN = {
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      thinking: {
+        collapseByDefault: "默认折叠思考过程",
+        collapseByDefaultDescription:
+          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",
@@ -870,6 +883,9 @@ export const zhCN = {
         allowNetworkAccess: "允许 Canvas 访问网络",
         allowNetworkAccessDescription:
           "允许 Canvas 预览从 CDN 加载脚本、样式、字体、媒体和网络资源。若需完全离线预览请保持关闭。",
+        blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerAction: "允许此 Canvas",
       },
       data: "数据",
       exportHistory: "导出聊天记录",
@@ -932,6 +948,10 @@ export const zhCN = {
       description: "管理此设备上保存的聊天记录和上传的文件。",
       archivedChats: "已归档的聊天",
       archivedChatsDescription: "查看和管理你归档的聊天。",
+      archivedImages: "已归档的图片",
+      archivedImagesDescription: "查看和管理你归档的图片。",
+      archivedVideos: "已归档的视频",
+      archivedVideosDescription: "查看和管理你归档的视频。",
       manageAction: "管理",
       exportArchivedChats: "导出",
       exportingArchivedChats: "正在导出...",
@@ -1142,23 +1162,7 @@ export const zhCN = {
       modelTooltip: "要微调的基础模型。",
       methodTooltip: "模型的训练方式。LoRA 和 QLoRA 只更新小型适配器，而不是全部权重。",
       datasetTooltip: "用于微调模型的训练数据。",
-      hfTokenLabel: "Hugging Face 令牌",
       hfTokenDescription: "访问受限或私有模型和数据集时需要。",
-      hfTokenGet: "获取令牌",
-      hfTokenChecking: "正在检查令牌…",
-      modelPickerDescription:
-        "搜索 Hugging Face，或选择此设备上已有的可训练模型。",
-      trainingMethod: "训练方法",
-      trainingMethodDescription: "选择如何微调 {model}",
-      trainingMethodTooltip:
-        "QLoRA 使用 4 位量化以最大限度降低显存占用。LoRA 使用 16 位权重，而全量微调会更新所有权重。",
-      datasetPickerDescription:
-        "搜索 Hugging Face，或选择此设备上已有的数据集。",
-      uploadDataset: "上传数据集",
-      uploadDatasetDescription: "支持 CSV、JSONL、JSON 和 Parquet。",
-      chooseFile: "选择文件",
-      format: "格式",
-      autoDetect: "自动检测",
       uploadLocalLabel: "或上传本地文件",
       sourceBrowse: "浏览",
       releaseToUpload: "松开以上传",
@@ -1314,24 +1318,8 @@ export const zhCN = {
       history: "历史",
     },
     loadingRuntime: "正在加载训练运行时...",
+    checkingSupport: "正在检查此设备是否支持训练...",
     backToHistory: "返回历史",
-    sections: {
-      model: "模型",
-      dataset: "数据集",
-      params: "参数",
-      training: "训练",
-      charts: "图表",
-      progress: "训练进度",
-    },
-    configure: {
-      title: "配置",
-      description: "选择模型、数据集和训练设置。",
-      startTraining: "开始训练",
-      starting: "启动中...",
-      loadingModel: "正在加载模型...",
-      checkingDataset: "正在检查数据集...",
-      trainingConfig: "训练配置",
-    },
     dataset: {
       selectors: {
         subset: "子集",
@@ -1352,7 +1340,6 @@ export const zhCN = {
         manualTooLong: "请使用不超过 128 个字符。",
         manualInvalid: "此值包含不支持的字符。",
       },
-      source: "数据集来源",
       sourceAriaLabel: "数据集来源",
       localDataset: "本地数据集",
       localDatasetRows: " / {count} 行",
@@ -1369,8 +1356,6 @@ export const zhCN = {
       fileTooLarge: "文件过大",
       fileTooLargeDescription:
         "{file} 大小为 {size}。训练上传最大支持 {limit}。",
-      uploadLimitsHint:
-        "CSV、JSONL、JSON、Parquet · 最大 {limit}；PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "此文件需要先转换",
         genericFile: "此文件",
@@ -1449,7 +1434,6 @@ export const zhCN = {
       evalDatasetUploaded: "评估数据集已上传",
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",
-      preview: "预览数据集",
       previewLoadingHuggingFace: "正在从 Hugging Face 获取数据集预览...",
       previewLoading: "正在加载预览...",
       mappingRequirements: {
@@ -1469,8 +1453,6 @@ export const zhCN = {
         requiredDescription:
           "使用标题中的下拉菜单为列分配角色。至少需要分配 {required}。",
       },
-      split: "切分",
-      subset: "子集",
       s3: {
         title: "S3 配置",
         description: "从 Amazon S3 加载 .parquet、.json、.jsonl 或 .csv 数据集",
@@ -1480,18 +1462,11 @@ export const zhCN = {
         regionPlaceholder: "us-east-1",
         prefix: "路径前缀",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "存储桶中数据集文件的可选路径",
         accessKeyId: "访问密钥 ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "秘密访问密钥",
         secretAccessKeyPlaceholder: "你的 AWS 秘密访问密钥",
         useIamRole: "使用 IAM 角色",
-        useIamRoleTooltip: "使用 IAM 角色凭证而非访问密钥（推荐用于 EC2/SageMaker）",
-        testConnection: "测试连接",
-        connectionSuccess: "成功连接到 S3 存储桶",
-        connectionFailed: "无法连接到 S3 存储桶",
-        comingSoon: "S3 集成即将推出",
-        comingSoonDescription: "S3 数据集加载需要 boto3。此功能正在开发中。",
       },
     },
     params: {
@@ -1675,7 +1650,6 @@ export const zhCN = {
       deleteArtifactsFailed: "运行已删除，但无法移除其文件。",
       deleteArtifactsRetainedError:
         "无法移除适配器文件，因此训练运行已保留在历史记录中。",
-      emptyTitle: "还没有训练运行",
       emptyDescription: "还没有训练运行。请在配置标签页开始第一次训练。",
       loadError: "加载训练运行失败",
       deleteError: "删除训练运行失败。请重试。",
@@ -1686,9 +1660,6 @@ export const zhCN = {
       runNotFound: "未找到运行",
       deleteTitle: "删除训练运行？",
       deleteDescription: "这会永久删除该训练运行及其所有指标。此操作无法撤销。",
-      runCount: "{count} 次运行",
-      oneRun: "1 次运行",
-      resume: "继续",
       resumeTraining: "继续训练",
       resuming: "正在恢复训练...",
       deleteRun: "删除运行",
@@ -1819,9 +1790,6 @@ export const zhCN = {
       dataset: "数据集",
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
-    },
-    tour: {
-      guidedTour: "引导教程",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

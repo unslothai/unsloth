@@ -5,13 +5,18 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
+
+import { SandboxFiles } from "./sandbox-files-view";
+import type { SandboxFile } from "./sandbox-files";
+import { isSandboxFileList } from "@/features/chat/api/chat-adapter";
 import {
-  preferFullToolOutput,
+  preferSanitizedFullToolOutput,
   useChatRuntimeStore,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
 } from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
@@ -30,15 +35,19 @@ interface StructuredResult {
   text: string;
   images: string[];
   sessionId: string;
+  files?: SandboxFile[];
 }
 
 function isStructuredResult(val: unknown): val is StructuredResult {
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as { files?: unknown };
   return (
-    typeof val === "object" &&
-    val !== null &&
     "text" in val &&
     "images" in val &&
-    "sessionId" in val
+    "sessionId" in val &&
+    // Persisted content can carry anything, and the card maps over this and
+    // reads name off each entry.
+    isSandboxFileList(v.files)
   );
 }
 
@@ -142,16 +151,16 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 
   let output: string;
   let images: string[] = [];
+  let files: SandboxFile[] = [];
   let sessionId = "";
 
   if (isStructuredResult(result)) {
     output = result.text;
     images = result.images;
+    files = result.files ?? [];
     sessionId = result.sessionId;
-  } else if (typeof result === "string") {
-    output = result;
-  } else if (result) {
-    output = JSON.stringify(result, null, 2);
+  } else if (result != null) {
+    output = stringifyToolResult(result);
   } else {
     output = "";
   }
@@ -164,7 +173,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
   // The gate only opens once the call parsed, so a pending approval means the script is
   // written even while the args status still reads as streaming.
@@ -222,6 +231,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
+
+          {/* Anything the script wrote, as a real download */}
+          <SandboxFiles sessionId={sessionId} files={files} />
 
           {/* Images from Python tool execution */}
           {images.length > 0 && sessionId && (

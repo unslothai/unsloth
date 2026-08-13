@@ -18,7 +18,10 @@ export const hi = {
     modelSourceAriaLabel: "मॉडल स्रोत",
     hubSectionAriaLabel: "Hub सेक्शन",
     pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
-    ejectLoadedModel: "लोड किया गया मॉडल इजेक्ट करें",
+    modelDropped: "अब उपलब्ध नहीं",
+    modelDroppedByProvider: "{provider} · अब उपलब्ध नहीं",
+    modelDisabled: "सक्षम नहीं",
+    modelDisabledByProvider: "{provider} · सक्षम नहीं",
     multipleMatches:
       "एक से अधिक मेल खाते {noun} मिले। सूची में से एक चुनें।",
     rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
@@ -86,6 +89,9 @@ export const hi = {
       recipes: "रेसिपी",
       images: "इमेज",
       video: "वीडियो",
+      audio: "ऑडियो",
+      trainChecking: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
+      videoChecking: "इस मशीन पर वीडियो सपोर्ट की जाँच हो रही है...",
       more: "अधिक",
       customizeSidebar: "साइडबार कस्टमाइज़ करें",
       newBadge: "नया",
@@ -379,6 +385,9 @@ export const hi = {
         keepKv: "निष्क्रियता पर अनलोड होने के बाद भी चैट का संदर्भ बनाए रखें",
         keepKvDescription:
           "निष्क्रियता पर अनलोड होने से पहले KV कैश सहेजता है, ताकि दोबारा शुरू की गई चैट को इतिहास फिर से न पढ़ना पड़े। डिस्क पर 10 GB तक।",
+        apiOnly: "केवल API द्वारा लोड किए गए मॉडल अनलोड करें",
+        apiOnlyDescription:
+          "निष्क्रियता पर अनलोड करते समय Studio से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -404,6 +413,9 @@ export const hi = {
         showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
         showLlamaUpdatesDescription:
           "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
+        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
+        showLoadedModelsDescription:
+          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -413,11 +425,6 @@ export const hi = {
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
-      gettingStarted: "शुरुआत करें",
-      startOnboarding: "ऑनबोर्डिंग शुरू करें",
-      startOnboardingDescription:
-        "अपना खाता बदले बिना सेटअप विज़ार्ड फिर से खोलें।",
-      startOnboardingAction: "ऑनबोर्डिंग शुरू करें",
       uploads: {
         sectionTitle: "अपलोड",
         maxUploadSize: "ट्रेनिंग डेटासेट अपलोड सीमा",
@@ -893,6 +900,11 @@ export const hi = {
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      thinking: {
+        collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
+        collapseByDefaultDescription:
+          "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML ब्लॉक संक्षिप्त करें",
@@ -901,6 +913,9 @@ export const hi = {
         allowNetworkAccess: "canvas नेटवर्क एक्सेस की अनुमति दें",
         allowNetworkAccessDescription:
           "canvas पूर्वावलोकन को CDN से स्क्रिप्ट, स्टाइल, फ़ॉन्ट, मीडिया, और नेटवर्क संसाधन लोड करने दें। पूरी तरह ऑफ़लाइन पूर्वावलोकन के लिए बंद रखें।",
+        blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
+        blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
+        blockedBannerAction: "इस Canvas के लिए अनुमति दें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",
@@ -968,6 +983,10 @@ export const hi = {
       archivedChats: "संग्रहित चैट",
       archivedChatsDescription:
         "आपने जो चैट संग्रहित की हैं उन्हें देखें और प्रबंधित करें।",
+      archivedImages: "संग्रहित छवियाँ",
+      archivedImagesDescription: "आपके द्वारा संग्रहित की गई छवियाँ देखें और प्रबंधित करें।",
+      archivedVideos: "संग्रहित वीडियो",
+      archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
       exportArchivedChats: "एक्सपोर्ट करें",
       exportingArchivedChats: "एक्सपोर्ट हो रहा है...",
@@ -1187,24 +1206,8 @@ export const hi = {
       modelTooltip: "वह बेस मॉडल जिसे आप फ़ाइन-ट्यून करना चाहते हैं।",
       methodTooltip: "मॉडल को कैसे ट्रेन किया जाता है। LoRA और QLoRA सभी वेट्स के बजाय छोटे अडैप्टर अपडेट करते हैं।",
       datasetTooltip: "मॉडल को फ़ाइन-ट्यून करने के लिए उपयोग किया जाने वाला ट्रेनिंग डेटा।",
-      hfTokenLabel: "Hugging Face टोकन",
       hfTokenDescription:
         "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",
-      hfTokenGet: "टोकन प्राप्त करें",
-      hfTokenChecking: "टोकन की जाँच हो रही है…",
-      modelPickerDescription:
-        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद ट्रेनिंग योग्य मॉडल चुनें।",
-      trainingMethod: "ट्रेनिंग विधि",
-      trainingMethodDescription: "{model} को फ़ाइन-ट्यून करने का तरीका चुनें",
-      trainingMethodTooltip:
-        "QLoRA न्यूनतम VRAM उपयोग के लिए 4-बिट क्वांटाइज़ेशन का उपयोग करता है। LoRA 16-बिट वेट का उपयोग करता है, जबकि पूर्ण फ़ाइन-ट्यूनिंग हर वेट को अपडेट करती है।",
-      datasetPickerDescription:
-        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद डेटासेट चुनें।",
-      uploadDataset: "डेटासेट अपलोड करें",
-      uploadDatasetDescription: "CSV, JSONL, JSON और Parquet समर्थित हैं।",
-      chooseFile: "फ़ाइल चुनें",
-      format: "फ़ॉर्मैट",
-      autoDetect: "स्वतः पहचान",
       uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
       sourceBrowse: "ब्राउज़ करें",
       releaseToUpload: "अपलोड करने के लिए छोड़ें",
@@ -1369,24 +1372,8 @@ export const hi = {
       history: "इतिहास",
     },
     loadingRuntime: "ट्रेनिंग रनटाइम लोड हो रहा है...",
+    checkingSupport: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
     backToHistory: "इतिहास पर वापस जाएं",
-    sections: {
-      model: "मॉडल",
-      dataset: "डेटासेट",
-      params: "पैरामीटर",
-      training: "ट्रेनिंग",
-      charts: "चार्ट",
-      progress: "ट्रेनिंग प्रगति",
-    },
-    configure: {
-      title: "कॉन्फ़िगर करें",
-      description: "एक मॉडल, डेटासेट, और ट्रेनिंग सेटिंग्स चुनें।",
-      startTraining: "ट्रेनिंग शुरू करें",
-      starting: "शुरू हो रहा है...",
-      loadingModel: "मॉडल लोड हो रहा है...",
-      checkingDataset: "डेटासेट जांचा जा रहा है...",
-      trainingConfig: "ट्रेनिंग कॉन्फ़िग",
-    },
     dataset: {
       selectors: {
         subset: "सबसेट",
@@ -1408,7 +1395,6 @@ export const hi = {
         manualTooLong: "128 या उससे कम वर्णों का उपयोग करें।",
         manualInvalid: "इस मान में असमर्थित वर्ण हैं।",
       },
-      source: "डेटासेट स्रोत",
       sourceAriaLabel: "डेटासेट स्रोत",
       localDataset: "स्थानीय डेटासेट",
       localDatasetRows: " / {count} पंक्तियां",
@@ -1425,8 +1411,6 @@ export const hi = {
       fileTooLarge: "फ़ाइल बहुत बड़ी है",
       fileTooLargeDescription:
         "{file} का आकार {size} है। ट्रेनिंग अपलोड की अधिकतम सीमा {limit} है।",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · अधिकतम {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "इस फ़ाइल को पहले रूपांतरित करना होगा",
         genericFile: "यह फ़ाइल",
@@ -1511,7 +1495,6 @@ export const hi = {
       uploadOneFileAtATime: "एक बार में एक फ़ाइल अपलोड करें",
       uploadSingleFileDescription:
         "ट्रेनिंग डेटासेट अपलोड एक ही फ़ाइल स्वीकार करता है।",
-      preview: "डेटासेट का पूर्वावलोकन करें",
       previewLoadingHuggingFace:
         "Hugging Face से डेटासेट पूर्वावलोकन प्राप्त किया जा रहा है...",
       previewLoading: "पूर्वावलोकन लोड हो रहा है...",
@@ -1532,8 +1515,6 @@ export const hi = {
         requiredDescription:
           "हेडर के ड्रॉपडाउन का उपयोग करके कॉलम को भूमिकाएँ दें। कम से कम {required} असाइन करें।",
       },
-      split: "स्प्लिट",
-      subset: "उपसमूह",
       s3: {
         title: "S3 कॉन्फ़िगरेशन",
         description:
@@ -1544,20 +1525,11 @@ export const hi = {
         regionPlaceholder: "us-east-1",
         prefix: "पथ प्रीफ़िक्स",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "बकेट में आपकी डेटासेट फ़ाइलों का वैकल्पिक पथ",
         accessKeyId: "एक्सेस Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "सीक्रेट एक्सेस Key",
         secretAccessKeyPlaceholder: "आपकी AWS सीक्रेट एक्सेस key",
         useIamRole: "IAM Role का उपयोग करें",
-        useIamRoleTooltip:
-          "एक्सेस keys के बजाय IAM role क्रेडेंशियल का उपयोग करें (EC2/SageMaker के लिए अनुशंसित)",
-        testConnection: "कनेक्शन जांचें",
-        connectionSuccess: "S3 बकेट से सफलतापूर्वक कनेक्ट हुआ",
-        connectionFailed: "S3 बकेट से कनेक्ट करने में विफल",
-        comingSoon: "S3 एकीकरण जल्द आ रहा है",
-        comingSoonDescription:
-          "S3 डेटासेट लोडिंग के लिए boto3 आवश्यक है। यह सुविधा विकासाधीन है।",
       },
     },
     params: {
@@ -1754,7 +1726,6 @@ export const hi = {
         "रन हटा दिया गया, लेकिन उसकी फ़ाइलें नहीं हटाई जा सकीं।",
       deleteArtifactsRetainedError:
         "अडैप्टर फ़ाइलें नहीं हटाई जा सकीं, इसलिए ट्रेनिंग रन को इतिहास में रखा गया है।",
-      emptyTitle: "अभी तक कोई ट्रेनिंग रन नहीं",
       emptyDescription:
         "अभी तक कोई ट्रेनिंग रन नहीं। कॉन्फ़िगर टैब में अपना पहला ट्रेनिंग रन शुरू करें।",
       loadError: "ट्रेनिंग रन लोड करने में विफल",
@@ -1767,9 +1738,6 @@ export const hi = {
       deleteTitle: "ट्रेनिंग रन हटाएं?",
       deleteDescription:
         "यह इस ट्रेनिंग रन और इसके सभी मेट्रिक्स को स्थायी रूप से हटा देगा। इस कार्रवाई को पूर्ववत नहीं किया जा सकता।",
-      runCount: "{count} रन",
-      oneRun: "1 रन",
-      resume: "फिर से शुरू करें",
       resumeTraining: "ट्रेनिंग फिर से शुरू करें",
       resuming: "फिर से शुरू हो रहा है...",
       deleteRun: "रन हटाएं",
@@ -1902,9 +1870,6 @@ export const hi = {
       dataset: "डेटासेट",
       datasetStreaming: "डेटासेट: स्ट्रीमिंग (कोई पूर्ण डाउनलोड नहीं)",
       modelWeights: "मॉडल वेट्स",
-    },
-    tour: {
-      guidedTour: "गाइडेड टूर",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

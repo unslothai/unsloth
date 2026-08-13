@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
   type Attachment,
@@ -49,7 +50,7 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
-  providerTypeSupportsVision,
+  providerModelSupportsVision,
 } from "./external-providers";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
@@ -85,8 +86,10 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import {
+  awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatMessage,
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
@@ -94,6 +97,7 @@ import {
   markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
+  trackStoredChatThreadRecord,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import {
@@ -173,7 +177,12 @@ class VisionImageAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const externalSelection = parseExternalModelId(checkpoint);
     const isExternalModel = externalSelection !== null;
-    const modelLoaded = !!checkpoint && !state.modelLoading;
+    const modelLoaded = chatModelLoaded({
+      checkpoint,
+      modelLoading: state.modelLoading,
+      isExternalModel,
+      residentCheckpoint: state.residentCheckpoint,
+    });
     let externalSupportsVision: boolean | null = null;
     let externalModelLabel: string | null = null;
     if (externalSelection !== null) {
@@ -181,8 +190,9 @@ class VisionImageAdapter implements AttachmentAdapter {
       const provider = providers.find(
         (p) => p.id === externalSelection.providerId,
       );
-      externalSupportsVision = providerTypeSupportsVision(
+      externalSupportsVision = providerModelSupportsVision(
         provider?.providerType,
+        externalSelection.modelId,
       );
       externalModelLabel = externalSelection.modelId;
     }
@@ -557,6 +567,10 @@ async function generateTitleWithModel(payload: {
       repetition_penalty: 1.0,
       enable_thinking: false,
       reasoning_effort: "none",
+      // Titling is a one-shot summarisation: never let it enter the tool loop.
+      // Omitting the field would inherit the server's tools-on default and put
+      // python/terminal schemas in a 24-token prompt.
+      enable_tools: false,
       messages: [
         {
           role: "system",
@@ -644,30 +658,39 @@ export async function ensureThreadRecord({
   modelType,
   pairId,
   projectId,
+  incognito,
+  modelId,
+  createdAt,
 }: {
   threadId: string;
   modelType: ModelType;
   pairId?: string;
   projectId?: string | null;
+  /** Snapshot from the send this row belongs to, so a retry cannot read a since-flipped toggle. */
+  incognito?: boolean;
+  /** Snapshot from the send this row belongs to, so retries cannot adopt a later checkpoint. */
+  modelId?: string;
+  /** Snapshot from the send this row belongs to, so retries retain its original creation time. */
+  createdAt?: number;
 }): Promise<void> {
   if (isChatThreadDeleted(threadId)) {
     return;
   }
-  // Snapshot the toggle SYNCHRONOUSLY, before the await below. This runs in
-  // the same tick as the user's send, so it reliably captures the toggle's
-  // state at creation. Reading it after the await would let a toggle-off
-  // that lands mid-await (the list call is a real network round-trip) flip
-  // the decision and persist what should have been an incognito thread.
-  const incognitoAtInit = useChatRuntimeStore.getState().incognito;
+  // Snapshot mutable creation inputs synchronously, before the await below. This runs in the same
+  // tick as the user's send, so a toggle or checkpoint change during the point lookup cannot
+  // change the identity of the thread a retry persists.
+  const runtimeStateAtInit = useChatRuntimeStore.getState();
+  const incognitoAtInit = incognito ?? runtimeStateAtInit.incognito;
+  const modelIdAtInit = modelId ?? runtimeStateAtInit.params.checkpoint ?? "";
+  const createdAtInit = createdAt ?? Date.now();
   // Fresh assistant-ui threads are local ids. Temporary chats can skip the
   // history list entirely so a storage outage cannot block the first send.
   if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
     markThreadIncognito(threadId);
     return;
   }
-  const existing = (await listStoredChatThreads({ includeArchived: true })).find(
-    (thread) => thread.id === threadId,
-  );
+  // A point lookup, not a listing: this must not scale with how many chats exist.
+  const existing = await getStoredChatThread(threadId);
   if (existing) {
     return;
   }
@@ -679,16 +702,15 @@ export async function ensureThreadRecord({
     return;
   }
 
-  const currentModelId = useChatRuntimeStore.getState().params.checkpoint ?? "";
   const record: ThreadRecord = {
     id: threadId,
     title: "New Chat",
     modelType,
-    modelId: currentModelId,
+    modelId: modelIdAtInit,
     pairId,
     projectId: projectId ?? null,
     archived: false,
-    createdAt: Date.now(),
+    createdAt: createdAtInit,
   };
 
   try {
@@ -697,10 +719,10 @@ export async function ensureThreadRecord({
     // assistant-ui can issue overlapping first-message persistence calls. If
     // another call created the same thread while this one waited, treat init as
     // successful and let the message write continue.
-    const existingAfterRace = await listStoredChatThreads({
-      includeArchived: true,
-    }).catch(() => []);
-    if (existingAfterRace.some((thread) => thread.id === threadId)) {
+    const existingAfterRace = await getStoredChatThread(threadId).catch(
+      () => undefined,
+    );
+    if (existingAfterRace) {
       return;
     }
     throw error;
@@ -757,13 +779,30 @@ function createStudioDbAdapter(
       };
     },
 
-    async initialize(threadId: string) {
-      await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+    initialize(threadId: string) {
+      // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
+      // Captured here, not inside the creator: a retry belongs to the send that initialized it,
+      // not to a later incognito or checkpoint selection.
+      const runtimeStateAtInit = useChatRuntimeStore.getState();
+      const incognitoAtInit = runtimeStateAtInit.incognito;
+      const modelIdAtInit = runtimeStateAtInit.params.checkpoint ?? "";
+      const createdAtInit = Date.now();
+      trackStoredChatThreadRecord(threadId, () =>
+        ensureThreadRecord({
+          threadId,
+          modelType,
+          pairId,
+          projectId,
+          incognito: incognitoAtInit,
+          modelId: modelIdAtInit,
+          createdAt: createdAtInit,
+        }),
+      );
       // A run already streaming on this thread filed its handles under "__default" because
       // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
       // id nothing is registered against.
       useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
-      return { remoteId: threadId, externalId: undefined };
+      return Promise.resolve({ remoteId: threadId, externalId: undefined });
     },
 
     async rename(remoteId: string, newTitle: string) {
@@ -789,7 +828,11 @@ function createStudioDbAdapter(
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
       const autoTitle = useChatRuntimeStore.getState().autoTitle;
-      const thread = await getStoredChatThread(remoteId);
+      // The run normally waits for its history append, but a bounded persistence wait can expire
+      // while the creator is still queued. Use the same retry choke point as other mutations so a
+      // temporarily missing row does not permanently skip first-turn title generation. A title is
+      // cosmetic, so a row that never landed falls back to the default rather than rejecting here.
+      const thread = await ensureStoredChatThread(remoteId).catch(() => undefined);
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {
@@ -1375,12 +1418,15 @@ function useStudioRuntimeAdapters(
         );
         const write = (async () => {
           const { remoteId } = await initializeThread;
+          // The model run waits for the authoritative row. Clear-all does not: it tombstones this
+          // known id directly, so a stalled request cannot hold the clear hostage.
+          await awaitStoredChatThreadWrites(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;
           }
-          // Keep single-chat runtime state in sync once a new chat is first
-          // persisted. Compare panes intentionally don't write global activeThreadId.
+          // published before the reads below: a temporary chat has no row to confirm, and a read
+          // that fails must not leave the runtime pointing at the previously open chat
           if (modelType === "base" && !pairId) {
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
@@ -1392,32 +1438,16 @@ function useStudioRuntimeAdapters(
               store.setActiveThreadId(remoteId);
             }
           }
-          const thread = await getStoredChatThread(remoteId);
+          // One point read: the model run waits on this write.
+          const existingMessage = await getStoredChatMessage(
+            remoteId,
+            message.id,
+          );
           await throwIfHistoryWasCleared(remoteId);
-          if (thread) {
-            await ensureStoredChatThread(remoteId, thread);
-            await throwIfHistoryWasCleared(remoteId);
-          }
-          if (thread?.modelType === "base" && !thread.pairId) {
-            const store = useChatRuntimeStore.getState();
-            const visibleThreadId = aui.threads().getState().mainThreadId;
-            if (
-              (visibleThreadId === localThreadId ||
-                visibleThreadId === remoteId) &&
-              store.activeThreadId !== remoteId
-            ) {
-              store.setActiveThreadId(remoteId);
-            }
-          }
           const content = cloneContent(message.content);
           const attachments =
             message.role === "user" ? cloneAttachments(message.attachments) : [];
           const custom = message.metadata?.custom;
-          const storedMessages = await listStoredChatMessages(remoteId);
-          await throwIfHistoryWasCleared(remoteId);
-          const existingMessage = storedMessages.find(
-            (storedMessage) => storedMessage.id === message.id,
-          );
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
@@ -1457,10 +1487,7 @@ function useStudioRuntimeAdapters(
           });
           await throwIfHistoryWasCleared(remoteId);
         })();
-        return trackHistoryAppend(
-          message.id,
-          chatHistoryClearBoundary.trackPending(write),
-        );
+        return trackHistoryAppend(message.id, write);
       },
     }),
     [aui, modelType, pairId],

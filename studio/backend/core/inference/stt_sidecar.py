@@ -19,8 +19,10 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -179,6 +181,10 @@ class SttLoadCancelledError(RuntimeError):
     """An in-flight STT model load was cancelled for training."""
 
 
+class SttTranscriptionCancelledError(RuntimeError):
+    """An in-flight transcription was cancelled by its client."""
+
+
 class SttModelNotDownloadedError(RuntimeError):
     """The selected model is not complete in the shared Hub cache."""
 
@@ -205,6 +211,29 @@ class SttAudioTooLongError(ValueError):
 
 class SttLanguageError(ValueError):
     """The requested language is not supported by the selected STT model."""
+
+
+def _close_connection_on_cancel(connection, cancel_event, done_event) -> None:
+    """Abandon one blocked sidecar HTTP request, leaving its server resident.
+
+    Shutting the socket unblocks the read without touching the process, so a cancelled
+    dictation does not cost the next one a server relaunch and model load. Shared by the
+    whisper.cpp and llama.cpp sidecars.
+    """
+    while not done_event.is_set():
+        if not cancel_event.wait(0.05):
+            continue
+        while not done_event.is_set():
+            sock = connection.sock
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+                return
+            time.sleep(0.01)
+        return
 
 
 _WHISPER_LANGUAGE_ALIASES = {
@@ -651,6 +680,10 @@ class _SnapshotDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
+                # Which model the cancel applies to. "model" goes None once the worker
+                # thread stops, so a settled cancellation was indistinguishable from an
+                # unrelated one and a deferred load restarted the whole download.
+                "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if show_progress else None,
             }
             captured = (
@@ -895,8 +928,15 @@ def _training_active() -> bool:
         return False
 
 
-def _clear_device_cache(device: Optional[str]) -> None:
-    gc.collect()
+def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
+    """Drop the unreferenced model, then hand its blocks back to the allocator.
+
+    ``collect = False`` for a caller that has just collected and dropped nothing since: a full
+    collection is not free (a long-lived backend reaches millions of tracked objects, where one
+    pass costs about a second), and the cancel path below runs this twice in a row while it
+    holds the model lock that ``wait_for_load_to_settle`` waits on."""
+    if collect:
+        gc.collect()
     try:
         import torch
         if device == "cuda":
@@ -905,6 +945,20 @@ def _clear_device_cache(device: Optional[str]) -> None:
             torch.mps.empty_cache()
     except Exception:
         pass
+
+
+def _reported_device(device: Optional[str]) -> Optional[str]:
+    """Device name for status. Torch calls the HIP device "cuda", which is right for the
+    API and wrong on screen: an AMD card reported as cuda reads like a bug."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+        if getattr(torch.version, "hip", None):
+            return "rocm"
+    except Exception:  # noqa: BLE001 - a label must never fail a status call
+        pass
+    return device
 
 
 def _pick_device():
@@ -934,12 +988,16 @@ def _pick_device():
         return "cpu", torch.float32
 
 
-def _decode_audio_bounded(audio: bytes):
+def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
     A small, highly-compressed upload can expand far past the encoded request
     limit once decoded, so decode frame-by-frame and enforce the sample cap as
     frames arrive, then hand the array straight to Whisper.
+
+    ``cancel_event`` is polled inside the frame loop: checking only after the decode
+    returned let an abandoned upload run to EOF or the sample cap, and several of them
+    could do that at once.
     """
     try:
         import av
@@ -986,6 +1044,8 @@ def _decode_audio_bounded(audio: bytes):
                 except InvalidDataError:
                     # Skip a corrupt frame rather than fail the whole transcription.
                     continue
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 frame.pts = None
                 fifo.write(frame)
                 if fifo.samples >= 500000:
@@ -996,7 +1056,7 @@ def _decode_audio_bounded(audio: bytes):
                     write_frame(resampled)
             for resampled in resampler.resample(None):
                 write_frame(resampled)
-    except (SttAudioDecodeError, SttAudioTooLongError):
+    except (SttAudioDecodeError, SttAudioTooLongError, SttTranscriptionCancelledError):
         raise
     except (FFmpegError, ValueError, RuntimeError) as exc:
         raise SttAudioDecodeError("Could not decode the audio.") from exc
@@ -1021,6 +1081,7 @@ class WhisperSttSidecar:
         self._load_state_lock = threading.Lock()
         self._loading = False
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -1031,7 +1092,9 @@ class WhisperSttSidecar:
 
     @property
     def device(self) -> Optional[str]:
-        return self._device
+        # Reported, so name the backend a user recognises. Torch's ROCm build keeps the
+        # "cuda" device name for HIP, which made an AMD box report "Transformers - cuda".
+        return _reported_device(self._device)
 
     def is_loading(self) -> bool:
         with self._load_state_lock:
@@ -1046,6 +1109,15 @@ class WhisperSttSidecar:
             event.set()
             return True
 
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            return True
+
     def wait_for_load_to_settle(self) -> None:
         """Block until any in-flight load() has exited and freed its memory.
 
@@ -1056,10 +1128,11 @@ class WhisperSttSidecar:
         with self._lock:
             pass
 
-    def _begin_load(self) -> threading.Event:
-        event = threading.Event()
+    def _begin_load(self, owner: Optional[threading.Event] = None) -> threading.Event:
+        event = owner if owner is not None else threading.Event()
         with self._load_state_lock:
             self._load_cancel_event = event
+            self._load_owner_cancel_event = owner
             self._loading = True
         return event
 
@@ -1067,6 +1140,7 @@ class WhisperSttSidecar:
         with self._load_state_lock:
             if self._load_cancel_event is event:
                 self._load_cancel_event = None
+                self._load_owner_cancel_event = None
                 self._loading = False
 
     @staticmethod
@@ -1187,23 +1261,33 @@ class WhisperSttSidecar:
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = False)
         return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
 
-    def load(self, model: Optional[str] = None):
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ):
         """Load (or switch to) a model, reusing it if already resident.
 
         Returns a ``(model, processor)`` pair.
         """
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
         with self._lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             if self._engine is not None and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return self._engine
             import torch
 
-            cancel_event = self._begin_load()
+            cancel_event = self._begin_load(request_cancel_event)
             candidate = None
             device: Optional[str] = None
+            resident_released = False
             try:
+                self._raise_if_load_cancelled(cancel_event)
                 cached = self._ensure_model_downloaded(model_id)
                 snapshot_path = cached.path
                 if snapshot_path is None:
@@ -1214,6 +1298,7 @@ class WhisperSttSidecar:
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
                 self._release_engine_locked()
+                resident_released = True
                 logger.info("Loading STT model %s (%s) on %s", model_id, snapshot_path, device)
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
@@ -1261,19 +1346,33 @@ class WhisperSttSidecar:
                     self._model_id = model_id
                     self._device = device
                     self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
                     self._loading = False
                 self._schedule_idle_unload_locked()
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
                 candidate = None
-                self._release_engine_locked()
-                _clear_device_cache(device)
+                if resident_released:
+                    # _release_engine_locked already collected, and the candidate was dropped
+                    # before it ran, so nothing has become garbage since. This second call is
+                    # only here to empty the cache of the device this LOAD picked, which need
+                    # not be the resident's, so it keeps the sweep and skips the collection.
+                    self._release_engine_locked()
+                    _clear_device_cache(device, collect = False)
+                else:
+                    _clear_device_cache(device)
                 raise
             finally:
                 self._end_load(cancel_event)
 
-    def _transcribe_decoded(self, model_id: str, decoded_audio, generate_kwargs: dict) -> str:
+    def _transcribe_decoded(
+        self,
+        model_id: str,
+        decoded_audio,
+        generate_kwargs: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
         Feeds a pre-decoded array so nothing here touches the Transformers audio
@@ -1282,8 +1381,22 @@ class WhisperSttSidecar:
         """
         import torch
 
-        model, processor = self.load(model_id)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
+        if cancel_event is None:
+            model, processor = self.load(model_id)
+        else:
+            model, processor = self.load(model_id, request_cancel_event = cancel_event)
         effective_generate_kwargs = dict(generate_kwargs)
+        if cancel_event is not None:
+            from transformers import StoppingCriteriaList
+            class _CancelCriteria:
+                def __call__(self, *_args, **_kwargs):
+                    return cancel_event.is_set()
+
+            effective_generate_kwargs["stopping_criteria"] = StoppingCriteriaList(
+                [_CancelCriteria()]
+            )
         generation_config = getattr(model, "generation_config", None)
         if getattr(generation_config, "is_multilingual", None) is False:
             # English-only checkpoints fix language and task in their generation
@@ -1295,6 +1408,8 @@ class WhisperSttSidecar:
         parts: list[str] = []
         with torch.no_grad():
             for start in range(0, max(len(decoded_audio), 1), window):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 segment = decoded_audio[start : start + window]
                 if segment.size == 0:
                     continue
@@ -1307,6 +1422,8 @@ class WhisperSttSidecar:
                 if target_dtype is not None:
                     features = features.to(target_dtype)
                 generated = model.generate(features, **effective_generate_kwargs)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 text = processor.batch_decode(generated, skip_special_tokens = True)
                 parts.append(text[0] if text else "")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
@@ -1317,6 +1434,7 @@ class WhisperSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes to text.
 
@@ -1325,6 +1443,8 @@ class WhisperSttSidecar:
         """
         # Reject a missing runtime up front, before the cache and bounded decode.
         ensure_stt_available()
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # A set language beats auto-detect. API takes BCP-47; Whisper wants short
         # codes like en or fr.
         lang = normalize_whisper_language(language)
@@ -1341,7 +1461,9 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by English-only STT model '{model_id}'."
             )
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior
         # context, which causes runaway repeats.
         generate_kwargs = {
@@ -1357,7 +1479,15 @@ class WhisperSttSidecar:
         # Serialize inference with model switches and unloads.
         with self._lock:
             try:
-                text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+                if cancel_event is None:
+                    text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+                else:
+                    text = self._transcribe_decoded(
+                        model_id,
+                        decoded_audio,
+                        generate_kwargs,
+                        cancel_event,
+                    )
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
@@ -1368,9 +1498,51 @@ class WhisperSttSidecar:
             "model": model_id,
         }
 
-    def unload(self) -> None:
-        with self._lock:
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        """Ask this request's Transformers generation or load to stop."""
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
+
+    def _holds_expected_model(self, expected: Optional[str]) -> bool:
+        """Whether the resident model is the one the caller claimed. Call under ``_lock``.
+
+        A caller that owns a specific model must not release whatever happens to be
+        resident: another surface can switch the engine between the ownership check and
+        the request reaching the sidecar, and the queued unload then tears down a model
+        it never owned.
+        """
+        if expected is None:
+            return True
+        current = self._model_id
+        if current is None:
+            return False
+        if current == expected:
+            return True
+        try:
+            return current == resolve_model_id(expected)
+        except Exception:  # noqa: BLE001 - an unresolvable name is not this model
+            return False
+
+    def unload(
+        self,
+        wait: bool = True,
+        expected_model: Optional[str] = None,
+    ) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        A transcription holds ``_lock`` throughout, so a caller releasing engines it does
+        not own must be able to leave a busy one alone. ``expected_model`` scopes the
+        release to one model, compared under the lock.
+        """
+        if not self._lock.acquire(blocking = wait):
+            return
+        try:
+            if not self._holds_expected_model(expected_model):
+                return
             self._release_engine_locked()
+        finally:
+            self._lock.release()
 
 
 _sidecar: Optional[WhisperSttSidecar] = None

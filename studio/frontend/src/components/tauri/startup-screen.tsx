@@ -10,8 +10,11 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+
+import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -217,9 +220,15 @@ function InstallingContent({
         <p className="text-sm text-muted-foreground">{message.subtitle}</p>
         {detailLines.length > 0 && (
           <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
               <span className="group-open:hidden">Show installation details</span>
               <span className="hidden group-open:inline">Hide installation details</span>
+              <HugeiconsIcon
+                icon={ChevronDownIcon}
+                aria-hidden="true"
+                strokeWidth={1.5}
+                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
+              />
             </summary>
             <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
               {detailLines.join("\n")}
@@ -253,15 +262,38 @@ function RepairingContent({
         <p className="text-sm text-muted-foreground">This won’t take long.</p>
         {detailLines.length > 0 && (
           <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
               <span className="group-open:hidden">Show setup details</span>
               <span className="hidden group-open:inline">Hide setup details</span>
+              <HugeiconsIcon
+                icon={ChevronDownIcon}
+                aria-hidden="true"
+                strokeWidth={1.5}
+                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
+              />
             </summary>
             <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
               {detailLines.join("\n")}
             </pre>
           </details>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ClosingContent() {
+  return (
+    <div className="flex h-full w-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex w-full flex-col items-center gap-2">
+        <Spinner className="size-6 text-primary" />
+        <p className="text-sm font-bold text-foreground" aria-live="polite">
+          Closing Unsloth Desktop...
+        </p>
+        <p className="text-sm text-muted-foreground">Shutting down the backend.</p>
       </div>
     </div>
   );
@@ -481,21 +513,57 @@ export function StartupScreen({
   }
 
   return (
+    <StartupSurface>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={status}
+          className="flex h-full w-full flex-col items-center justify-center text-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: EASE_OUT_QUART }}
+        >
+          {renderContent()}
+        </motion.div>
+      </AnimatePresence>
+    </StartupSurface>
+  );
+}
+
+/** The chrome both full-window screens sit in, so they agree on insets and scrolling. */
+function StartupSurface({ children }: { children: ReactNode }) {
+  return (
     <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
       <div className="flex min-h-0 flex-1 w-full max-w-md items-center justify-center px-6">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={status}
-            className="flex h-full w-full flex-col items-center justify-center text-center"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2, ease: EASE_OUT_QUART }}
-          >
-            {renderContent()}
-          </motion.div>
-        </AnimatePresence>
+        {children}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Shown from the moment a quit is requested until the process is gone. Separate from
+ * StartupScreen because a quit can come from the running app, where no backend status
+ * applies, and unanimated because it has to be on screen for the very next paint.
+ *
+ * A layer over the app rather than a replacement for it: a declined quit has to hand the
+ * user back the tree they had, in-flight generations and unsaved drafts included. The
+ * z-index clears the titlebar, the download stack and the floating panels above it:
+ * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
+ */
+export function ClosingScreen() {
+  return (
+    // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
+    // <body> while any modal layer is open, and a quit raised from the window controls,
+    // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
+    // click-through onto the dialog it is hiding, so clicks meant for a screen that says
+    // the app is closing would land on buttons the user can no longer see.
+    <div className="pointer-events-auto fixed inset-0 z-[9999]">
+      <StartupSurface>
+        <div className="flex h-full w-full flex-col items-center justify-center text-center">
+          <ClosingContent />
+        </div>
+      </StartupSurface>
     </div>
   );
 }

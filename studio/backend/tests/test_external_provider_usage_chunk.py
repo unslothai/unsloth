@@ -272,7 +272,8 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
                 base_url = "http://custom.example/v1",
                 model_id = "Qwen/Qwen3-0.6B",
             ),
-            current_subject = "unsloth",
+            _current_subject = "unsloth",
+            via_api_key = False,
         )
 
     result = _drive(run())
@@ -312,7 +313,8 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
                 provider_type = "custom",
                 base_url = "http://custom.example/v1",
             ),
-            current_subject = "unsloth",
+            _current_subject = "unsloth",
+            via_api_key = False,
         )
 
     result = _drive(run())

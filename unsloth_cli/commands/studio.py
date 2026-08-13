@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import functools
 import importlib.util
 import hashlib
 import hmac
@@ -11,6 +12,7 @@ import platform
 import re
 import secrets
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -249,6 +251,177 @@ def _studio_venv_python() -> Optional[Path]:
     else:
         p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
     return p if p.is_file() else None
+
+
+def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
+    """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
+
+    libhsakmt (topology.c) reads it as a major.minor.stepping triple
+    (``sscanf(envvar, "%u.%u.%u%c") != 3`` rejects anything else) and the target
+    name concatenates the stepping in hex, which is why 9.0.10 is gfx90a:
+    11.0.0 -> gfx1100, 11.5.1 -> gfx1151.
+
+    Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py and
+    in install.sh.
+    """
+    if not value:
+        return None
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
+        return None
+    major, minor, step = (int(p) for p in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
+    if not (0 <= step <= 15) or major <= 0 or minor > 9:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
+def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
+    """Whether the installed torch actually resolves through the ``rocm`` meta-package.
+
+    AMD's per-gfx wheels depend on it; the generic pytorch.org ROCm wheels vendor their
+    own runtime and depend on nothing, so after a switch between them the meta-package is
+    left behind describing a family with no bearing on what torch loads. Unknown shapes
+    answer False: refusing to arbitrate leaves the environment untouched.
+    """
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("torch-*.dist-info"):
+                if not re.fullmatch(r"torch-[^-]+\.dist-info", info.name):
+                    continue
+                metadata = info / "METADATA"
+                if not metadata.is_file():
+                    continue
+                try:
+                    text = metadata.read_text(encoding = "utf-8", errors = "replace")
+                except OSError:
+                    return False
+                for line in text.splitlines():
+                    if not line.lower().startswith("requires-dist:"):
+                        continue
+                    # `Requires-Dist: rocm[libraries,devel]==7.13.0` and plain `rocm` both
+                    # count; `rocm-sdk-core` does not, it is a component not the arbiter.
+                    if re.search(r"requires-dist:\s*rocm(?![-_a-z0-9])", line, re.IGNORECASE):
+                        return True
+                return False
+    return False
+
+
+def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
+    """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None.
+
+    AMD's per-gfx index ships one runtime distribution per architecture,
+    ``rocm-sdk-libraries-<family>``, and the torch beside it holds code objects for
+    that family alone. Which one is live has to come from the ``rocm`` meta-package,
+    whose ``Requires-Dist`` names the family AMD's torch resolved (verified on
+    repo.amd.com/rocm/whl/gfx1151: ``rocm-sdk-libraries-gfx1151==7.13.0; extra ==
+    "libraries"``). Globbing for a ``rocm_sdk_libraries_gfx*`` directory instead
+    would read an ORPHAN: ``rocm`` upgrades in place across a family switch while the
+    superseded runtime keeps its own distribution name and is never uninstalled, so a
+    venv that has changed families holds both. Same reasoning and hazard as
+    _installed_rocm_wheel_family in studio/install_python_stack.py.
+
+    None means "do not act": no ``rocm``, unreadable metadata, more than one family
+    named, or a MULTI-arch family such as gfx120x-all, whose runtime carries kernels
+    for several ISAs and so contradicts no override.
+    """
+    # The bare `rocm` metadata only describes a LIVE install while torch still resolves
+    # through it. Switching from AMD's per-gfx index to a generic pytorch.org one does not
+    # uninstall it: the generic wheels vendor their own ROCm libraries and depend on no
+    # meta-package, so `rocm` is orphaned and pip never removes it. Reading it then would
+    # name the OLD family and clear an override the generic wheels may be the only reason
+    # the GPU works at all.
+    if not _torch_requires_rocm_metapackage(venv_dir):
+        return None
+    _metadata: Optional[Path] = None
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("rocm-*.dist-info"):
+                # rocm-sdk-core and rocm-sdk-libraries-* also start "rocm-"; only the
+                # bare `rocm` meta-package arbitrates.
+                if (
+                    re.fullmatch(r"rocm-[^-]+\.dist-info", info.name)
+                    and (info / "METADATA").is_file()
+                ):
+                    _metadata = info / "METADATA"
+                    break
+    if _metadata is None:
+        return None
+    try:
+        _text = _metadata.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    _families = set()
+    for _line in _text.splitlines():
+        if not _line.lower().startswith("requires-dist:"):
+            continue
+        _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([0-9a-zA-Z]+)", _line)
+        if _m:
+            _families.add(_m.group(1).lower())
+    if len(_families) != 1:
+        return None  # nothing to arbitrate with, or two runtimes and no tie-break
+    _family = _families.pop()
+    # Single ISA only: gfx120x-all style families cover several architectures, so an
+    # override naming one of them is contradicted by nothing.
+    return _family if re.fullmatch(r"gfx[0-9a-f]+", _family) else None
+
+
+def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
+    """Drop an HSA_OVERRIDE_GFX_VERSION no installed kernel can satisfy (#7331).
+
+    libhsakmt (topology.c) writes the variable's major.minor.stepping straight into
+    the KFD node's EngineId and ROCr names the agent from that, so the override
+    decides the ISA every later process sees. Against per-gfx wheels, which hold code
+    objects for one architecture, an override naming a different one leaves the
+    runtime asking for kernels the install does not contain and every launch fails on
+    the first allocation, exactly as before the routing fix.
+
+    install.sh clears it for the one launch it performs itself, but that unset dies
+    with the installer: `unsloth studio update` runs install_python_stack.py as a
+    child (studio/setup.sh:1444) and every later launch inherits the user's shell
+    instead. This is the chokepoint the exec, the Windows Popen and the in-process
+    paths all pass through.
+
+    Keyed on the INSTALL, never on a hardware probe: on a generic multi-arch index
+    there is nothing to contradict and the override is often the only thing making
+    the GPU usable. Returns the installed arch when the variable was dropped.
+    """
+    raw = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+    # Windows ROCm ignores the variable entirely, so there is nothing to correct.
+    if not raw or platform.system() == "Windows":
+        return None
+    arch = _installed_rocm_single_arch(venv_dir)
+    if arch is None:
+        return None
+    named = _hsa_override_gfx_arch(raw)
+    # Unreadable: libhsakmt rejects it too, so it is not this spoof to undo.
+    if named is None or named == arch:
+        return None
+    os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
+    return arch
+
+
+def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
+    """Run the #7331 spoof clear for whichever entry point is about to launch.
+
+    Every launch needs it, not just plain ``unsloth studio``: the group callback
+    returns early once a subcommand is named, and ``unsloth run`` is bound straight
+    to ``studio_run``, so both would otherwise reach llama-server and the backend
+    with the contradicting override still set. Idempotent, so chained entry points
+    are free to call it twice.
+    """
+    _venv = STUDIO_HOME / "unsloth_studio"
+    _arch = _clear_hsa_override_contradicting_install(
+        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    )
+    if _arch is not None and not silent:
+        typer.echo(
+            f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
+            f"only, so the runtime has to report the real arch. Remove the export "
+            f"from your shell profile as well, or the next terminal restores it.",
+            err = True,
+        )
+    return _arch
 
 
 def _find_run_py() -> Optional[Path]:
@@ -1398,15 +1571,18 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
-        "/v1/messages takes the on direction per request (enable_tools) because it has no "
-        "confirmation channel; the off direction still applies everywhere.",
+        "every request. Default: no server-wide policy, so the per-chat UI toggle "
+        "(the request's own enable_tools) decides; `unsloth studio run` is the "
+        "launcher that defaults them on. /v1/messages takes the on direction per "
+        "request (enable_tools) because it has no confirmation channel; the off "
+        "direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
         "--disable-dns-pinning",
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
     password: str = typer.Option(
         "",
@@ -1544,6 +1720,10 @@ def studio_default(
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    # Before any of the three launch paths below, and before the environment is handed
+    # to a child: an override contradicting single-arch wheels makes every kernel launch
+    # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
+    _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -1915,17 +2095,19 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind. /v1/messages takes the on "
-            "direction per request (enable_tools) because it has no confirmation "
-            "channel; the off direction still applies everywhere."
+            "every request. Default: on for every bind, with a request's own "
+            "enable_tools: false (what the Studio UI sends) honored. /v1/messages "
+            "takes the on direction per request (enable_tools) because it has no "
+            "confirmation channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
         "--disable-dns-pinning",
         rich_help_panel = _RUN_PANEL_TOOLS,
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
     tool_call_healing: Optional[bool] = typer.Option(
         None,
@@ -2091,6 +2273,10 @@ def run(
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    # The group callback returns before its own clear once a subcommand is named, and
+    # `unsloth run` is bound straight here, so this path has to do it itself or
+    # llama-server and the backend start with the contradicting override (#7331).
+    _clear_hsa_override_before_launch(silent = bool(silent))
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
@@ -2197,9 +2383,11 @@ def run(
             )
         host = "127.0.0.1"
 
-    # Tool policy no longer depends on the bind: tools default on everywhere
-    # (--secure is a loopback tunnel; the operator owns a raw bind). Resolve here
-    # so the re-exec'd child inherits a concrete decision.
+    # Tool policy does not depend on the bind: tools default on everywhere
+    # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
+    # this stays None, so the default applies without becoming an override and a
+    # request's own enable_tools: false is honored. Resolve here so the re-exec'd
+    # child inherits the same decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -2317,10 +2505,11 @@ def run(
             args.append("--api-only")
         if silent:
             args.append("--silent")
-        # Forward the resolved tool policy so the child doesn't re-resolve.
-        if enable_tools:
+        # Forward the resolved tool policy so the child doesn't re-resolve. None
+        # forwards neither flag: the child then leaves the policy unset too.
+        if enable_tools is True:
             args.append("--enable-tools")
-        else:
+        elif enable_tools is False:
             args.append("--disable-tools")
         # Forward --yes only if the user passed it; resolution no longer prompts.
         if yes:
@@ -2371,8 +2560,10 @@ def run(
     # Match the route handlers' import path: run.py adds studio/backend/ to
     # sys.path, so they import as `state.tool_policy`. Set this before
     # run_server() starts uvicorn; once sockets are bound, routes can be hit.
-    from state.tool_policy import set_tool_policy
+    # run_server() applies the same pair; both calls are idempotent.
+    from state.tool_policy import set_tool_policy, set_tool_policy_default
 
+    set_tool_policy_default(True)
     set_tool_policy(enable_tools)
 
     run_kwargs = dict(
@@ -2460,7 +2651,7 @@ def run(
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
     _is_external = is_external_host(host)
-    if not enable_tools:
+    if enable_tools is False:
         _tool_notice = "Server-side tools are DISABLED (--disable-tools)."
     elif secure:
         _tool_notice = (
@@ -2819,6 +3010,331 @@ def _wait_for_windows_setup_process(process) -> int:
         raise
 
 
+# -NoProfile below drops $PSDefaultParameterValues wholesale, and on a corporate host a profile
+# entry such as 'Invoke-WebRequest:Proxy' may be the only route to the VC++ runtime and the uv
+# installer setup.ps1 downloads. install.ps1 hands over the keys it kept; a standalone update
+# has no installer above it, so the probe below asks a short-lived PowerShell that DOES load
+# the profile.
+
+# Markers unlikely in a banner, and fixed so both sides agree.
+_PROXY_PROBE_BEGIN = "<<UNSLOTH_PROXY_DEFAULTS>>"
+_PROXY_PROBE_END = "<</UNSLOTH_PROXY_DEFAULTS>>"
+
+_PS_PROXY_PROBE = (
+    "$ErrorActionPreference = 'SilentlyContinue'; "
+    # Windows PowerShell 5.1 writes REDIRECTED output in the console code page while this
+    # process decodes UTF-8, so a non-ASCII proxy value came back with replacement characters,
+    # still parsed as JSON, and handed setup a proxy that does not work.
+    "try { [Console]::OutputEncoding = "
+    "New-Object System.Text.UTF8Encoding $false } catch { }; "
+    "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
+    "$PSModuleAutoLoadingPreference = 'All'; "
+    # Launched -NoProfile, with the caller's profiles dot-sourced by name instead, because left
+    # to itself this process loads the CONSOLEHOST profile -- an unrelated host's for a caller
+    # in the VS Code console. $PROFILE is fully populated under -NoProfile (the paths are
+    # computed, not loaded), so naming them is exact.
+    "$__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
+    # All-users first, PowerShell's own startup order: a machine-managed proxy lives in
+    # AllUsersAllHosts on a domain-joined box, and the user's profile only overrides it by
+    # running last.
+    "try { $__unslothProfiles = @($PROFILE.AllUsersAllHosts); "
+    # ONLY the caller's host profile, and only when the caller could be identified: sourcing
+    # every Microsoft.*_profile.ps1 in the directory ran profiles for hosts nobody was using,
+    # which can print, clobber $PSDefaultParameterValues, or exit before the record is written.
+    "if ($__unslothHostProfileName) { "
+    "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.AllUsersCurrentHost) "
+    "$__unslothHostProfileName) }; "
+    "$__unslothProfiles += $PROFILE.AllUsersCurrentHost; "
+    "$__unslothProfiles += $PROFILE.CurrentUserAllHosts; "
+    # ADDED, never substituted: TERM_PROGRAM=vscode is set by every VS Code integrated terminal,
+    # not only the PowerShell extension's own host, so a plain pwsh terminal there loads
+    # Microsoft.PowerShell_profile.ps1 and substitution missed the proxy it actually has.
+    "if ($__unslothHostProfileName) { "
+    "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.CurrentUserCurrentHost) "
+    "$__unslothHostProfileName) }; "
+    # Current-host profile LAST.
+    "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; "
+    "foreach ($__unslothProfile in ($__unslothProfiles | Select-Object -Unique)) { "
+    "if ($__unslothProfile -and (Test-Path -LiteralPath $__unslothProfile -PathType Leaf)) { "
+    "try { . $__unslothProfile } catch { } } } } catch { }; "
+    # Re-pinned, because setting [Console]::OutputEncoding is an ordinary profile customization
+    # that overrides the pin above. The parent decodes this stream as UTF-8, so a console left
+    # on a legacy code page corrupts the framed record and the proxy URI with it.
+    "try { [Console]::OutputEncoding = "
+    "New-Object System.Text.UTF8Encoding $false } catch { }; "
+    "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
+    "$out = @{}; "
+    "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
+    "if ($k -is [string] -and [regex]::IsMatch($k, ':Proxy(Credential|UseDefaultCredentials)?$', "
+    "[System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { "
+    "$v = $PSDefaultParameterValues[$k]; "
+    "if ($v -is [uri]) { $out[$k] = $v.AbsoluteUri } "
+    "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } "
+    # A script block is the supported form for a DYNAMIC default -- e.g.
+    # { [uri]$env:CORP_PROXY } -- evaluated per call by Invoke-WebRequest. Evaluate here and
+    # serialize the RESULT: executable code must not cross the handoff.
+    "elseif ($v -is [scriptblock]) { try { $r = & $v; "
+    "if ($r -is [uri]) { $out[$k] = $r.AbsoluteUri } "
+    "elseif ($r -is [string] -or $r -is [bool]) { $out[$k] = $r } } catch { } } } }; "
+    # $out already holds copies, so the profile's table is now only a hazard:
+    # ConvertTo-Json:AsArray = $true is a legitimate setting that turns this record into a JSON
+    # array, which the reader rejects for not being a dictionary.
+    "$PSDefaultParameterValues = @{}; "
+    # FRAMED, not bare: the profile is free to print a banner or a MOTD, and that output
+    # arriving ahead of the JSON made the parse throw. Module-qualified, as with the uv lookup:
+    # an alias named ConvertTo-Json or Write-Output would otherwise reshape the frame.
+    f"if ($out.Count -gt 0) {{ "
+    f"Microsoft.PowerShell.Utility\\Write-Output '{_PROXY_PROBE_BEGIN}'; "
+    f"$out | Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress; "
+    f"Microsoft.PowerShell.Utility\\Write-Output '{_PROXY_PROBE_END}' }}"
+)
+
+
+# What the CALLER's host names its own CurrentUserCurrentHost profile, when we can tell. An
+# unidentifiable host gets no extra profile rather than someone else's.
+_HOST_PROFILE_BY_TERM_PROGRAM = {"vscode": "Microsoft.VSCode_profile.ps1"}
+
+
+def _caller_host_profile_name() -> Optional[str]:
+    term_program = (os.environ.get("TERM_PROGRAM") or "").strip().casefold()
+    return _HOST_PROFILE_BY_TERM_PROGRAM.get(term_program)
+
+
+# Windows PowerShell's own module directory, under %SystemRoot%.
+_WINDOWS_PS_MODULE_DIR = r"System32\WindowsPowerShell\v1.0\Modules"
+_WINDOWS_PS_HOSTS = frozenset({"powershell.exe", "powershell", "powershell_ise.exe"})
+
+
+def _fold_module_entry(entry: str) -> str:
+    """A PSModulePath entry reduced to a comparable form (separator and case insensitive)."""
+    return entry.replace("/", "\\").rstrip("\\").casefold()
+
+
+def _windows_powershell_module_path(current: str) -> Optional[str]:
+    """``current`` with Windows PowerShell's own module directory first, or None to leave it be.
+
+    PowerShell 7 strips its module paths only when IT launches powershell.exe, so reached through
+    this Python process the child keeps them in FRONT and resolves 5.1's own modules to the
+    PowerShell 7 copies. A profile that imports one then throws while it is dot-sourced and the
+    proxy it was going to publish is lost. Same repair as install.ps1, applied per probed host:
+    pwsh needs none, because PowerShell 7 prefixes its own paths on startup."""
+    root = os.environ.get("SystemRoot")
+    if not root:
+        return None
+    own = root.rstrip("\\/") + "\\" + _WINDOWS_PS_MODULE_DIR
+    entries = [entry for entry in current.split(";") if entry.strip()]
+    if entries and _fold_module_entry(entries[0]) == _fold_module_entry(own):
+        return None
+    kept = [e for e in entries if _fold_module_entry(e) != _fold_module_entry(own)]
+    return ";".join([own] + kept)
+
+
+def _profile_probe_env(host: str = "") -> dict:
+    """The probe child's environment: the caller's host profile when it is known, and the probed
+    host's own module precedence."""
+    env = dict(os.environ)
+    name = _caller_host_profile_name()
+    if name:
+        env["_UNSLOTH_PS_HOST_PROFILE"] = name
+    else:
+        env.pop("_UNSLOTH_PS_HOST_PROFILE", None)
+    if platform.system() == "Windows" and _fold_module_entry(host).rsplit("\\", 1)[-1] in (
+        _WINDOWS_PS_HOSTS
+    ):
+        # os.environ upper-cases keys on Windows, so the copy is keyed PSMODULEPATH: reading
+        # "PSModulePath" misses the caller's value and adds a second, case-differing entry.
+        key = next((k for k in env if k.upper() == "PSMODULEPATH"), "PSModulePath")
+        reordered = _windows_powershell_module_path(env.get(key, ""))
+        if reordered:
+            env[key] = reordered
+    return env
+
+
+def _framed_probe_record(stdout: str) -> Optional[str]:
+    """The JSON between the markers, or None. Tolerates anything the profile printed."""
+    start = stdout.find(_PROXY_PROBE_BEGIN)
+    if start < 0:
+        return None
+    start += len(_PROXY_PROBE_BEGIN)
+    end = stdout.find(_PROXY_PROBE_END, start)
+    if end < 0:
+        return None
+    return stdout[start:end].strip() or None
+
+
+def _profile_probe_hosts() -> list[str]:
+    r"""The PowerShell hosts whose profile to ask, most likely caller first.
+
+    The two editions keep SEPARATE profiles, so both are asked and the caller's edition goes
+    first, its value winning on merge.
+
+    The caller is inferred from PSModulePath, which every host exports: Windows PowerShell's
+    points at ``...\WindowsPowerShell\v1.0\Modules`` and pwsh's at ``...\PowerShell\7\Modules``.
+    By ORDER, not by absence, since a machine can have both trees on PSModulePath at once and
+    each host puts its OWN module directory first. Neither present, or both at the same
+    position: keep the default order rather than guess.
+    """
+    hosts = ["pwsh.exe", "powershell.exe"]
+    module_path = os.environ.get("PSModulePath", "").lower()
+    windows_at = module_path.find("windowspowershell")
+    seven_at = module_path.find("powershell\\7")
+    if windows_at >= 0 and (seven_at < 0 or windows_at < seven_at):
+        hosts = ["powershell.exe", "pwsh.exe"]
+    return [host for host in hosts if shutil.which(host)]
+
+
+# Annotations below are quoted: this module has no `from __future__ import annotations`, and on
+# Python 3.9 evaluating `str | list[str]` at def time raises TypeError, taking the CLI import
+# with it.
+
+# The whole profile probe's budget, shared across however many hosts are tried.
+_PROFILE_PROBE_TIMEOUT_SECONDS = 20.0
+
+
+def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str]:
+    """The caller's profile proxy defaults as JSON, or None.
+
+    install.ps1 hands these over in the environment, but a standalone `unsloth studio update`
+    has no installer above it and a PowerShell variable does not reach this Python process. So
+    ask for it, in a throwaway process whose only job is to print the table.
+
+    Several hosts may be given: their answers are MERGED, earlier hosts winning per key.
+
+    Best effort. A slow, interactive or broken profile costs one timeout and the child proceeds
+    as it does today."""
+    hosts = [powershell] if isinstance(powershell, str) else list(powershell)
+    # ONE budget for the whole probe, not one per host: with both editions installed, two hung
+    # profiles would otherwise stall every standalone update for twice the stated cost.
+    deadline = time.monotonic() + _PROFILE_PROBE_TIMEOUT_SECONDS
+    merged: dict = {}
+    # $PSDefaultParameterValues keys are case-INSENSITIVE, so "Invoke-WebRequest:Proxy" and
+    # "invoke-webrequest:proxy" are one entry to PowerShell and two to a Python dict. Only the
+    # first spelling seen is handed on, or the prelude would replay both and let the
+    # lower-priority host's land last.
+    claimed: dict = {}
+    seen_keys: set = set()
+    for host in hosts:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            probe = subprocess.run(
+                [
+                    host,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    _PS_PROXY_PROBE,
+                ],
+                env = _profile_probe_env(host),
+                capture_output = True,
+                text = True,
+                # text=True alone decodes with the locale codec and STRICT errors, so a UTF-8
+                # profile banner on an ANSI console raised UnicodeDecodeError -- neither
+                # OSError nor SubprocessError, so it escaped the handler below and took the
+                # update down.
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = remaining,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        payload = _framed_probe_record(probe.stdout or "")
+        if not payload:
+            continue
+        try:
+            # Validated, not trusted: the framing finds the record, this confirms it is one, so
+            # nothing hands the child a string ConvertFrom-Json throws on.
+            parsed = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict) or not parsed:
+            continue
+        # Per CMDLET, not per key: pairing the earlier host's Proxy with the later host's
+        # ProxyUseDefaultCredentials would offer the user's Windows credentials to a proxy whose
+        # own profile never asked for that. A cmdlet is claimed whole by the first host.
+        for key, value in parsed.items():
+            if not isinstance(key, str):
+                continue
+            cmdlet = key.split(":", 1)[0].casefold()
+            folded = key.casefold()
+            if _cmdlet_claimed_elsewhere(cmdlet, claimed, parsed):
+                continue
+
+            if folded in seen_keys:
+                continue
+            claimed[cmdlet] = parsed
+            seen_keys.add(folded)
+            merged[key] = value
+    if not merged:
+        return None
+    return json.dumps(merged)
+
+
+def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> bool:
+    """Whether another host already owns the cmdlet family ``cmdlet`` belongs to.
+
+    A literal comparison is not enough: the command half of a $PSDefaultParameterValues key may
+    be a wildcard, and PowerShell applies such an entry to every cmdlet it matches. Overlap in
+    either direction claims the family.
+    """
+    for owned, owner in claimed.items():
+        if owner is source:
+            continue
+        if owned == cmdlet or _patterns_can_overlap(cmdlet, owned):
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize = 512)
+def _patterns_can_overlap(left: str, right: str) -> bool:
+    """Whether any command name matches BOTH wildcard patterns.
+
+    Two patterns can share matches without either matching the other as a STRING (Invoke-Web* and
+    *-WebRequest both apply to Invoke-WebRequest), so the languages are intersected rather than
+    string-matched -- otherwise a host's Start-Bits* entry swallowed the other host's unrelated
+    Invoke-Web* one. A character class is not decided, only assumed to overlap: that is the
+    conservative answer, and no cmdlet name is written that way.
+    """
+    if "[" in left or "[" in right:
+        return True
+
+    @functools.lru_cache(maxsize = None)
+    def walk(i: int, j: int) -> bool:
+        # Both patterns are consumed in step, except at a '*', which may absorb one more
+        # character from the other side or match nothing at all.
+        if i == len(left):
+            return all(char == "*" for char in right[j:])
+        if j == len(right):
+            return all(char == "*" for char in left[i:])
+        here, there = left[i], right[j]
+        if here == "*":
+            return walk(i + 1, j) or walk(i, j + 1)
+        if there == "*":
+            return walk(i, j + 1) or walk(i + 1, j)
+        if here == "?" or there == "?" or here == there:
+            return walk(i + 1, j + 1)
+        return False
+
+    return walk(0, 0)
+
+
+_PS_PROXY_DEFAULTS_PRELUDE = (
+    "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
+    # Read once, then GONE from the environment: a profile proxy can carry credentials
+    # (http://user:secret@proxy is the ordinary corporate form) and every native process setup
+    # starts would otherwise inherit it. Needed only by this session's
+    # $PSDefaultParameterValues, which is not inherited.
+    "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue; "
+    "if ($__unslothProxyDefaults) { try { "
+    "(ConvertFrom-Json $__unslothProxyDefaults).PSObject.Properties | ForEach-Object { "
+    "$PSDefaultParameterValues[$_.Name] = $_.Value } } catch { } }; "
+)
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -2836,10 +3352,19 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if platform.system() == "Windows":
         powershell_args = ["powershell.exe"]
+        # PRESENCE, not truthiness: install.ps1 publishes this around the handoff and sets it to
+        # "{}" when it found no proxy, so treating that as "nobody handed anything over" would
+        # send an installer launch off to reload the profiles it deliberately discarded.
+        if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
+            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
+            if probed:
+                env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
+        # -NoProfile unconditionally, not just on the hidden branch: install.ps1 hands off to
+        # exactly here from a console where stdout is a tty, so the hidden branch does not fire
+        # and a profile that aliases uv or python would break setup.ps1.
+        powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            powershell_args.extend(
-                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
-            )
+            powershell_args.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
         # Use -Command + `*>&1` (not -File) so setup.ps1's Write-Host output
         # (Information stream #6) merges into stdout. -File drops it when
         # stdout is a pipe, e.g. `unsloth studio update --local 2>&1 | tee`.
@@ -2850,7 +3375,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                f"& '{script_pwsh_literal}' *>&1",
+                f"{_PS_PROXY_DEFAULTS_PRELUDE}& '{script_pwsh_literal}' *>&1",
             ]
         )
         # Explicitly hand std handles to the child so CI tee sees setup.ps1's
@@ -2904,8 +3429,11 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
+        # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
+        # branch left the visible console path, where a profile is exactly what IS loaded.
+        ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+            ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
         for script in candidates:
             try:

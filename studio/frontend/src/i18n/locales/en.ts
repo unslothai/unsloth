@@ -14,7 +14,10 @@ export const en = {
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
     pickModelFile: "Pick a model file from disk",
-    ejectLoadedModel: "Eject loaded model",
+    modelDropped: "No longer offered",
+    modelDroppedByProvider: "{provider} · no longer offered",
+    modelDisabled: "Not enabled",
+    modelDisabledByProvider: "{provider} · not enabled",
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
@@ -78,6 +81,10 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      audio: "Audio",
+      // Hover text while the row spins, before this machine's capability is measured.
+      trainChecking: "Checking this machine for training support...",
+      videoChecking: "Checking this machine for video support...",
       more: "More",
       // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
@@ -369,6 +376,9 @@ export const en = {
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        apiOnly: "Only unload models loaded by the API",
+        apiOnlyDescription:
+          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -400,6 +410,9 @@ export const en = {
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
           "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
+        showLoadedModels: "Loaded models indicator",
+        showLoadedModelsDescription:
+          "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
       },
       startup: {
         sectionTitle: "Startup",
@@ -409,11 +422,6 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
-      gettingStarted: "Getting started",
-      startOnboarding: "Start onboarding",
-      startOnboardingDescription:
-        "Reopen the setup wizard without changing your account.",
-      startOnboardingAction: "Start onboarding",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
@@ -880,6 +888,11 @@ export const en = {
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
+      thinking: {
+        collapseByDefault: "Collapse Thinking by default",
+        collapseByDefaultDescription:
+          "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
@@ -888,6 +901,9 @@ export const en = {
         allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
           "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+        blockedBanner: "Blocked {count} external resource from {hosts}.",
+        blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
+        blockedBannerAction: "Allow for this canvas",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -953,6 +969,10 @@ export const en = {
         "Manage chat history and uploaded files stored on this device.",
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
+      archivedImages: "Archived images",
+      archivedImagesDescription: "View and manage images you have archived.",
+      archivedVideos: "Archived videos",
+      archivedVideosDescription: "View and manage videos you have archived.",
       manageAction: "Manage",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",
@@ -1170,23 +1190,7 @@ export const en = {
         "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
-      hfTokenLabel: "Hugging Face token",
       hfTokenDescription: "Required for gated or private models and datasets.",
-      hfTokenGet: "Get token",
-      hfTokenChecking: "Checking token…",
-      modelPickerDescription:
-        "Search Hugging Face or choose a trainable model already on this device.",
-      trainingMethod: "Training method",
-      trainingMethodDescription: "Choose how to fine-tune {model}",
-      trainingMethodTooltip:
-        "QLoRA uses 4-bit quantization for the lowest VRAM use. LoRA uses 16-bit weights, while full fine-tuning updates every weight.",
-      datasetPickerDescription:
-        "Search Hugging Face or choose a dataset already on this device.",
-      uploadDataset: "Upload a dataset",
-      uploadDatasetDescription: "Supports CSV, JSONL, JSON, and Parquet.",
-      chooseFile: "Choose a file",
-      format: "Format",
-      autoDetect: "Auto Detect",
       uploadLocalLabel: "Or upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",
@@ -1347,24 +1351,8 @@ export const en = {
     imageTraining: "Image training",
     goToImageTraining: "Go to image training",
     loadingRuntime: "Loading training runtime...",
+    checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",
-    sections: {
-      model: "Model",
-      dataset: "Dataset",
-      params: "Parameters",
-      training: "Training",
-      charts: "Charts",
-      progress: "Training Progress",
-    },
-    configure: {
-      title: "Configure",
-      description: "Choose a model, dataset, and training settings.",
-      startTraining: "Start Training",
-      starting: "Starting...",
-      loadingModel: "Loading model...",
-      checkingDataset: "Checking dataset...",
-      trainingConfig: "Training Config",
-    },
     dataset: {
       selectors: {
         subset: "Subset",
@@ -1386,7 +1374,6 @@ export const en = {
         manualTooLong: "Use 128 characters or fewer.",
         manualInvalid: "This value contains unsupported characters.",
       },
-      source: "Dataset source",
       sourceAriaLabel: "Dataset source",
       localDataset: "Local dataset",
       localDatasetRows: " / {count} rows",
@@ -1403,8 +1390,6 @@ export const en = {
       fileTooLarge: "File too large",
       fileTooLargeDescription:
         "{file} is {size}. Training uploads support up to {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · up to {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "This file needs conversion first",
         genericFile: "This file",
@@ -1486,7 +1471,6 @@ export const en = {
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
         "Training dataset upload accepts a single file.",
-      preview: "Preview dataset",
       previewLoadingHuggingFace:
         "Fetching dataset preview from Hugging Face...",
       previewLoading: "Loading preview...",
@@ -1508,8 +1492,6 @@ export const en = {
         requiredDescription:
           "Assign roles to columns using the dropdowns in the headers. At minimum, assign {required}.",
       },
-      split: "Split",
-      subset: "Subset",
       s3: {
         title: "S3 Configuration",
         description:
@@ -1520,20 +1502,11 @@ export const en = {
         regionPlaceholder: "us-east-1",
         prefix: "Path Prefix",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Optional path within the bucket to your dataset files",
         accessKeyId: "Access Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Your AWS secret access key",
         useIamRole: "Use IAM Role",
-        useIamRoleTooltip:
-          "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
-        testConnection: "Test Connection",
-        connectionSuccess: "Successfully connected to S3 bucket",
-        connectionFailed: "Failed to connect to S3 bucket",
-        comingSoon: "S3 integration coming soon",
-        comingSoonDescription:
-          "S3 dataset loading requires boto3. This feature is under development.",
       },
     },
     params: {
@@ -1729,7 +1702,6 @@ export const en = {
         "The run was deleted but its files could not be removed.",
       deleteArtifactsRetainedError:
         "The adapter files could not be removed, so the training run was kept in history.",
-      emptyTitle: "No training runs yet",
       emptyDescription:
         "No training runs yet. Start your first training run in the Configure tab.",
       loadError: "Failed to load training runs",
@@ -1742,9 +1714,6 @@ export const en = {
       deleteTitle: "Delete training run?",
       deleteDescription:
         "This will permanently delete this training run and all its metrics. This action cannot be undone.",
-      runCount: "{count} runs",
-      oneRun: "1 run",
-      resume: "Resume",
       resumeTraining: "Resume training",
       resuming: "Resuming...",
       deleteRun: "Delete run",
@@ -1877,9 +1846,6 @@ export const en = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
-    },
-    tour: {
-      guidedTour: "Guided Tour",
     },
   },
 } as const;

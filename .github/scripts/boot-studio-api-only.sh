@@ -2,11 +2,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Wipe Studio's auth state and boot `unsloth studio` in API-only mode in the
-# background, exporting the pid so a later step can stop it.
+# Wipe Studio's auth state and boot `unsloth studio` in the background, exporting
+# the pid so a later step can stop it.
 #
 # Usage:
 #   boot-studio-api-only.sh --port 18888 [--log logs/studio.log] [--pid-var STUDIO_PID]
+#                           [--api-only]
+#
+# On the name, and on --api-only being a flag rather than the default. The
+# UNSLOTH_API_ONLY=1 below reads like the switch and is not: nothing in unsloth_cli
+# takes it as input. Whether the web UI is served is decided by the CLI's --api-only
+# flag alone, and the backend only ever reads that variable back out (main.py, to pick
+# a CORS profile) after run.py has set it from the flag. So every caller here has in
+# fact been booting a server that serves the frontend, and the Playwright UI smokes
+# depend on exactly that -- passing --api-only unconditionally would leave them
+# driving a browser at a backend with no UI. Hence opt-in: callers with no built
+# `studio/frontend/dist` (mlx-ci.yml boots on a bare pip install) must ask for it, or
+# the server prints "Unsloth frontend build not found" and exits before it binds.
 #
 # Twenty steps across eight workflows ran this same five-line body, varying only
 # in those three values. Extracted so the three easy-to-get-wrong parts have one
@@ -36,12 +48,14 @@ set -uo pipefail
 PORT=""
 LOG="logs/studio.log"
 PID_VAR="STUDIO_PID"
+API_ONLY=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --port)    PORT="$2"; shift 2 ;;
-    --log)     LOG="$2"; shift 2 ;;
-    --pid-var) PID_VAR="$2"; shift 2 ;;
+    --port)     PORT="$2"; shift 2 ;;
+    --log)      LOG="$2"; shift 2 ;;
+    --pid-var)  PID_VAR="$2"; shift 2 ;;
+    --api-only) API_ONLY="--api-only"; shift ;;
     *) echo "boot-studio-api-only.sh: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
@@ -53,10 +67,11 @@ done
 rm -rf ~/.unsloth/studio/auth
 mkdir -p "$(dirname "$LOG")"
 
-UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$PORT" > "$LOG" 2>&1 &
+# shellcheck disable=SC2086  # $API_ONLY is one flag or empty, and must not become ''
+UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$PORT" $API_ONLY > "$LOG" 2>&1 &
 SERVER_PID=$!
 
-echo "[boot] unsloth studio --api-only on 127.0.0.1:${PORT}, pid ${SERVER_PID}, log ${LOG}"
+echo "[boot] unsloth studio ${API_ONLY:---with-frontend} on 127.0.0.1:${PORT}, pid ${SERVER_PID}, log ${LOG}"
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "${PID_VAR}=${SERVER_PID}" >> "$GITHUB_ENV"
 else

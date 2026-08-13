@@ -67,6 +67,7 @@ def _backend(
     embd = 5120,
     mla = None,
     arch = None,
+    pooling_type = None,
 ):
     """Backend with just the dims the compute-buffer estimate reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -74,6 +75,7 @@ def _backend(
     b._embedding_length = embd
     b._key_length_mla = mla  # non-None -> MLA (compressed attention)
     b._architecture = arch  # GGUF general.architecture (e.g. 'deepseek4')
+    b._pooling_type = pooling_type
     return b
 
 
@@ -134,6 +136,13 @@ class TestScaling:
         lo = b._estimate_compute_buffer_bytes(n_parallel = 4, n_ubatch = 256)
         hi = b._estimate_compute_buffer_bytes(n_parallel = 4, n_ubatch = 1024)
         assert hi > lo
+
+    def test_embedding_mode_budgets_the_first_output_buffer(self):
+        chat = _backend()._estimate_compute_buffer_bytes(n_parallel = 1, n_ubatch = 512)
+        embedding = _backend(pooling_type = 2)._estimate_compute_buffer_bytes(
+            n_parallel = 1, n_ubatch = 512
+        )
+        assert embedding > chat
 
 
 class TestFallback:
@@ -933,8 +942,10 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Native-context loop and the reduced-to-4096 fallback below it.
-        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 2
+        # Native-context loop, the reduced-to-4096 fallback below it, and the
+        # Auto drafter-drop probe above them, which caps to the same reserve so
+        # it cannot price a drafter at a context the weakest card never holds.
+        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 3
         # Gated on the chosen context, and only reachable after the pooled test.
         assert "_usable_mib=[_gpu_usable(g,pin_fraction)forginsubset]" in compact
         assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact

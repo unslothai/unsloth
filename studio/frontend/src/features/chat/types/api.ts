@@ -28,6 +28,8 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  /** Codec of the checkpoint's base model when it fine-tunes an audio model, else null. */
+  audio_type?: string | null;
 }
 
 export interface ListLorasResponse {
@@ -37,6 +39,8 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /** Opaque client attempt ID used to cancel only this in-flight load. */
+  load_request_id?: string | null;
   /**
      * Stop any chats still generating instead of getting a 409: a load replaces the single
      * llama-server they all decode on. Set only after the user confirms.
@@ -57,16 +61,17 @@ export interface LoadModelRequest {
   mlx_kv_bits?: number | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
-   * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
-   * (force draft-mtp), "dspark" (force draft-dspark with a sidecar),
-   * "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
-   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
-   * "ngram-simple" are still accepted by the backend.
+   * (platform-aware: DSpark or DFlash when the model ships that sidecar, else
+   * MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp" (force draft-mtp),
+   * "dspark" (force draft-dspark with a sidecar), "dflash" (force draft-dflash
+   * with a sidecar), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
+   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"draft-dspark"/
+   * "draft-dflash"/"ngram-mod"/"ngram-simple" are still accepted by the backend.
    */
   speculative_type?: string | null;
   /**
-   * Override --spec-draft-n-max for MTP speculative decoding. Applied only
-   * when speculative_type resolves to "mtp", "mtp+ngram", or "dspark".
+   * Override --spec-draft-n-max for drafter speculative decoding. Applied only
+   * when speculative_type resolves to "mtp", "mtp+ngram", "dspark" or "dflash".
    */
   spec_draft_n_max?: number | null;
   /**
@@ -134,13 +139,21 @@ export interface ValidateModelResponse {
 
 export interface GgufVariantDetail {
   filename: string;
+  /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
+  /** What to SHOW for `quant` ("Q6_K · distilled"); absent when the key already reads as a label. */
+  display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
   partial?: boolean;
+  /** Variants sharing this key share one companion download footprint (text
+   *  encoder, VAE, tokenizer, configs). The set is not repo-wide: one repo can
+   *  hold GGUFs of different families, and FLUX.2-klein picks its text encoder
+   *  per checkpoint size. Null/absent means unknown, so the repo is one group. */
+  dependency_key?: string | null;
 }
 
 export interface GgufVariantsResponse {
@@ -249,6 +262,8 @@ export interface LoadModelResponse {
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Cancel this exact in-flight load; never unload an already-resident model. */
+  cancel_load_request_id?: string | null;
   /** Stop any chats still generating instead of getting a 409: the unload takes down the
    * llama-server they all decode on. */
   force_cancel_active?: boolean;
@@ -337,14 +352,17 @@ export interface InferenceStatusResponse {
    * Why a speculative drafter was disabled despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
-   * "drafter_not_found" -> its MTP or DSpark sidecar was unavailable;
+   * "drafter_not_found" -> its MTP, DSpark or DFlash sidecar was unavailable;
+   * "drafter_no_vram" -> an Auto-mode fit downgrade: the model pins on GPU but
+   * the drafter's reserve does not, and Auto keeps the context rather than
+   * shrink it (choose the drafter in Settings to force it);
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
   /**
-   * Which drafter the resolution was about, "mtp" or "dspark". Auto resolves the
-   * kind itself, so speculative_type still reads "auto", and a fallback leaves
+   * Which drafter the resolution was about: "mtp", "dspark" or "dflash". Auto
+   * resolves the kind itself, so speculative_type still reads "auto", and a fallback leaves
    * the engaged type at "default": neither names the file to fix.
    */
   spec_drafter_kind?: string | null;
@@ -369,6 +387,9 @@ export interface ApiMonitorEntry {
   updated_at: number;
   finished_at?: number | null;
   duration_ms?: number | null;
+  // duration_ms covers the whole request, queue wait and prefill included. decode_ms is
+  // only the generating span, and is absent unless the engine reported it.
+  decode_ms?: number | null;
   context_length?: number | null;
   context_usage?: number | null;
   prompt_tokens?: number | null;

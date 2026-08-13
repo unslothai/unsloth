@@ -18,7 +18,10 @@ export const ptBR = {
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
     pickModelFile: "Escolher um arquivo de modelo no disco",
-    ejectLoadedModel: "Ejetar o modelo carregado",
+    modelDropped: "Não é mais oferecido",
+    modelDroppedByProvider: "{provider} · não é mais oferecido",
+    modelDisabled: "Não ativado",
+    modelDisabledByProvider: "{provider} · não ativado",
     multipleMatches:
       "Há vários {noun} correspondentes. Escolha uma opção na lista.",
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
@@ -85,6 +88,9 @@ export const ptBR = {
       recipes: "Receitas",
       images: "Imagens",
       video: "Vídeo",
+      audio: "Áudio",
+      trainChecking: "Verificando se esta máquina oferece suporte a treino...",
+      videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
       newBadge: "Novo",
@@ -380,6 +386,9 @@ export const ptBR = {
         keepKv: "Manter o contexto do chat ao descarregar por inatividade",
         keepKvDescription:
           "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
+        apiOnly: "Descarregar apenas modelos carregados pela API",
+        apiOnlyDescription:
+          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Studio e libera apenas os que uma requisição da API carregou.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -405,6 +414,9 @@ export const ptBR = {
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
         showLlamaUpdatesDescription:
           "Notifica quando uma versão mais recente do llama.cpp está disponível para executar novos modelos. Desative se você só treina modelos.",
+        showLoadedModels: "Indicador de modelos carregados",
+        showLoadedModelsDescription:
+          "Mostra um pequeno cartão no canto inferior direito listando todos os modelos atualmente na memória (chat, fala, imagem, vídeo), com um botão para liberar cada um.",
       },
       startup: {
         sectionTitle: "Inicialização",
@@ -416,11 +428,6 @@ export const ptBR = {
         saveError:
           "Não foi possível atualizar a configuração de inicialização no login.",
       },
-      gettingStarted: "Primeiros passos",
-      startOnboarding: "Iniciar configuração",
-      startOnboardingDescription:
-        "Reabre o assistente de configuração sem alterar sua conta.",
-      startOnboardingAction: "Iniciar configuração",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
@@ -899,6 +906,11 @@ export const ptBR = {
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      thinking: {
+        collapseByDefault: "Recolher o raciocínio por padrão",
+        collapseByDefaultDescription:
+          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
@@ -907,6 +919,9 @@ export const ptBR = {
         allowNetworkAccess: "Permitir acesso à rede no canvas",
         allowNetworkAccessDescription:
           "Permite que as pré-visualizações do canvas carreguem scripts, estilos, fontes, mídia e recursos de rede de CDNs. Mantenha desativado para pré-visualizações totalmente offline.",
+        blockedBanner: "{count} recurso externo de {hosts} bloqueado.",
+        blockedBannerPlural: "{count} recursos externos de {hosts} bloqueados.",
+        blockedBannerAction: "Permitir neste Canvas",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",
@@ -973,6 +988,10 @@ export const ptBR = {
         "Gerencie o histórico de chats e os arquivos enviados que ficam armazenados neste dispositivo.",
       archivedChats: "Chats arquivados",
       archivedChatsDescription: "Veja e gerencie os chats que você arquivou.",
+      archivedImages: "Imagens arquivadas",
+      archivedImagesDescription: "Veja e gerencie as imagens que você arquivou.",
+      archivedVideos: "Vídeos arquivados",
+      archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
       manageAction: "Gerenciar",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
@@ -1196,24 +1215,8 @@ export const ptBR = {
       modelTooltip: "O modelo base que você quer ajustar.",
       methodTooltip: "Como o modelo é treinado. LoRA e QLoRA atualizam adaptadores pequenos em vez de todos os pesos.",
       datasetTooltip: "Os dados de treinamento usados para ajustar o modelo.",
-      hfTokenLabel: "Token do Hugging Face",
       hfTokenDescription:
         "Necessário para modelos e conjuntos de dados restritos ou privados.",
-      hfTokenGet: "Obter token",
-      hfTokenChecking: "Verificando token…",
-      modelPickerDescription:
-        "Pesquise no Hugging Face ou escolha um modelo treinável já disponível neste dispositivo.",
-      trainingMethod: "Método de treinamento",
-      trainingMethodDescription: "Escolha como fazer o fine-tuning de {model}",
-      trainingMethodTooltip:
-        "O QLoRA usa quantização de 4 bits para reduzir ao mínimo o uso de VRAM. O LoRA usa pesos de 16 bits, enquanto o fine-tuning completo atualiza todos os pesos.",
-      datasetPickerDescription:
-        "Pesquise no Hugging Face ou escolha um dataset já disponível neste dispositivo.",
-      uploadDataset: "Enviar um dataset",
-      uploadDatasetDescription: "Compatível com CSV, JSONL, JSON e Parquet.",
-      chooseFile: "Escolher um arquivo",
-      format: "Formato",
-      autoDetect: "Detecção automática",
       uploadLocalLabel: "Ou envie um arquivo local",
       sourceBrowse: "Procurar",
       releaseToUpload: "Solte para enviar",
@@ -1379,24 +1382,8 @@ export const ptBR = {
       history: "Histórico",
     },
     loadingRuntime: "Carregando ambiente de execução de treino...",
+    checkingSupport: "Verificando se esta máquina oferece suporte a treino...",
     backToHistory: "Voltar ao histórico",
-    sections: {
-      model: "Modelo",
-      dataset: "Dataset",
-      params: "Parâmetros",
-      training: "Treinamento",
-      charts: "Gráficos",
-      progress: "Progresso do Treinamento",
-    },
-    configure: {
-      title: "Configurar",
-      description: "Escolha um modelo, dataset e configurações de treinamento.",
-      startTraining: "Iniciar Treinamento",
-      starting: "Iniciando...",
-      loadingModel: "Carregando modelo...",
-      checkingDataset: "Verificando dataset...",
-      trainingConfig: "Configuração de Treino",
-    },
     dataset: {
       selectors: {
         subset: "Subconjunto",
@@ -1419,7 +1406,6 @@ export const ptBR = {
         manualTooLong: "Use no máximo 128 caracteres.",
         manualInvalid: "Este valor contém caracteres não suportados.",
       },
-      source: "Origem do dataset",
       sourceAriaLabel: "Origem do dataset",
       localDataset: "Dataset local",
       localDatasetRows: " / {count} linhas",
@@ -1436,8 +1422,6 @@ export const ptBR = {
       fileTooLarge: "Arquivo muito grande",
       fileTooLargeDescription:
         "{file} tem {size}. Os uploads de treinamento aceitam até {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · até {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Este arquivo precisa ser convertido primeiro",
         genericFile: "Este arquivo",
@@ -1524,7 +1508,6 @@ export const ptBR = {
       uploadOneFileAtATime: "Envie um arquivo por vez",
       uploadSingleFileDescription:
         "O upload do dataset de treinamento aceita apenas um único arquivo.",
-      preview: "Pré-visualizar dataset",
       previewLoadingHuggingFace:
         "Buscando a pré-visualização do dataset no Hugging Face...",
       previewLoading: "Carregando pré-visualização...",
@@ -1546,8 +1529,6 @@ export const ptBR = {
         requiredDescription:
           "Atribua funções às colunas usando os menus nos cabeçalhos. Atribua pelo menos {required}.",
       },
-      split: "Divisão (Split)",
-      subset: "Subconjunto (Subset)",
       s3: {
         title: "Configuração do S3",
         description: "Carregue datasets em .parquet, .json, .jsonl ou .csv do Amazon S3",
@@ -1557,18 +1538,11 @@ export const ptBR = {
         regionPlaceholder: "us-east-1",
         prefix: "Prefixo do Caminho",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Caminho opcional dentro do bucket para os arquivos do seu dataset",
         accessKeyId: "ID da Chave de Acesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Chave de Acesso Secreta",
         secretAccessKeyPlaceholder: "Sua chave de acesso secreta da AWS",
         useIamRole: "Usar Função IAM",
-        useIamRoleTooltip: "Usa credenciais de função IAM em vez de chaves de acesso (recomendado para EC2/SageMaker)",
-        testConnection: "Testar Conexão",
-        connectionSuccess: "Conectado com sucesso ao bucket S3",
-        connectionFailed: "Falha ao conectar ao bucket S3",
-        comingSoon: "Integração com S3 em breve",
-        comingSoonDescription: "O carregamento de datasets do S3 requer o boto3. Este recurso está em desenvolvimento.",
       },
     },
     params: {
@@ -1754,7 +1728,6 @@ export const ptBR = {
     },
     history: {
       title: "Histórico",
-      emptyTitle: "Nenhuma execução de treino ainda",
       emptyDescription:
         "Nenhuma execução de treino ainda. Inicie sua primeira execução na aba Configurar.",
       loadError: "Falha ao carregar as execuções de treino",
@@ -1782,9 +1755,6 @@ export const ptBR = {
         "A execução foi excluída, mas não foi possível apagar seus arquivos.",
       deleteArtifactsRetainedError:
         "Não foi possível remover os arquivos do adaptador, então a execução foi mantida no histórico.",
-      runCount: "{count} execuções",
-      oneRun: "1 execução",
-      resume: "Retomar",
       resumeTraining: "Retomar treinamento",
       resuming: "Retomando...",
       deleteRun: "Excluir execução",
@@ -1917,9 +1887,6 @@ export const ptBR = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: streaming (sem download completo)",
       modelWeights: "Pesos do modelo",
-    },
-    tour: {
-      guidedTour: "Tour Guiado",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

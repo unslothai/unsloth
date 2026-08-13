@@ -161,26 +161,46 @@ SLIM_BACKEND_MODULE_GLOBS = {
     },
     "cuda": {"linux": "libggml-cuda.so*", "windows": "ggml-cuda.dll"},
     "metal": {"macos": "libggml-metal*.dylib"},
-    "rocm": {"linux": "libggml-hip.so*", "windows": "*hip*.dll"},
+    # Windows rocm must name the ggml module: the bundles also ship amdhip64,
+    # hipblas and libhipblaslt, which a looser *hip*.dll would accept.
+    "rocm": {"linux": "libggml-hip.so*", "windows": "ggml-hip*.dll"},
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
 # Everything the slim wiring mirrors from the llama bin dir: the core ggml
 # sonames plus every dlopen'd backend module (CPU variants included). libggml*
-# matches .so and .dylib alike; ggml*.dll covers Windows. libomp*.dll rides along
-# because llama's clang-built windows-arm64 ggml-base.dll imports
-# libomp140.aarch64.dll, shipped in the llama bundle but never a system DLL, so
-# the loader needs it next to whisper-server.exe (MSVC x64 uses System32
-# vcomp140.dll; Linux ggml needs system libgomp.so.1, which llama already requires).
-SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll", "libomp*.dll")
+# matches .so and .dylib alike; ggml*.dll covers Windows. libomp* rides along
+# because llama's clang-built slices (windows x64/arm64, linux arm64) link ggml
+# against the LLVM OpenMP runtime and ship it in the bundle, so the loader can
+# never find it on the host. Linux x64 (gcc, host libgomp.so.1) and macOS (Apple
+# clang, no OpenMP) ship none, so the globs match nothing there.
+SLIM_GGML_LIBRARY_GLOBS = (
+    "libggml*",
+    "ggml*.dll",
+    "libomp*.dll",
+    "libomp*.so*",
+    "libomp*.dylib",
+)
 SLIM_ROCM_LIBRARY_GLOBS = (
     "libamd*.so*",
     "libhip*.so*",
     "libhsa*.so*",
     "libroc*.so*",
 )
+# Kernel catalogs a linux ROCm llama bundle can ship, mirrored into the whisper
+# bin dir so the packaged libraries find their Tensile kernels beside them.
 SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
-SLIM_RUNTIME_WIRING_VERSION = 2
+# Of those, the ones a paired runtime must actually carry. hipBLASLt builds no
+# Tensile kernels for gfx1030 / RDNA2, so llama's linux-x64-rocm-gfx103X bundle
+# ships libhipblaslt.so.1 with no hipblaslt/ catalog while every other published
+# target carries one. rocblas is load-bearing: libggml-hip links librocblas
+# directly and every published linux ROCm bundle ships rocblas/library. The
+# llama installer copies only the catalogs the archive has, so demanding both
+# here rejected a runtime llama.cpp itself runs fine on (#8364).
+SLIM_ROCM_REQUIRED_RUNTIME_DIRS = ("rocblas",)
+# 3: libomp*.so*/dylib joined the wiring, so version 2 installs are missing
+# libomp.so.5 on linux arm64 and must re-wire.
+SLIM_RUNTIME_WIRING_VERSION = 3
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
@@ -442,6 +462,18 @@ def llama_runtime_pairs(
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
 
+def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
+    """Whether a paired Windows llama runtime carries a GPU ggml backend module.
+    Only the cpu bundle links ggml against libomp, and bundle_profile cannot tell
+    the two apart: it is absent on both the published rocm artifacts and every
+    upstream-sourced install, so the files on disk decide."""
+    for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
+        glob = per_os.get("windows")
+        if backend != "cpu" and glob and any(llama_bin_dir.glob(glob)):
+            return True
+    return False
+
+
 def slim_pairing_for_artifact(
     artifact: dict[str, Any], host: HostInfo, backend: str
 ) -> tuple[Path, str] | None:
@@ -471,7 +503,21 @@ def slim_pairing_for_artifact(
     if not isinstance(sonames, list) or not sonames:
         log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
         return None
-    missing = [str(name) for name in sonames if not (llama_bin_dir / str(name)).is_file()]
+    required_sonames = [str(name) for name in sonames]
+    if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
+        # The shared Windows manifest lists libomp only because the cpu bundle's
+        # ggml links against it; a GPU bundle neither ships nor imports it, so
+        # requiring it there only mis-rejects. link_ggml_runtime still wires it.
+        # This drops libomp140.aarch64.dll as readily as the x64 name, which is
+        # safe only while llama publishes no Windows arm64 GPU bundle: that slice
+        # is clang-built and its ggml really does need LLVM OpenMP (see
+        # SLIM_GGML_LIBRARY_GLOBS). Re-check this gate before adding one.
+        required_sonames = [
+            name
+            for name in required_sonames
+            if not (name.lower().startswith("libomp") and name.lower().endswith(".dll"))
+        ]
+    missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
         log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
         return None
@@ -903,11 +949,20 @@ def link_runtime_directories(
     linked: list[str] = []
     for name in SLIM_ROCM_RUNTIME_DIRS:
         source_root = llama_bin_dir / name
-        if not source_root.is_dir():
-            raise PrebuiltFallback(f"paired ROCm runtime is missing its {name} kernel catalog")
-        files = [path for path in source_root.rglob("*") if path.is_file()]
+        required = name in SLIM_ROCM_REQUIRED_RUNTIME_DIRS
+        files = (
+            [path for path in source_root.rglob("*") if path.is_file()]
+            if source_root.is_dir()
+            else []
+        )
         if not files:
-            raise PrebuiltFallback(f"paired ROCm runtime has an empty {name} kernel catalog")
+            if not required:
+                # hipBLASLt has no kernels for this target; llama pairs without
+                # the catalog and runs, so whisper must pair the same way.
+                log(f"slim install: paired ROCm runtime ships no {name} kernel catalog; skipping")
+                continue
+            missing = "is missing its" if not source_root.is_dir() else "has an empty"
+            raise PrebuiltFallback(f"paired ROCm runtime {missing} {name} kernel catalog")
         for source in files:
             _link_or_copy(source, whisper_bin_dir / name / source.relative_to(source_root))
         linked.append(name)
@@ -1037,12 +1092,16 @@ def existing_install_matches(
             )
             return False
         runtime_dirs = marker.get("linked_runtime_directories")
+        # Subset plus required, not equality: a target without hipBLASLt kernels
+        # wires rocblas alone and is complete (#8364), while an unknown name or
+        # a missing rocblas still means stale or hand-edited wiring.
         if (
             marker.get("backend") == "rocm"
             and not host.is_windows
             and (
                 not isinstance(runtime_dirs, list)
-                or set(runtime_dirs) != set(SLIM_ROCM_RUNTIME_DIRS)
+                or not set(runtime_dirs) <= set(SLIM_ROCM_RUNTIME_DIRS)
+                or not set(SLIM_ROCM_REQUIRED_RUNTIME_DIRS) <= set(runtime_dirs)
             )
         ):
             log(f"existing ROCm install at {install_dir} lacks kernel catalogs; reinstalling")

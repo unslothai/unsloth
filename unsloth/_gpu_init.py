@@ -30,6 +30,7 @@ from .import_fixes import (
     fix_torchao_torch_symbol_skew,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
+    check_transformers_dependency_versions,
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
@@ -80,6 +81,10 @@ fix_torchao_torch_symbol_skew()
 # The above fixes THIS process only; vLLM's model-architecture inspector
 # is a subprocess that imports torchao itself and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
+# Warn, do not raise: this only adds the correct remedy just before transformers
+# prints its misleading one, without turning a metadata-derived floor into a hard
+# import failure of our own.
+check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
@@ -93,6 +98,7 @@ del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
+del check_transformers_dependency_versions
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -192,6 +198,7 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
+    patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
@@ -232,6 +239,8 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
+# Apple Silicon M4+ only: psutil <= 7.2.2 reads the clock 1000x too small.
+patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
@@ -268,6 +277,7 @@ del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
+del patch_psutil_cpu_freq
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del patch_openspiel_env_async

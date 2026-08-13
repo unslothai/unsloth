@@ -10,12 +10,16 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/video",
   staticData: { title: "Video" },
-  // A diffusion pick made from the chat picker arrives here as ?model= (+ ?quant=), which the page loads and then clears.
+  // A chat-picker pick arrives as ?model= (+ ?quant= for an exact filename, ?ggufQuant= for a label the page resolves),
+  // which the page loads and then clears.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { model?: string; quant?: string } => ({
+  ): { model?: string; quant?: string; ggufQuant?: string } => ({
     ...(typeof search.model === "string" ? { model: search.model } : {}),
     ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
+    ...(typeof search.ggufQuant === "string"
+      ? { ggufQuant: search.ggufQuant }
+      : {}),
   }),
   beforeLoad: () => requireAuth(),
   component: () => null,

@@ -49,6 +49,19 @@ class GgufVariantDetail(BaseModel):
             "this to pick Resume (http) vs Redownload (xet) labels."
         ),
     )
+    dependency_key: Optional[str] = Field(
+        None,
+        description = (
+            "Opaque grouping key: variants sharing a key share one companion "
+            "download footprint (text encoders, VAE, tokenizer, configs), so a "
+            "footprint resolved for one of them is correct for all of them. The "
+            "companion set is NOT repository-wide -- one repo can hold GGUFs of "
+            "different diffusion families, and FLUX.2-klein picks its text "
+            "encoder per checkpoint size -- so a client must group by this key "
+            "rather than per repo. Null means unknown (no family resolved); "
+            "clients should then treat the repo as a single group."
+        ),
+    )
 
 
 class GgufVariantsResponse(BaseModel):
@@ -273,79 +286,52 @@ class RemoveScanFolderResponse(BaseModel):
     ok: bool
 
 
-class RecommendedFoldersResponse(BaseModel):
-    folders: List[str] = Field(default_factory = list)
-
-
 class DeleteCachedModelResponse(BaseModel):
     status: str
     repo_id: str
     variant: Optional[str] = None
 
 
-class BrowseEntry(BaseModel):
-    """A directory entry surfaced by the folder browser."""
+class CompanionAssetInfo(BaseModel):
+    """A companion base repo (text encoders, VAE, tokenizer, configs) in the cache."""
 
-    name: str = Field(..., description = "Entry name (basename, not full path)")
-    has_models: bool = Field(
-        False,
-        description = (
-            "Hint that the directory likely contains models "
-            "(*.gguf, *.safetensors, config.json, or HF-style "
-            "`models--*` subfolders). Used by the UI to highlight "
-            "promising candidates; the scanner itself is authoritative."
-        ),
-    )
-    hidden: bool = Field(
-        False,
-        description = "Name starts with a dot (e.g. `.cache`)",
-    )
-
-
-class BrowseFoldersResponse(BaseModel):
-    """Response schema for the folder browser endpoint."""
-
-    current: str = Field(..., description = "Absolute path of the directory just listed")
-    parent: Optional[str] = Field(
-        None,
-        description = (
-            "Parent directory of `current`, or null if `current` is the "
-            "filesystem root. The frontend uses this to render an `Up` row."
-        ),
-    )
-    entries: List[BrowseEntry] = Field(
+    repo_id: str
+    size_bytes: int = Field(0, description = "Real on-disk blob bytes, deduped per blob")
+    needed_by: List[str] = Field(
         default_factory = list,
-        description = (
-            "Subdirectories of `current`. Sorted with model-bearing "
-            "directories first, then alphabetically case-insensitive; "
-            "hidden entries come last within each group."
-        ),
+        description = "Installed models that still need it; empty means it is reclaimable",
     )
-    suggestions: List[str] = Field(
+
+
+class DeleteImpactResponse(BaseModel):
+    """What a pending delete would actually do, so the confirm dialog can say it."""
+
+    repo_id: str
+    variant: Optional[str] = None
+    reclaimed_bytes: int = Field(0, description = "Bytes this delete frees, from the cache scan")
+    retained_companions: List[CompanionAssetInfo] = Field(
         default_factory = list,
-        description = (
-            "Handy starting points (home, HF cache, already-registered "
-            "scan folders). Rendered as quick-pick chips above the list."
-        ),
+        description = "Shared assets that stay because another installed model needs them",
     )
-    truncated: bool = Field(
-        False,
-        description = (
-            "True when the listing was capped because the directory had "
-            "more subfolders than the server is willing to enumerate in "
-            "one request. The UI should show a hint telling the user to "
-            "narrow their path."
-        ),
+    freeable_companions: List[CompanionAssetInfo] = Field(
+        default_factory = list,
+        description = "Shared assets that become orphaned by this delete and can then be removed",
     )
-    model_files_here: int = Field(
-        0,
-        description = (
-            "Count of GGUF/safetensors files immediately inside "
-            "``current``. Used by the UI to surface a hint on leaf "
-            "model directories (which otherwise look `empty` because "
-            "they contain only files, no subdirectories)."
-        ),
+    blocked_by: List[str] = Field(
+        default_factory = list,
+        description = "Installed models that make this delete impossible (shared-asset guard)",
     )
+
+
+class OrphanCompanionInfo(BaseModel):
+    repo_id: str
+    size_bytes: int = 0
+    cache_path: Optional[str] = None
+
+
+class OrphanCompanionsResponse(BaseModel):
+    companions: List[OrphanCompanionInfo] = Field(default_factory = list)
+    total_bytes: int = 0
 
 
 class ModelsFolderResponse(BaseModel):

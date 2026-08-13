@@ -59,7 +59,7 @@ def _ref_names(repo_dir: Path) -> list[str]:
 
 
 def _scan(cache_root: Path, monkeypatch) -> list:
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [cache_root])
     return inventory_scan._compute_all_hf_cache_scans()
 
 
@@ -288,7 +288,7 @@ def _autoload_rows(
     from hub.services.models import cache_inventory
     from types import SimpleNamespace
 
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [cache_root])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = cache_root),
@@ -769,9 +769,9 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     load_dir = Path(rows[0]["load_id"])
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
-    assert [v.quant for v in variants], (
-        f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a " "companion drafter"
-    )
+    assert [
+        v.quant for v in variants
+    ], f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a companion drafter"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
@@ -1474,7 +1474,7 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
         for name, payload in files.items():
             (snapshot / name).write_bytes(payload)
 
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, previous])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, previous])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = active),
@@ -1628,6 +1628,73 @@ def _repo_with(
     for ref_name, commit in refs.items():
         (repo_dir / "refs" / ref_name).write_text(commit, encoding = "utf-8")
     return repo_dir
+
+
+def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}',
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--user--speech-finetune",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+    assert len(rows) == 1
+    assert rows[0]["task"] == "automatic-speech-recognition"
+    assert rows[0]["pipeline_tag"] == "automatic-speech-recognition"
+    assert rows[0]["library_name"] == "transformers"
+    assert "whisper" in rows[0]["tags"]
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "README.md": b"---\npipeline_tag: text-to-speech\nlibrary_name: transformers\n---\n",
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--community--orpheus-tts",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert len(rows) == 1
+    assert rows[0]["task"] == "text-to-speech"
+    assert rows[0]["pipeline_tag"] == "text-to-speech"
 
 
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):
@@ -2451,7 +2518,7 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
     _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
     _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
 
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = active),
@@ -2466,7 +2533,7 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
     assert cached == []
 
     # Control: the broken copy in the other cache leaves the active one publishable.
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [legacy, active])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [legacy, active])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = legacy),
@@ -2961,7 +3028,7 @@ def test_an_all_incomplete_repo_is_offered_by_repo_id_as_partial(tmp_path, monke
         snapshots = {SNAPSHOT: {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16}},
         refs = {"main": SNAPSHOT},
     )
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = tmp_path),
@@ -2991,7 +3058,7 @@ def test_a_whole_repo_is_still_offered_by_repo_id_as_downloaded(tmp_path, monkey
         snapshots = {SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 64}},
         refs = {"main": SNAPSHOT},
     )
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = tmp_path),
@@ -3027,7 +3094,7 @@ def _split_payload_rows(tmp_path, monkeypatch, *, where: str, refs: dict) -> lis
         },
         refs = refs,
     )
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = active),
@@ -3090,7 +3157,7 @@ def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
         },
         refs = refs,
     )
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = active),
@@ -3140,7 +3207,7 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
     os.utime(repo_dir / "snapshots" / OLDER, (1_000_000, 1_000_000))
     os.utime(repo_dir / "snapshots" / SNAPSHOT, (2_000_000, 2_000_000))
 
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = tmp_path),
@@ -3924,7 +3991,7 @@ def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
 
     import routes.models as models_route
 
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [cache_root])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = cache_root),

@@ -208,9 +208,6 @@ tmp/
 **/node_modules/
 auth.db
 
-# Packaging snapshot of the root CHANGELOG.md (written by build.sh)
-studio/CHANGELOG.md
-
 # Tauri local build/generated output
 studio/src-tauri/target/
 studio/src-tauri/gen/
@@ -247,3 +244,6 @@ llama.cpp/
 async_task_outputs/
 temp/
 logs/
+
+# Audio fixture downloaded by tests/saving/text_to_speech_models at import time.
+Speech_12dB_s16.flac

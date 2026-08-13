@@ -5,6 +5,7 @@ export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
   addScanFolder,
   browseFolders,
+  ChatThreadDeletedError,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
@@ -15,10 +16,12 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listLoras,
   listModels,
   listRecommendedFolders,
   listScanFolders,
   loadModel,
+  unloadModel,
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
@@ -60,6 +63,8 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
+
+  preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
   useToolOutputFor,
@@ -122,6 +127,8 @@ export {
   useChatModelRuntime,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
+export { chatModelLoaded } from "./lib/chat-model-loaded";
+export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
   customProviderDisplayName,
   isCustomProviderType,
@@ -135,15 +142,27 @@ export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
   deleteStoredChatThreads,
+  ensureStoredChatThread,
+  isThreadIncognito,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
-export { markChatThreadDeleted } from "./utils/chat-thread-tombstones";
+export {
+  markChatThreadDeleted,
+  removeChatThreadTombstones,
+} from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
+export {
+  reasoningAutoOpensWhileStreaming,
+  resolveReasoningOpen,
+  resolveReasoningToggle,
+  startsNewReasoningRound,
+} from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";
 export {
@@ -211,10 +230,12 @@ export {
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
+  sttEngineFor,
   sttEngineStatusFor,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,
+  type SttEngine,
 } from "./adapters/studio-model-dictation-adapter";
 export {
   StudioSpeechSynthesisAdapter,
