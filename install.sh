@@ -5342,6 +5342,13 @@ case ":$_UNSLOTH_LOGIN_PATH:" in
                 _SHELL_PROFILE="$HOME/.bashrc"
             elif [ -f "$HOME/.profile" ]; then
                 _SHELL_PROFILE="$HOME/.profile"
+            elif [ -n "${HOME:-}" ] && [ -w "$HOME" ]; then
+                # A fresh account can have no rc file at all. astral's installer used to create
+                # its own here, so the case never surfaced; the pinned path does not, and
+                # leaving it empty means the next shell resolves neither unsloth nor uv. The
+                # append below creates the file, and ~/.profile is the one every POSIX login
+                # shell reads.
+                _SHELL_PROFILE="$HOME/.profile"
             fi
             if [ -n "$_SHELL_PROFILE" ]; then
                 if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
