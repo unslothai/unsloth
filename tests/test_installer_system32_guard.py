@@ -566,15 +566,38 @@ def test_cli_guard_lands_where_the_desktop_puts_its_children():
 
 
 def test_cli_guard_relocates_when_the_desktop_marks_the_child():
-    """Newer desktop builds set the marker; the argv rules above cover older ones."""
+    """Newer desktop builds set the marker; the argv rules above cover older ones.
+
+    The marker exists for a command shape this CLI does not know yet, so it is
+    tried here with one.
+    """
     message, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
-        argv = ["unsloth", "studio", "run", "some-model"],
+        argv = ["unsloth", "studio", "desktop-handshake", "--json"],
         environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "1"},
     )
     assert colour == "yellow"
     assert chdir_calls == [_RELOCATED]
     assert message is not None
+
+
+@pytest.mark.parametrize(
+    "rest",
+    [
+        ["run", "some-model"],
+        ["run", "--model", r".\local.gguf", "--api-only"],
+        ["update", "--local", r".\checkout"],
+    ],
+)
+def test_cli_guard_marker_does_not_authorise_a_command_carrying_a_path(rest: list[str]):
+    """The backend and everything below it inherit the marker, so it must not
+    widen the set to commands that resolve a path the caller gave them."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", *rest],
+        environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "1"},
+    )
+    assert (colour, chdir_calls) == ("red", [])
 
 
 @pytest.mark.parametrize(
@@ -807,7 +830,7 @@ def test_cli_guard_does_not_recreate_a_profile_that_is_not_mounted():
     assert (colour, chdir_calls) == ("red", [])
 
 
-def test_cli_guard_never_relocates_into_the_public_profile():
+def test_cli_guard_never_relocates_into_the_public_profile_from_userprofile():
     """The public profile is readable and writable by every account on the
     machine, so it is no place for one account's caches, scans and outputs."""
     public = r"C:\Users\Public"
@@ -859,6 +882,53 @@ def test_cli_guard_pins_the_local_checkout_update_reads():
     )
     assert colour == "yellow"
     assert environ_out["STUDIO_LOCAL_REPO"] == r"C:\Windows\System32\..\src\unsloth"
+
+
+def test_cli_guard_resolves_a_root_relative_override_through_the_os():
+    r"""A single leading separator takes the drive of the current directory, so
+    moving to a profile on another drive would move the folder with it."""
+    environ_out: dict[str, str] = {}
+    _, colour, _ = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        environ_extra = {"HF_HOME": r"\hf-cache"},
+        environ_out = environ_out,
+        drive_cwd = {"": "C:\\"},
+    )
+    assert colour == "yellow"
+    assert environ_out["HF_HOME"] == r"C:\hf-cache"
+
+
+def test_cli_guard_anchors_each_entry_of_a_path_list():
+    """One relative entry decides what the whole allowlist authorises."""
+    environ_out: dict[str, str] = {}
+    _, colour, _ = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        environ_extra = {"UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH": r"trusted;D:\shared"},
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"] == (
+        r"C:\Windows\System32\trusted;D:\shared"
+    )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [r"\\?\UNC\server\profiles\me", r"\\?\unc\server\profiles\me"],
+)
+def test_cli_guard_accepts_an_extended_unc_profile_in_either_case(profile: str):
+    r"""The object manager is case-insensitive, so reading \\?\unc\ as a relative
+    name would reject a profile Windows itself resolves."""
+    chosen = _system_dir_guard.safe_user_dir(
+        {"USERPROFILE": profile},
+        [r"C:\Windows"],
+        pathmod = ntpath,
+        sep = "\\",
+        expanduser = lambda _p: profile,
+    )
+    assert chosen == profile
 
 
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():

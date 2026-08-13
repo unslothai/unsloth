@@ -1004,12 +1004,14 @@ pub(crate) fn managed_cli_working_dir_from(
 // Case-insensitive, either separator, no trailing one, no \\?\ prefix. Not
 // cfg-gated, so the check stays unit-testable from Linux CI.
 fn normalize_windows_path(path: &std::path::Path) -> String {
-    let text = path.to_string_lossy().replace('/', "\\");
-    let text = match text.strip_prefix("\\\\?\\UNC\\") {
+    // Lowercased first: the object manager accepts \\?\unc\ too, and reading
+    // that as an ordinary path would compare a share against a relative name.
+    let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    let text = match text.strip_prefix("\\\\?\\unc\\") {
         Some(rest) => format!("\\\\{rest}"),
         None => text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string(),
     };
-    text.trim_end_matches('\\').to_lowercase()
+    text.trim_end_matches('\\').to_string()
 }
 
 fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
@@ -1032,11 +1034,25 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
     if let Ok(cwd) = std::env::current_dir() {
-        if !is_inside_windows_dir(&cwd, &windirs) {
+        if !is_unusable_cwd(&cwd, &windirs) {
             return Ok(cwd);
         }
     }
     managed_cli_working_dir_from(dirs::home_dir(), &windirs)
+}
+
+/// The directories the CLI guard refuses to run from, and only those.
+///
+/// The rest of the Windows tree still disqualifies a *home* (a service account
+/// living under System32), but a child that was already running from, say,
+/// C:\Windows\Temp keeps doing so: the guard allowed it before this change, and
+/// moving it would put that install's state somewhere else than the CLI does.
+fn is_unusable_cwd(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
+    windirs.iter().any(|windir| {
+        ["System32", "SysWOW64"]
+            .iter()
+            .any(|name| is_inside_windows_dir(path, &[windir.join(name)]))
+    })
 }
 
 /// Every real Windows directory, empty off Windows.
@@ -1129,19 +1145,34 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
+    "UNSLOTH_STUDIO_CHILD_RECORD",
+    "UNSLOTH_LLAMA_INSTALLER",
+    "CUDA_HOME",
+    "CUDA_ROOT",
 ];
 
-/// Whether a value already names a directory of its own.
+/// The same, for values holding several separated directories: one relative
+/// entry changes what the whole list allows or searches.
+pub(crate) const PATH_LIST_ENV: &[&str] =
+    &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", "CUDA_RUNTIME_DLL_DIR"];
+
+/// Whether a value names one directory whatever the process does next.
 ///
 /// Windows rules on every platform: a Windows value is what reaches this code,
 /// and hard-coding them keeps the check testable from Linux CI. Matches
-/// `_is_rooted` in the CLI guard, "C:sub" naming no directory included.
-fn is_rooted(value: &str) -> bool {
-    let value = match value.strip_prefix("\\\\?\\UNC\\") {
-        Some(rest) => rest,
-        None => value.strip_prefix("\\\\?\\").unwrap_or(value),
+/// `_is_fully_qualified` in the CLI guard, "C:sub" and "\\cache" included, both
+/// of which name a directory only in combination with process state.
+fn is_fully_qualified(value: &str) -> bool {
+    let lowered = value.to_lowercase();
+    if lowered.starts_with("\\\\?\\unc\\") {
+        return true;
+    }
+    let value = if lowered.starts_with("\\\\?\\") {
+        &value[4..]
+    } else {
+        value
     };
-    if value.starts_with('\\') || value.starts_with('/') {
+    if value.starts_with("\\\\") || value.starts_with("//") {
         return true;
     }
     let bytes = value.as_bytes();
@@ -1150,10 +1181,13 @@ fn is_rooted(value: &str) -> bool {
     drive_rooted || std::path::Path::new(value).is_absolute()
 }
 
-/// Whether a value is relative to a drive's own current directory ("D:cache").
-fn is_drive_relative(value: &str) -> bool {
-    matches!(value.as_bytes(), [drive, b':', rest @ ..]
-        if drive.is_ascii_alphabetic() && !matches!(rest.first(), Some(b'\\') | Some(b'/')))
+/// Whether the value depends on process state `join` cannot see: the current
+/// directory of a drive ("D:cache") or of the current drive ("\\cache").
+fn needs_os_resolution(value: &str) -> bool {
+    if value.starts_with('\\') || value.starts_with('/') {
+        return true;
+    }
+    matches!(value.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())
 }
 
 fn relative_override_pins_from(
@@ -1179,16 +1213,45 @@ fn relative_override_pins_from(
             if value.is_empty() || value.starts_with('~') {
                 return None;
             }
-            if is_rooted(value) {
+            if is_fully_qualified(value) {
                 return None;
             }
-            if is_drive_relative(value) {
-                // "D:cache" is relative to drive D's own current directory, which
-                // join() cannot know, so it would hand the value straight back.
+            if needs_os_resolution(value) {
+                // "D:cache" is drive D's own current directory and "\\cache" the
+                // root of the current drive, neither of which join() knows.
                 return Some((*name, absolute(value)?));
             }
             Some((*name, cwd.join(value)))
         })
+        .chain(PATH_LIST_ENV.iter().filter_map(|name| {
+            let raw = lookup(name)?;
+            if raw.trim().is_empty() {
+                return None;
+            }
+            // Only reached on Windows, where the separator is ';'.
+            let entries: Vec<String> = raw
+                .split(';')
+                .map(|entry| {
+                    let entry = entry.trim();
+                    if entry.is_empty() || entry.starts_with('~') || is_fully_qualified(entry) {
+                        return entry.to_string();
+                    }
+                    let anchored = if needs_os_resolution(entry) {
+                        absolute(entry)
+                    } else {
+                        Some(cwd.join(entry))
+                    };
+                    anchored
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| entry.to_string())
+                })
+                .collect();
+            let joined = entries.join(";");
+            if joined == raw {
+                return None;
+            }
+            Some((*name, std::path::PathBuf::from(joined)))
+        }))
         .collect()
 }
 
@@ -2622,9 +2685,12 @@ mod managed_cli_working_dir_tests {
             "HF_DATASETS_CACHE" => Some("D:datasets".to_string()),
             _ => None,
         };
+        // What GetFullPathNameW would answer: drive D's own current directory,
+        // and the current drive for a root-relative value.
         let absolute = |value: &str| match value {
             "D:datasets" => Some(PathBuf::from("D:\\work\\datasets")),
-            other => panic!("unexpected drive-relative value {other}"),
+            "\\srv\\llama-server" => Some(PathBuf::from("C:\\srv\\llama-server")),
+            other => panic!("unexpected value needing the OS: {other}"),
         };
 
         let pins = relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute);
@@ -2632,13 +2698,19 @@ mod managed_cli_working_dir_tests {
             pins,
             vec![
                 ("UNSLOTH_STUDIO_HOME", cwd.join("studio")),
+                // Root-relative: the drive is the current one, which the move
+                // can change, so the OS resolves it before that happens.
+                (
+                    "LLAMA_SERVER_PATH",
+                    PathBuf::from("C:\\srv\\llama-server")
+                ),
                 ("HF_HOME", cwd.join("cache")),
                 (
                     "HF_DATASETS_CACHE",
                     PathBuf::from("D:\\work\\datasets")
                 ),
             ],
-            "only relative values are rewritten, and against the directory being left"
+            "only values that name no directory on their own are rewritten"
         );
 
         // An unresolvable drive-relative value is left alone, not rewritten.
@@ -2870,6 +2942,73 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn only_the_folders_the_cli_refuses_count_as_unusable() {
+        let windirs = [PathBuf::from("C:\\Windows")];
+        for unusable in [
+            "C:\\Windows\\System32",
+            "c:\\windows\\system32\\config\\systemprofile",
+            "C:\\Windows\\SysWOW64",
+            "\\\\?\\C:\\Windows\\System32",
+        ] {
+            assert!(
+                is_unusable_cwd(std::path::Path::new(unusable), &windirs),
+                "{unusable} must be replaced"
+            );
+        }
+        for usable in [
+            // The guard has always allowed these, so a child that was running
+            // from one keeps running from it.
+            "C:\\Windows\\Temp\\project",
+            "C:\\Windows",
+            "C:\\Windows2\\System32",
+            "C:\\Users\\me\\projects",
+        ] {
+            assert!(
+                !is_unusable_cwd(std::path::Path::new(usable), &windirs),
+                "{usable} must be kept"
+            );
+        }
+    }
+
+    #[test]
+    fn an_extended_unc_path_compares_the_same_in_either_case() {
+        // The object manager accepts \\?\unc\, so a profile spelled that way
+        // must not be read as a relative name.
+        assert_eq!(
+            normalize_windows_path(std::path::Path::new("\\\\?\\UNC\\server\\profiles\\me")),
+            normalize_windows_path(std::path::Path::new("\\\\?\\unc\\server\\profiles\\me"))
+        );
+        assert!(is_fully_qualified("\\\\?\\unc\\server\\profiles\\me"));
+        assert!(is_fully_qualified("\\\\?\\UNC\\server\\profiles\\me"));
+    }
+
+    #[test]
+    fn each_entry_of_a_path_list_is_anchored_on_its_own() {
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name| match name {
+                "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => {
+                    Some("trusted;D:\\shared;~\\mine".to_string())
+                }
+                _ => None,
+            },
+            |_| None,
+        );
+        let expected = format!("{};D:\\shared;~\\mine", cwd.join("trusted").to_string_lossy());
+        assert_eq!(
+            pins,
+            vec![(
+                "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
+                PathBuf::from(expected)
+            )],
+            "a relative entry must not authorise a different directory after the move"
+        );
+    }
+
+    #[test]
     fn configuring_a_command_twice_changes_nothing() {
         let work_dir = scratch("cwd-command-twice");
 
@@ -2937,7 +3076,7 @@ mod managed_cli_working_dir_tests {
         // that the value stopped moving after the first pass.
         assert_eq!(values[0].1, cwd.join("cache").to_string_lossy());
         assert_eq!(values[1].1, "D:\\work\\datasets");
-        assert!(is_rooted(&values[0].1) && is_rooted(&values[1].1));
+        assert!(is_fully_qualified(&values[0].1) && is_fully_qualified(&values[1].1));
     }
 
     #[test]

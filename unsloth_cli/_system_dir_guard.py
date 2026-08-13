@@ -69,10 +69,16 @@ def windows_roots(
 
 
 def _strip_extended_prefix(path):
-    r"""Drop the \\?\ (and \\?\UNC\) form so it compares like an ordinary path."""
-    if path.startswith("\\\\?\\UNC\\"):
+    r"""Drop the \\?\ (and \\?\UNC\) form so it compares like an ordinary path.
+
+    The prefix is matched case-insensitively: the object manager accepts
+    \\?\unc\server\share, and reading it as a relative path would reject a
+    profile that Windows itself resolves.
+    """
+    lowered = path.lower()
+    if lowered.startswith("\\\\?\\unc\\"):
         return "\\\\" + path[8:]
-    if path.startswith("\\\\?\\"):
+    if lowered.startswith("\\\\?\\"):
         return path[4:]
     return path
 
@@ -120,6 +126,17 @@ def _is_rooted(path, pathmod):
     """
     stripped = _strip_extended_prefix(path)
     return pathmod.isabs(stripped) or stripped.startswith(("\\", "/"))
+
+
+def _is_fully_qualified(path, pathmod):
+    r"""Whether the value names one directory whatever the process does next.
+
+    Narrower than _is_rooted: "\cache" is rooted, but only to the drive of the
+    current directory, so moving to a profile on another drive silently moves it
+    too. Windows calls these drive-relative and root-relative; both have to be
+    resolved before the process leaves.
+    """
+    return pathmod.isabs(_strip_extended_prefix(path))
 
 
 def _outside_windows(candidate, windirs, pathmod, sep):
@@ -210,6 +227,25 @@ def _is_desktop_backend_launch(rest):
     return True
 
 
+# Subcommands that take a path from the caller, by argument or by environment.
+# `run` takes --model and a raw llama-server tail; `update --local` installs
+# from a checkout the caller names.
+_PATH_TAKING_STUDIO_COMMANDS = ("run", "update")
+
+
+def _takes_a_path(rest):
+    """Whether this `studio` invocation can carry a caller's path.
+
+    Deliberately blunt: the bare forms the desktop runs carry no path, so
+    anything else is treated as though it might.
+    """
+    if not rest:
+        return False
+    if rest[0] in _PATH_TAKING_STUDIO_COMMANDS:
+        return tuple(rest) not in _STUDIO_COMMANDS
+    return any(not arg.startswith("-") for arg in rest[1:])
+
+
 def is_relocatable_invocation(argv, environ):
     """True when this invocation is desktop-managed or provably cwd-independent.
 
@@ -230,9 +266,13 @@ def is_relocatable_invocation(argv, environ):
         # `train --dataset .\data.json` under a stray one would be worse than
         # the refusal it replaced.
         return False
-    if environ.get(DESKTOP_MANAGED_ENV) == "1":
-        return True
     rest = args[1:]
+    if environ.get(DESKTOP_MANAGED_ENV) == "1" and not _takes_a_path(rest):
+        # The marker is for a desktop build whose command shape this CLI does
+        # not know yet. It is inherited by the backend and everything below it,
+        # so it must not widen the set to commands that carry a path: `studio
+        # run --model .\local.gguf` from a marked shell would be rebased.
+        return True
     if rest and all(arg in _HELP_FLAGS for arg in rest):
         return True
     if _is_desktop_backend_launch(rest):
@@ -286,6 +326,20 @@ _RELATIVE_PATH_ENV = (
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
+    "UNSLOTH_STUDIO_CHILD_RECORD",
+    "UNSLOTH_LLAMA_INSTALLER",
+    "CUDA_HOME",
+    "CUDA_ROOT",
+)
+
+# The separator is Windows', not the host's: this guard only ever runs on
+# Windows, and os.pathsep would split "D:\\shared" apart anywhere else.
+_PATH_LIST_SEPARATOR = ";"
+
+# Values holding several separated directories, anchored entry by entry.
+_PATH_LIST_ENV = (
+    "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
+    "CUDA_RUNTIME_DLL_DIR",
 )
 
 
@@ -303,17 +357,41 @@ def pin_relative_overrides(
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
-        if not value or value.startswith("~") or _is_rooted(value, pathmod):
+        anchored = _anchor(value, cwd, pathmod, abspath)
+        if anchored is not None:
+            environ[name] = anchored
+            pinned.append(name)
+    for name in _PATH_LIST_ENV:
+        raw = environ.get(name) or ""
+        if not raw.strip():
             continue
-        if pathmod.splitdrive(value)[0]:
-            # "D:cache" means drive D's own current directory, which only
-            # Windows knows and which join() would hand back unchanged. Ask the
-            # OS, and let a failure reach the caller, which then declines to move.
-            environ[name] = (abspath or pathmod.abspath)(value)
-        else:
-            environ[name] = pathmod.join(cwd, value)
-        pinned.append(name)
+        # A list authorises or searches several directories, so each entry is
+        # anchored on its own; one relative entry is enough to change what the
+        # whole list means.
+        entries = raw.split(_PATH_LIST_SEPARATOR)
+        anchored_entries = [_anchor(e.strip(), cwd, pathmod, abspath) or e for e in entries]
+        if anchored_entries != entries:
+            environ[name] = _PATH_LIST_SEPARATOR.join(anchored_entries)
+            pinned.append(name)
     return pinned
+
+
+def _anchor(value, cwd, pathmod, abspath = None):
+    """The value rewritten to name the same folder from anywhere, or None.
+
+    None means it needs no rewriting: it is empty, it starts with `~` (expanduser
+    does not consult the working directory), or it is already fully qualified.
+    """
+    value = (value or "").strip()
+    if not value or value.startswith("~") or _is_fully_qualified(value, pathmod):
+        return None
+    if pathmod.splitdrive(value)[0] or value.startswith(("\\", "/")):
+        # "D:cache" is the current directory on drive D and "\cache" is the root
+        # of the current drive: both depend on process state that join() cannot
+        # see, so ask the OS. A failure reaches the caller, which then declines
+        # to move at all.
+        return (abspath or pathmod.abspath)(value)
+    return pathmod.join(cwd, value)
 
 
 def relocation_target(
