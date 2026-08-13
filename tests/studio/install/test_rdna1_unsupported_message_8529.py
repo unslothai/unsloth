@@ -281,9 +281,9 @@ class TestPythonStackWindowsArm64:
         with patch.object(stack_mod, "_is_windows_arm64", return_value = True):
             _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert "gfx1010" in out, "the card is still named"
-        assert "UNSLOTH_LLAMA_CPP_BACKEND" not in out, (
-            f"ARM64 is still told to set the variable setup.ps1 throws on:\n{out}"
-        )
+        assert (
+            "UNSLOTH_LLAMA_CPP_BACKEND" not in out
+        ), f"ARM64 is still told to set the variable setup.ps1 throws on:\n{out}"
         assert "ARM64" in out and "source" in out
 
     def test_x64_still_gets_the_setter(self):

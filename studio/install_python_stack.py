@@ -63,6 +63,7 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     or IS_MAC_INTEL
 )
 
+
 def _is_windows_arm64() -> bool:
     """Windows on ARM, machine arch rather than process arch: platform.machine() reports
     AMD64 under an emulated x64 Python, and PROCESSOR_ARCHITEW6432 is ARM64 in exactly

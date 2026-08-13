@@ -688,7 +688,11 @@ _SETUP_SH_FUNCS = (
 )
 
 
-def _run_setup_report(tmp_path, lspci_lines: "list[str]", mkt: str = "") -> str:
+def _run_setup_report(
+    tmp_path,
+    lspci_lines: "list[str]",
+    mkt: str = "",
+) -> str:
     """setup.sh's lookup on the KFD path, where no market name is available and the
     lookup falls back to lspci. Same fixtures as the install.sh summary above."""
     source = _SETUP_SH.read_text(encoding = "utf-8")
@@ -746,9 +750,9 @@ class TestSetupShReportBlamesTheRightCard:
         """rocminfo can hand back a nonempty name that maps to nothing. Returning that
         failure ended the lookup, so the lspci scan never ran and the report fell back to
         the plain "AMD ROCm" line this change exists to replace."""
-        assert _run_setup_report(tmp_path, [_RX_5700], mkt).startswith("UNCOVERED"), (
-            f"an unmapped market name ({mkt!r}) hides an uncovered card lspci can see"
-        )
+        assert _run_setup_report(tmp_path, [_RX_5700], mkt).startswith(
+            "UNCOVERED"
+        ), f"an unmapped market name ({mkt!r}) hides an uncovered card lspci can see"
 
     def test_a_mapped_market_name_short_circuits(self):
         """The name still wins when it maps: no lspci call is needed or made."""
@@ -806,7 +810,11 @@ def test_setup_sh_treats_a_blank_index_pin_as_unset(url, family, pinned):
     end = src.index('if [ -n "$_setup_unsup_pin" ]', start)
     snippet = textwrap.dedent(src[start:end])
     out = subprocess.run(
-        ["sh", "-c", f'{snippet}\nif [ -n "$_setup_unsup_pin" ]; then echo PINNED; else echo UNSET; fi\n'],
+        [
+            "sh",
+            "-c",
+            f'{snippet}\nif [ -n "$_setup_unsup_pin" ]; then echo PINNED; else echo UNSET; fi\n',
+        ],
         stdout = subprocess.PIPE,
         stderr = subprocess.DEVNULL,
         text = True,
