@@ -1938,6 +1938,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
         memory_mode: advanced.memory_mode,
+        // The plan sizes its file set against the card the load will use, so it needs the pick.
+        gpu_ids: advanced.gpu_ids,
       });
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -2164,6 +2166,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // And the partition, for the same reason: the two H3 denoisers are separate downloads,
           // so a plan asked without it stages the default fl2va weights for a References pick.
           h3_task: opts.h3Task,
+          // The plan sizes its file set against the card the load will use, so it needs the pick.
+          gpu_ids: advanced.gpu_ids,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) return true;

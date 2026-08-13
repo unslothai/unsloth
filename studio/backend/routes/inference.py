@@ -22222,6 +22222,7 @@ async def diffusion_download_plan(
         plan = await asyncio.to_thread(
             planner.download_plan,
             request.model_path,
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids),
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
@@ -22448,6 +22449,9 @@ async def load_diffusion_model(
                 model_kind = kind,
                 loras = [(s.id, s.weight) for s in request.loras] if request.loras else None,
                 gpu_ids = request.gpu_ids,
+                # The winner this route already ranked and preflighted, so the load cannot pick a
+                # different card from free VRAM that has moved since.
+                gpu_ordinal = gpu_ordinal,
             )
 
         def _begin_load():

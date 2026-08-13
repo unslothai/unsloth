@@ -805,3 +805,57 @@ def test_a_selection_is_ignored_where_physical_indices_mean_nothing(monkeypatch)
     torch = _make_torch(mps_available = True)
     _install(monkeypatch, torch, studio_device = "mlx")
     assert dd.resolve_diffusion_device_target(ordinal = 1).ordinal is None
+
+
+def test_the_device_scope_restores_the_previous_card(monkeypatch):
+    # Route preflights run on a pooled asyncio.to_thread executor, so a pin taken there and left
+    # set is inherited by the NEXT request on that thread, including an automatic one.
+    calls: list = []
+    torch = _make_torch(cuda_available = True, device_count = 2, set_device_calls = calls)
+
+    class _Scope:
+        def __init__(self, index):
+            calls.append(("enter", index))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            calls.append(("exit", None))
+            return False
+
+    torch.cuda.device = _Scope
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    with dd.diffusion_device_scope(1):
+        pass
+    assert calls == [("enter", 1), ("exit", None)]
+
+    # No selection is a plain no-op, so the automatic path never touches the current device.
+    calls.clear()
+    with dd.diffusion_device_scope(None):
+        pass
+    assert calls == []
+
+
+def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
+    # is_bf16_supported() takes no device argument, so the only way to ask about the selected card
+    # is to make it current for the probe. Without that, a bf16-capable pick behind an older
+    # default is needlessly promoted to fp32.
+    torch = _make_torch(cuda_available = True, hip = "6.0", device_count = 2)
+    scoped: list = []
+
+    class _Scope:
+        def __init__(self, index):
+            scoped.append(index)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    torch.cuda.device = _Scope
+    torch.cuda.is_bf16_supported = lambda: bool(scoped and scoped[-1] == 1)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
+    assert scoped == [1]

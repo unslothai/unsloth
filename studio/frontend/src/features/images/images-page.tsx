@@ -2487,6 +2487,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
         // planned a quantized file set and staged too little. Same list handleLoad bakes.
         loras: advanced.loras,
+        // The plan route preflights precision and sizes the file set against the card the load
+        // will use, so a selection the load carries has to reach the plan as well.
+        gpu_ids: advanced.gpu_ids,
       }),
     [],
   );

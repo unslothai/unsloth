@@ -60,6 +60,7 @@ from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
 from .diffusion_device import (
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
+    diffusion_device_scope,
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
@@ -1146,8 +1147,32 @@ class DiffusionBackend:
             return
         # One probe for both checks, asked of the card THIS load will use: on a mixed box the
         # default device can be a different generation, which would refuse a scheme the selected
-        # card supports, or pass one it does not and fail only after eviction.
-        target = self._target_for_ordinal(fam, gpu_ordinal)
+        # card supports, or pass one it does not and fail only after eviction. Scoped, because the
+        # route calls this on a pooled thread and the probes below use argument-less CUDA calls.
+        with diffusion_device_scope(gpu_ordinal):
+            target = self._target_for_ordinal(fam, gpu_ordinal)
+            return self._assert_precision_for_target(
+                fam,
+                target,
+                model_kind = model_kind,
+                pinned = pinned,
+                te_mode = te_mode,
+                memory_mode = memory_mode,
+                cpu_offload = cpu_offload,
+            )
+
+    def _assert_precision_for_target(
+        self,
+        fam: Optional[DiffusionFamily],
+        target: DiffusionDeviceTarget,
+        *,
+        model_kind: str,
+        pinned: Optional[str],
+        te_mode: Optional[str],
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+    ) -> None:
+        """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
             reason = None
             if model_kind != "gguf":
@@ -1264,10 +1289,10 @@ class DiffusionBackend:
                 "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
                 getattr(fam, "name", None),
             )
-        target = diffusion_device_target_from_torch_device(device, effective)
-        # Here, not per call site: set_device is thread-local and every path resolves its target on its own thread.
-        apply_diffusion_device_ordinal(target)
-        return target
+        # Builds only. Pinning is the CALLER's decision: a worker thread is dedicated and takes
+        # the permanent pin, while a route preflight runs on a pooled executor thread where an
+        # unrestored set_device would leak this request's card into the next one.
+        return diffusion_device_target_from_torch_device(device, effective)
 
     def _target_for_ordinal(
         self, fam: Optional[DiffusionFamily], ordinal: Optional[int]
@@ -1285,7 +1310,9 @@ class DiffusionBackend:
         bare: the weights are on ``state.gpu_ordinal`` and ``state.device`` is the un-indexed
         string, so an unpinned thread would resolve both to its own default card.
         """
-        return self._target_for_ordinal(state.family, state.gpu_ordinal)
+        target = self._target_for_ordinal(state.family, state.gpu_ordinal)
+        apply_diffusion_device_ordinal(target)
+        return target
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -1357,7 +1384,10 @@ class DiffusionBackend:
                 return False
             if mm is None and kwargs.get("cpu_offload"):
                 return False
-            target = self._resolve_device_target(fam)
+            # The card this load will land on: the dense-quant path is a device capability, so
+            # judging it on the default card stages shards the selected one replaces, or omits
+            # shards it needs and forces an inline fallback after eviction.
+            target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
             # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
             # plan must not stage the base transformer/ shards either.
             if (
@@ -1706,6 +1736,8 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         loras: Optional[list[tuple[str, float]]] = None,
         gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
@@ -1714,11 +1746,15 @@ class DiffusionBackend:
         # 400 rather than a load that dies mid-download, and only once so free VRAM cannot re-rank
         # the choice after the weights land. Gated on the resolved backend, since XPU / MPS / CPU
         # ignore physical ids and would otherwise 400 a selection the contract says to drop.
-        gpu_ordinal = (
-            resolve_selected_cuda_ordinal(gpu_ids)
-            if gpu_ids and resolve_diffusion_device_target().device == "cuda"
-            else None
-        )
+        # Re-ranked only when the caller did not already do it: free VRAM moves between the
+        # route's preflight and here (network preflight, engine activation, arbiter eviction), so
+        # resolving twice can approve a scheme against one card and place the weights on another.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         # base_repo is gated at the route pre-eviction; this only cheap-fails the resolved repo/family.
         fam = self.validate_load_request(
             repo_id,
@@ -1800,7 +1836,10 @@ class DiffusionBackend:
             kwargs["base_repo"] = base
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
-                fam, kwargs.get("text_encoder_quant"), kwargs.get("hf_token")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                kwargs.get("hf_token"),
+                kwargs.get("gpu_ordinal"),
             )
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -1949,7 +1988,10 @@ class DiffusionBackend:
 
     @staticmethod
     def _te_prequant_plan_files(
-        fam: Any, text_encoder_quant: Optional[str], hf_token: Optional[str]
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        hf_token: Optional[str],
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
         take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
@@ -1964,7 +2006,12 @@ class DiffusionBackend:
             sources = te_prequant_sources(
                 fam,
                 te_quant_mode = text_encoder_quant,
-                target = resolve_diffusion_device_target(),
+                # The selected card, for the same reason the dense-quant probe uses it.
+                target = (
+                    resolve_diffusion_device_target()
+                    if gpu_ordinal is None
+                    else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+                ),
             )
             if not sources:
                 return {}
@@ -2265,7 +2312,9 @@ class DiffusionBackend:
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
         incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
-        te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
+        te_files = self._te_prequant_plan_files(
+            fam, text_encoder_quant, hf_token, load_kwargs.get("gpu_ordinal")
+        )
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
         revisions: dict[str, str] = {}
@@ -2967,6 +3016,9 @@ class DiffusionBackend:
         # path took it before staging), so nothing stages one repo and assembles from the other.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
         target = self._target_for_ordinal(fam, gpu_ordinal)
+        # A dedicated worker thread, so the pin is permanent and everything downstream -- the
+        # placement, the offload budget, the un-indexed state.device -- lands on the same card.
+        apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
         import diffusers

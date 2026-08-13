@@ -12,6 +12,7 @@ the capability flags optimisation paths key off.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -207,6 +208,27 @@ def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]
     return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
 
 
+@contextmanager
+def diffusion_device_scope(ordinal: Optional[int]):
+    """Make ``ordinal`` the current CUDA device for the block, then restore the previous one.
+
+    For probes on a POOLED thread. ``torch.cuda.set_device`` is thread-local but not scoped, so a
+    permanent pin taken on an asyncio.to_thread executor thread outlives the request and leaves the
+    next one -- possibly an automatic load with no selection -- resolving its bare "cuda" calls
+    against the previous request's card. Worker threads are dedicated and keep the permanent pin.
+    """
+    if ordinal is None:
+        yield
+        return
+    try:
+        import torch
+
+        with torch.cuda.device(ordinal):
+            yield
+    except Exception:  # noqa: BLE001 -- an unusable index must not fail the probe it wraps
+        yield
+
+
 def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
     """Point this thread's CUDA context at ``target.ordinal``.
 
@@ -340,8 +362,10 @@ def _cuda_or_rocm_target(
 ) -> DiffusionDeviceTarget:
     if is_rocm:
         # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy.
+        # It takes no device argument, so the selected card is asked by scoping the current device.
         try:
-            bf16_ok = bool(torch.cuda.is_bf16_supported())
+            with diffusion_device_scope(ordinal):
+                bf16_ok = bool(torch.cuda.is_bf16_supported())
         except Exception:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16

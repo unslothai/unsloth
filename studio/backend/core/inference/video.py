@@ -61,6 +61,7 @@ from .diffusion_cache import (
 from .diffusion_device import (
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
+    diffusion_device_scope,
     force_float32_rope,
     install_decoder_sync,
     resolve_diffusion_device_target,
@@ -219,11 +220,36 @@ def assert_video_precision_available(
         return
     # One probe for both checks, asked of the card THIS load will use: the default one can be a
     # different generation, refusing a scheme the selected card supports or passing one it cannot.
-    target = (
-        resolve_diffusion_device_target()
-        if gpu_ordinal is None
-        else resolve_diffusion_device_target(ordinal = gpu_ordinal)
-    )
+    # SCOPED around the probes below, which use argument-less CUDA calls and bare "cuda"
+    # allocations, and which the route reaches on a pooled thread that must not keep the pin.
+    with diffusion_device_scope(gpu_ordinal):
+        target = (
+            resolve_diffusion_device_target()
+            if gpu_ordinal is None
+            else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+        )
+        _assert_video_precision_for_target(
+            fam,
+            target,
+            model_kind = model_kind,
+            transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
+            memory_mode = memory_mode,
+        )
+
+
+def _assert_video_precision_for_target(
+    fam: Any,
+    target: Any,
+    *,
+    model_kind: str,
+    transformer_quant: Optional[str] = None,
+    text_encoder_quant: Optional[str] = None,
+    memory_mode: Optional[str] = None,
+) -> None:
+    """The body of ``assert_video_precision_available``, run with the selected card current."""
+    pinned = normalize_transformer_quant(transformer_quant)
+    te_mode = normalize_te_quant(text_encoder_quant)
     # A modular-workflow family (MiniMax-H3) never reaches the memory plan the offload refusals
     # below reason about: load_pipeline hands it to _load_h3_modular_pipeline, which always uses
     # the ComponentsManager auto CPU offload and PINS a pre-quantized denoiser resident, so
@@ -1249,6 +1275,8 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -1256,11 +1284,15 @@ class VideoBackend:
         # 400 rather than a load that dies tens of GB later, and only once so free VRAM cannot
         # re-rank the choice after the weights land. Gated on the resolved backend, since XPU /
         # MPS / CPU ignore physical ids and would otherwise 400 a selection the contract drops.
-        gpu_ordinal = (
-            resolve_selected_cuda_ordinal(gpu_ids)
-            if gpu_ids and resolve_diffusion_device_target().device == "cuda"
-            else None
-        )
+        # Re-ranked only when the caller did not already do it: free VRAM moves between the
+        # route's preflight and here, so resolving twice can approve a scheme against one card
+        # and place the weights on another.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -2500,6 +2532,8 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant,
                 speed_mode = load_kwargs.get("speed_mode"),
                 h3_task = h3_task,
+                # Sizes the file set from device capacity, so it has to read the selected card.
+                gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             )
             or transformer_quant
         )
