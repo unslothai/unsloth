@@ -415,6 +415,14 @@ def pin_relative_overrides(
                 raise
             continue
         if anchored is not None:
+            if len(anchored) >= _WINDOWS_ENV_VALUE_LIMIT:
+                # Anchoring a value that was already near the limit can cross it,
+                # and a variable Windows will not accept is a failure to report
+                # here rather than one to discover in the next process.
+                raise ValueError(
+                    f"{name} does not fit in an environment variable once it "
+                    "names its folder in full"
+                )
             environ[name] = anchored
             pinned.append(name)
     for name in _PATH_LIST_ENV:

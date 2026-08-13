@@ -1209,6 +1209,51 @@ fn is_fully_qualified(value: &str) -> bool {
         if drive.is_ascii_alphabetic() && (*sep == b'\\' || *sep == b'/'))
 }
 
+/// `$NAME` and `${NAME}` against the process environment, as posixpath.expandvars
+/// reads them: an unset name and a `$` that starts no name are left exactly as
+/// written, and `%NAME%` is an ordinary filename character off Windows.
+fn expand_posix_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'$' {
+            let start = index;
+            while index < bytes.len() && bytes[index] != b'$' {
+                index += 1;
+            }
+            out.push_str(&value[start..index]);
+            continue;
+        }
+        let rest = &value[index + 1..];
+        let (name, consumed) = if let Some(rest) = rest.strip_prefix('{') {
+            match rest.find('}') {
+                Some(end) => (&rest[..end], end + 2),
+                None => {
+                    out.push_str(&value[index..]);
+                    break;
+                }
+            }
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            (&rest[..end], end)
+        };
+        if name.is_empty() {
+            out.push('$');
+            index += 1;
+            continue;
+        }
+        match lookup(name) {
+            Some(value) => out.push_str(&value),
+            None => out.push_str(&value[index..index + consumed + 1]),
+        }
+        index += consumed + 1;
+    }
+    out
+}
+
 /// Whether the value names the same place from any working directory.
 ///
 /// Windows rules on Windows, the native ones off it. The lost-directory
@@ -1384,9 +1429,20 @@ fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) ->
 /// %USERPROFILE%, an escaped %%NAME%%, or a self-reference would be expanded a
 /// second time and read as a folder with another drive in the middle of it. The
 /// twin of `_expand_settled` in the CLI guard.
-fn expand_settled(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> Option<String> {
-    let expanded = expand_windows_vars(value, lookup);
-    (expand_windows_vars(&expanded, lookup) == expanded).then_some(expanded)
+fn expand_settled(
+    value: &str,
+    lookup: &impl Fn(&str) -> Option<String>,
+    windows: bool,
+) -> Option<String> {
+    let expand = |value: &str| {
+        if windows {
+            expand_windows_vars(value, lookup)
+        } else {
+            expand_posix_vars(value, lookup)
+        }
+    };
+    let expanded = expand(value);
+    (expand(&expanded) == expanded).then_some(expanded)
 }
 
 fn names_a_path(name: &str, value: &str) -> bool {
@@ -1482,10 +1538,23 @@ fn relative_override_pins_from(
         if !EXPANDED_ENV.contains(&name) {
             return Ok(Some(value.to_string()));
         }
-        match expand_settled(value, &lookup) {
+        // Windows rules on Windows, the native ones off it: a POSIX reader leaves
+        // %HOME% as an ordinary name and expands $HOME instead, so reading this
+        // the Windows way would call a relative value absolute.
+        match expand_settled(value, &lookup, windows) {
             Some(settled) => Ok(Some(settled)),
-            None if is_fully_qualified(&expand_windows_vars(value, &lookup)) => Ok(None),
-            None => Err(format!("{name} does not expand to one folder")),
+            None => {
+                let once = if windows {
+                    expand_windows_vars(value, &lookup)
+                } else {
+                    expand_posix_vars(value, &lookup)
+                };
+                if is_cwd_independent(&once, windows) {
+                    Ok(None)
+                } else {
+                    Err(format!("{name} does not expand to one folder"))
+                }
+            }
         }
     };
     let Some(cwd) = cwd else {
@@ -1594,7 +1663,14 @@ fn relative_override_pins_from(
             continue;
         }
         match anchor(name, &value) {
-            Ok(pinned) => pins.push((*name, pinned)),
+            Ok(pinned) => {
+                if windows && pinned.as_os_str().len() >= WINDOWS_ENV_VALUE_LIMIT {
+                    return Err(format!(
+                        "{name} does not fit in an environment variable once it names its folder in full"
+                    ));
+                }
+                pins.push((*name, pinned));
+            }
             Err(error) => {
                 if !BEST_EFFORT_ENV.contains(name) {
                     return Err(error);
@@ -3361,6 +3437,80 @@ mod managed_cli_working_dir_tests {
                 "PYTHONPATH",
                 PathBuf::from(format!("{}:/opt/vendor", cwd.join("plugins").display()))
             )]
+        );
+    }
+
+    #[test]
+    fn a_scalar_that_would_not_fit_is_reported_too() {
+        // Anchoring a value that was already near the limit can cross it, and
+        // CreateProcess is too late to say which setting did.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let long = "x".repeat(WINDOWS_ENV_VALUE_LIMIT);
+        let error = relative_override_pins_from(
+            Some(cwd),
+            std::path::Path::new("C:\\Users\\me\\.unsloth"),
+            |name: &str| (name == "HF_HOME").then(|| long.clone()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("HF_HOME does not fit"), "{error}");
+    }
+
+    #[test]
+    fn a_posix_reader_expands_its_own_spelling_and_no_other() {
+        // posixpath.expandvars reads $NAME and ${NAME}; %NAME% is an ordinary
+        // filename there, so reading it the Windows way would call a relative
+        // value absolute and let the child move out from under it.
+        let lookup = |name: &str| match name {
+            "HOME" => Some("/home/me".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_posix_vars("$HOME/hf", &lookup), "/home/me/hf");
+        assert_eq!(expand_posix_vars("${HOME}/hf", &lookup), "/home/me/hf");
+        assert_eq!(expand_posix_vars("%HOME%/hf", &lookup), "%HOME%/hf");
+        assert_eq!(expand_posix_vars("$UNSET/hf", &lookup), "$UNSET/hf");
+        assert_eq!(expand_posix_vars("${UNTERMINATED/hf", &lookup), "${UNTERMINATED/hf");
+        assert_eq!(expand_posix_vars("cost: $5", &lookup), "cost: $5");
+        assert_eq!(expand_posix_vars("plain/path", &lookup), "plain/path");
+
+        // And the lost-directory branch reads it that way: %HOME%/hf depends on
+        // where the process is standing, so the move is refused rather than
+        // taken with the value following it.
+        let error = relative_override_pins_from(
+            None,
+            std::path::Path::new("/home/me/.unsloth"),
+            |name: &str| match name {
+                "HOME" => Some("/home/me".to_string()),
+                "HF_HOME" => Some("%HOME%/hf".to_string()),
+                _ => None,
+            },
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("HF_HOME"), "{error}");
+        // The POSIX spelling of the same setting names one folder, so it passes.
+        assert_eq!(
+            relative_override_pins_from(
+                None,
+                std::path::Path::new("/home/me/.unsloth"),
+                |name: &str| match name {
+                    "HOME" => Some("/home/me".to_string()),
+                    "HF_HOME" => Some("$HOME/hf".to_string()),
+                    _ => None,
+                },
+                |value: &str| panic!("unexpected value needing the OS: {value}"),
+                Some(std::path::Path::new("/home/me")),
+                MANAGED_CHILD_SCRUBBED_ENV,
+                false,
+            )
+            .unwrap(),
+            Vec::new()
         );
     }
 

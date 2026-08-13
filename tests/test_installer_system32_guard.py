@@ -1237,6 +1237,20 @@ def test_cli_guard_refuses_to_move_under_an_expansion_that_stays_relative():
         assert environ_out[name] == value
 
 
+def test_cli_guard_refuses_a_value_that_would_not_fit_in_the_environment():
+    r"""A scalar that was already near the 32767-character limit crosses it once
+    it names its folder in full, and a variable Windows will not accept is a
+    failure to report here rather than in the next process."""
+    message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {"HF_HOME": "x" * 32767},
+    )
+    assert (colour, chdir_calls) == ("red", [])
+    assert "path settings" in message
+    assert "HF_HOME" in message
+
+
 def test_cli_guard_refuses_a_list_that_would_not_fit_in_the_environment():
     r"""Windows caps a variable at 32767 characters, and a list of relative
     entries can cross that once each names its folder in full. Reporting it here
