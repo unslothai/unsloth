@@ -2749,6 +2749,12 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
         . "$HOME/.local/bin/env"
     fi
     export PATH="$HOME/.local/bin:$PATH"
+    # ...and put the pinned destination back in front. UV_INSTALL_DIR and friends can put uv
+    # somewhere other than ~/.local/bin, and both the line above and astral's env file prepend
+    # ~/.local/bin, so a stale uv there would shadow the 0.12.1 we just verified.
+    if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$HOME/.local/bin" ]; then
+        export PATH="$_UNSLOTH_UV_BIN_DIR:$PATH"
+    fi
 fi
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
@@ -5427,7 +5433,7 @@ _persist_login_path_dir() {
         _plp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
         mkdir -p "$_plp_fish_dir" 2>/dev/null || return 0
         _plp_fish="$_plp_fish_dir/unsloth.fish"
-        if ! grep -qF "$_plp_dir" "$_plp_fish" 2>/dev/null; then
+        if ! grep -v '^[[:space:]]*#' "$_plp_fish" 2>/dev/null | grep -qF "$_plp_dir"; then
             # Single-quoted: an unquoted path with a space is two arguments to fish_add_path
             # and neither exists. Inside fish single quotes only \\ and \' carry meaning.
             _plp_quoted=$(printf '%s' "$_plp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
@@ -5451,7 +5457,9 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
-    if ! grep -q "$_plp_pattern" "$_SHELL_PROFILE" 2>/dev/null; then
+    # Comments stripped first: a commented-out old export is not an active entry, and taking it
+    # for one leaves the next shell with no uv at all.
+    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null | grep -qE "$_plp_pattern"; then
         echo '' >> "$_SHELL_PROFILE"
         echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
         echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
@@ -5482,8 +5490,11 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN
         # terminated by the shell that reads it. The ~/.local/bin literal is exempt: its
         # $HOME is meant to stay unexpanded.
         _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+        # Anchored on both sides, so /opt/uv is not satisfied by /opt/uv-old and the match has
+        # to be a whole PATH entry rather than any occurrence of the text.
+        _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')
         _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
-            "$_UNSLOTH_UV_BIN_DIR" "$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')"
+            "$_UNSLOTH_UV_BIN_DIR" "(^|[^[:alnum:]_.~/-])$_uv_grep_esc([^[:alnum:]_.~/-]|\$)"
     fi
 fi
 # end of the PATH persistence block

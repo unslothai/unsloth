@@ -906,6 +906,76 @@ for _impl in "$INSTALL_SH" "$SETUP_SH"; do
     fi
 done
 
+# A commented-out old export is not an active PATH entry, and neither is a directory that merely
+# starts with ours. Taking either for one leaves the next shell unable to resolve uv.
+for _case in comment prefix; do
+    _ch="$WORK/entry_$_case"
+    mkdir -p "$_ch/.local/bin" "$_ch/opt/uv"
+    if [ "$_case" = comment ]; then
+        printf '# export PATH="%s/opt/uv:$PATH"\n' "$_ch" > "$_ch/.bashrc"
+    else
+        printf 'export PATH="%s/opt/uv-old:$PATH"\n' "$_ch" > "$_ch/.bashrc"
+    fi
+    (
+        set +e
+        step() { :; }
+        HOME="$_ch"; export HOME
+        SHELL="/bin/bash"; export SHELL
+        unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+        _LOCAL_BIN="$HOME/.local/bin"
+        _STUDIO_HOME_REDIRECT="none"
+        _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+        _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+        # shellcheck disable=SC1090
+        . "$WORK/path_guard.sh"
+    ) >/dev/null 2>&1 || true
+    # Count only ACTIVE lines naming the uv directory exactly: the ~/.local/bin line is written
+    # too and would mask the answer.
+    # `|| _n=0`: grep -c exits non-zero on no match and set -e would take the suite down.
+    _n=$(grep -v '^[[:space:]]*#' "$_ch/.bashrc" | grep -cE "(^|[^[:alnum:]_.~/-])$_ch/opt/uv([^[:alnum:]_.~/-]|$)") || _n=0
+    if [ "$_n" = "1" ]; then
+        ok "an inactive entry ($_case) does not suppress the uv PATH write"
+    else
+        bad "an inactive entry ($_case) does not suppress the uv PATH write (active lines: $_n)"
+    fi
+done
+# ...and a genuinely active entry still suppresses it, so the write stays idempotent.
+_ch="$WORK/entry_active"
+mkdir -p "$_ch/.local/bin" "$_ch/opt/uv"
+printf 'export PATH="%s/opt/uv:$PATH"\n' "$_ch" > "$_ch/.bashrc"
+(
+    set +e
+    step() { :; }
+    HOME="$_ch"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+_n=$(grep -v '^[[:space:]]*#' "$_ch/.bashrc" | grep -cE "(^|[^[:alnum:]_.~/-])$_ch/opt/uv([^[:alnum:]_.~/-]|$)") || _n=0
+if [ "$_n" = "1" ]; then
+    ok "an active entry still suppresses the uv PATH write"
+else
+    bad "an active entry still suppresses the uv PATH write (active lines: $_n)"
+fi
+
+# Both installers put the pinned destination back in front of PATH after the ~/.local/bin
+# prepend that follows them, or a stale uv there shadows the one that was just verified.
+if grep -q 'export PATH="\$_UNSLOTH_UV_BIN_DIR:\$PATH"' "$INSTALL_SH"; then
+    ok "install.sh keeps the pinned uv destination ahead of ~/.local/bin"
+else
+    bad "install.sh keeps the pinned uv destination ahead of ~/.local/bin"
+fi
+if grep -q '\[ "\$_SETUP_UV_PINNED_OK" = true \] || export PATH="\$HOME/.local/bin:\$PATH"' "$SETUP_SH"; then
+    ok "setup.sh does not prepend ~/.local/bin over a pinned destination"
+else
+    bad "setup.sh does not prepend ~/.local/bin over a pinned destination"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -1781,7 +1781,7 @@ _setup_persist_uv_path() {
         _supp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
         mkdir -p "$_supp_fish_dir" 2>/dev/null || return 0
         _supp_fish="$_supp_fish_dir/unsloth.fish"
-        if ! grep -qF "$_supp_dir" "$_supp_fish" 2>/dev/null; then
+        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qF "$_supp_dir"; then
             # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
             _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
             echo "# Added by Unsloth setup" >> "$_supp_fish"
@@ -1800,7 +1800,12 @@ _setup_persist_uv_path() {
         _supp_profile="$HOME/.profile"
     fi
     [ -n "$_supp_profile" ] || return 0
-    if ! grep -qF "$_supp_dir" "$_supp_profile" 2>/dev/null; then
+    # Comments stripped and the directory anchored as a whole entry: a commented-out old export,
+    # or /opt/uv-old when we want /opt/uv, is not an active entry, and taking either for one
+    # leaves the next shell unable to resolve uv.
+    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[^$*\\/]/\\&/g')
+    if ! grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+        | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
         # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
         # terminated by the shell that reads it.
         _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
