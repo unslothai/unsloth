@@ -3348,12 +3348,13 @@ exit 0
         # is that it never guesses.
         # Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
         # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
-        # omits (W5700, W5500, W5300M, RX 5300). No name here is guessed.
+        # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
+        # No name here is guessed.
         $unsupportedNameArchTable = @(
             @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
             @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
-            @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)";          A = "gfx803"  }  # Polaris 10/20/30
+            @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
         $ROCmUnsupportedGfxArch = $null
         # ── Arch resolution: env-var override → name inference ──────────────
@@ -3746,7 +3747,7 @@ exit 0
         # one, and comment lines inside it push the later substeps out of view.
         substep "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
-        substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that." "Yellow"
+        substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
         substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
         substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
         substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
@@ -4238,7 +4239,7 @@ exit 0
                 # from its name rather than from a probe (unslothai#8529).
                 substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmUnsupportedGfxArch." "Yellow"
                 substep "Unsloth training and GPU inference are unavailable on CPU torch." "Yellow"
-                substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can enable ROCm here." "Yellow"
+                substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can give this GPU ROCm." "Yellow"
                 substep 'For GPU GGUF chat through Vulkan, set $env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"' "Yellow"
                 substep "and re-run this installer; the bundle is chosen at install time, not at launch." "Yellow"
             } elseif ($ROCmGpuLabel) {

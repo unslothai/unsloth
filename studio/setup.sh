@@ -1878,13 +1878,16 @@ elif [ "$_setup_amd_detected" = true ]; then
     # precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
     # Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
     # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
-    # omits (W5700, W5500, W5300M, RX 5300). No name here is guessed.
+    # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
+    # No name here is guessed.
+    # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi,
+    # lspci) spells these names as pci.ids does.
     _setup_unsupported_gfx_from_name() {
         case "$1" in
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
-            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
+            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
             *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
-            *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*) echo gfx803 ;;  # Polaris 10/20/30
+            *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
             *) return 1 ;;
         esac
     }
@@ -1921,7 +1924,7 @@ EOF
         # NotImplementedError at import (unsloth/device_type.py). Same wording the XPU
         # and no-GPU arms below already use.
         substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
-        substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value changes that."
+        substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."

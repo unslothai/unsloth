@@ -2066,6 +2066,8 @@ class TestInstallShStructure:
         self._assert_guarded_by_pin_arm(
             source,
             'substep "AMD GPU detected, but no usable ROCm/HIP install',
+            'substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."',
+            "elif _has_amd_rocm_gpu; then",
             "the */cpu note must check the explicit pin before diagnosing ROCm",
         )
         assert (
@@ -2074,19 +2076,35 @@ class TestInstallShStructure:
         self._assert_guarded_by_pin_arm(
             source,
             'step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"',
+            'step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)"',
+            "else",
             "the gpu summary must not claim no usable ROCm for a pinned index",
         )
 
     _PIN_ARM = 'if [ "$_torch_index_pinned" = true ]'
+
+    # `fi` as a command of its own: at the start of the line, or after a `;`.
+    # install.sh closes chains inline too (`; fi`, `else :; fi`), and a closure
+    # written that way is invisible to a startswith("fi") test -- `else :; fi`
+    # reads as an ordinary `else` arm, leaving a chain that has already closed
+    # looking open across the message.
+    _CLOSER = re.compile(r"(?:^|;)\s*fi\b")
+
+    # install.sh indents in 4-space steps, so a closure less than one step deeper
+    # than the arm closes the arm's own chain (or an enclosing one, which closes it
+    # too) rather than something nested inside it. Comparing against the step
+    # instead of the exact indent is what keeps a `fi` re-indented by a space or
+    # two counting as the closure it is.
+    _INDENT_STEP = 4
 
     @staticmethod
     def _indent(line):
         return len(line) - len(line.lstrip())
 
     @classmethod
-    def _assert_guarded_by_pin_arm(cls, source, needle, message):
-        """Assert ``needle`` sits in a LATER arm of a still-open chain whose first
-        arm is the pin check.
+    def _assert_guarded_by_pin_arm(cls, source, needle, pinned_note, arm, message):
+        """Assert ``needle`` sits in the ``arm`` arm of a still-open chain whose
+        first arm is the pin check and whose pin arm says ``pinned_note``.
 
         Deliberately local rather than a whole-file walk of if/elif/fi. install.sh
         embeds awk programs and PowerShell in quoted blocks, all of which contain
@@ -2094,15 +2112,28 @@ class TestInstallShStructure:
         global keyword walk mis-nests on both and can end up satisfying this guard
         from an unrelated chain. Indentation is the structure install.sh is written
         in and needs no parse: find the pin arm above the message, then require the
-        chain it opens to still be open (no `fi` back at its indent) and to have
-        moved on to another arm (an `elif`/`else` at its indent).
+        chain it opens to still be open (nothing closes it before the message) and
+        to have moved on to another arm (an `elif`/`else` at its indent).
+
+        The pin arm has to be the exact whole line and the arm the message sits in
+        has to be the exact expected one, or "a chain opened by something that
+        mentions the pin" is enough to pass: a never-firing `&& [ ... ]` extension
+        of the condition, or a decoy chain left open across the message with the
+        real guard deleted, both read as guards otherwise. And a guard that routes
+        pinned hosts to an empty arm still suppresses the message, so the pin arm
+        must be checked to carry its own note.
         """
         lines = source.splitlines()
-        hits = [i for i, line in enumerate(lines) if needle in line]
+        # Skip comments: a commented-out `substep` is not a message users ever see.
+        hits = [
+            i
+            for i, line in enumerate(lines)
+            if needle in line and not line.lstrip().startswith("#")
+        ]
         assert len(hits) == 1, f"expected exactly one {needle!r} in install.sh, found {len(hits)}"
         message_line = hits[0]
 
-        opens = [i for i in range(message_line) if lines[i].strip().startswith(cls._PIN_ARM)]
+        opens = [i for i in range(message_line) if lines[i].strip() == cls._PIN_ARM + "; then"]
         assert opens, f"{message}\nno pin check appears anywhere above the message"
         pin_line = opens[-1]
         indent = cls._indent(lines[pin_line])
@@ -2111,21 +2142,36 @@ class TestInstallShStructure:
         closed = [
             i + 1
             for i in between
-            if lines[i].strip().startswith("fi") and cls._indent(lines[i]) == indent
+            if cls._CLOSER.search(lines[i].strip())
+            and cls._indent(lines[i]) < indent + cls._INDENT_STEP
         ]
         assert not closed, (
             f"{message}\ninstall.sh:{pin_line + 1} opens on the pin check but the chain "
             f"closes at install.sh:{closed[0]}, before the message at "
             f"install.sh:{message_line + 1}, so the two are unrelated"
         )
-        later_arm = [
-            i + 1
+        later_arms = [
+            i
             for i in between
             if re.match(r"^(elif|else)\b", lines[i].strip()) and cls._indent(lines[i]) == indent
         ]
-        assert later_arm, (
+        assert later_arms, (
             f"{message}\nthe message at install.sh:{message_line + 1} is inside the pin "
             f"arm opened at install.sh:{pin_line + 1}, so a pinned host still reaches it"
+        )
+        # The last arm before the message is the one the message is actually in.
+        enclosing_arm = lines[later_arms[-1]].strip()
+        assert enclosing_arm == arm, (
+            f"{message}\nthe message at install.sh:{message_line + 1} sits in "
+            f"`{enclosing_arm}` at install.sh:{later_arms[-1] + 1}, not in the expected "
+            f"`{arm}`, so the chain guarding it is not the one this test describes"
+        )
+        pin_body = lines[pin_line + 1 : later_arms[0]]
+        assert any(
+            pinned_note in line and not line.lstrip().startswith("#") for line in pin_body
+        ), (
+            f"{message}\nthe pin arm at install.sh:{pin_line + 1} no longer says "
+            f"{pinned_note!r}, so a pinned host is told nothing at all"
         )
 
     _ROCM_VERSION_SOURCES = (

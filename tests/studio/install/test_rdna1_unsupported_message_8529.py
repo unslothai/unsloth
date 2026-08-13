@@ -95,6 +95,11 @@ _RDNA1_NAMES = [
     ("Navi 14 [Radeon Pro W5300M]", "gfx1012"),
     ("AMD Radeon RX 5300", "gfx1012"),
     ("AMD Radeon RX 5300M", "gfx1012"),
+    # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10: the only Navi 10
+    # retail parts naming neither "RX 5700" nor a W prefix.
+    ("Navi 10 [Radeon Pro 5700 XT]", "gfx1010"),
+    ("Navi 10 [Radeon Pro 5700]", "gfx1010"),
+    ("AMD Radeon Pro 5700 XT", "gfx1010"),
 ]
 
 # Cards the supported table owns, plus a non-AMD one. A hit here would print
@@ -390,7 +395,8 @@ class TestAdviceIsNotEmittedForRdna1:
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1])
     def test_the_unsupported_arm_says_the_override_cannot_help(self, path):
         src = _normalised(path)
-        needle = "setting UNSLOTH_ROCM_GFX_ARCH will not change that."
+        # Scoped to the card, not the host: see _HOST_WIDE_CLAIMS below for why.
+        needle = "setting UNSLOTH_ROCM_GFX_ARCH will not change that for it."
         assert needle in src, f"{path.name}: the override disclaimer is missing"
 
     def test_install_sh_cpu_note_keeps_the_sdk_advice_only_for_unknown_cards(self):
@@ -628,6 +634,74 @@ class TestSetupShKfdOnlyHost:
         assert assigns, "studio/setup.sh: no _setup_mkt assignment found"
         for rhs in assigns:
             assert "lspci" not in rhs, f"_setup_mkt fed from lspci: {rhs!r}"
+
+
+# ── Scope: these sentences speak for one card, not for the host ───────────
+
+
+# A host is not one GPU. An RX 580 beside an RX 7900 XTX or an MI210 is a host where
+# masking to the other card and pinning its arch DOES install wheels, so a host-wide
+# "nothing can enable ROCm here" is false there. Deciding it at runtime was tried and
+# dropped: "any adapter we cannot name" misfires on the Vega-class iGPU (Raven through
+# Cezanne, Mendocino) present on most Ryzen desktops, and "any covered peer" misses the
+# Instinct and V620 parts no name table carries. These sentences speak for one card.
+_ALL_SOURCES = [_INSTALL_SH, _SETUP_SH, _INSTALL_PS1, _SETUP_PS1, _STACK_PY]
+
+_HOST_WIDE_CLAIMS = [
+    "will not enable ROCm PyTorch.",
+    "Installing the ROCm/HIP SDK will not change this.",
+    "no UNSLOTH_ROCM_GFX_ARCH value changes that.",
+    "UNSLOTH_ROCM_GFX_ARCH will not change that.",
+    "can enable ROCm here.",
+]
+
+_SCOPED_CLAIMS = {
+    "install.sh": [
+        "will not give it ROCm PyTorch.",
+        "Installing the ROCm/HIP SDK will not give this GPU ROCm PyTorch.",
+    ],
+    "setup.sh": [
+        "no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one.",
+    ],
+    "install.ps1": [
+        "will not change that for it.",
+        "can give this GPU ROCm.",
+    ],
+    "setup.ps1": [
+        "will not change that for it.",
+    ],
+    "install_python_stack.py": [
+        "changes that on this GPU.",
+    ],
+}
+
+
+@pytest.mark.parametrize("source_path", _ALL_SOURCES, ids = [p.name for p in _ALL_SOURCES])
+def test_no_advice_arm_speaks_for_the_whole_host(source_path):
+    src = _normalised(source_path)
+    for line in src.split("\n"):
+        if line.lstrip().startswith("#"):
+            continue
+        for claim in _HOST_WIDE_CLAIMS:
+            assert claim not in line, (
+                f"{source_path.name}: this sentence claims the HOST has no ROCm path, "
+                f"which is false beside a covered card:\n{line}"
+            )
+
+
+@pytest.mark.parametrize("name,claims", sorted(_SCOPED_CLAIMS.items()))
+def test_the_scoped_wording_is_the_one_that_ships(name, claims):
+    """The other half: dropping the sentence entirely would also pass the ban above,
+    and would take the answer with it. Each arm still has to say ROCm cannot reach
+    the card it just named."""
+    source_path = next(p for p in _ALL_SOURCES if p.name == name)
+    src = _normalised(source_path)
+    emitted = [ln for ln in src.split("\n") if not ln.lstrip().startswith("#")]
+    for claim in claims:
+        assert any(claim in ln for ln in emitted), (
+            f"{source_path.name}: the scoped verdict {claim!r} is gone; an arm that "
+            f"names an uncovered arch has to say ROCm does not reach it"
+        )
 
 
 # ── The shell copies, executed rather than parsed ────────────────────────────
@@ -966,6 +1040,11 @@ _POLARIS_NAMES = [
     ("AMD Radeon RX 480", "gfx803"),
     ("AMD Radeon RX 470", "gfx803"),
     ("Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]", "gfx803"),
+    # The Polaris 10 workstation boards: pci.ids groups them on Ellesmere, the RX 580
+    # die from #8458, and their names carry no RX number for the consumer rows to hit.
+    ("Ellesmere [Radeon Pro WX 7100 / WX 7100 Mobile / WX 5100 / V7300X / V7350x2]", "gfx803"),
+    ("AMD Radeon Pro WX 7100", "gfx803"),
+    ("AMD Radeon Pro WX 5100", "gfx803"),
 ]
 
 # Polaris 11/12. Deliberately NOT in the table: a different die, and this table

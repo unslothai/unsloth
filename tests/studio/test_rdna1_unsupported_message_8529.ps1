@@ -72,6 +72,10 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "Radeon Pro W5300M -> gfx1012"   ((Resolve-Unsupported "AMD Radeon Pro W5300M") -eq 'gfx1012')
     Check "RX 5300 -> gfx1012"             ((Resolve-Unsupported "AMD Radeon RX 5300") -eq 'gfx1012')
     Check "RX 5300M -> gfx1012"            ((Resolve-Unsupported "AMD Radeon RX 5300M") -eq 'gfx1012')
+    # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10. The only Navi 10
+    # retail parts whose name carries neither "RX 5700" nor a W prefix.
+    Check "Radeon Pro 5700 XT -> gfx1010"  ((Resolve-Unsupported "AMD Radeon Pro 5700 XT") -eq 'gfx1010')
+    Check "Radeon Pro 5700 -> gfx1010"     ((Resolve-Unsupported "AMD Radeon Pro 5700") -eq 'gfx1010')
     # The W-series that DOES have wheels: "W5700" must not be read out of "W7500".
     Check "PRO W7500 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W7500"))
     Check "PRO W6500 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W6500"))
@@ -86,6 +90,10 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "RX 590 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 590") -eq 'gfx803')
     Check "RX 480 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 480") -eq 'gfx803')
     Check "RX 470 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 470") -eq 'gfx803')
+    # The Polaris 10 workstation boards, grouped on Ellesmere by pci.ids. Their names
+    # carry no RX number, so the consumer rows could never have reached them.
+    Check "Radeon Pro WX 7100 -> gfx803"   ((Resolve-Unsupported "AMD Radeon Pro WX 7100") -eq 'gfx803')
+    Check "Radeon Pro WX 5100 -> gfx803"   ((Resolve-Unsupported "AMD Radeon Pro WX 5100") -eq 'gfx803')
 
     # Polaris 11/12 is a different die and is deliberately absent: this table is
     # only worth having while it never guesses an arch.
@@ -144,7 +152,9 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         ($src.IndexOf($unsupArm) -ge 0 -and $src.IndexOf($unknownArm) -ge 0 -and
          $src.IndexOf($unsupArm) -lt $src.IndexOf($unknownArm))
 
-    $disclaimer = "setting UNSLOTH_ROCM_GFX_ARCH will not change that."
+    # Scoped to the card: a host can pair an uncovered GPU with a covered one, so the
+    # sentence says what is true of the card just named and claims nothing beyond it.
+    $disclaimer = "setting UNSLOTH_ROCM_GFX_ARCH will not change that for it."
     Check "unsupported arm says the override cannot help" ($src.Contains($disclaimer))
 
     $sdkAdvice = 'substep "Could not determine the GPU arch'
