@@ -3,6 +3,7 @@
 
 """Tests for the out-of-process torch allocation probe."""
 
+import ast
 import os
 import signal
 import subprocess
@@ -182,6 +183,7 @@ def test_result_is_cached_per_device(monkeypatch):
         "CUDA_VISIBLE_DEVICES",
         "HIP_VISIBLE_DEVICES",
         "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
         "HSA_OVERRIDE_GFX_VERSION",
         # _TORCH_DEVICE maps DeviceType.XPU to "xpu", so the probe runs on Intel too and
         # its selectors move the silicon underneath a cached verdict just as the rest do.
@@ -198,6 +200,28 @@ def test_device_identity_change_invalidates_cache(monkeypatch, variable):
     monkeypatch.setenv(variable, "changed")
     assert torch_device_probe.device_can_allocate("cuda") is True
     assert len(calls) == 2
+
+
+def test_every_visibility_mask_hardware_honours_is_part_of_the_cache_key():
+    """The two lists have to move together, or a cached verdict outlives its device.
+
+    hardware.py decides whether a visibility mask is filtering the device set. Any variable
+    it counts there renames the silicon behind "cuda", so a verdict cached before the change
+    would describe a GPU that is no longer the one being asked about. Read out of the source
+    rather than imported, since that module reaches for torch.
+    """
+    source = Path(torch_device_probe.__file__).with_name("hardware") / "hardware.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    masks = {
+        node.value
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef) and function.name == "_rocm_visibility_mask_active"
+        for node in ast.walk(function)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isupper()
+    }
+
+    assert masks, "hardware._rocm_visibility_mask_active no longer lists its variables"
+    assert masks <= set(torch_device_probe._DEVICE_IDENTITY_ENV_VARS)
 
 
 def test_disable_env_var_skips_the_child(monkeypatch):
