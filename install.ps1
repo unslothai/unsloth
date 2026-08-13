@@ -1120,7 +1120,7 @@ public static class UnslothStudioFinalPathV2
     # Written into every generated bin\unsloth.cmd and required by every ownership
     # check that accepts one. Mirrored in scripts/uninstall.ps1 and studio/setup.ps1.
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
-    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
     # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
     # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
@@ -1311,6 +1311,12 @@ public static class UnslothStudioFinalPathV2
     # a re-run reproduces it byte for byte, and %~dp0 keeps profile paths containing
     # spaces, '$', brackets and apostrophes out of the file. CRLF and ASCII, no BOM:
     # cmd.exe reads a BOM as part of the first command.
+    #
+    # Scope, stated plainly: this answers EXE-and-DLL enforcement of the unsigned
+    # console script, which is issue #8490. A machine that also enforces AppLocker's
+    # Script collection denies .cmd and .ps1 alike, and install.ps1 itself would not
+    # have run there. The interpreter route is what carries such a machine; the shim
+    # is the convenience on top of it.
     function Get-UnslothCmdShimContent {
         param(
             [Parameter(Mandatory = $true)][string]$ShimDir,
@@ -1380,6 +1386,12 @@ public static class UnslothStudioFinalPathV2
             if (Test-Path -LiteralPath $shimCmd -PathType Leaf) {
                 $existing = [System.IO.File]::ReadAllBytes($shimCmd)
                 if (@(Compare-Object $existing $desired -SyncWindow 0).Count -eq 0) { return }
+                # This directory is the installer's own, so the file is replaced either
+                # way, but a file that carries neither our marker nor our trampoline was
+                # written by something else and its owner deserves to read that it went.
+                if (-not (Test-UnslothCmdShimFile -Path $shimCmd)) {
+                    substep "replacing an unrecognised $shimCmd" "Yellow"
+                }
             }
             # Publish by rename so a shell reading it mid-install never sees half a file.
             $tmp = "$shimCmd.$PID.tmp"
@@ -1991,6 +2003,16 @@ exit 0
         }
         if (Test-Path -LiteralPath $ShortcutShimDir -PathType Container) {
             Write-UnslothCmdShim -ShimDir $ShortcutShimDir -PythonPath $ShortcutPython
+            # An installer older than the shim directory put the venv's Scripts dir on
+            # PATH instead, so the .cmd we just wrote would sit somewhere nothing looks.
+            # Add-ToUserPath is idempotent and a no-op for every modern install, so this
+            # only moves a machine that update is the sole route back into the installer
+            # for. Env mode never writes the registry.
+            if ($StudioRedirectMode -ne 'env') {
+                if (Add-ToUserPath -Directory $ShortcutShimDir -Position 'Prepend') {
+                    substep "added $ShortcutShimDir to PATH"
+                }
+            }
         }
         New-StudioShortcuts -ManagedPythonPath $ShortcutPython
         return

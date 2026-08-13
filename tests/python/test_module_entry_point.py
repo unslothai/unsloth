@@ -39,7 +39,7 @@ import pytest
 # any one side of the language boundary fails this test.
 TRAMPOLINE = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
-    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
 # No -I. It implies -E, which would discard every PYTHON* variable the console
@@ -212,7 +212,11 @@ def test_the_attached_np_short_is_still_canonicalised(monkeypatch):
     monkeypatch.setattr(unsloth_cli, "_entry_point_prepared", False)
     monkeypatch.setattr(sys, "argv", ["-m", "studio", "run", "-np8"])
 
-    runpy.run_module("unsloth_cli", run_name = "__main__", alter_sys = True)
+    # SystemExit, because __main__ ends in sys.exit(app()) exactly as the console
+    # script does. The fake app returns None, so the status is None: a clean exit.
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_module("unsloth_cli", run_name = "__main__", alter_sys = True)
+    assert exit_info.value.code in (None, 0)
 
     assert recorded["argv"] == ["unsloth", "studio", "run", "-np", "8"], (
         "__main__ must apply the console-script argv canonicalisation; got " f"{recorded['argv']}"
@@ -276,6 +280,10 @@ def test_the_module_entry_source_keeps_its_two_load_bearing_details():
     # click reads __main__.__package__ rather than argv[0] and would otherwise
     # print `Usage: python -m unsloth_cli` in every usage and error string.
     assert 'prog_name = "unsloth"' in source
+    # The generated console script is `sys.exit(app())`. Typer raises SystemExit
+    # itself today, so both spellings agree, but a returned value has to become
+    # the exit status here too or they stop agreeing the moment one exists.
+    assert "sys.exit(unsloth_cli.app(" in source
 
 
 @requires_this_checkout_installed
@@ -402,3 +410,32 @@ def test_the_working_directory_is_still_stripped_without_safe_path(tmp_path):
     )
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     assert result.stdout.startswith(b"unsloth "), result.stdout
+
+
+def test_the_stream_reconfigure_happens_once_per_process(monkeypatch):
+    """The console script reaches it twice; the streams must only move once.
+
+    Off Windows the guard inside cannot short-circuit, because encoding = None
+    deliberately keeps the caller's encoding, so the second call reconfigured a
+    C-locale console again and flushed it again. Harmless, but it is a difference
+    from what the console script did before this file grew a second entry route.
+    """
+    import unsloth_cli
+
+    calls = []
+
+    class _Stream:
+        encoding = "ascii"
+
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(unsloth_cli, "_streams_reconfigured", False)
+    monkeypatch.setattr(unsloth_cli._sys, "stdout", _Stream())
+    monkeypatch.setattr(unsloth_cli._sys, "stderr", _Stream())
+
+    unsloth_cli._reconfigure_entry_point_streams()
+    unsloth_cli._reconfigure_entry_point_streams()
+    unsloth_cli._reconfigure_entry_point_streams()
+
+    assert len(calls) == 2, f"expected one reconfigure per stream, got {calls}"

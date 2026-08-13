@@ -1051,7 +1051,7 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// slightly cleaner here rather than matching byte for byte.
 #[cfg(windows)]
 pub(crate) const WINDOWS_CLI_ENTRYPOINT: &str =
-    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())";
 
 /// The program and argument vector that run the managed CLI without executing
 /// `bin` itself. On non-Windows platforms `bin` is a plain script with a
@@ -1080,6 +1080,27 @@ pub(crate) fn resolve_managed_cli_invocation(
     bin: &std::path::Path,
     args: &[&str],
 ) -> Result<ManagedCliInvocation, String> {
+    resolve_managed_cli_invocation_with(bin, args, Isolation::Inherit)
+}
+
+/// Whether a managed invocation runs isolated from the ambient Python environment.
+///
+/// Everything the user could equally have typed themselves inherits, because the
+/// console script does and the swap has to be invisible. The desktop updater does
+/// not: it shipped with `-I` before any of this, nobody types it, and it rewrites
+/// the very environment it runs in, so a `pip install --user unsloth_cli` deciding
+/// which package gets updated is a real hazard rather than a parity question.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Isolation {
+    Inherit,
+    Isolated,
+}
+
+pub(crate) fn resolve_managed_cli_invocation_with(
+    bin: &std::path::Path,
+    args: &[&str],
+    isolation: Isolation,
+) -> Result<ManagedCliInvocation, String> {
     #[cfg(windows)]
     {
         let python = bin
@@ -1096,10 +1117,15 @@ pub(crate) fn resolve_managed_cli_invocation(
         // process writes UTF-8 into read_lossy_lines whatever the locale, and a
         // caller's PYTHONIOENCODING overrides it exactly as it overrides the
         // console script's.
-        let mut argv: Vec<std::ffi::OsString> = ["-X", "utf8", "-c", WINDOWS_CLI_ENTRYPOINT]
-            .into_iter()
-            .map(std::ffi::OsString::from)
-            .collect();
+        // -X utf8 before -I: -I implies -E, which would discard PYTHONUTF8, and the
+        // flag form survives it.
+        let mut argv: Vec<std::ffi::OsString> = match isolation {
+            Isolation::Inherit => vec!["-X", "utf8", "-c", WINDOWS_CLI_ENTRYPOINT],
+            Isolation::Isolated => vec!["-X", "utf8", "-I", "-c", WINDOWS_CLI_ENTRYPOINT],
+        }
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
         argv.extend(args.iter().copied().map(std::ffi::OsString::from));
         Ok(ManagedCliInvocation {
             program: python,
@@ -1109,6 +1135,9 @@ pub(crate) fn resolve_managed_cli_invocation(
 
     #[cfg(not(windows))]
     {
+        // Isolation is a Windows-only concept: POSIX executes the console script
+        // itself, so there is no interpreter command line to isolate.
+        let _ = isolation;
         Ok(ManagedCliInvocation {
             program: bin.to_path_buf(),
             args: args.iter().copied().map(std::ffi::OsString::from).collect(),
@@ -1121,7 +1150,15 @@ pub(crate) fn build_managed_cli_command(
     bin: &std::path::Path,
     args: &[&str],
 ) -> Result<Command, String> {
-    let cmd = resolve_managed_cli_invocation(bin, args)?.to_command();
+    build_managed_cli_command_with(bin, args, Isolation::Inherit)
+}
+
+pub(crate) fn build_managed_cli_command_with(
+    bin: &std::path::Path,
+    args: &[&str],
+    isolation: Isolation,
+) -> Result<Command, String> {
+    let cmd = resolve_managed_cli_invocation_with(bin, args, isolation)?.to_command();
     // PYTHONHOME and PYTHONPATH are deliberately left alone. Removing them was
     // belt and braces under -I, which dropped them anyway. Without -I it would
     // bite: the console script honours both, so scrubbing them here would make
@@ -1351,6 +1388,37 @@ mod tests {
         assert!(
             WINDOWS_CLI_ENTRYPOINT.contains("sys.path[:1]"),
             "{WINDOWS_CLI_ENTRYPOINT}"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // The exception, and the only one: the updater rewrites the environment it
+    // runs in, so it stays isolated exactly as it shipped. Asserted here as well
+    // as in update.rs so the two halves of the rule are stated together.
+    #[cfg(windows)]
+    #[test]
+    fn only_the_isolated_flavour_carries_the_isolation_flag() {
+        let (dir, _python, bin) = managed_venv("managed-cli-isolated");
+
+        let inherit =
+            resolve_managed_cli_invocation_with(&bin, &["studio"], Isolation::Inherit).unwrap();
+        let isolated =
+            resolve_managed_cli_invocation_with(&bin, &["studio"], Isolation::Isolated).unwrap();
+
+        assert!(!inherit.args.iter().any(|arg| arg == "-I"), "{:?}", inherit.args);
+        assert!(isolated.args.iter().any(|arg| arg == "-I"), "{:?}", isolated.args);
+        // -X utf8 comes first either way: -I implies -E, which would drop
+        // PYTHONUTF8, and the flag form survives it.
+        assert_eq!(isolated.args[0], std::ffi::OsString::from("-X"));
+        assert_eq!(isolated.args[1], std::ffi::OsString::from("utf8"));
+        assert_eq!(isolated.args[2], std::ffi::OsString::from("-I"));
+        // Same program, same trailing arguments; only the flag differs.
+        assert_eq!(inherit.program, isolated.program);
+        assert_eq!(inherit.args.last(), isolated.args.last());
+        // And the default entry point is the inheriting one.
+        assert_eq!(
+            resolve_managed_cli_invocation(&bin, &["studio"]).unwrap().args,
+            inherit.args
         );
         fs::remove_dir_all(dir).unwrap();
     }

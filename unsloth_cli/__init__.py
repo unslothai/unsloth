@@ -11,6 +11,9 @@ _entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
 _is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
 
 
+_streams_reconfigured = False
+
+
 def _reconfigure_entry_point_streams():
     """Give the console script streams that can render typer's help.
 
@@ -20,14 +23,17 @@ def _reconfigure_entry_point_streams():
     the error handler is relaxed, so an explicit PYTHONIOENCODING still picks the
     bytes and only loses unencodable glyphs.
 
-    Safe to call twice, which the module-entry path below does. On Windows the
-    first call sets utf-8 and the guard then skips the second outright. Elsewhere
-    the guard cannot become true, because passing encoding = None deliberately
-    keeps the caller's encoding, so a second call repeats the reconfigure -- it
-    reaches the same state (only errors = "replace" is being set) and costs one
-    redundant flush, since reconfigure mutates the stream in place rather than
-    rebinding it.
+    Called at most once per process. The console script reaches it twice, from
+    the import-time gate and again through _prepare_entry_point, and off Windows
+    the second call did repeat the work: passing encoding = None keeps the
+    caller's encoding, so the "already utf" guard below cannot become true and a
+    C-locale console was reconfigured, and flushed, one time more than the
+    console script ever did before this file grew a second entry route.
     """
+    global _streams_reconfigured
+    if _streams_reconfigured:
+        return
+    _streams_reconfigured = True
     _to_utf8 = _sys.platform == "win32"
     for _name in ("stdout", "stderr"):
         _stream = getattr(_sys, _name, None)

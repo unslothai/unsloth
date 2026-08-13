@@ -640,7 +640,7 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
         "utf8",
         "-c",
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
-        "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()",
+        "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())",
         "--version",
     ]
     assert calls[1][1]["timeout"] == 10
@@ -850,3 +850,43 @@ def test_every_candidate_failing_is_still_an_error(monkeypatch, studio, tmp_path
         _update(studio)
 
     assert "could not recover" in capsys.readouterr().err
+
+
+def test_an_unrecoverable_launcher_keeps_its_recovery_copies(monkeypatch, studio, tmp_path):
+    """Judged healthy through the interpreter is not the same as repaired.
+
+    When every restore attempt failed, the copies are the only material a later
+    run has. Deleting them on the way out of a "successful" update would make the
+    next one unrecoverable.
+    """
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    backup = scripts / "unsloth.exe.update-backup"
+    backup.write_bytes(ORIGINAL_LAUNCHER)
+
+    def always_fails(source, destination):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(
+        studio._WindowsLauncherUpdateTransaction, "_atomic_copy", staticmethod(always_fails)
+    )
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    assert backup.exists(), "the only recovery copy was deleted"
+
+
+def test_a_restored_launcher_still_cleans_up(monkeypatch, studio, tmp_path):
+    """Parity guard: keeping copies must not become never cleaning up."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    assert not (scripts / "unsloth.exe.update-backup").exists()
+    assert not (scripts / "unsloth.exe.update-stale").exists()
+    assert not (scripts / "unsloth.exe.deleteme").exists()

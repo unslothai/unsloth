@@ -25,7 +25,7 @@ $install = Join-Path $repo "install.ps1"
 # Written out for the same reason as the trampoline: an edit on either side has to fail a
 # check rather than be copied into the expectation. This one gates a recursive delete.
 $ShimMarker = "unsloth-studio-managed-launcher"
-$Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+$Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
 function Get-FunctionText {
     param([string] $Path, [string] $Name)
@@ -37,6 +37,23 @@ function Get-FunctionText {
     }, $true)
     if ($fn.Count -ne 1) { throw "expected exactly one $Name in $Path, found $($fn.Count)" }
     return $fn[0].Extent.Text
+}
+
+# Every installer function the extracted ones call has to be in the harness, or a
+# code path that reaches it dies with CommandNotFound and the check above it passes
+# for the wrong reason. Exactly that shipped twice: Write-StudioLine missing from the
+# mutex harness in tests/python, and Test-UnslothCmdShimFile missing from Invoke-Write
+# below the moment the writer started asking it.
+function Assert-HarnessComplete {
+    param([string] $Extracted, [string[]] $Provided, [string] $Label)
+    $installerFunctions = @([regex]::Matches(
+        (Get-Content -Raw -LiteralPath $install), '(?m)^    function ([\w-]+) \{'
+    ) | ForEach-Object { $_.Groups[1].Value })
+    $called = @([regex]::Matches($Extracted, '(?<![\w-])([A-Z][\w]*-[\w-]+)') |
+        ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $missing = @($called | Where-Object { $installerFunctions -contains $_ -and $Provided -notcontains $_ })
+    Check "$Label harness defines everything it calls" ($missing.Count -eq 0)
+    if ($missing.Count -gt 0) { Write-Host "        missing: $($missing -join ', ')" }
 }
 
 $failures = 0
@@ -143,7 +160,7 @@ Check "-c follows the utf8 flag"    ($line.IndexOf("-X utf8") -lt $line.IndexOf(
 # console script honours; the trampoline drops the cwd entry by itself instead.
 Check "the interpreter is not isolated" (-not ($line -match '(^|\s)-I(\s|$)'))
 Check "caller arguments come last"  ($line.EndsWith("studio -p 8888"))
-Check "no arguments still builds"   ((Invoke-CommandLine).Trim().EndsWith('app()"'))
+Check "no arguments still builds"   ((Invoke-CommandLine).Trim().EndsWith('sys.exit(app())"'))
 # Start-Process joins the line back with spaces, so an unquoted spaced argument would
 # reach the child as several. Only bare subcommands are passed today; the signature is
 # what invites the mistake.
@@ -276,11 +293,18 @@ function substep { param(`$Message, `$Color) Write-Output "SUBSTEP: `$Message" }
 `$script:UnslothCliTrampoline = "$Trampoline"
 $relFn
 $contentFn
+$shimFileFn
 $writeFn
 Write-UnslothCmdShim -ShimDir `$ShimDir -PythonPath `$PythonPath
 "@)
     return (& $sb $ShimDir $PythonPath)
 }
+
+Assert-HarnessComplete `
+    -Extracted ($relFn + "`n" + $contentFn + "`n" + $shimFileFn + "`n" + $writeFn) `
+    -Provided @("Get-RelativeShimPath", "Get-UnslothCmdShimContent", "Test-UnslothCmdShimFile",
+                "Write-UnslothCmdShim") `
+    -Label "the .cmd writer"
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-shim-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 try {
@@ -572,7 +596,7 @@ try {
     $ours = Join-Path $markerTmp "ours.cmd"
     [System.IO.File]::WriteAllText($ours, "@echo off`r`nrem unsloth-studio-managed-launcher`r`n... from unsloth_cli import app ...`r`n")
     $theirs = Join-Path $markerTmp "theirs.cmd"
-    [System.IO.File]::WriteAllText($theirs, "@echo off`r`npython -c `"from unsloth_cli import app; app()`" %*`r`n")
+    [System.IO.File]::WriteAllText($theirs, "@echo off`r`npython -c `"from unsloth_cli import app; sys.exit(app())`" %*`r`n")
 
     Write-Host "only the shim this installer generated proves ownership"
     Check "our shim is recognised"      (& $markerSb $ours)

@@ -126,7 +126,7 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
     # fails here instead of quietly agreeing with itself.
     canonical = (
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
-        "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+        "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
     )
 
     # Python: via AST, because the constant is written as adjacent literals.

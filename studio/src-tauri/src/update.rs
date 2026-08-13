@@ -26,7 +26,15 @@ pub fn new_update_state() -> UpdateState {
 fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
     // Only the Windows arm below mutates it.
     #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut cmd = crate::process::build_managed_cli_command(bin, &["studio", "update"])?;
+    // Isolated, as this call site shipped. It is the one managed invocation nobody
+    // types by hand, and the one that decides which install gets rewritten: a
+    // user-site unsloth_cli must not be able to answer `from unsloth_cli import app`
+    // here. Everything else inherits, because the console script does.
+    let mut cmd = crate::process::build_managed_cli_command_with(
+        bin,
+        &["studio", "update"],
+        crate::process::Isolation::Isolated,
+    )?;
     // The only managed invocation that scrubs, and the only one that shipped doing it.
     // Elsewhere inheriting is the point, since the console script honours these. Here
     // the failure is unrecoverable: a foreign PYTHONHOME stops the managed interpreter
@@ -516,10 +524,14 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
-                // No -I: it implies -E, which made the child ignore every
-                // PYTHON* variable the console script honours.
+                // -I here and nowhere else. This is the invocation that decides
+                // which install gets rewritten, and it shipped isolated; a
+                // user-site unsloth_cli answering `from unsloth_cli import app`
+                // would update the wrong one. Every invocation a user could have
+                // typed instead inherits, because the console script does.
                 OsString::from("-X"),
                 OsString::from("utf8"),
+                OsString::from("-I"),
                 OsString::from("-c"),
                 OsString::from(crate::process::WINDOWS_CLI_ENTRYPOINT),
                 OsString::from("studio"),

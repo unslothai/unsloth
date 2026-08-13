@@ -180,7 +180,7 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
 # both halves and for the deliberate absence of -I.
 _WINDOWS_CLI_ENTRYPOINT = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
-    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
 # CreateProcess refuses a program blocked by an Application Control policy with
@@ -4275,6 +4275,14 @@ class _WindowsLauncherUpdateTransaction:
                     typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
                 raise typer.Exit(1)
         self._validated = True
+        # Only once the launcher is actually back. A quarantined or locked stub can
+        # be judged healthy through the interpreter while every attempt to restore
+        # a copy failed, and deleting the copies there would throw away the only
+        # material a later run could recover from. They are fixed names, so keeping
+        # them costs nothing and the next update that does put a launcher back
+        # clears them.
+        if not self._is_valid_pe(self.launcher):
+            return
         for orphan in (self.stale, self.backup, self.legacy_backup):
             if orphan is None:
                 continue
