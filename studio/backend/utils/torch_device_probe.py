@@ -226,7 +226,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return True
 
-    env = utf8_child_env(child_env_without_native_path_secret())
+    env = child_env_without_native_path_secret()
     dll_directories = _rocm_dll_directories()
     if dll_directories:
         env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
@@ -239,7 +239,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            env = env,
+            env = utf8_child_env(env),
             # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when
             # this multithreaded backend forks and executes Python before exec.
             **windows_hidden_subprocess_kwargs(),
