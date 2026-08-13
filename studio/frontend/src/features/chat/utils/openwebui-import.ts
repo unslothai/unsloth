@@ -97,8 +97,13 @@ export function isOpenWebUIRecord(value: unknown): boolean {
 // Content
 
 // A closed fence first, then an opener that never closed: an answer cut off
-// inside a code block still quotes code, not an Open WebUI construct.
-const FENCED_CODE = /```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$/g;
+// inside a code block still quotes code, not an Open WebUI construct. The
+// unclosed form is anchored to the start of a line, which is where markdown
+// requires a block fence to begin. Unanchored, a single stray ``` mid-sentence
+// swallowed the whole rest of the message, so every tool call after it was
+// rendered as literal markup and lost.
+const FENCED_CODE =
+  /```[\s\S]*?```|~~~[\s\S]*?~~~|(?:^|\n)[ \t]{0,3}(?:```|~~~)[\s\S]*$/g;
 const DETAILS_BLOCK = /<details\b([^>]*)>([\s\S]*?)<\/details>/gi;
 const ATTRIBUTE = /([\w-]+)="([^"]*)"/g;
 

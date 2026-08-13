@@ -996,3 +996,63 @@ test("a disconnected cycle does not displace the branch the user had open", () =
   // Studio reopens on the last message, so it has to be the selected branch.
   assert.equal(text(conversation, conversation.messages.length - 1), "the answer");
 });
+
+test("a stray inline fence does not swallow the tool calls after it", () => {
+  // Markdown opens a block fence only at the start of a line. Treating any
+  // unclosed ``` as one made a single mid-sentence backtick run quote the rest
+  // of the message, so every tool call after it was lost as literal markup.
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content:
+            "let me compute ```\n" +
+            '<details type="tool_calls" done="true" id="c1" name="calculator" ' +
+            'arguments="{}" result="7">\n<summary>Tool Executed</summary>\n</details>\n' +
+            "the answer is 7",
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const call = parts(conversation, 0).find((part) => part.type === "tool-call");
+  assert.ok(call, "the tool call was swallowed by the stray fence");
+  assert.equal(call.toolName, "calculator");
+  assert.equal(call.result, 7);
+});
+
+test("a reasoning block quoting one backtick run keeps the next tool call", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content:
+            '<details type="reasoning" done="true">\n<summary>Thought</summary>\n' +
+            "> the user asked about ```\n</details>\n" +
+            '<details type="tool_calls" done="true" id="c9" name="real_tool" ' +
+            'arguments="{}" result="42">\n<summary>Tool Executed</summary>\n</details>\n' +
+            "final answer",
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.deepEqual(
+    parts(conversation, 0).map((part) => part.type),
+    ["reasoning", "tool-call", "text"],
+  );
+});
