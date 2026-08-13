@@ -190,6 +190,38 @@ Check "there is an escape hatch"          ($report -match 'UNSLOTH_SKIP_TORCH_GP
 # An explicit cpu pin is a request, not a fault: install_python_stack force-reinstalls the CPU
 # wheel for it, so a red "cannot see the GPU" would accuse the user of their own setting.
 Check "an explicit cpu pin is excluded"   ($report -match '\$_gpuCheckPinLeaf -ne "cpu"')
+# A hide-all visibility mask is a request too, and detection cannot see it: nvidia-smi ignores
+# CUDA_VISIBLE_DEVICES, and the AMD arch can come from a WMI GPU name, so the summary announces
+# the card while torch is meant to see nothing.
+Check "a hide-all mask is excluded"       ($report -match '-not \$_gpuCheckMasked')
+# Scoped to the mask that governs what was announced: an idle HIP mask on an NVIDIA host must
+# not mute a genuine mismatch.
+Check "the NVIDIA arm reads the CUDA mask" ($report -match 'NVIDIA\*.*[\s\S]{0,80}CUDA_VISIBLE_DEVICES')
+Check "the AMD arm reads the HIP masks"   ($report -match 'HIP_VISIBLE_DEVICES.*ROCR_VISIBLE_DEVICES')
+Check "the NVIDIA arm ignores HIP"        (-not ($report -match 'NVIDIA\*\) \{\s*\n\s*Test-VisibleMaskHidesAll \$env:HIP'))
+
+# The mask predicate itself is run: PowerShell turns an unset $env: read into "" under a
+# [string[]] cast, and "" is the hide-all value, so a typed parameter would mute every host.
+$maskFn = Get-FunctionText $setup "Test-VisibleMaskHidesAll"
+function Test-Mask {
+    param($Masks)
+    $sb = [scriptblock]::Create(@"
+param(`$Masks)
+$maskFn
+Test-VisibleMaskHidesAll `$Masks
+"@)
+    return (& $sb $Masks)
+}
+Check "an unset mask hides nothing"       (-not (Test-Mask $null))
+Check "no mask at all hides nothing"      (-not (Test-Mask @($null, $null)))
+Check "-1 hides everything"               (Test-Mask "-1")
+Check "an empty mask hides everything"    (Test-Mask "")
+Check "whitespace is trimmed"             (Test-Mask " -1 ")
+Check "a selected device is not hidden"   (-not (Test-Mask "0"))
+Check "a device list is not hidden"       (-not (Test-Mask "1,0"))
+# First-set-wins: an empty HIP mask shadows a ROCR mask that names a device.
+Check "the first set mask wins"           (Test-Mask @("", "0"))
+Check "and an unset one is skipped"       (-not (Test-Mask @($null, "0")))
 # Resolved here, not read off $TorchIndexPinned / $CuTag: those live inside the dependency-pass
 # branch and are $null on the "dependencies up to date" run this check exists for.
 Check "the pin is resolved fresh"         ($report -match '\$_gpuCheckPinLeaf = Get-TorchIndexLeaf \(Get-PinnedTorchIndexUrl\)')

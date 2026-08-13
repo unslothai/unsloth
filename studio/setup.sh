@@ -2059,7 +2059,10 @@ if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } 
         substep "If the Live monitor shows VRAM \"--\" and \"No visible GPU\", that is this, not a second bug." "$C_ERR"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then
-        verbose_substep "torch sees $_setup_torch_devices GPU(s) (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"
+        # device_count() is CUDA-only, so on a host suppressed by the XPU answer it is 0 while
+        # torch is using the Intel GPU. Name what the number counts, and print the xpu answer
+        # next to it, rather than presenting it as the total.
+        verbose_substep "torch sees $_setup_torch_devices CUDA device(s), xpu $_setup_torch_sees_xpu (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"
     elif [ "$_setup_skip_torch_check" = false ] && [ -n "$_setup_torch_py" ]; then
         # Silent when torch is simply absent (GGUF-only venv): there is nothing
         # to reconcile, and a warning there would be noise on every update. Colab

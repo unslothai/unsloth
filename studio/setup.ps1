@@ -2164,6 +2164,19 @@ function Test-VisibleDevicesPinned {
     return $false
 }
 
+# True when the FIRST mask that is set hides every device ("" or "-1"). First-set-wins, like
+# Resolve-VisibleGpuIndex and the runtime itself. Untyped on purpose: a [string[]] cast turns an
+# unset $env: read from $null into "", which reads as hide-all and would mute every host.
+function Test-VisibleMaskHidesAll {
+    param($Masks)
+    foreach ($mask in @($Masks)) {
+        if ($null -eq $mask) { continue }
+        $value = "$mask".Trim()
+        return ($value -eq "" -or $value -eq "-1")
+    }
+    return $false
+}
+
 # The one mask -> index resolver for every pick site below; the sites used to inline
 # their own expressions and disagreed (hipinfo rejected " 1 ", amd-smi rejected "1,0"),
 # and a mask Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, the
@@ -5180,7 +5193,17 @@ $_gpuCheckPy = Join-Path $VenvDir "Scripts\python.exe"
 # the "dependencies up to date" run this check exists for they are $null. Exact leaf only -- a
 # cu128 or rocm pin still expects a GPU.
 $_gpuCheckPinLeaf = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+# A hide-all visibility mask is a request too, and detection does not see it: nvidia-smi ignores
+# CUDA_VISIBLE_DEVICES entirely, and the AMD arch can come from a WMI GPU name, so the summary
+# announces the card while torch is meant to see nothing. Scoped to the mask that governs what
+# was announced, so an idle HIP mask cannot mute a genuine NVIDIA mismatch.
+$_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
+    Test-VisibleMaskHidesAll $env:CUDA_VISIBLE_DEVICES
+} elseif ($_gpuCheckAnnounced -like "AMD*") {
+    Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES)
+} else { $false }
 if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
+    -not $_gpuCheckMasked -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
     $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy

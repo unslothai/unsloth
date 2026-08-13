@@ -253,7 +253,7 @@ def test_a_working_amd_gpu_prints_no_mismatch(block, tmp_path):
     out = result["stdout"]
     assert "gpu check" not in out
     assert "cannot see" not in out
-    assert "VSUB|torch sees 1 GPU(s) (torch 2.9.0+rocm6.4, hip 6.4)" in out
+    assert "VSUB|torch sees 1 CUDA device(s), xpu false (torch 2.9.0+rocm6.4, hip 6.4)" in out
 
 
 def test_nvidia_host_is_named_as_nvidia(block, tmp_path):
@@ -558,6 +558,16 @@ def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
     assert result["returncode"] == 0
 
 
+def test_the_verbose_line_does_not_call_zero_cuda_devices_the_total(block, tmp_path):
+    """device_count() is CUDA-only. On the host the XPU answer suppresses, it is 0 while torch
+    is using the Intel GPU, so "torch sees 0 GPU(s)" reads as a failure on a working machine."""
+    venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+xpu", xpu = "1"))
+    result = _run_block(block, venv, tmp_path, nvidia = True, env = {"UNSLOTH_VERBOSE": "1"})
+    out = result["stdout"]
+    assert "VSUB|torch sees 0 CUDA device(s), xpu true (torch 2.9.0+xpu, hip none)" in out
+    assert "GPU(s)" not in out
+
+
 def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
     """The suppression is XPU-specific, not a blanket mute: with no XPU the same
     invisible-GPU host must still be reported."""
@@ -590,7 +600,10 @@ def test_a_working_colab_runtime_prints_no_mismatch(block, tmp_path):
         block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
     )
     assert "cannot see" not in result["stdout"]
-    assert "VSUB|torch sees 1 GPU(s) (torch 2.9.0+cu128, hip none)" in result["stdout"]
+    assert (
+        "VSUB|torch sees 1 CUDA device(s), xpu false (torch 2.9.0+cu128, hip none)"
+        in result["stdout"]
+    )
 
 
 def test_a_colab_probe_that_does_not_answer_still_warns(block, tmp_path):
