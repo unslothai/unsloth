@@ -85,6 +85,7 @@ import {
   saveAdvancedSettingsOpen,
   savePerModelConfig,
   subscribeAdvancedSettingsOpen,
+  VRAM_BUDGET_PERCENT_STEP,
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
@@ -300,6 +301,7 @@ function AdvancedGpuSlider({
   displayValue,
   info,
   inputRef,
+  step = 1,
 }: {
   label: string;
   value: number;
@@ -309,6 +311,7 @@ function AdvancedGpuSlider({
   displayValue?: string;
   info?: ReactNode;
   inputRef?: Ref<NumericValueInputHandle>;
+  step?: number;
 }) {
   return (
     <div className="space-y-3">
@@ -322,7 +325,7 @@ function AdvancedGpuSlider({
           value={value}
           min={min}
           max={max}
-          step={1}
+          step={step}
           onChange={onChange}
           displayValue={displayValue}
           ariaLabel={label}
@@ -333,7 +336,7 @@ function AdvancedGpuSlider({
       <Slider
         min={min}
         max={max}
-        step={1}
+        step={step}
         value={[value]}
         onValueChange={([next]) => onChange(next)}
         className="panel-slider"
@@ -446,6 +449,8 @@ function VramBudgetRow() {
         value={percent}
         min={vramFractionToPercent(settings.minFraction)}
         max={vramFractionToPercent(settings.maxFraction)}
+        step={VRAM_BUDGET_PERCENT_STEP}
+        displayValue={`${percent}%`}
         onChange={commit}
         info={
           <div className="flex flex-col gap-1.5">
@@ -456,7 +461,9 @@ function VramBudgetRow() {
             </div>
             <div>
               Applies to every model, not just this one, and takes effect on the
-              next load. Default {defaultPercent}%.
+              next load. Default {defaultPercent}%. At 100% a load still leaves
+              512 MiB per card, the same margin llama.cpp keeps for its own
+              fitter.
             </div>
           </div>
         }

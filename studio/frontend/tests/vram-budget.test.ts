@@ -18,6 +18,7 @@ const {
   VRAM_BUDGET_PERCENT_DEFAULT,
   VRAM_BUDGET_PERCENT_MAX,
   VRAM_BUDGET_PERCENT_MIN,
+  VRAM_BUDGET_PERCENT_STEP,
   vramFractionToPercent,
   vramPercentToFraction,
 } = await import(
@@ -25,16 +26,27 @@ const {
 );
 
 test("percent and fraction round-trip exactly across the whole range", () => {
-  for (
-    let percent = VRAM_BUDGET_PERCENT_MIN;
-    percent <= VRAM_BUDGET_PERCENT_MAX;
-    percent += 1
-  ) {
+  // Every stop the slider can land on, tenths included: a value that does not
+  // survive the trip reads as "changed" and re-saves itself on every remount.
+  const steps = Math.round(
+    (VRAM_BUDGET_PERCENT_MAX - VRAM_BUDGET_PERCENT_MIN) /
+      VRAM_BUDGET_PERCENT_STEP,
+  );
+  for (let i = 0; i <= steps; i += 1) {
+    const percent =
+      Math.round((VRAM_BUDGET_PERCENT_MIN + i * VRAM_BUDGET_PERCENT_STEP) * 10) /
+      10;
     assert.equal(
       vramFractionToPercent(vramPercentToFraction(percent)),
       percent,
     );
   }
+});
+
+test("a tenth of a percent survives the trip to the backend and back", () => {
+  assert.equal(vramPercentToFraction(97.5), 0.975);
+  assert.equal(vramFractionToPercent(0.975), 97.5);
+  assert.equal(VRAM_BUDGET_PERCENT_STEP, 0.1);
 });
 
 test("the default fraction is exactly 0.97, not a float-drifted neighbour", () => {
@@ -52,14 +64,14 @@ test("the bounds mirror the backend range", () => {
 });
 
 test("fractionToPercent rounds rather than truncating", () => {
-  // A value set through UNSLOTH_VRAM_FRACTION need not be a whole percent.
-  assert.equal(vramFractionToPercent(0.855), 86);
-  assert.equal(vramFractionToPercent(0.854), 85);
+  // A value set through UNSLOTH_VRAM_FRACTION need not land on the grid.
+  assert.equal(vramFractionToPercent(0.8555), 85.6);
+  assert.equal(vramFractionToPercent(0.8554), 85.5);
 });
 
-test("percentToFraction tolerates a non-integer slider value", () => {
-  assert.equal(vramPercentToFraction(90.4), 0.9);
-  assert.equal(vramPercentToFraction(90.6), 0.91);
+test("percentToFraction tolerates an off-grid slider value", () => {
+  assert.equal(vramPercentToFraction(90.44), 0.904);
+  assert.equal(vramPercentToFraction(90.46), 0.905);
 });
 
 // The component cannot be mounted here (no DOM, and renderToStaticMarkup never
@@ -241,4 +253,17 @@ test("a read waits behind an open write", () => {
     read.indexOf("pendingWrites") < read.indexOf(".then(fetchVramBudgetSettings)"),
     "the fetch must be chained behind the open writes, not raced with them",
   );
+});
+
+test("the budget reads as a percentage and steps in tenths", () => {
+  const row = vramBudgetRowSource();
+  // Without the suffix the row is a bare number next to controls measured in
+  // layers and tokens, and 97 reads as neither.
+  assert.match(row, /displayValue=\{`\$\{percent\}%`\}/);
+  assert.match(row, /step=\{VRAM_BUDGET_PERCENT_STEP\}/);
+  // The shared slider defaults to whole steps, so the other callers are untouched.
+  const slider = pageSource.slice(
+    pageSource.indexOf("function AdvancedGpuSlider"),
+  );
+  assert.match(slider.slice(0, slider.indexOf("</div>")), /step = 1,/);
 });

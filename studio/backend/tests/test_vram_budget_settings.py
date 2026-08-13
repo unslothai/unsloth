@@ -111,6 +111,21 @@ class TestPrecedence:
         assert _active_vram_fraction() == _CTX_FIT_VRAM_FRACTION
 
 
+class TestGrid:
+    def test_a_tenth_of_a_percent_is_a_legal_budget(self):
+        # The slider steps in tenths, so the fraction has to survive storage on
+        # that grid or the control would show a value the backend never held.
+        assert vb.coerce_fraction(0.975) == 0.975
+        assert vb.coerce_fraction("0.975") == 0.975
+
+    def test_off_grid_values_are_quantised_rather_than_refused(self):
+        # An environment variable or a hand-written row need not land on a stop.
+        assert vb.coerce_fraction(0.9749999999) == 0.975
+        assert vb.coerce_fraction(0.9754) == 0.975
+        assert vb.coerce_fraction(0.8) == 0.8
+        assert vb.coerce_fraction(1.0) == 1.0
+
+
 class TestState:
     def test_reports_inherited_values_as_not_stored(self, monkeypatch):
         monkeypatch.setenv(vb.VRAM_FRACTION_ENV_VAR, "0.91")
@@ -462,3 +477,49 @@ class TestPendingOwnership:
         with pytest.raises(Exception):
             backend.load_model(lc.GgufLoadIntent(model_identifier = "owner/repo"))
         assert backend._vram_fraction_pending is None
+
+
+class TestFloorReserve:
+    """100% still leaves a card the margin llama.cpp keeps for its own fitter."""
+
+    @staticmethod
+    def _usable(free, total, frac):
+        import core.inference.llama_cpp as lc
+        return lc._vram_usable_mib(free, total, frac)
+
+    def test_full_budget_still_leaves_the_floor(self):
+        import core.inference.llama_cpp as lc
+
+        # 24 GB card, nothing else resident.
+        assert self._usable(24_576, 24_576, 1.0) == pytest.approx(
+            24_576 - lc._VRAM_FLOOR_RESERVE_MIB
+        )
+        # And on a small card, where a pure percentage would leave nothing.
+        assert self._usable(8_192, 8_192, 1.0) == pytest.approx(8_192 - lc._VRAM_FLOOR_RESERVE_MIB)
+
+    @pytest.mark.parametrize("total", [4_096, 8_192, 16_384, 24_576, 81_920])
+    def test_the_default_reserve_is_unchanged_on_every_card_size(self, total):
+        # The acceptance bar for the whole setting: unset behaves exactly as the
+        # hard-coded 0.97 did. The floor must not reach below the default, which
+        # it otherwise would on any card under about 17 GB.
+        import core.inference.llama_cpp as lc
+        assert self._usable(total, total, lc._CTX_FIT_VRAM_FRACTION) == pytest.approx(
+            total - (1.0 - lc._CTX_FIT_VRAM_FRACTION) * total
+        )
+
+    def test_the_floor_only_binds_where_the_percentage_reserves_less(self):
+        import core.inference.llama_cpp as lc
+
+        # 1% of 80 GB is 819 MiB, above the floor, so 99% keeps its percentage.
+        assert self._usable(81_920, 81_920, 0.99) == pytest.approx(81_920 * 0.99)
+        # 1% of 24 GB is 245 MiB, under the floor, so the floor takes over.
+        assert self._usable(24_576, 24_576, 0.99) == pytest.approx(
+            24_576 - lc._VRAM_FLOOR_RESERVE_MIB
+        )
+
+    def test_an_absolute_pool_budget_is_not_charged_twice(self):
+        # The tensor-parallel paths pass an already computed pool budget with
+        # budget_frac = 1.0 and total_mib = None. Flooring there would subtract a
+        # reserve the pool budget has already paid for on each of its cards.
+        assert self._usable(12_000, 0, 1.0) == pytest.approx(12_000)
+        assert self._usable(12_000, None, 1.0) == pytest.approx(12_000)

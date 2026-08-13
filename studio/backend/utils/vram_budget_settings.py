@@ -30,12 +30,17 @@ VRAM_BUDGET_SETTING_KEY = "vram_budget_fraction"
 
 VRAM_FRACTION_ENV_VAR = "UNSLOTH_VRAM_FRACTION"
 
-# Mirrored in per-model-config.ts as whole percent for the slider, a pair
+# Mirrored in per-model-config.ts as percent for the slider, a pair
 # test_vram_budget_settings.py pins together. The default is the historical
 # _CTX_FIT_VRAM_FRACTION / _GPU_PIN_VRAM_FRACTION.
 VRAM_FRACTION_MIN = 0.80
 VRAM_FRACTION_MAX = 1.00
 VRAM_FRACTION_DEFAULT = 0.97
+
+# The slider steps in tenths of a percent, so 0.975 is a legal budget. Values are
+# quantised to that grid, which keeps a stored fraction exactly representable as
+# the percent the UI shows and stops float noise accumulating over a round trip.
+VRAM_FRACTION_DECIMALS = 3
 
 # Read on the load path, so memo briefly to spare SQLite, as model_memory_settings.
 _CACHE_TTL_S = 2.0
@@ -92,7 +97,9 @@ def coerce_fraction(value: Any) -> Optional[float]:
     # Two-sided on purpose: NaN loses every comparison, so this rejects it; the
     # one-sided form would let NaN through and NaN every per-GPU budget. Mirrors
     # _parse_mem_fraction_env.
-    return fraction if VRAM_FRACTION_MIN <= fraction <= VRAM_FRACTION_MAX else None
+    if not VRAM_FRACTION_MIN <= fraction <= VRAM_FRACTION_MAX:
+        return None
+    return round(fraction, VRAM_FRACTION_DECIMALS)
 
 
 def _env_fraction() -> Optional[float]:

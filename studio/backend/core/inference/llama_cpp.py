@@ -1895,6 +1895,27 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
+# Left on every card even at 100%, matching the --fit-target margin llama.cpp
+# keeps for its own fitter. Applied only above the default, so an unset budget
+# reserves exactly what it always did on every card size.
+_VRAM_FLOOR_RESERVE_MIB = 512.0
+
+
+def _vram_usable_mib(free_mib: float, total_mib: float, frac: float) -> float:
+    """Free MiB one card offers a load at ``frac``, unclamped.
+
+    Only the known-total branch floors the reserve: without a total the caller may
+    be passing an already absolute pool budget (budget_frac = 1.0), which must not
+    be charged a second reserve.
+    """
+    if total_mib and total_mib > 0:
+        reserve = (1.0 - frac) * total_mib
+        if frac > _CTX_FIT_VRAM_FRACTION:
+            reserve = max(reserve, _VRAM_FLOOR_RESERVE_MIB)
+        return free_mib - reserve
+    return free_mib * frac
+
+
 def _active_vram_fraction() -> float:
     """The user's VRAM budget, or ``_CTX_FIT_VRAM_FRACTION`` when they set none.
 
@@ -6058,13 +6079,12 @@ class LlamaCppBackend:
             usable_fraction = _active_vram_fraction()
         overhead_mib = per_device_overhead_bytes / (1024 * 1024)
 
-        # Per-GPU usable budget: free - (1-frac)*total when total is known, else
+        # Per-GPU usable budget: free minus the reserve when total is known, else
         # the legacy free*frac (also covers a total-0 two-column probe).
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
-            if t > 0:
-                return max(0.0, free_mib - (1.0 - usable_fraction) * t)
-            return free_mib * usable_fraction
+            usable = _vram_usable_mib(free_mib, t, usable_fraction)
+            return max(0.0, usable) if t > 0 else usable
 
         # Rank by usable budget (free - reserve), not raw free: a more-used large
         # card can have less usable room than a less-used small one.
@@ -6912,10 +6932,9 @@ class LlamaCppBackend:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
             budget_frac = _active_vram_fraction() - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
+        budget_mib = _vram_usable_mib(available_mib, total_mib or 0, budget_frac)
         if total_mib is not None and total_mib > 0:
-            budget_mib = max(0.0, available_mib - (1.0 - budget_frac) * total_mib)
-        else:
-            budget_mib = available_mib * budget_frac
+            budget_mib = max(0.0, budget_mib)
         budget_bytes = budget_mib * 1024 * 1024
         model_footprint = model_size_bytes
 
@@ -10931,14 +10950,11 @@ class LlamaCppBackend:
                     _detected_gpus = list(gpus)
 
                     def _gpu_usable(g, frac = _vram_frac):
-                        # Per-GPU usable budget for ranking: free - (1-frac)*total.
-                        # Callers pass the ACTIVE fraction so the ranking matches the
-                        # budget the fit then tests (else mixed totals mis-order).
+                        # Per-GPU usable budget for ranking. Callers pass the ACTIVE
+                        # fraction so the ranking matches the budget the fit then
+                        # tests (else mixed totals mis-order).
                         idx, free = g
-                        t = total_by_idx.get(idx, 0)
-                        if t > 0:
-                            return free - (1.0 - frac) * t
-                        return free * frac
+                        return _vram_usable_mib(free, total_by_idx.get(idx, 0), frac)
 
                     def _pool_budget_mib(subset, frac):
                         # Sum each GPU's own usable budget. Pooling free and total
