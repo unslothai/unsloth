@@ -4769,8 +4769,10 @@ export function createOpenAIStreamAdapter(
 
       // Stop handle for when this conversation is not the visible one, which cancelByThreadId
       // cannot reach. Aborting this run's own controller closes just its request, and the
-      // listener above posts its cancel_id so llama-server stops decoding too. For an
-      // external provider the abort is the stop, since its cancel_id is never registered.
+      // listener above posts its cancel_id so llama-server stops decoding too. For a plain
+      // external passthrough the abort is the stop (nothing runs locally); the external
+      // local-tools loop registers its cancel event under the request's cancel_id, so the
+      // explicit /cancel POST reaches it even when a Colab/proxy swallows the abort.
       runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
         if (runSignal.aborted) {
@@ -5144,6 +5146,10 @@ export function createOpenAIStreamAdapter(
                       ? { session_id: sandboxSessionId }
                       : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    // the loop runs tools on this machine, so its cancel event is
+                    // registered under this id; without it a swallowed fetch abort
+                    // (Colab/proxy) would leave python/terminal/MCP/RAG running.
+                    cancel_id: cancelId,
                     permission_mode: permissionMode,
                     ...(permissionMode === "auto"
                       ? {}
