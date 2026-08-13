@@ -121,6 +121,57 @@ jobs:
             --ignore=tests/test_studio_api.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
+  pytest-macos:
+    # The same suite on Apple Silicon. Everything above runs on ubuntu-latest only, so a test that
+    # depends on the host -- an MPS device target, a path separator, a case-insensitive filesystem
+    # -- reads as green until someone runs it on a Mac. Studio ships to Macs, and the native
+    # engine's whole reason for existing is that tier, so the gap is not a theoretical one:
+    # test_a_quantized_reference_load_resolves_the_reference_denoiser failed there for months
+    # because H3's Modular Diffusers path is refused on Metal and the test read that as a
+    # regression (fixed in the commit that added this job's sibling PR).
+    #
+    # ONE interpreter, not the four the ubuntu matrix runs. macOS runners cost ten times a Linux
+    # one in Actions minutes, and a second interpreter would re-find whatever the first found: the
+    # bugs this job exists for are about the platform, not the Python version.
+    name: (macOS, Python 3.13)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install backend test dependencies (CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r studio/backend/requirements/studio.txt
+          pip install \
+            python-multipart aiofiles sqlalchemy cryptography psutil \
+            pyyaml jinja2 mammoth unpdf requests \
+            'numpy<3' pytest pytest-asyncio httpx \
+            soundfile librosa
+          # From PyPI, NOT the download.pytorch.org/whl/cpu index the ubuntu job uses: that index
+          # publishes Linux wheels only, so pointing macOS at it resolves nothing and the install
+          # fails outright. The PyPI macOS wheel is already CPU/MPS, there is no CUDA build to
+          # avoid.
+          pip install 'torch>=2.4,<2.11'
+          pip install 'transformers>=4.51,<5.5'
+          pip install torchao
+
+      - name: Backend tests
+        working-directory: studio/backend
+        # Same deselections as the ubuntu matrix, for the same reason: they are GPU-bound by
+        # design and no hosted runner of either OS can satisfy them.
+        run: |
+          python -m pytest tests/ -q --tb=short \
+            --ignore=tests/test_studio_api.py \
+            -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
+
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by
     # design. New tests added in covered directories are picked up
