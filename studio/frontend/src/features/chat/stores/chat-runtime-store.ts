@@ -35,6 +35,7 @@ import {
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
 import { normalizeStoredRagAutoInject } from "../utils/mirrored-chat-settings";
+import { retryablePatchAfterFailure } from "../utils/settings-retry";
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
@@ -339,17 +340,29 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   pendingPatch = {};
   try {
     await savePersistedChatSettingsPatch(patch, { keepalive });
-  } catch {
+  } catch (error) {
+    // A rejected patch is NOT requeued as it stands. The endpoint is
+    // extra="forbid" and refuses the whole body on one bad field, so a patch the
+    // server will never accept, requeued forever, makes every later save fail
+    // too and the tab can no longer persist any chat setting. Keep the fields
+    // the server did not name, drop the ones it did, and only reschedule when
+    // the patch actually got smaller so the retry chain is bounded.
+    const { patch: retryable, progressed } = retryablePatchAfterFailure(
+      patch,
+      error,
+    );
     const retryPatch: SettingsPatch = {};
-    mergePatch(retryPatch, patch);
+    mergePatch(retryPatch, retryable);
     mergePatch(retryPatch, pendingPatch);
     pendingPatch = retryPatch;
     warnSettingsPersistenceFailure();
+    if (progressed && !keepalive && Object.keys(pendingPatch).length > 0) {
+      scheduleSettingsFlush();
+    }
   }
 }
 
-function saveSettingsPatch(patch: SettingsPatch): void {
-  mergePatch(pendingPatch, patch);
+function scheduleSettingsFlush(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
@@ -359,19 +372,38 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   }, SETTINGS_DEBOUNCE_MS);
 }
 
-// Best-effort flush of any pending patch on tab close. keepalive lets the PUT
-// outlive the unload; without it the browser cancels the fetch and the user's
-// last slider drag is dropped.
+function saveSettingsPatch(patch: SettingsPatch): void {
+  mergePatch(pendingPatch, patch);
+  scheduleSettingsFlush();
+}
+
+// Best-effort flush of any pending patch when the page is going away. keepalive
+// lets the PUT outlive the unload; without it the browser cancels the fetch and
+// the user's last slider drag is dropped.
+function flushSettingsOnPageHidden(): void {
+  if (pendingTimer !== null) clearTimeout(pendingTimer);
+  // An edit still waiting on hydration is a user edit like any other, and the
+  // tab is going away, so send it rather than let the next session hydrate over it.
+  drainPreHydrationPatch();
+  if (Object.keys(pendingPatch).length === 0) return;
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch(true));
+}
+
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => {
-    if (pendingTimer !== null) clearTimeout(pendingTimer);
-    // An edit still waiting on hydration is a user edit like any other, and the
-    // tab is closing, so send it rather than let the next session hydrate over it.
-    drainPreHydrationPatch();
-    if (Object.keys(pendingPatch).length === 0) return;
-    inflightFlush = inflightFlush
-      .catch(() => undefined)
-      .then(() => flushSettingsPatch(true));
+  window.addEventListener("beforeunload", flushSettingsOnPageHidden);
+  // beforeunload is not the end of a page's life on every platform: mobile
+  // Safari and backgrounded Android tabs are routinely discarded without it, and
+  // a page restored from the back/forward cache never unloaded at all. pagehide
+  // and the hidden transition of visibilitychange are the two the platform does
+  // guarantee, so the debounced patch is normally already gone by the time an
+  // unload would have run. Safe to add rather than replace: the pending patch is
+  // swapped out before the request, so a second call with nothing queued returns
+  // immediately and the two never send the same edit twice.
+  window.addEventListener("pagehide", flushSettingsOnPageHidden);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSettingsOnPageHidden();
   });
 }
 

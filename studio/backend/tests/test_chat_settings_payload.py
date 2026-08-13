@@ -149,3 +149,51 @@ def test_unset_fields_stay_out_of_the_merge():
 def test_out_of_contract_values_are_rejected(payload):
     with pytest.raises(ValidationError):
         ChatSettingsPayload.model_validate(payload)
+
+
+# ---------------------------------------------------------------------------
+# Non-finite numbers
+# ---------------------------------------------------------------------------
+#
+# json.loads accepts bare NaN and Infinity, so both reach the payload from any
+# client that is not a browser (JSON.stringify emits null for them). Two things
+# then went wrong, and each needs its own guard.
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "payload_for",
+    [
+        lambda v: {"ragAutoInjectMinScore": v},
+        lambda v: {"inferenceParams": {"temperature": v}},
+        lambda v: {"customPresets": [{"name": "p", "params": {"topP": v}}]},
+    ],
+)
+def test_non_finite_numbers_are_refused_rather_than_stored(payload_for, value):
+    """A stored NaN is written to value_json as a bare `NaN` token.
+
+    Python reads it back, so the row is never quarantined, and the response model
+    renders it as null: the value is silently lost and the row on disk is not
+    valid JSON for any reader that is not Python.
+    """
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate(payload_for(value))
+
+
+def test_the_rejection_detail_can_be_rendered_as_json():
+    """The 400 must be renderable, or the caller gets a 500 instead.
+
+    Starlette's JSONResponse dumps with allow_nan = False, so echoing the
+    offending input back inside `detail` turned a correctly refused request into
+    an unhandled ValueError in the response renderer.
+    """
+    import json
+
+    from fastapi import HTTPException
+
+    from routes.chat_history import put_settings
+
+    with pytest.raises(HTTPException) as excinfo:
+        put_settings({"ragAutoInjectMinScore": float("nan")}, current_subject = "t")
+    assert excinfo.value.status_code == 400
+    json.dumps(excinfo.value.detail, allow_nan = False)

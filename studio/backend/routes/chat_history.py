@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
+from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
@@ -175,7 +176,13 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    # allow_inf_nan: json.loads accepts bare NaN and Infinity, and pydantic takes them
+    # for a float, so `{"temperature": NaN}` used to be stored as a bare NaN token in
+    # value_json. Python reads that back, so the row is never quarantined, while the
+    # response model renders it as null: the value is silently lost and the row is not
+    # valid JSON for any strict reader. Refuse it at the door instead, the way
+    # models/training.py already does for every numeric training field.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
@@ -192,7 +199,7 @@ class ChatInferenceSettings(BaseModel):
 
 
 class ChatPresetLoadConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
@@ -255,7 +262,7 @@ class ChatResearchWebsitePolicy(BaseModel):
 
 
 class ChatSettingsPayload(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     inferenceParams: Optional[ChatInferenceSettings] = None
     customPresets: Optional[list[ChatPreset]] = None
@@ -1155,7 +1162,14 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code = 400, detail = exc.errors()) from exc
+        # safe_validation_errors, not exc.errors(): the raw errors echo the offending
+        # input, and Starlette's JSONResponse dumps with allow_nan = False, so a
+        # rejected NaN or Infinity made the 400 handler itself unrenderable and the
+        # caller got a 500 for a request the validator had already refused. It also
+        # bounds a multi-megabyte value being quoted back.
+        raise HTTPException(
+            status_code = 400, detail = safe_validation_errors(exc.errors())
+        ) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
