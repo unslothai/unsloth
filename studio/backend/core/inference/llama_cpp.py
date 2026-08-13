@@ -109,7 +109,6 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     provisional_tool_provenance,
-    tool_event_provenance,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,

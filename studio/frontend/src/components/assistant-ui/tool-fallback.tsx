@@ -13,7 +13,7 @@ import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
   mcpServerFromProvenance,
-} from "@/features/chat";
+} from "@/features/chat/utils/mcp-tool-name";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
