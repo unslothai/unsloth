@@ -22,6 +22,14 @@ export function getAuthSessionEpoch(): number {
   return authSessionEpoch;
 }
 
+/**
+ * Ends this tab's session generation without touching storage or firing the cleared event,
+ * for a logout another tab already performed on the shared keys.
+ */
+export function noteAuthSessionCleared(): void {
+  authSessionEpoch += 1;
+}
+
 type PostAuthRoute = "/change-password" | "/chat";
 
 function canUseStorage(): boolean {

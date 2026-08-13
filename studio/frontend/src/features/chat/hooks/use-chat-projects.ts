@@ -5,6 +5,7 @@ import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_TOKEN_KEY,
   getAuthSessionEpoch,
+  noteAuthSessionCleared,
 } from "@/features/auth/session";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
@@ -64,6 +65,9 @@ if (typeof window !== "undefined") {
   // event. An access-token refresh rewrites the key, so only its removal ended the session.
   window.addEventListener("storage", (event) => {
     if (event.key !== AUTH_TOKEN_KEY || event.newValue !== null) return;
+    // Before the reset, so a request in flight under the old account fails the epoch guard
+    // and a subscriber that starts a new one on the freed slot reads the new generation.
+    noteAuthSessionCleared();
     resetChatProjectsState();
   });
 }

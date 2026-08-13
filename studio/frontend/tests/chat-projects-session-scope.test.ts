@@ -163,6 +163,39 @@ test("another tab's logout clears this tab's cache", async () => {
   assert.deepEqual(getProjectsSnapshot(), []);
 });
 
+test("another tab's logout stops an in-flight request from republishing", async () => {
+  freshSession();
+  const stale = loadProjects(true);
+  const calls = storage.listProjectsCalls();
+
+  fireStorage(AUTH_TOKEN_KEY, null);
+  assert.deepEqual(getProjectsSnapshot(), []);
+
+  // The request started under the account that just logged out everywhere.
+  calls[0].resolve(projectRows("Acme roadmap"));
+  assert.deepEqual(await stale, []);
+  assert.deepEqual(getProjectsSnapshot(), []);
+});
+
+test("a request from before another tab's logout does not clobber the next account", async () => {
+  freshSession();
+  const stale = loadProjects(true);
+  const calls = storage.listProjectsCalls();
+
+  fireStorage(AUTH_TOKEN_KEY, null);
+  // The freed slot lets the next account's request start here.
+  const fresh = loadProjects(true);
+  assert.equal(calls.length, 2, "the cross-tab logout did not free the slot");
+
+  calls[1].resolve(projectRows("Second account"));
+  assert.deepEqual(await fresh, projectRows("Second account"));
+
+  calls[0].resolve(projectRows("Acme roadmap"));
+  await flush();
+  assert.deepEqual(getProjectsSnapshot(), projectRows("Second account"));
+  assert.deepEqual(await stale, []);
+});
+
 test("a cross-tab token refresh or an unrelated key keeps the cache", async () => {
   freshSession();
   const loaded = loadProjects(true);
