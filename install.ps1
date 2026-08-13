@@ -1423,11 +1423,9 @@ exit 0
             # it across the rewrite. The shortcut loads this under RemoteSigned, which refuses a
             # marked unsigned script, so clear the mark on the file we just authored. A no-op on
             # every ordinary install, where the stream was never there.
-            # -Confirm:$false: Unblock-File declares SupportsShouldProcess at the default
-            # Medium impact, so a profile setting $ConfirmPreference to Medium or Low would
-            # prompt here, even for a launcher that never had the stream. ErrorAction does
-            # not suppress a ShouldProcess prompt, and a noninteractive host turns it into
-            # an error that skips shortcut setup entirely.
+            # -Confirm:$false: Unblock-File is SupportsShouldProcess at Medium impact, so a
+            # profile lowering $ConfirmPreference would prompt here, and ErrorAction does not
+            # suppress a ShouldProcess prompt. On a noninteractive host that skips shortcut setup.
             Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
@@ -1529,18 +1527,15 @@ exit 0
             #
             # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
             # Microsoft's detections key on, and install.rs makes the same call for the app's own
-            # launch. Nothing is lost: this launcher is written locally, so it carries no
-            # mark-of-the-web and RemoteSigned loads it. The hidden window stays.
+            # launch. This launcher is written locally, so RemoteSigned loads it either way.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
-            # A launcher on a UNC share is a REMOTE script to PowerShell, and RemoteSigned
-            # refuses an unsigned one, so a roaming profile would get a shortcut that exits
-            # without starting Studio. Bypass for that case only, and without -WindowStyle
-            # Hidden, since the hidden window beside a bypassed policy is the pair the
-            # detections key on. A console window on a UNC profile beats nothing launching.
-            # A mapped drive (H:, Z:) resolves to the same share and the same zone, so it needs
-            # the same treatment; DriveInfo on the root reports Network for both.
+            # A launcher on a share is a REMOTE script to PowerShell and RemoteSigned refuses an
+            # unsigned one, so a roaming profile would get a shortcut that exits without starting
+            # Studio. Bypass for that case only, and without the hidden window: a console beats
+            # nothing launching. A mapped drive (H:, Z:) is the same share and the same zone, and
+            # DriveInfo on the root reports Network for both.
             $launcherIsRemote = $launcherPs1 -like "\\*"
             if (-not $launcherIsRemote) {
                 try {
@@ -2619,11 +2614,9 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL and its
-        # older alias INSTALLER_DOWNLOAD_URL outrank the mirror variables there, and a host that
-        # sets one usually cannot reach the public endpoints at all, so trying those first would
-        # stall. The pin still applies: a source serving a different build fails the digest and
-        # the caller falls back.
+        # astral's sources in astral's order, each exclusive when set: a host that sets one
+        # usually cannot reach the public endpoints at all, so trying those first would stall.
+        # The pin still applies, so a source serving a different build fails the digest.
         $uvBase = if ($env:UV_DOWNLOAD_URL) {
             @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
         } elseif ($env:INSTALLER_DOWNLOAD_URL) {

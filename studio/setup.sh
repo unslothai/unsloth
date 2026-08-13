@@ -1715,11 +1715,9 @@ _setup_persist_uv_path() {
             echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
         fi
     fi
-    # Comments stripped and the directory anchored as a whole entry: a commented-out old export,
-    # or /opt/uv-old when we want /opt/uv, is not an active entry, and taking either for one
-    # leaves the next shell unable to resolve uv.
-    # A line that SETS PATH, as opposed to one that merely names the directory. The name
-    # boundary keeps PYTHONPATH out; the helpers are the common non-assignment spellings.
+    # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
+    # /opt/uv-old when we want /opt/uv, and PYTHONPATH=/opt/uv are none of them, and taking any
+    # for an entry leaves the next shell unable to resolve uv.
     _supp_path_line='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
     _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or

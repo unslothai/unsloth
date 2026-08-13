@@ -5497,14 +5497,11 @@ if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new sh
         fi
 fi
 
-# UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME and XDG_DATA_HOME all outrank
-# ~/.local/bin, and astral's installer wrote a PATH line for whichever it picked. Replacing that
-# installer means persisting its destination too. Both of astral's opt-outs are honoured:
-# UV_NO_MODIFY_PATH, and UV_UNMANAGED_INSTALL, which forces no-modify-path there and in
-# Install-UvFromRelease, so a caller asking for an unmanaged install gets no profile write here.
-# The default destination IS ~/.local/bin, so this must not be gated on it differing: an
-# ordinary install is the case that matters most, and gating it there left every normal machine
-# with the single-file write the shim path has always done.
+# UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME and XDG_DATA_HOME all outrank ~/.local/bin,
+# and astral's installer wrote a PATH line for whichever it picked, so replacing that installer
+# means persisting its destination too. Both of astral's opt-outs are honoured. Not gated on the
+# destination differing from ~/.local/bin: that IS the default, so gating there left every
+# ordinary machine with the single-file write.
 if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
    && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
    && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
@@ -5525,11 +5522,9 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
                 ;;
         esac
         _uv_pattern="(^|[^[:alnum:]_.~/-])($_uv_grep_esc)([^[:alnum:]_.~/-]|\$)"
-        # Every startup file astral's installer wired, because it is the installer we replaced:
-        # ~/.profile always, each of the bash files that exists, zsh under ZDOTDIR, and the fish
-        # drop-in regardless of the current shell. Writing only the one file for the shell that
-        # happens to be running would leave a bash user whose .bash_profile does not source
-        # .bashrc, or anyone who later switches shells, without uv on PATH.
+        # Every startup file astral's installer wired, because it is the installer we replaced.
+        # Writing only the file for the shell that happens to be running leaves a bash user whose
+        # .bash_profile does not source .bashrc, or anyone who later switches shells, without uv.
         for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                         "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
             # ~/.profile is created when absent, as astral does; the rest are only touched when

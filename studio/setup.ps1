@@ -4561,11 +4561,10 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     try {
         $script:UvPinnedInstalled = $false
         Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
-        # The merge base ran astral's installer here, so a failed pinned install has to have
-        # somewhere to go: without a fallback the whole setup silently drops to pip for torch,
-        # bitsandbytes, Triton and the rest, which is a different resolver, not a different
-        # download. winget rather than the remote script, since it is the shape this branch
-        # exists to remove, and it is what install.ps1 already tries first.
+        # The merge base ran astral's installer here, so a failed pinned install needs somewhere
+        # to go: with no fallback the setup drops to pip for torch, bitsandbytes and Triton, which
+        # is a different resolver rather than a different download. winget, not the remote script,
+        # which is the shape this branch removes and is what install.ps1 already tries first.
         if (-not $script:UvPinnedInstalled -and (Get-Command winget -ErrorAction SilentlyContinue)) {
             Invoke-SetupCommand {
                 winget install --id astral-sh.uv --source winget --accept-source-agreements `
