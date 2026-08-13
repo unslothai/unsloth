@@ -1575,7 +1575,8 @@ _setup_install_uv_pinned() {
     _siup_dest="${UV_INSTALL_DIR:-${UV_UNMANAGED_INSTALL:-${XDG_BIN_HOME:-}}}"
     if [ -z "$_siup_dest" ] && [ -n "${XDG_DATA_HOME:-}" ]; then _siup_dest="$XDG_DATA_HOME/../bin"; fi
     [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
-    _siup_work=$(mktemp -d) || return 1
+    # 2>/dev/null, as install.sh does: a speculative attempt whose failure falls back.
+    _siup_work=$(mktemp -d 2>/dev/null) || return 1
     _siup_rc=1
     # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
     # restricted network sets one because the public hosts are unreachable, so trying those first

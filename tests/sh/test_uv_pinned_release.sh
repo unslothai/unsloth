@@ -115,6 +115,63 @@ else
     bad "the shell-profile guard tests the inherited PATH, not the one we prepended to"
 fi
 
+# ...and having found that a new shell would NOT see the directory, it has to actually persist it.
+# A fresh account can have no rc file at all; astral's installer used to create one, the pinned
+# path does not, so an empty _SHELL_PROFILE means the next terminal resolves neither unsloth nor
+# uv. Run the real block from install.sh rather than grepping it.
+_guard_start=$(grep -n 'case ":\$_UNSLOTH_LOGIN_PATH:" in' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_guard_end=$(awk -v s="$_guard_start" 'NR>=s && $0=="esac" {print NR; exit}' "$INSTALL_SH")
+sed -n "${_guard_start},${_guard_end}p" "$INSTALL_SH" > "$WORK/path_guard.sh"
+mkdir -p "$WORK/fresh_home/.local/bin"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/fresh_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -q '\.local/bin' "$WORK/fresh_home/.profile" 2>/dev/null; then
+    ok "an account with no rc file still gets ~/.local/bin persisted"
+else
+    bad "an account with no rc file still gets ~/.local/bin persisted"
+fi
+# And it must stay idempotent: a second run over the file it just wrote adds nothing.
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/fresh_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if [ "$(grep -c 'Added by Unsloth installer' "$WORK/fresh_home/.profile")" = "1" ]; then
+    ok "the created profile is written once, not once per run"
+else
+    bad "the created profile is written once, not once per run"
+fi
+
+# The digest belongs inside the mirror loop. A proxy answering 200 with its own body is a
+# successful download by every measure Invoke-WebRequest has, and checking once afterwards spends
+# the only attempt on it and never reaches the mirror that would have served the real archive.
+for _ps in "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"; do
+    _dl_line=$(grep -n 'if (-not \$downloaded) { return \$false }' "$_ps" | head -1 | cut -d: -f1)
+    _hash_line=$(grep -n 'Get-FileHash -LiteralPath \$zip' "$_ps" | head -1 | cut -d: -f1)
+    if [ -n "$_dl_line" ] && [ -n "$_hash_line" ] && [ "$_hash_line" -lt "$_dl_line" ]; then
+        ok "${_ps##*/} verifies each uv mirror before it stops trying them"
+    else
+        bad "${_ps##*/} verifies each uv mirror before it stops trying them"
+    fi
+done
+
 # A configured uv mirror is exclusive: a restricted network sets one because the public hosts are
 # unreachable, and download() has no timeout, so trying them first stalls instead of falling back.
 for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
@@ -513,6 +570,23 @@ else
     ok "an unpinned architecture declines so the fallback runs"
 fi
 
+
+# An interrupted install must not leave the pinned path's temporaries behind: the work
+# directory holds a ~40 MB unpacked archive, and the staging file sits inside a directory that
+# is on PATH. The helper's own cleanup only runs when it returns normally, so both have to be
+# reachable from the signal and exit traps.
+_cleanup_body=$(awk '/^_cleanup_install_temporaries\(\) \{/,/^\}/' "$INSTALL_SH")
+if printf '%s' "$_cleanup_body" | grep -q '_UIP_WORK' && printf '%s' "$_cleanup_body" | grep -q '_UIP_STAGE'; then
+    ok "the pinned uv temporaries are removed by the interrupt cleanup"
+else
+    bad "the pinned uv temporaries are removed by the interrupt cleanup"
+fi
+if grep -q '^_UIP_WORK=""' "$INSTALL_SH" && grep -q '_UIP_WORK="\$_uip_work"' "$INSTALL_SH" \
+   && grep -q '_UIP_STAGE="\$_uip_stage"' "$INSTALL_SH"; then
+    ok "the pinned uv temporaries are published to the trap as they are created"
+else
+    bad "the pinned uv temporaries are published to the trap as they are created"
+fi
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

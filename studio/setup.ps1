@@ -4398,25 +4398,29 @@ function Install-UvFromPinnedRelease {
     $zip  = Join-Path $work $asset
     try {
         [System.IO.Directory]::CreateDirectory($work) | Out-Null
+        # The digest is checked per mirror, as install.ps1 does. A proxy answering 200 with its
+        # own body is a successful download by every measure Invoke-WebRequest has, and checking
+        # afterwards would spend the one attempt on it and never reach the second mirror.
         $downloaded = $false
         foreach ($base in $uvBase) {
             Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
             try {
                 Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
-                $downloaded = $true
-                break
             } catch {
                 Write-Output "uv download failed: $($_.Exception.Message)"
+                continue
             }
-        }
-        if (-not $downloaded) { return $false }
-
-        $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-        if ($actual -ne $wanted) {
+            $actual = ""
+            try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
+            if ($actual -eq $wanted) {
+                $downloaded = $true
+                break
+            }
             Write-Output "uv download failed checksum verification -- discarding it."
             Write-Output "expected $wanted, got $actual"
-            return $false
+            Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
         }
+        if (-not $downloaded) { return $false }
 
         # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
         Expand-Archive -LiteralPath $zip -DestinationPath $work -Force

@@ -725,6 +725,12 @@ _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
     [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
+    # The pinned uv path unpacks a ~40 MB archive and stages the binary next to the
+    # destination. Its own cleanup only runs on the normal exit from that function, so
+    # a Ctrl-C in the middle used to leave both behind, the staging file inside a
+    # directory that is on PATH.
+    [ -n "${_UIP_WORK:-}" ] && rm -rf "$_UIP_WORK" 2>/dev/null || true
+    [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -752,6 +758,8 @@ _on_install_signal() {
 _UV_OVERRIDE_TMPDIR=""
 _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
+_UIP_WORK=""
+_UIP_STAGE=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -2529,7 +2537,10 @@ _uv_install_pinned() {
         _uip_dest="$HOME/.local/bin"
     fi
 
-    _uip_work=$(mktemp -d) || return 1
+    # 2>/dev/null: this is a speculative attempt whose failure falls back to astral's
+    # installer, so an unusable $TMPDIR must not print a line the user cannot act on.
+    _uip_work=$(mktemp -d 2>/dev/null) || return 1
+    _UIP_WORK="$_uip_work"
     _uip_rc=1
     # astral's mirrors and precedence; each serves the identical asset, so one pin holds. A
     # configured mirror is EXCLUSIVE, as it is for astral's installer and for Install-UvFromRelease:
@@ -2587,6 +2598,7 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                 # means each rename publishes a file nobody else can still be writing, which is
                 # what makes the swap atomic for a concurrent reader.
                 _uip_stage=$(mktemp "$_uip_dest/.$_uip_exe.XXXXXX" 2>/dev/null) || break
+                _UIP_STAGE="$_uip_stage"
                 if ! cp -f "$_uip_src" "$_uip_stage" 2>/dev/null; then
                     rm -f "$_uip_stage" 2>/dev/null || true
                     break
@@ -2626,6 +2638,8 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         break
     done
     rm -rf "$_uip_work"
+    _UIP_WORK=""
+    _UIP_STAGE=""
     # Nothing is unwound on the failure path on purpose: the fallback installs over whatever is
     # at the destination, and deleting there would take out a working uv the host already had.
     return "$_uip_rc"
@@ -5341,6 +5355,13 @@ case ":$_UNSLOTH_LOGIN_PATH:" in
             elif [ -f "$HOME/.bashrc" ]; then
                 _SHELL_PROFILE="$HOME/.bashrc"
             elif [ -f "$HOME/.profile" ]; then
+                _SHELL_PROFILE="$HOME/.profile"
+            elif [ -n "${HOME:-}" ] && [ -w "$HOME" ]; then
+                # A fresh account can have no rc file at all. astral's installer used to create
+                # its own here, so the case never surfaced; the pinned path does not, and
+                # leaving it empty means the next shell resolves neither unsloth nor uv. The
+                # append below creates the file, and ~/.profile is the one every POSIX login
+                # shell reads.
                 _SHELL_PROFILE="$HOME/.profile"
             fi
             if [ -n "$_SHELL_PROFILE" ]; then

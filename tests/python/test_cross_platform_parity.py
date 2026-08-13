@@ -693,24 +693,24 @@ class TestPinnedIndexClearsUvEnvParity:
         protection refuses the one we just downloaded. Both PowerShell installers must
         run the extracted uv.exe where it landed BEFORE anything at the destination is
         touched, and must restore the incumbent if the published copy will not run."""
-        for path, probe in ((INSTALL_PS1, "Test-UvExecutable"),
-                            (SETUP_PS1, "Test-SetupUvExecutable")):
+        for path, probe in (
+            (INSTALL_PS1, "Test-UvExecutable"),
+            (SETUP_PS1, "Test-SetupUvExecutable"),
+        ):
             text = path.read_text(encoding = "utf-8")
             assert f"function {probe}" in text, f"{path.name} must define {probe}"
             # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
             # binary is exactly how an unattended install hangs.
-            assert "WaitForExit(20000)" in text, (
-                f"{path.name}'s uv probe must bound its wait"
-            )
+            assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
             probe_at = text.index(f"({probe} -Path $stagedUv)")
-            copy_at = text.index('Copy-Item -LiteralPath $src -Destination $dst -Force')
+            copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
             assert probe_at < copy_at, (
                 f"{path.name} must probe the extracted uv.exe before copying over the "
                 "destination"
             )
-            assert "$dst.unsloth-old" in text, (
-                f"{path.name} must copy the incumbent aside before replacing it"
-            )
+            assert (
+                "$dst.unsloth-old" in text
+            ), f"{path.name} must copy the incumbent aside before replacing it"
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
