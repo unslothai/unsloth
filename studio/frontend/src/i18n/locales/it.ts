@@ -406,6 +406,12 @@ export const it = {
         launchAtLogin: "Avvia Unsloth all'accesso",
         launchAtLoginDescription:
           "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+
+        closeToTray: "Chiudi nell'area di notifica",
+        closeToTrayDescription:
+          "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
+        closeToTraySaveError:
+          "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
@@ -956,11 +962,13 @@ export const it = {
       exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
-        "Importa nei Recenti un'esportazione JSONL, NDJSON o CSV.",
+        "Importa un export Open WebUI, JSONL, NDJSON o CSV in Recenti.",
       importChatsAction: "Importa",
       importNoConversations: "Nessuna conversazione trovata nel file.",
       importedOneChat: "1 conversazione importata nei Recenti.",
       importedChatCount: "{count} conversazioni importate nei Recenti.",
+      importingChats: "Importazione chat: {count} finora ({percent}%)...",
+      importedChatCountPartial: "Importate {count} conversazioni in Recenti; {failed} non sono state salvate.",
       importFailed: "Importazione non riuscita.",
       clearHistory: "Cancella la cronologia delle chat",
       clearHistoryDescription:

@@ -20,6 +20,7 @@ import atexit
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from functools import lru_cache
@@ -43,6 +44,48 @@ _TRANSPORT_ERRORS = (
     httpx.RemoteProtocolError,
     httpx.WriteError,
 )
+
+
+def _resolve_entrypoint(binary: str) -> str:
+    """The real executable behind a managed shell/symlink entrypoint.
+
+    macOS only matters here: SIP purges DYLD_* while starting the protected
+    /bin/sh a wrapper runs under, so probing or launching the wrapper loses the
+    loader path however carefully the environment was built (#8566). Shared
+    with the chat backend, which restricts this to OUR entrypoint so a user's
+    own wrapper keeps whatever setup it does before its exec.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._exec_path_for_launch(binary) or binary
+    except Exception:  # noqa: BLE001 - launch what we were given
+        return binary
+
+
+def _binary_lib_dir(binary: str) -> str:
+    """Directory holding ``binary``'s sibling libraries, through an entrypoint."""
+    try:
+        from core.inference.llama_cpp import _llama_lib_dir
+        return str(_llama_lib_dir(binary))
+    except Exception:  # noqa: BLE001 - fall back to the plain parent
+        return str(Path(binary).parent)
+
+
+def _with_dyld_path(env: dict[str, str], lib_dir: str) -> dict[str, str]:
+    """``env`` with ``lib_dir`` first on the macOS loader search path.
+
+    Returns a new dict rather than editing in place: the caller's environment is
+    its own, and the chat backend's equivalent is a pure function too. Shares
+    that one's prepend so both dedupe the same way.
+    """
+    out = dict(env)
+    try:
+        from core.inference.llama_cpp import _prepend_loader_dir
+        out["DYLD_LIBRARY_PATH"] = _prepend_loader_dir(out.get("DYLD_LIBRARY_PATH", ""), lib_dir)
+    except Exception:  # noqa: BLE001 - a search path is better than none
+        existing = [p for p in out.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
+        out["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([lib_dir, *existing]))
+    return out
 
 
 class LlamaServerBackend:
@@ -89,6 +132,9 @@ class LlamaServerBackend:
                 "llama-server. Install llama.cpp or set LLAMA_SERVER_PATH / "
                 "UNSLOTH_LLAMA_CPP_PATH."
             )
+        # Before the probe, so the --help check and the spawn both run the real
+        # executable rather than an entrypoint that loses DYLD_* to SIP.
+        binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
         return binary
@@ -97,7 +143,24 @@ class LlamaServerBackend:
     @lru_cache(maxsize = 8)
     def _help_text(binary: str) -> str:
         """`llama-server --help`, cached. Ignore exit code (some builds exit
-        non-zero on --help)."""
+        non-zero on --help).
+
+        On macOS, runs under the same loader environment as the real launch.
+        Without it, a bundle that needs the search path dies in the loader
+        here, and its error text reads as help output with no ``--embedding``
+        in it, so the caller reports a build that lacks embeddings instead of a
+        load failure. Elsewhere the probe keeps inheriting this process's
+        environment exactly as it always has: the loader hole is macOS-only,
+        and a probe that answers "does this build do embeddings" has no reason
+        to run under a different environment than it did before.
+        """
+        probe_env = None
+        if sys.platform == "darwin":
+            try:
+                from core.inference.llama_cpp import LlamaCppBackend
+                probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
+            except Exception:  # noqa: BLE001 - probe with the inherited env
+                probe_env = None
         try:
             proc = subprocess.run(
                 [binary, "--help"],
@@ -106,6 +169,7 @@ class LlamaServerBackend:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 30,
+                env = probe_env,
                 **windows_hidden_subprocess_kwargs(),
             )
             return (proc.stdout or "") + (proc.stderr or "")
@@ -269,7 +333,18 @@ class LlamaServerBackend:
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
         env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
-        if use_gpu:
+        if sys.platform == "darwin":
+            # _llama_lib_dir, not Path(binary).parent: the managed install puts
+            # an entrypoint in front of the real server, and the dylibs sit
+            # next to the target, not next to the wrapper. Unconditional,
+            # unlike the CUDA branch below: a CPU start loads the same sibling
+            # dylibs (#8566).
+            env = _with_dyld_path(env, _binary_lib_dir(binary))
+        elif use_gpu:
+            # Path(binary).parent, unchanged. Resolving the entrypoint here too
+            # would be more correct in principle, but it moves the first
+            # LD_LIBRARY_PATH entry for every existing Linux GPU install whose
+            # llama-server is a symlink, and this change is not about them.
             self._add_linux_cuda_libs(env, str(Path(binary).parent))
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
@@ -281,7 +356,9 @@ class LlamaServerBackend:
                     env, ",".join(str(i) for i in _pinned), prefer_rocr = True
                 )
                 logger.info("pinning the embed server to arch-supported GPU(s) %s", _pinned)
-        else:
+        # Not else: the darwin branch above is about dylibs, so a macOS CPU start
+        # still has to blank the devices, exactly as it did before that branch.
+        if not use_gpu:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
             # HIP reads CUDA_VISIBLE_DEVICES only when HIP_VISIBLE_DEVICES is unset,
@@ -305,7 +382,6 @@ class LlamaServerBackend:
         """Best-effort LD_LIBRARY_PATH so the prebuilt binary finds CUDA libs."""
         import glob
         import platform
-        import sys
 
         if sys.platform == "win32":
             return  # Windows resolves CUDA via PATH in the inherited env.

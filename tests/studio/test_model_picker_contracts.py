@@ -1322,18 +1322,26 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
     the label leaves a distilled model's low-step, guidance-0 recipe pointed at a non-distilled
     model, and the next generation silently runs with the wrong settings.
 
-    So the rollback token carries the recipe and every rollback path puts all of it back."""
+    So the rollback token carries the recipe and every rollback path puts all of it back.
+
+    The token may carry more than the recipe (a preset claim, what the pick applied), so the
+    fields are matched inside the declaration rather than against one exact line."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        assert (
-            "type PickRevert = { prev: string | null; steps: number; guidance: number };" in src
-        ), f"{rel}: the rollback token does not carry the generation recipe"
+        token = re.search(r"type PickRevert = \{(.*?)\n\};", src, re.S) or re.search(
+            r"type PickRevert = \{(.*?)\};", src, re.S
+        )
+        assert token, f"{rel}: no PickRevert rollback token"
+        for field in ("prev: string | null", "steps: number", "guidance: number"):
+            assert field in token.group(1), f"{rel}: the rollback token does not carry {field}"
         revert = re.search(
             r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S
         )
         assert revert, f"{rel}: no shared rollback helper"
         body = revert.group(1)
-        for setter in ("setQuant(r.prev)", "setSteps(r.steps)", "setGuidance(r.guidance)"):
+        # The recipe may be restored conditionally (a preset chosen after the pick owns those
+        # fields), but the rollback still has to read it off the token.
+        for setter in ("setQuant(r.prev)", "setSteps(", "r.steps", "setGuidance(", "r.guidance"):
             assert setter in body, f"{rel}: rollback does not restore {setter}"
         # No rollback path may still put back the label alone.
         assert (

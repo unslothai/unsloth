@@ -1894,17 +1894,23 @@ exit 0
             #
             # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
             # Microsoft's detections key on, and install.rs makes the same call for the app's own
-            # launch. Nothing is lost: this launcher is written locally, so it carries no
-            # mark-of-the-web and RemoteSigned loads it. The hidden window stays.
+            # launch. This launcher is written locally, so RemoteSigned loads it either way.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
-            # A launcher on a UNC share is a REMOTE script to PowerShell, and RemoteSigned
-            # refuses an unsigned one, so a roaming profile would get a shortcut that exits
-            # without starting Studio. Bypass for that case only, and without -WindowStyle
-            # Hidden, since the hidden window beside a bypassed policy is the pair the
-            # detections key on. A console window on a UNC profile beats nothing launching.
-            if ($launcherPs1 -like "\\*") {
+            # A launcher on a share is a REMOTE script to PowerShell and RemoteSigned refuses an
+            # unsigned one, so a roaming profile would get a shortcut that exits without starting
+            # Studio. Bypass for that case only, and without the hidden window: a console beats
+            # nothing launching. A mapped drive (H:, Z:) is the same share and the same zone, and
+            # DriveInfo on the root reports Network for both.
+            $launcherIsRemote = $launcherPs1 -like "\\*"
+            if (-not $launcherIsRemote) {
+                try {
+                    $launcherIsRemote = ([System.IO.DriveInfo]::new(
+                        [System.IO.Path]::GetPathRoot($launcherPs1))).DriveType -eq 'Network'
+                } catch {}
+            }
+            if ($launcherIsRemote) {
                 $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
             }
 
@@ -3022,11 +3028,9 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL and its
-        # older alias INSTALLER_DOWNLOAD_URL outrank the mirror variables there, and a host that
-        # sets one usually cannot reach the public endpoints at all, so trying those first would
-        # stall. The pin still applies: a source serving a different build fails the digest and
-        # the caller falls back.
+        # astral's sources in astral's order, each exclusive when set: a host that sets one
+        # usually cannot reach the public endpoints at all, so trying those first would stall.
+        # The pin still applies, so a source serving a different build fails the digest.
         $uvBase = if ($env:UV_DOWNLOAD_URL) {
             @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
         } elseif ($env:INSTALLER_DOWNLOAD_URL) {
@@ -3079,8 +3083,8 @@ exit 0
             }
             # Run it where it landed, before the destination is touched. A host can have a
             # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
-            # copying first would leave the user with neither. A policy scoped by path is covered
-            # by the second probe and the restore below.
+            # copying first would leave the user with neither. A policy scoped to the destination
+            # path is not covered here: the caller's fallback handles it.
             if ((Get-UvExecutableVerdict -Path $stagedUv) -eq "failed") {
                 substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
@@ -3844,13 +3848,13 @@ exit 0
                 } catch {}
             }
         }
-        # Set outside the scan: only the WMI arm fills it, but the lookup further down reads
-        # it on every AMD path, including the amd-smi ones that never enter the block.
-        $wmiAmdNames = @()
-        # Keyed on the ARCH, not on $HasROCm: amd-smi can report GPUs with no gfx token and
-        # only the first market name, which sets $HasROCm and used to skip this scan, leaving
-        # the peer guard below blind. A host with an arch never reaches that lookup anyway.
-        if (-not $ROCmGfxArch) {
+        # This scan fills the LABEL the arch inference reads, so its gate is load-bearing:
+        # widening it turned a CPU install into a ROCm one on hosts amd-smi had already
+        # claimed. CIM, not Get-WmiObject, which PowerShell 7 removed: the catch below is
+        # silent, so a supported Radeon named only by Windows took the CPU path there, and
+        # the report-only peer scan cannot undo that. Same class and fields as every other
+        # adapter scan in this file, and identical output under Windows PowerShell 5.1.
+        if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
                 # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
@@ -3860,23 +3864,25 @@ exit 0
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                # CIM, as everywhere else here: Get-WmiObject is gone from PowerShell 7, where
-                # the catch below would swallow it and leave the peer list empty. CIM is 5.1+.
                 $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
-                $wmiAdapters = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })
-                $wmiGpu = $wmiAdapters[0]
-                if ($wmiGpu) {
-                    # amd-smi's label wins when it had one; this scan is here for the peers.
-                    if (-not $HasROCm) { $ROCmGpuLabel = $wmiGpu.Name }
-                    # Every adapter's name, not just the chosen one: only the peer list tells
-                    # "this host has no ROCm-capable GPU" apart from "this host's FIRST adapter
-                    # is not the ROCm-capable one". Read by the unsupported lookup below;
-                    # nothing here picks an arch, so the choice above is untouched.
-                    $wmiAmdNames = @($wmiAdapters | ForEach-Object { $_.Name })
-                }
+                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            } catch {}
+        }
+        # Peer names for the REPORT ONLY, kept apart from the scan above: that one feeds the
+        # inference and runs only without a runtime, this one only the uncovered-card verdict.
+        $wmiAmdNames = @()
+        if (-not $ROCmGfxArch) {
+            try {
+                $peerAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $healthyPeers = @($peerAdapters | Where-Object {
+                    ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+                $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerAdapters })
+                $wmiAmdNames = @($usePeers | ForEach-Object { $_.Name })
             } catch {}
         }
         # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
@@ -3942,12 +3948,25 @@ exit 0
                 #    arm, which says exactly that. studio/setup.ps1 already scores every
                 #    adapter before it reaches its own lookup.
                 if (-not $ROCmGfxArch) {
+                    # HIP/ROCR only: CUDA_VISIBLE_DEVICES masks NVIDIA devices and says
+                    # nothing about which Radeon was chosen.
+                    $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
+                        Where-Object { $null -ne $_ }
                     $coveredPeer = $false
-                    foreach ($peerName in $wmiAmdNames) {
-                        foreach ($row in $nameArchTable) {
-                            if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                    if ($unsupMasked) {
+                        # A masked-out peer cannot answer for the card the user named, but the
+                        # label is only that card when there is nothing else to select: both
+                        # sources above keep adapter 0, so HIP_VISIBLE_DEVICES=1 beside a
+                        # supported peer would blame the wrong GPU. Stay quiet, rather than
+                        # guess an order Win32_VideoController does not promise matches HIP's.
+                        $coveredPeer = ($wmiAmdNames.Count -gt 1)
+                    } else {
+                        foreach ($peerName in $wmiAmdNames) {
+                            foreach ($row in $nameArchTable) {
+                                if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                            }
+                            if ($coveredPeer) { break }
                         }
-                        if ($coveredPeer) { break }
                     }
                     if (-not $coveredPeer) {
                         foreach ($row in $unsupportedNameArchTable) {

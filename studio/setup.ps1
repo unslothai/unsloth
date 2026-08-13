@@ -2398,10 +2398,7 @@ if (-not $HasNvidiaSmi) {
     # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
     # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
     # so the name-based inference below can still attempt an arch lookup.
-    # Gated on the ARCH, like install.ps1: amd-smi can set $HasROCm with no arch, and gated
-    # that way the scan was skipped, so $script:ROCmGpuLabels held one name and the inference
-    # below judged a whole multi-GPU host on it. Same condition as that inference.
-    if (-not $script:ROCmGfxArch) {
+    if (-not $HasROCm) {
         try {
             # Keep every AMD adapter, not just the first: WMI orders controllers as the
             # driver stack enumerated them, so a shadowing iGPU can lead here exactly as
@@ -2425,11 +2422,26 @@ if (-not $HasNvidiaSmi) {
             $wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
-                # amd-smi's label wins when it had one; this scan is here for the peers.
-                if (-not $HasROCm) { $ROCmGpuLabel = $script:ROCmGpuLabels[0] }
+                $ROCmGpuLabel = $script:ROCmGpuLabels[0]
             }
         } catch {}
     }
+    # Peer names for the REPORT ONLY. amd-smi can confirm a runtime with no gfx token and
+    # only the first card's name, and the scan above is skipped there, so the verdict below
+    # would speak for a host it has seen one adapter of. Kept out of $script:ROCmGpuLabels
+    # deliberately: that feeds the inference, and widening it turned a CPU install into ROCm.
+    $script:ROCmPeerLabels = @()
+    if ($HasROCm -and -not $script:ROCmGfxArch) {
+        try {
+            $peerGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" })
+            $healthyPeers = @($peerGpus | Where-Object {
+                ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+            $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerGpus })
+            $script:ROCmPeerLabels = @($usePeers | ForEach-Object { $_.Name })
+        } catch {}
+    }
+
     # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
     # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
     # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
@@ -2519,7 +2531,32 @@ if (-not $HasNvidiaSmi) {
                 # Nothing mapped: the card may be a generation ROCm never covered rather
                 # than one we failed to recognise (unslothai#8529). $script:ROCmGfxArch
                 # stays null either way, so only the wording of the report below moves.
-                $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
+                # Stay quiet when a PEER is covered: "no override can help" is false beside a
+                # card that has wheels. Read-only; never reaches $gpuNames or the inference.
+                # HIP/ROCR only, unlike Test-VisibleDevicesPinned: CUDA_VISIBLE_DEVICES says
+                # nothing about which Radeon was chosen, and counting it would fire the verdict
+                # beside a covered card.
+                $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
+                    Where-Object { $null -ne $_ }
+                $unsupPeerCovered = $false
+                if ($unsupMasked) {
+                    # Under a mask a peer cannot answer for the named card, as the
+                    # arch-borrowing rule above. But $gpuNames is one synthesized label on the
+                    # amd-smi path, and $nameIdx cannot index a card it never saw, so a mask
+                    # onto a supported peer would be blamed on adapter 0. Unseen peer, no
+                    # verdict: Win32_VideoController does not promise HIP's order to guess with.
+                    $unsupPeerCovered = ($script:ROCmPeerLabels.Count -gt $gpuNames.Count)
+                } else {
+                    foreach ($peerName in $script:ROCmPeerLabels) {
+                        if (Get-GfxArchFromGpuName -Name $peerName -Table $nameArchTable) {
+                            $unsupPeerCovered = $true
+                            break
+                        }
+                    }
+                }
+                if (-not $unsupPeerCovered) {
+                    $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
+                }
             }
         }
     }
@@ -4565,6 +4602,10 @@ function Install-UvFromPinnedRelease {
         Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
     }
     $env:PATH = "$destDir;$env:PATH"
+    # Recorded on the script scope as well as returned: the caller runs this through
+    # Invoke-SetupCommand, which hands back [int]$LASTEXITCODE rather than the pipeline value,
+    # so the return alone cannot tell the fallback whether to run.
+    $script:UvPinnedInstalled = $true
     return $true
 }
 
@@ -4579,13 +4620,13 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        $uvPinned = Invoke-SetupCommand { Install-UvFromPinnedRelease } | Select-Object -Last 1
-        # The merge base ran astral's installer here, so a failed pinned install has to have
-        # somewhere to go: without a fallback the whole setup silently drops to pip for torch,
-        # bitsandbytes, Triton and the rest, which is a different resolver, not a different
-        # download. winget rather than the remote script, since it is the shape this branch
-        # exists to remove, and it is what install.ps1 already tries first.
-        if ($uvPinned -ne $true -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        $script:UvPinnedInstalled = $false
+        Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        # The merge base ran astral's installer here, so a failed pinned install needs somewhere
+        # to go: with no fallback the setup drops to pip for torch, bitsandbytes and Triton, which
+        # is a different resolver rather than a different download. winget, not the remote script,
+        # which is the shape this branch removes and is what install.ps1 already tries first.
+        if (-not $script:UvPinnedInstalled -and (Get-Command winget -ErrorAction SilentlyContinue)) {
             Invoke-SetupCommand {
                 winget install --id astral-sh.uv --source winget --accept-source-agreements `
                     --accept-package-agreements --silent

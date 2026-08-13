@@ -419,6 +419,11 @@ export const en = {
         launchAtLogin: "Run Unsloth at login",
         launchAtLoginDescription:
           "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+
+        closeToTray: "Close to system tray",
+        closeToTrayDescription:
+          "Keep Unsloth and its server running in the background when you close the main window.",
+        closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -953,11 +958,13 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Import a JSONL, NDJSON, or CSV export into Recents.",
+        "Import an Open WebUI, JSONL, NDJSON, or CSV export into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",
       importedChatCount: "Imported {count} conversations to Recents.",
+      importingChats: "Importing chats: {count} so far ({percent}%)...",
+      importedChatCountPartial: "Imported {count} conversations to Recents; {failed} could not be saved.",
       importFailed: "Import failed.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete chat history from this device.",

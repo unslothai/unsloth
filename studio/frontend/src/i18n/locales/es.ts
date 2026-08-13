@@ -432,6 +432,12 @@ export const es = {
         launchAtLogin: "Ejecutar Unsloth al iniciar sesión",
         launchAtLoginDescription:
           "Inicia Unsloth en segundo plano cuando inicias sesión. Permanece en la barra de menús o en la bandeja del sistema hasta que lo abras.",
+
+        closeToTray: "Cerrar en la bandeja del sistema",
+        closeToTrayDescription:
+          "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
+        closeToTraySaveError:
+          "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
@@ -984,11 +990,13 @@ export const es = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importa una exportación JSONL, NDJSON o CSV a Recientes.",
+        "Importa una exportación de Open WebUI, JSONL, NDJSON o CSV a Recientes.",
       importChatsAction: "Importar",
       importNoConversations: "No se encontraron conversaciones en el archivo.",
       importedOneChat: "Se importó 1 conversación a Recientes.",
       importedChatCount: "Se importaron {count} conversaciones a Recientes.",
+      importingChats: "Importando chats: {count} hasta ahora ({percent}%)...",
+      importedChatCountPartial: "Se importaron {count} conversaciones a Recientes; {failed} no se pudieron guardar.",
       importFailed: "La importación falló.",
       clearHistory: "Borrar historial de chat",
       clearHistoryDescription: "Elimina el historial de chat de este dispositivo.",

@@ -2579,6 +2579,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         # replaced as one, and a failure anywhere before them leaves the destination untouched.
         _uip_ready=1
         for _uip_exe in uv uvx; do
+            # `mv f d` moves f INTO d and reports success, and a searchable directory passes -x
+            # too, so a directory called uv at the destination would look like a published
+            # binary and skip the fallback. The installer already refuses one for its own shim.
+            if [ -d "$_uip_dest/$_uip_exe" ]; then _uip_ready=0; break; fi
             _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
             if [ -z "$_uip_src" ] || [ ! -f "$_uip_src" ]; then _uip_ready=0; break; fi
             # cp onto a symlinked destination writes through it and would rewrite, say, the
@@ -3127,7 +3131,7 @@ _infer_unsupported_amd_gfx_arch_from_gpu_name() {
         *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
         *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
         *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
-        *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
+        *"RX 470"|*"RX 470"[!0]*|*"RX 480"|*"RX 480"[!0]*|*"RX 570"|*"RX 570"[!0]*|*"RX 580"|*"RX 580"[!0]*|*"RX 590"|*"RX 590"[!0]*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
         *) return 1 ;;
     esac
 }
@@ -5436,6 +5440,10 @@ _persist_fish_path_dir() {
     fi
 }
 
+# A line that SETS PATH, as opposed to one that merely names the directory. The name boundary
+# keeps PYTHONPATH and friends out; the three helpers are the common non-assignment spellings.
+_PATH_LINE_RE='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
+
 # Put a directory on the PATH of the NEXT shell, not just this process.
 #   $1 the directory  $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always
 #   has)  $3 how to name it in the line we print  $4 the grep that says it is already there
@@ -5466,9 +5474,12 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
-    # Comments stripped first: a commented-out old export is not an active entry, and taking it
-    # for one leaves the next shell with no uv at all.
-    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null | grep -qE "$_plp_pattern"; then
+    # Comments stripped first, then only lines that actually set PATH: a commented-out old export
+    # is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name
+    # boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next
+    # shell with no uv at all.
+    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
+        | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
         echo '' >> "$_SHELL_PROFILE"
         echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
         echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
@@ -5486,14 +5497,11 @@ if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new sh
         fi
 fi
 
-# UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME and XDG_DATA_HOME all outrank
-# ~/.local/bin, and astral's installer wrote a PATH line for whichever it picked. Replacing that
-# installer means persisting its destination too. Both of astral's opt-outs are honoured:
-# UV_NO_MODIFY_PATH, and UV_UNMANAGED_INSTALL, which forces no-modify-path there and in
-# Install-UvFromRelease, so a caller asking for an unmanaged install gets no profile write here.
-# The default destination IS ~/.local/bin, so this must not be gated on it differing: an
-# ordinary install is the case that matters most, and gating it there left every normal machine
-# with the single-file write the shim path has always done.
+# UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME and XDG_DATA_HOME all outrank ~/.local/bin,
+# and astral's installer wrote a PATH line for whichever it picked, so replacing that installer
+# means persisting its destination too. Both of astral's opt-outs are honoured. Not gated on the
+# destination differing from ~/.local/bin: that IS the default, so gating there left every
+# ordinary machine with the single-file write.
 if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
    && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
    && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
@@ -5504,21 +5512,19 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
         _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
         # Anchored on both sides, so /opt/uv is not satisfied by /opt/uv-old and the match has
         # to be a whole PATH entry rather than any occurrence of the text.
-        _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')
+        _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
         # ...and the $HOME-relative spelling as well, because the shim block above writes
         # `export PATH="$HOME/.local/bin:$PATH"` unexpanded. Without this the default install
         # would add a second line for the same directory in the same file.
         case "$_UNSLOTH_UV_BIN_DIR" in
             "$HOME"/*)
-                _uv_grep_esc="$_uv_grep_esc|\\\$HOME$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[].[^$*\\/]/\\&/g')"
+                _uv_grep_esc="$_uv_grep_esc|\\\$HOME$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')"
                 ;;
         esac
         _uv_pattern="(^|[^[:alnum:]_.~/-])($_uv_grep_esc)([^[:alnum:]_.~/-]|\$)"
-        # Every startup file astral's installer wired, because it is the installer we replaced:
-        # ~/.profile always, each of the bash files that exists, zsh under ZDOTDIR, and the fish
-        # drop-in regardless of the current shell. Writing only the one file for the shell that
-        # happens to be running would leave a bash user whose .bash_profile does not source
-        # .bashrc, or anyone who later switches shells, without uv on PATH.
+        # Every startup file astral's installer wired, because it is the installer we replaced.
+        # Writing only the file for the shell that happens to be running leaves a bash user whose
+        # .bash_profile does not source .bashrc, or anyone who later switches shells, without uv.
         for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                         "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
             # ~/.profile is created when absent, as astral does; the rest are only touched when

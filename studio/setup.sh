@@ -1629,6 +1629,10 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         # other so the pair is replaced as one.
         _siup_ready=1
         for _siup_exe in uv uvx; do
+            # `mv f d` moves f INTO d and reports success, and a searchable directory passes -x
+            # too, so a directory called uv at the destination would look like a published
+            # binary and skip the fallback. The installer already refuses one for its own shim.
+            if [ -d "$_siup_dest/$_siup_exe" ]; then _siup_ready=0; break; fi
             _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
             if [ -z "$_siup_src" ]; then _siup_ready=0; break; fi
             # cp writes through a symlinked destination, and a per-process staging name keeps
@@ -1711,10 +1715,11 @@ _setup_persist_uv_path() {
             echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
         fi
     fi
-    # Comments stripped and the directory anchored as a whole entry: a commented-out old export,
-    # or /opt/uv-old when we want /opt/uv, is not an active entry, and taking either for one
-    # leaves the next shell unable to resolve uv.
-    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[^$*\\/]/\\&/g')
+    # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
+    # /opt/uv-old when we want /opt/uv, and PYTHONPATH=/opt/uv are none of them, and taking any
+    # for an entry leaves the next shell unable to resolve uv.
+    _supp_path_line='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
+    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
     _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
@@ -1725,7 +1730,10 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
+        # are not PATH entries, and taking one for an entry leaves the next shell without uv.
         if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+            | grep -E "$_supp_path_line" \
             | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
@@ -2154,7 +2162,7 @@ elif [ "$_setup_amd_detected" = true ]; then
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
             *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
             *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
-            *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
+            *"RX 470"|*"RX 470"[!0]*|*"RX 480"|*"RX 480"[!0]*|*"RX 570"|*"RX 570"[!0]*|*"RX 580"|*"RX 580"[!0]*|*"RX 590"|*"RX 590"[!0]*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
             *) return 1 ;;
         esac
     }

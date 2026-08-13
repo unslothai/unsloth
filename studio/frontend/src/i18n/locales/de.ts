@@ -436,6 +436,12 @@ export const de = {
         launchAtLogin: "Unsloth bei der Anmeldung starten",
         launchAtLoginDescription:
           "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+
+        closeToTray: "In den Infobereich schließen",
+        closeToTrayDescription:
+          "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
+        closeToTraySaveError:
+          "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -993,12 +999,14 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in „Zuletzt verwendet“.",
+        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
       importedChatCount:
         "{count} Konversationen in „Zuletzt verwendet“ importiert.",
+      importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
+      importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",

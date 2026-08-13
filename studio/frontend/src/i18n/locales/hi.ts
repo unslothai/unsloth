@@ -422,6 +422,11 @@ export const hi = {
         launchAtLogin: "लॉगिन पर Unsloth चलाएं",
         launchAtLoginDescription:
           "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
+
+        closeToTray: "सिस्टम ट्रे में बंद करें",
+        closeToTrayDescription:
+          "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
+        closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
@@ -965,12 +970,14 @@ export const hi = {
       exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
-        "JSONL, NDJSON या CSV एक्सपोर्ट को हाल के सेक्शन में इंपोर्ट करें।",
+        "Open WebUI, JSONL, NDJSON या CSV एक्सपोर्ट को Recents में इंपोर्ट करें।",
       importChatsAction: "इंपोर्ट करें",
       importNoConversations: "फ़ाइल में कोई वार्तालाप नहीं मिला।",
       importedOneChat: "1 वार्तालाप हाल के सेक्शन में इंपोर्ट किया गया।",
       importedChatCount:
         "{count} वार्तालाप हाल के सेक्शन में इंपोर्ट किए गए।",
+      importingChats: "चैट इंपोर्ट हो रही हैं: अब तक {count} ({percent}%)...",
+      importedChatCountPartial: "{count} बातचीत Recents में इंपोर्ट की गईं; {failed} सेव नहीं हो सकीं।",
       importFailed: "इंपोर्ट विफल रहा।",
       clearHistory: "चैट इतिहास साफ़ करें",
       clearHistoryDescription: "इस डिवाइस से चैट इतिहास हटाएं।",

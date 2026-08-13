@@ -6,6 +6,7 @@ import functools
 import importlib.util
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import platform
@@ -20,6 +21,7 @@ import tempfile
 import time
 import types
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3600,8 +3602,144 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
+# The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
+# so a launcher fix reaches users without waiting for a release.
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
 _INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. Anywhere
+# else, or plain http, is refused rather than followed.
+_INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
+_INSTALLER_FETCH_TIMEOUT = 30
+# install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
+_INSTALLER_MAX_BYTES = 8 * 1024 * 1024
+# The flag this code passes, so an installer without it cannot serve the request.
+# Internal names would be tighter but can be renamed in a perfectly good installer,
+# and a false negative here skips every wheel-based refresh until new Python ships.
+_INSTALLER_MARKERS = {
+    "install.sh": (b"--shortcuts-only",),
+    "install.ps1": (b"--shortcuts-only",),
+}
+
+
+def _is_allowed_installer_url(url: str) -> bool:
+    """https on a known host. Applied to the first request and to every redirect."""
+    split = urllib.parse.urlsplit(url)
+    return split.scheme == "https" and split.hostname in _INSTALLER_FETCH_HOSTS
+
+
+class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the installer fetch on the unsloth.ai -> raw.githubusercontent chain."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_allowed_installer_url(newurl):
+            raise urllib.error.URLError(f"refused installer redirect to {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_installer_opener() -> urllib.request.OpenerDirector:
+    """A private opener, so the redirect chain can be checked before it is followed.
+
+    urlopen() would instead use whatever install_opener() put in place. Carrying those
+    handlers over was tried and abandoned: OpenerDirector.add_handler() assigns
+    handler.parent, so sharing them repoints the installed opener at this one and
+    breaks every later urlopen() in the process, and copying them does not help either
+    because the default HTTPSHandler here already answers first. Proxy environment
+    variables and the system trust store still work, since build_opener() sets up both.
+    The residue is a machine whose proxy auth or CA lives in a programmatically
+    installed opener: its refresh is skipped, which the update survives, rather than
+    silently pulling the installer through an unchecked path.
+    """
+    return urllib.request.build_opener(_InstallerRedirectHandler)
+
+
+def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
+    """Cheap shape check before a fetched installer is executed.
+
+    Not a trust check -- the hosts above are trusted. It stops a captive-portal page or
+    an HTTP error body from being piped into bash when something in between answers.
+    """
+    if not body or len(body) < 512:
+        return False
+    head = body.lstrip()[:256].lower()
+    # `<#` opens PowerShell comment-based help, which is a perfectly ordinary way for
+    # install.ps1 to start, so match the actual markup rather than any leading "<".
+    if not head.startswith(b"<#") and (
+        head.startswith((b"<!doctype", b"<html", b"<head", b"<?xml", b"<body"))
+        or b"<html" in head
+        or b"<!doctype" in head
+    ):
+        return False
+    return all(marker in body for marker in _INSTALLER_MARKERS[installer_name])
+
+
+def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[bytes]:
+    """Fetch install.sh / install.ps1, or None if nothing usable came back."""
+    url = _INSTALLER_URL_PWSH if installer_name == "install.ps1" else _INSTALLER_URL_BASH
+    if not _is_allowed_installer_url(url):
+        typer.echo(f"  refresh-launcher  refusing to fetch {installer_name} from {url}")
+        return None
+    try:
+        opener = _build_installer_opener()
+        request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
+        with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
+            body = response.read(_INSTALLER_MAX_BYTES + 1)
+            # read(amt) does not check Content-Length; only a further read() does,
+            # raising IncompleteRead. Without it a transfer cut off mid-file still
+            # carries the markers and would be piped into bash half-written.
+            if len(body) <= _INSTALLER_MAX_BYTES:
+                body += response.read()
+    except (
+        urllib.error.URLError,
+        # IncompleteRead / a malformed proxy response raises at the HTTP framing layer,
+        # which is neither URLError nor OSError, so it would abort an already-done update.
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as exc:
+        typer.echo(f"  refresh-launcher  skipped: could not fetch {url} ({exc})")
+        return None
+
+    if len(body) > _INSTALLER_MAX_BYTES:
+        typer.echo(f"  refresh-launcher  skipped: oversized {installer_name} response")
+        return None
+    if not _looks_like_installer(body, installer_name):
+        typer.echo(f"  refresh-launcher  skipped: response is not {installer_name}")
+        return None
+    if verbose:
+        typer.echo(f"  refresh-launcher  fetched {url} ({len(body)} bytes)")
+    return body
+
+
+def _installer_script_candidates(installer_name: str) -> List[Path]:
+    """Source-tree installers, which outrank the network because `update --local` is
+    testing its own installer, so fetching over the top of it would be wrong."""
+    candidates: List[Path] = []
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    if local_repo:
+        candidates.append(Path(local_repo).expanduser() / installer_name)
+    # Clone or editable install: _PACKAGE_ROOT is the repo root.
+    root = _PACKAGE_ROOT / installer_name
+    if root not in candidates:
+        candidates.append(root)
+    return candidates
+
+
+def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
+    """Every candidate that exists, not just the first.
+
+    The pre-refactor loop probed and launched in one pass, so a candidate that could
+    not be launched left the next one to try before the network was reached. Returning
+    only the first match would quietly drop that second chance.
+    """
+    found: List[Path] = []
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                found.append(candidate)
+        except OSError:
+            continue
+    return found
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
@@ -3612,145 +3750,124 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     is_windows = platform.system() == "Windows"
     installer_name = "install.ps1" if is_windows else "install.sh"
-    installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
-
-    # Prefer local checkout, fall back to package dir, then network fetch.
-    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
-    candidates: list[Path] = []
-    if local_repo:
-        candidates.append(Path(local_repo) / installer_name)
-    candidates.append(_PACKAGE_ROOT / installer_name)
 
     args = ["--shortcuts-only"]
     if verbose:
         args.append("--verbose")
 
+    checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
+
     if is_windows:
-        ps_argv: list[str] = ["powershell.exe"]
+        ps_argv: List[str] = ["powershell.exe"]
         # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
         # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
             ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
-        for script in candidates:
-            try:
-                if script.is_file():
-                    quoted = str(script).replace("'", "''")
-                    argv = list(ps_argv)
-                    argv.extend(
-                        [
-                            "-ExecutionPolicy",
-                            "Bypass",
-                            "-Command",
-                            f"& '{quoted}' {' '.join(args)} *>&1",
-                        ]
-                    )
-                    result = subprocess.run(
-                        argv,
-                        env = env,
-                        check = False,
-                        **_windows_hidden_subprocess_kwargs(),
-                    )
-                    if result.returncode != 0:
-                        typer.echo(f"  refresh-launcher  install.ps1 exited {result.returncode}")
-                    return
-            except OSError:
-                continue
-
-        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
-        try:
-            request = urllib.request.Request(
-                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
-            )
-            with urllib.request.urlopen(request, timeout = 30) as response:
-                installer = response.read().decode("utf-8", errors = "replace")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+        # Stops at the first candidate that launched; only an unlaunchable one moves on.
+        if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
             return
-
-        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
-        # stdin `$args` is empty so that triggers the full installer flow
-        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
-        installer = re.sub(
-            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
-            "",
-            installer,
-        )
-        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
-        marker_args = " ".join(args)
-        wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
-
-        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
-        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
-        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
-        # in install.ps1. -File reads the BOM and decodes correctly. The
-        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
-        ps1_fd, ps1_path = tempfile.mkstemp(
-            prefix = "unsloth-studio-refresh-",
-            suffix = ".ps1",
-        )
-        try:
-            with os.fdopen(ps1_fd, "wb") as fh:
-                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
-            argv = list(ps_argv)
-            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
-            try:
-                result = subprocess.run(
-                    argv,
-                    env = env,
-                    check = False,
-                    **_windows_hidden_subprocess_kwargs(),
-                )
-                if result.returncode != 0:
-                    typer.echo(
-                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
-                    )
-            except OSError as exc:
-                typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
-        finally:
-            try:
-                os.unlink(ps1_path)
-            except OSError:
-                pass
+        fetched = _fetch_installer(installer_name, verbose = verbose)
+        if fetched is not None:
+            _run_fetched_installer_ps1(fetched, args, ps_argv, env)
         return
 
-    for script in candidates:
-        try:
-            if script.is_file():
-                result = subprocess.run(
-                    ["bash", str(script), *args],
-                    env = env,
-                    check = False,
-                )
-                if result.returncode != 0:
-                    typer.echo(f"  refresh-launcher  install.sh exited {result.returncode}")
-                return
-        except OSError:
-            continue
-
-    # PyPI installs lack install.sh: fetch upstream.
-    try:
-        request = urllib.request.Request(
-            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
-        )
-        with urllib.request.urlopen(request, timeout = 30) as response:
-            installer = response.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+    if any(_run_installer_bash(script, args, env) for script in checkouts):
         return
+    fetched = _fetch_installer(installer_name, verbose = verbose)
+    if fetched is not None:
+        _run_fetched_installer_bash(fetched, args, env)
 
+
+def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
+    """False when the interpreter could not be launched, so the caller can fall back.
+
+    The pre-refactor candidate loop caught that OSError and carried on to the next
+    candidate and then to the network, silently. Returning False keeps a machine that
+    cannot spawn bash for the checkout on exactly that path instead of ending the
+    refresh early.
+    """
     try:
-        result = subprocess.run(
-            ["bash", "-s", "--", *args],
-            input = installer,
-            env = env,
-            check = False,
-        )
-        if result.returncode != 0:
-            typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+        result = subprocess.run(["bash", str(script), *args], env = env, check = False)
+    except OSError:
+        return False
+    if result.returncode != 0:
+        typer.echo(f"  refresh-launcher  {script.name} exited {result.returncode}")
+    return True
+
+
+def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> None:
+    try:
+        result = subprocess.run(["bash", "-s", "--", *args], input = installer, env = env, check = False)
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
+        return
+    if result.returncode != 0:
+        typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+
+
+def _run_installer_ps1(
+    script: Path, args: Sequence[str], ps_argv: Sequence[str], env: dict
+) -> bool:
+    """False when powershell.exe could not be launched. See _run_installer_bash."""
+    quoted = str(script).replace("'", "''")
+    argv = list(ps_argv)
+    argv.extend(["-ExecutionPolicy", "Bypass", "-Command", f"& '{quoted}' {' '.join(args)} *>&1"])
+    try:
+        result = subprocess.run(argv, env = env, check = False, **_windows_hidden_subprocess_kwargs())
+    except OSError:
+        return False
+    if result.returncode != 0:
+        typer.echo(f"  refresh-launcher  {script.name} exited {result.returncode}")
+    return True
+
+
+def _run_fetched_installer_ps1(
+    installer: bytes, args: Sequence[str], ps_argv: Sequence[str], env: dict
+) -> None:
+    """Run a fetched install.ps1 from a tempfile.
+
+    -File rather than `-Command -`: stdin is decoded with [Console]::InputEncoding
+    (CP1252/OEM on most Windows boxes), which mangles install.ps1's box-drawing chars,
+    while -File honours the BOM written below. The args go after the path so the
+    installer's own `Install-UnslothStudio @args` at EOF receives them, which is why
+    this no longer rewrites that line. The prefix gives AV/EDR engines (and anyone
+    grepping temp) a clear identity.
+
+    Creating and writing that file is its own failure mode: a full disk, a read-only or
+    missing %TEMP%, or AV holding the handle. Those raise OSError, and the refresh runs
+    after the package update has already succeeded, so they are reported and skipped
+    rather than allowed to abort the command.
+    """
+    try:
+        ps1_fd, ps1_path = tempfile.mkstemp(prefix = "unsloth-studio-refresh-", suffix = ".ps1")
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: could not create a temp script ({exc})")
+        return
+    try:
+        try:
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + installer)
+        except OSError as exc:
+            typer.echo(f"  refresh-launcher  skipped: could not write the temp script ({exc})")
+            return
+        argv = list(ps_argv)
+        argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path, *args])
+        try:
+            result = subprocess.run(
+                argv, env = env, check = False, **_windows_hidden_subprocess_kwargs()
+            )
+        except OSError as exc:
+            typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
+            return
+        if result.returncode != 0:
+            typer.echo(f"  refresh-launcher  fetched install.ps1 exited {result.returncode}")
+    finally:
+        try:
+            os.unlink(ps1_path)
+        except OSError:
+            pass
 
 
 @studio_app.command(hidden = True)
