@@ -293,11 +293,21 @@ class _Turn:
                 current["extra_content"] = {**current.get("extra_content", {}), **extra}
             function = raw_call.get("function")
             if isinstance(function, dict):
-                # Assignment, not concatenation: llama-server re-sends the whole
-                # name as it grows, so appending turns "web" then "web_search"
-                # into "webweb_search" and the call silently never runs.
-                if isinstance(function.get("name"), str):
-                    current["function"]["name"] = function["name"]
+                # Two provider dialects, and picking either one alone breaks the
+                # other. llama-server re-sends the whole name as it grows ("web"
+                # then "web_search"), so appending yields "webweb_search".
+                # OpenAI streams it in fragments ("web" then "_search"), so
+                # assigning yields "_search". Both then fail the enabled-name
+                # check and the call silently never runs. A fragment that already
+                # starts with what we have is the whole name resent; anything
+                # else continues it.
+                fragment = function.get("name")
+                if isinstance(fragment, str) and fragment:
+                    accumulated = current["function"]["name"]
+                    if fragment.startswith(accumulated):
+                        current["function"]["name"] = fragment
+                    else:
+                        current["function"]["name"] = accumulated + fragment
                 if isinstance(function.get("arguments"), str):
                     current["function"]["arguments"] += function["arguments"]
 
@@ -624,6 +634,13 @@ async def stream_with_studio_tools(
                         # Withheld: one summed chunk is sent once the loop ends, so a
                         # multi-turn answer does not report a burst of partial counts.
                         continue
+                    # Some providers hang usage off a chunk that also carries a
+                    # choice, which cannot be withheld wholesale without losing
+                    # the content. Drop just the usage: it is already in the
+                    # totals, and leaving it here makes a client that sums
+                    # chunks count this turn twice.
+                    payload.pop("usage", None)
+                    line = "data: " + json.dumps(payload, separators = (",", ":"))
                 choices = payload.get("choices")
                 choice = choices[0] if isinstance(choices, list) and choices else {}
                 if not isinstance(choice, dict):
@@ -927,6 +944,12 @@ async def stream_with_studio_tools(
             step_task: Any = None
             try:
                 while True:
+                    if cancel_event.is_set():
+                        # A tool that does not watch the cancel event would keep
+                        # producing heartbeats and hold the answer open forever.
+                        # Stop asking for them and let the drain below join the
+                        # worker under its own bounded timeout.
+                        break
                     step_task = asyncio.create_task(
                         asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
                     )
