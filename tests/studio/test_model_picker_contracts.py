@@ -1322,18 +1322,26 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
     the label leaves a distilled model's low-step, guidance-0 recipe pointed at a non-distilled
     model, and the next generation silently runs with the wrong settings.
 
-    So the rollback token carries the recipe and every rollback path puts all of it back."""
+    So the rollback token carries the recipe and every rollback path puts all of it back.
+
+    The token may carry more than the recipe (a preset claim, what the pick applied), so the
+    fields are matched inside the declaration rather than against one exact line."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        assert (
-            "type PickRevert = { prev: string | null; steps: number; guidance: number };" in src
-        ), f"{rel}: the rollback token does not carry the generation recipe"
+        token = re.search(r"type PickRevert = \{(.*?)\n\};", src, re.S) or re.search(
+            r"type PickRevert = \{(.*?)\};", src, re.S
+        )
+        assert token, f"{rel}: no PickRevert rollback token"
+        for field in ("prev: string | null", "steps: number", "guidance: number"):
+            assert field in token.group(1), f"{rel}: the rollback token does not carry {field}"
         revert = re.search(
             r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S
         )
         assert revert, f"{rel}: no shared rollback helper"
         body = revert.group(1)
-        for setter in ("setQuant(r.prev)", "setSteps(r.steps)", "setGuidance(r.guidance)"):
+        # The recipe may be restored conditionally (a preset chosen after the pick owns those
+        # fields), but the rollback still has to read it off the token.
+        for setter in ("setQuant(r.prev)", "setSteps(", "r.steps", "setGuidance(", "r.guidance"):
             assert setter in body, f"{rel}: rollback does not restore {setter}"
         # No rollback path may still put back the label alone.
         assert (
@@ -2137,7 +2145,14 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The Vulkan inventory is authoritative even while its probe is temporarily
     # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
     # picker and make DiffusionGemma offer a selection the route rejects.
-    assert 'const inference = data?.inference_gpu; if (inference?.backend === "vulkan") {' in src
+    # Scoped to the GGUF picker: an image or video load runs on torch, not llama-server, so it
+    # reads the torch inventory even here. A Vulkan chat build says nothing about the CUDA / ROCm
+    # devices a diffusion load can be pinned to.
+    vulkan_gate = (
+        "const inference = data?.inference_gpu; "
+        'if (!forDiffusion && inference?.backend === "vulkan") {'
+    )
+    assert vulkan_gate in src
     # A confirmed-Vulkan backend with no enumerated devices yet must return no
     # devices, not fall through to the torch/CUDA inventory below.
     assert "if (!(inference.devices ?? []).length) return [];" in src
@@ -3538,3 +3553,36 @@ def test_the_backend_keys_the_footprint_on_family_and_text_encoders():
     assert answer.count("dependency_key = _variant_dependency_key(") >= 4
     schema = _read_backend("hub/schemas/inventory.py")
     assert "dependency_key: Optional[str] = Field(" in schema
+
+
+def test_the_diffusion_gpu_choices_are_memoized():
+    """An unstable array here reaches the GGUF picker as a new footprint resolver on every render.
+
+    ImagesPage feeds the choices into its load-advanced snapshot, that snapshot into
+    resolveDownloadFootprint, and the picker's effect depends on the resolver: a fresh identity per
+    render clears the companion sizes it had resolved and re-POSTs /images/download-plan for every
+    variant, on every status poll, discarding the in-flight answers.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    choices = src[src.index("export function useDiffusionGpuChoices") :]
+    choices = choices[: choices.index("/** Whether device discovery")]
+    assert "return useMemo(() => {" in choices
+    # Keyed on the device list, which useGpuDevices only replaces when the inventory changes.
+    assert "}, [devices]);" in choices
+
+
+def test_the_media_gpu_pick_survives_a_reload():
+    """Every other Advanced select is reseeded from the loaded build; this one cannot be, because
+    the status reports the device a pipeline is on and not which physical card. Without persistence
+    a refresh silently reset the pick to Auto while the model stayed put, and the next Reapply
+    moved it to the default GPU -- on a mixed box, potentially onto the card that cannot hold it."""
+    for page, key in (
+        ("features/images/images-page.tsx", "unsloth_image_gpu_choice"),
+        ("features/video/video-page.tsx", "unsloth_video_gpu_choice"),
+    ):
+        src = " ".join(_read(page).split())
+        assert f'usePersistedChoice( "{key}", "auto", )' in src, page
+        # A stored id is only a hint: a card that has gone falls back to automatic.
+        assert "gpuChoices.some((d) => String(d.index) === selectedGpu)" in src or (
+            "controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)" in src
+        ), page

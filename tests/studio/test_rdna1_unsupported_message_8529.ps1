@@ -300,71 +300,103 @@ $guardBlocks = @($installAst.FindAll({
 Check "the unsupported lookup block consults the peer list" ($guardBlocks.Count -gt 0)
 
 # The cases below inject $wmiAmdNames, so they cannot see whether anything FILLS it.
-# Assert the producer separately: the WMI scan must build it from the adapter list it
-# indexed, not from the single chosen adapter.
+# Assert the producer separately, and assert what it must NOT touch: the peer list is for
+# the REPORT, so it lives in its own block and must never write the label or the arch the
+# inference reads. Widening the existing scan instead turned a CPU install into a ROCm one
+# on a host amd-smi had already claimed, which is a routing change, not a message change.
 $peerAssign = @($installAst.FindAll({
     param($n)
     $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
     $n.Left.Extent.Text -eq '$wmiAmdNames' -and
-    $n.Right.Extent.Text.Contains('$wmiAdapters')
+    $n.Right.Extent.Text.Contains('$usePeers')
 }, $true))
-Check "the WMI scan fills the peer list from every adapter" ($peerAssign.Count -eq 1)
+Check "install.ps1 fills the peer list from every adapter" ($peerAssign.Count -eq 1)
 
-# ...and it must not be gated on $HasROCm. amd-smi can report GPUs with no gfx token and
-# only the first market name, which sets $HasROCm with no arch: gated that way the scan
-# was skipped and the guard above saw an empty peer list on exactly the multi-GPU host it
-# is for. The enclosing if must test the ARCH, which is what decides whether the lookup
-# below can run at all.
-$peerScanGate = $null
+$peerBlock = $null
 foreach ($assign in $peerAssign) {
-    # Walk PAST the inner `if ($wmiGpu)`: the gate under test is the outer one, the only
-    # condition on this path that mentions either signal.
     $node = $assign.Parent
     while ($node) {
         if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
-            $cond = $node.Clauses[0].Item1.Extent.Text
-            if ($cond.Contains('$ROCmGfxArch') -or $cond.Contains('$HasROCm')) {
-                $peerScanGate = $cond
-                break
-            }
+            $peerBlock = $node
+            break
         }
         $node = $node.Parent
     }
 }
-Check "the peer scan is not gated on `$HasROCm" (
-    $peerScanGate -and $peerScanGate.Contains('$ROCmGfxArch') -and -not $peerScanGate.Contains('$HasROCm')
+Check "install.ps1's peer scan writes neither the label nor the arch" (
+    $peerBlock -and
+    -not $peerBlock.Extent.Text.Contains('$ROCmGpuLabel =') -and
+    -not $peerBlock.Extent.Text.Contains('$ROCmGfxArch =')
 )
 
-# studio/setup.ps1 carries the same scan for its own inference, and had the same gate: on
-# the amd-smi market-name-only path $script:ROCmGpuLabels held one name, so $gpuNames was
-# one entry and the whole host was judged on it. Its inference runs under
-# `if (-not $script:ROCmGfxArch)`, so the scan that feeds it must run there too.
+# studio/setup.ps1 keeps its own report-only list, for the same reason: $script:ROCmGpuLabels
+# feeds $gpuNames and therefore the arch inference, so the peer names must not go there.
 $setupPath = Join-Path $root "studio/setup.ps1"
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$null, [ref]$null)
-$setupPeerAssign = @($setupAst.FindAll({
+$setupPeer = @($setupAst.FindAll({
     param($n)
     $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-    $n.Left.Extent.Text -eq '$script:ROCmGpuLabels' -and
-    $n.Right.Extent.Text.Contains('$wmiGpus')
+    $n.Left.Extent.Text -eq '$script:ROCmPeerLabels' -and
+    $n.Right.Extent.Text.Contains('$usePeers')
 }, $true))
-Check "setup.ps1 fills its peer list from every adapter" ($setupPeerAssign.Count -eq 1)
-$setupGate = $null
-foreach ($assign in $setupPeerAssign) {
+Check "setup.ps1 keeps a separate report-only peer list" ($setupPeer.Count -eq 1)
+$setupPeerBlock = $null
+foreach ($assign in $setupPeer) {
     $node = $assign.Parent
     while ($node) {
-        if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
-            $cond = $node.Clauses[0].Item1.Extent.Text
-            if ($cond.Contains('$script:ROCmGfxArch') -or $cond.Contains('$HasROCm')) {
-                $setupGate = $cond
-                break
-            }
-        }
+        if ($node -is [System.Management.Automation.Language.IfStatementAst]) { $setupPeerBlock = $node; break }
         $node = $node.Parent
     }
 }
-Check "setup.ps1's peer scan is not gated on `$HasROCm" (
-    $setupGate -and $setupGate.Contains('$script:ROCmGfxArch') -and -not $setupGate.Contains('$HasROCm')
+Check "setup.ps1's peer scan writes neither the label nor the inference list" (
+    $setupPeerBlock -and
+    -not $setupPeerBlock.Extent.Text.Contains('$ROCmGpuLabel =') -and
+    -not $setupPeerBlock.Extent.Text.Contains('$script:ROCmGpuLabels =')
 )
+
+# A mask names the card, so a masked-out peer cannot answer for it: the suppression has to
+# yield to HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES, as the arch-borrowing rule already
+# does. CUDA_VISIBLE_DEVICES must NOT count; it masks NVIDIA devices, and counting it fired
+# the verdict beside a covered Radeon on every host that sets it.
+foreach ($pair in @(
+    @{ F = "install.ps1";      P = $installPath },
+    @{ F = "studio/setup.ps1"; P = (Join-Path $root "studio/setup.ps1") }
+)) {
+    $text = (Get-Content -Raw $pair.P) -replace "`r`n", "`n"
+    $i = $text.IndexOf('$unsupMasked = @(')
+    Check "$($pair.F) yields the peer suppression to an AMD visible-device mask" ($i -ge 0)
+    if ($i -ge 0) {
+        $decl = $text.Substring($i, [Math]::Min(240, $text.Length - $i))
+        Check "$($pair.F) counts HIP and ROCR in that mask" (
+            $decl.Contains('HIP_VISIBLE_DEVICES') -and $decl.Contains('ROCR_VISIBLE_DEVICES')
+        )
+        Check "$($pair.F) does not count CUDA_VISIBLE_DEVICES" (
+            -not $decl.Contains('CUDA_VISIBLE_DEVICES')
+        )
+        # Yielding to the mask is only safe while the label is the pinned card: both label
+        # sources keep adapter 0, so the masked branch has to fall silent once a peer it
+        # never indexed exists.
+        $window = $text.Substring($i, [Math]::Min(1200, $text.Length - $i))
+        Check "$($pair.F) drops the verdict when the mask may name another adapter" (
+            $window -match '(ROCmPeerLabels|wmiAmdNames)\.Count -gt (1|\$gpuNames\.Count)'
+        )
+    }
+}
+
+# Get-WmiObject is gone from PowerShell 7, and the scans below catch silently, so a supported
+# Radeon named only by Windows took the CPU torch path there. Ask the parser for real calls;
+# the name still appears in prose. Every adapter scan in these files is on CIM.
+foreach ($pair in @(
+    @{ F = "install.ps1";      A = $installAst },
+    @{ F = "studio/setup.ps1"; A = $setupAst }
+)) {
+    $wmiCalls = @($pair.A.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and
+        $n.GetCommandName() -eq 'Get-WmiObject'
+    }, $true))
+    Check "$($pair.F) scans adapters with Get-CimInstance, not Get-WmiObject" ($wmiCalls.Count -eq 0)
+}
 
 Invoke-Expression (Get-AssignmentSource $installPath '$nameArchTable')
 Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable')
@@ -391,6 +423,15 @@ $guardCases = @(
     # The amd-smi paths never enter the WMI scan, so the peer list is empty there.
     @{ N = "an empty peer list does not suppress the verdict"
        L = "AMD Radeon RX 5700 XT"; A = @(); E = 'gfx1010' }
+    # Under a mask the peers no longer speak for the named card, but both label sources take
+    # adapter 0, so the label is only the SELECTED card when there is nothing else to pick.
+    @{ N = "a masked lone RX 5700 XT is still named"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); M = "0"; E = 'gfx1010' }
+    @{ N = "a mask beside a second adapter claims nothing"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 7900 XTX"); M = "1"; E = $null }
+    # Even two uncovered peers: the arch named would still be adapter 0's, not the pinned one.
+    @{ N = "a mask beside a second uncovered adapter claims nothing"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 580"); M = "1"; E = $null }
 )
 $guardSource = $guardBlocks[0].Extent.Text
 foreach ($case in $guardCases) {
@@ -398,7 +439,9 @@ foreach ($case in $guardCases) {
     $ROCmUnsupportedGfxArch = $null
     $ROCmGpuLabel = $case.L
     $wmiAmdNames = @($case.A)
+    if ($case.M) { $env:HIP_VISIBLE_DEVICES = $case.M } else { Remove-Item Env:HIP_VISIBLE_DEVICES -ErrorAction SilentlyContinue }
     Invoke-Expression $guardSource
+    Remove-Item Env:HIP_VISIBLE_DEVICES -ErrorAction SilentlyContinue
     Check $case.N ($ROCmUnsupportedGfxArch -eq $case.E)
 }
 

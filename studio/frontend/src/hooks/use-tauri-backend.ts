@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { preflightStaleMessage } from "@/hooks/backend-preflight-message";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
@@ -276,9 +277,7 @@ export function useTauriBackend() {
             await startRepair();
           } else {
             setBackendError(
-              preflight.disposition === "owned_stale"
-                ? "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth."
-                : "Managed Unsloth install is too old. Run `unsloth studio update`.",
+              preflightStaleMessage(preflight.disposition, preflight.reason),
             );
           }
           return;

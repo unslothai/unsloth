@@ -17,7 +17,6 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
-    pickModelFile: "Escolher um arquivo de modelo no disco",
     modelDropped: "Não é mais oferecido",
     modelDroppedByProvider: "{provider} · não é mais oferecido",
     modelDisabled: "Não ativado",
@@ -423,6 +422,12 @@ export const ptBR = {
         launchAtLogin: "Executar o Unsloth ao fazer login",
         launchAtLoginDescription:
           "Inicia o Unsloth em segundo plano quando você faz login. Ele permanece na barra de menus ou na bandeja do sistema até você abri-lo.",
+
+        closeToTray: "Fechar para a bandeja do sistema",
+        closeToTrayDescription:
+          "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
+        closeToTraySaveError:
+          "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
@@ -972,11 +977,13 @@ export const ptBR = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importe um arquivo exportado em JSONL, NDJSON ou CSV para Recentes.",
+        "Importe um export do Open WebUI, JSONL, NDJSON ou CSV para Recentes.",
       importChatsAction: "Importar",
       importNoConversations: "Nenhuma conversa encontrada no arquivo.",
       importedOneChat: "1 conversa foi importada para Recentes.",
       importedChatCount: "{count} conversas foram importadas para Recentes.",
+      importingChats: "Importando chats: {count} até agora ({percent}%)...",
+      importedChatCountPartial: "{count} conversas importadas para Recentes; {failed} não puderam ser salvas.",
       importFailed: "Falha na importação.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",

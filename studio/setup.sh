@@ -1477,17 +1477,287 @@ _setup_http_get_timed() {
     fi
 }
 
+# ── uv from a pinned release ──
+# Same archive and destination as astral's installer, but it fetches a data file with a
+# pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# Bumping the version means bumping every hash:
+#   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
+#
+# Only the four mainstream targets are pinned; the rest fall through to the existing path
+# rather than risk a binary for the wrong triple.
+_SETUP_UV_PINNED_VERSION="0.12.1"
+
+# Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
+# run the GNU build", and astral drops to its musl-static archive below its floor.
+_setup_uv_glibc_minor() {
+    _sugm_line=$( (ldd --version 2>/dev/null || true) | head -1 )
+    case "$_sugm_line" in *[Mm]usl*) return 1 ;; esac
+    _sugm_ver=$(printf '%s\n' "$_sugm_line" | awk '{print $NF}')
+    case "$_sugm_ver" in
+        2.[0-9]*) : ;;
+        *) _sugm_ver=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}') ;;
+    esac
+    case "$_sugm_ver" in 2.[0-9]*) : ;; *) return 1 ;; esac
+    _sugm_minor=${_sugm_ver#2.}
+    _sugm_minor=${_sugm_minor%%.*}
+    case "$_sugm_minor" in "" | *[!0-9]*) return 1 ;; esac
+    echo "$_sugm_minor"
+    return 0
+}
+
+_setup_uv_pinned_asset() {
+    _supa_os=$(uname -s 2>/dev/null || echo unknown)
+    _supa_arch=$(uname -m 2>/dev/null || echo unknown)
+    case "$_supa_os" in
+        Linux)
+            # A 32-bit userland on a 64-bit kernel still reports x86_64 from uname.
+            [ "$(getconf LONG_BIT 2>/dev/null || echo 0)" = "64" ] || return 1
+            _supa_glibc=$(_setup_uv_glibc_minor) || return 1
+            case "$_supa_arch" in
+                x86_64|amd64)
+                    [ "$_supa_glibc" -ge 17 ] 2>/dev/null || return 1
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                aarch64|arm64)
+                    [ "$_supa_glibc" -ge 28 ] 2>/dev/null || return 1
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        Darwin)
+            # Rosetta 2 reports x86_64 from a translated shell; astral reads the same sysctl.
+            if [ "$_supa_arch" = "x86_64" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+                _supa_arch=arm64
+            fi
+            case "$_supa_arch" in
+                x86_64)
+                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                arm64|aarch64)
+                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+_setup_uv_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    fi
+}
+
+# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
+# `timeout` exists (stock macOS has none).
+_setup_uv_probe_exec() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
+    else
+        "$1" --version >/dev/null 2>&1 </dev/null
+    fi
+}
+
+# The function's own cleanup only runs when it returns, so an interrupt left the unpacked
+# archive behind plus a staging file inside a directory on PATH. No trap is active here (the
+# gitignore EXIT trap is cleared well above), so the pinned install owns these four for its
+# duration and hands them back on the way out.
+_setup_uv_cleanup_temporaries() {
+    [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE2:-}" ] && rm -f "$_SIUP_STAGE2" 2>/dev/null || true
+}
+
+_setup_uv_on_signal() {
+    trap - EXIT HUP INT TERM
+    _setup_uv_cleanup_temporaries
+    exit "$1"
+}
+
+# The PATH a new shell inherits, captured before the uv destination can be prepended to it.
+_SETUP_LOGIN_PATH="$PATH"
+_SIUP_WORK=""
+_SIUP_STAGE=""
+_SIUP_STAGE2=""
+
+_setup_install_uv_pinned() {
+    _siup_spec=$(_setup_uv_pinned_asset) || return 1
+    [ -n "$_siup_spec" ] || return 1
+    _siup_asset=${_siup_spec%% *}
+    _siup_want=${_siup_spec##* }
+    command -v tar >/dev/null 2>&1 || return 1
+    [ -n "$(_setup_uv_sha256 /dev/null)" ] || return 1
+    [ -n "${HOME:-}" ] || return 1
+
+    # astral's full destination priority, including the XDG_DATA_HOME tier that sits between
+    # XDG_BIN_HOME and the home default. Dropping it would leave uv under ~/.local/bin on a
+    # host that configured an XDG location, where no later shell looks for it.
+    _siup_dest="${UV_INSTALL_DIR:-${UV_UNMANAGED_INSTALL:-${XDG_BIN_HOME:-}}}"
+    if [ -z "$_siup_dest" ] && [ -n "${XDG_DATA_HOME:-}" ]; then _siup_dest="$XDG_DATA_HOME/../bin"; fi
+    [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
+    # 2>/dev/null, as install.sh does: a speculative attempt whose failure falls back.
+    _siup_work=$(mktemp -d 2>/dev/null) || return 1
+    _SIUP_WORK="$_siup_work"
+    trap _setup_uv_cleanup_temporaries EXIT
+    trap '_setup_uv_on_signal 129' HUP
+    trap '_setup_uv_on_signal 130' INT
+    trap '_setup_uv_on_signal 143' TERM
+    _siup_rc=1
+    # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
+    # restricted network sets one because the public hosts are unreachable, so trying those first
+    # would stall instead of falling through.
+    if [ -n "${UV_DOWNLOAD_URL:-}" ]; then
+        _siup_bases="${UV_DOWNLOAD_URL%/}"
+    elif [ -n "${INSTALLER_DOWNLOAD_URL:-}" ]; then
+        _siup_bases="${INSTALLER_DOWNLOAD_URL%/}"
+    elif [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
+        _siup_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
+        _siup_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    else
+        _siup_bases="https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION
+https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    fi
+    for _siup_base in $_siup_bases; do
+        _setup_http_get "$_siup_base/$_siup_asset" > "$_siup_work/$_siup_asset" 2>/dev/null || continue
+        [ -s "$_siup_work/$_siup_asset" ] || continue
+        [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
+        tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
+        mkdir -p "$_siup_dest" 2>/dev/null || break
+        # Stage both, then publish both, as install.sh does: the renames sit next to each
+        # other so the pair is replaced as one.
+        _siup_ready=1
+        for _siup_exe in uv uvx; do
+            # `mv f d` moves f INTO d and reports success, and a searchable directory passes -x
+            # too, so a directory called uv at the destination would look like a published
+            # binary and skip the fallback. The installer already refuses one for its own shim.
+            if [ -d "$_siup_dest/$_siup_exe" ]; then _siup_ready=0; break; fi
+            _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
+            if [ -z "$_siup_src" ]; then _siup_ready=0; break; fi
+            # cp writes through a symlinked destination, and a per-process staging name keeps
+            # two racing installers from publishing each other's half-written file.
+            _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || { _siup_ready=0; break; }
+            if [ "$_siup_exe" = "uv" ]; then _SIUP_STAGE="$_siup_stage"; else _SIUP_STAGE2="$_siup_stage"; fi
+            if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then _siup_ready=0; break; fi
+            # 0755, not +x: the staging file carries the umask default and +x only adds execute
+            # where read was allowed, so umask 077 would leave uv unusable for every other
+            # account. astral ships these 0755.
+            chmod 0755 "$_siup_stage" 2>/dev/null || true
+            # Validate before publishing: the rename destroys the incumbent, so a binary that
+            # cannot run here must never replace one that could.
+            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
+        done
+        if [ "$_siup_ready" = "1" ] &&
+           mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
+           mv -f "$_SIUP_STAGE2" "$_siup_dest/uvx" 2>/dev/null; then
+            _siup_rc=0
+        fi
+        rm -f "$_SIUP_STAGE" "$_SIUP_STAGE2" 2>/dev/null || true
+        _SIUP_STAGE=""
+        _SIUP_STAGE2=""
+        break
+    done
+    rm -rf "$_siup_work"
+    _SIUP_WORK=""
+    _SIUP_STAGE=""
+    _SIUP_STAGE2=""
+    trap - EXIT HUP INT TERM
+    # The staged binary already answered --version above, before it replaced anything.
+    [ -x "$_siup_dest/uv" ] || _siup_rc=1
+    if [ "$_siup_rc" = "0" ]; then
+        export PATH="$_siup_dest:$PATH"
+        _setup_persist_uv_path "$_siup_dest"
+    fi
+    return "$_siup_rc"
+}
+
+# astral's installer wrote a profile line for whichever destination it chose. This replaces that
+# installer, so setup.sh run directly (local or Colab) has to do the same or the export above
+# dies with this shell and every later run reinstalls uv. Both of astral's opt-outs apply, and
+# fish is handled on its own terms since it reads none of the POSIX rc files.
+# Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
+# expansion is off for the walk and restored afterwards.
+_setup_path_has_dir() {
+    _sphd_glob=on
+    case $- in *f*) _sphd_glob=off ;; esac
+    set -f
+    _sphd_found=1
+    _sphd_old_ifs="$IFS"
+    IFS=:
+    for _sphd_entry in $1; do
+        if [ "$_sphd_entry" = "$2" ]; then _sphd_found=0; break; fi
+    done
+    IFS="$_sphd_old_ifs"
+    [ "$_sphd_glob" = on ] && set +f
+    return "$_sphd_found"
+}
+
+_setup_persist_uv_path() {
+    _supp_dir="$1"
+    [ -n "$_supp_dir" ] || return 0
+    [ -n "${HOME:-}" ] || return 0
+    [ -z "${UV_NO_MODIFY_PATH:-}" ] || return 0
+    [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
+    # The PATH a new shell inherits, not the one this process has already prepended to, and
+    # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
+    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
+    # file, and it is written regardless of the current shell for the same reason.
+    _supp_fish_dir="$HOME/.config/fish/conf.d"
+    if mkdir -p "$_supp_fish_dir" 2>/dev/null; then
+        _supp_fish="$_supp_fish_dir/unsloth.fish"
+        # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
+        _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
+        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
+            echo "# Added by Unsloth setup" >> "$_supp_fish"
+            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+        fi
+    fi
+    # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
+    # /opt/uv-old when we want /opt/uv, and PYTHONPATH=/opt/uv are none of them, and taking any
+    # for an entry leaves the next shell unable to resolve uv.
+    _supp_path_line='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
+    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
+    # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
+    # terminated by the shell that reads it.
+    _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # Every startup file astral's installer wired, because it is the installer this replaced:
+    # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
+    # file for the shell that happens to be running would leave a bash user whose .bash_profile
+    # does not source .bashrc, or anyone who later switches shells, without uv on PATH.
+    for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                         "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+        if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
+        # are not PATH entries, and taking one for an entry leaves the next shell without uv.
+        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+            | grep -E "$_supp_path_line" \
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
+        echo '' >> "$_supp_profile"
+        echo '# Added by Unsloth setup' >> "$_supp_profile"
+        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+    done
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
-    if _is_verbose; then
+    _SETUP_UV_PINNED_OK=false
+    if _setup_install_uv_pinned; then
+        _SETUP_UV_PINNED_OK=true
+    elif _is_verbose; then
         _setup_http_get https://astral.sh/uv/install.sh | sh
     else
         _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
-    export PATH="$HOME/.local/bin:$PATH"
+    # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
+    # own destination first, and prepending here would let a stale ~/.local/bin/uv shadow the
+    # 0.12.1 we just verified, so the rest of setup would run the wrong one.
+    [ "$_SETUP_UV_PINNED_OK" = true ] || export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
 fi
 
@@ -2067,7 +2337,7 @@ elif [ "$_setup_amd_detected" = true ]; then
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
             *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
             *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
-            *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
+            *"RX 470"|*"RX 470"[!0]*|*"RX 480"|*"RX 480"[!0]*|*"RX 570"|*"RX 570"[!0]*|*"RX 580"|*"RX 580"[!0]*|*"RX 590"|*"RX 590"[!0]*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
             *) return 1 ;;
         esac
     }
