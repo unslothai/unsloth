@@ -346,6 +346,10 @@ _RELATIVE_PATH_ENV = (
     # huggingface_hub resolves the credential file from here; a relative value
     # would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
+    # uv reads this as written, and Studio treats a non-blank value as
+    # authoritative (storage_roots.py), so `unsloth studio update` would install
+    # from a different cache once the child moves.
+    "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
@@ -380,16 +384,17 @@ def pin_relative_overrides(
     pathmod = _os.path,
     abspath = None,
     expandvars = None,
+    expanduser = None,
 ):
     """Rewrite relative path overrides so they keep meaning the folder they did.
 
-    Returns the names that were pinned. A `~` value is left alone: expanduser
-    does not consult the working directory.
+    Returns the names that were pinned. A `~` value is written out, since only
+    some of the readers expand it themselves.
     """
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
-        anchored = _anchor(name, value, cwd, pathmod, abspath, expandvars)
+        anchored = _anchor(name, value, cwd, pathmod, abspath, expandvars, expanduser)
         if anchored is not None:
             environ[name] = anchored
             pinned.append(name)
@@ -402,7 +407,8 @@ def pin_relative_overrides(
         # whole list means.
         entries = raw.split(_PATH_LIST_SEPARATOR)
         anchored_entries = [
-            _anchor_list_entry(name, e, cwd, pathmod, abspath, expandvars) for e in entries
+            _anchor_list_entry(name, e, cwd, pathmod, abspath, expandvars, expanduser)
+            for e in entries
         ]
         if anchored_entries != entries:
             environ[name] = _PATH_LIST_SEPARATOR.join(anchored_entries)
@@ -461,6 +467,7 @@ def pin_relative_sys_path(
     syspath = None,
     abspath = None,
     isdir = None,
+    expanduser = None,
 ):
     """Anchor the relative import roots this interpreter is already carrying.
 
@@ -489,7 +496,9 @@ def pin_relative_sys_path(
             # no test; anything else has to be a real directory.
             if entry.strip() and not isdir(entry):
                 continue
-            anchored = _anchor_list_entry("PYTHONPATH", entry, cwd, pathmod, abspath, None)
+            anchored = _anchor_list_entry(
+                "PYTHONPATH", entry, cwd, pathmod, abspath, None, expanduser
+            )
         except Exception:
             # Best effort, unlike the environment: an import root this process
             # already holds is not worth refusing the move over, and refusing is
@@ -501,21 +510,16 @@ def pin_relative_sys_path(
     return pinned
 
 
-def _anchor_list_entry(name, entry, cwd, pathmod, abspath, expandvars):
+def _anchor_list_entry(name, entry, cwd, pathmod, abspath, expandvars, expanduser = None):
     """One entry of a path list, anchored, or left as written.
 
-    PYTHONPATH has two spellings the ordinary rules would leave behind, and both
-    follow the process rather than the caller: an empty component means the
-    working directory itself, and a leading `~` is not expanded there, so Python
-    reads `~\\plugins` as an ordinary relative folder.
+    An empty PYTHONPATH component means the working directory itself, which is
+    the one spelling the rules below cannot see.
     """
     entry = entry.strip()
-    if name == "PYTHONPATH":
-        if not entry:
-            return cwd
-        if entry.startswith("~"):
-            return pathmod.join(cwd, entry)
-    return _anchor(name, entry, cwd, pathmod, abspath, expandvars) or entry
+    if name == "PYTHONPATH" and not entry:
+        return cwd
+    return _anchor(name, entry, cwd, pathmod, abspath, expandvars, expanduser) or entry
 
 
 def _anchor(
@@ -525,6 +529,7 @@ def _anchor(
     pathmod,
     abspath = None,
     expandvars = None,
+    expanduser = None,
 ):
     """The value rewritten to name the same folder from anywhere, or None.
 
@@ -532,12 +537,20 @@ def _anchor(
     does not consult the working directory), or it is already fully qualified.
     """
     original = value = (value or "").strip()
+    if value.startswith("~"):
+        # Written out rather than skipped. Every reader takes these as plain
+        # paths and only some call expanduser first: llama_cpp.py hands
+        # UNSLOTH_LLAMA_CPP_PATH straight to Path(), so a move would leave it
+        # naming a folder called "~" under the new directory. Expanding here is
+        # what the caller meant either way, and it is what the readers that do
+        # call expanduser would have computed for themselves.
+        value = (expanduser or pathmod.expanduser)(value)
     if name in _EXPANDED_ENV and value:
         # Written out, so the reader that expands and the reader that does not
         # land in the same folder. An unset variable is left as written, and
         # expandvars is a no-op on a value that holds none.
         value = (expandvars or _os.path.expandvars)(value)
-    if not value or value.startswith("~"):
+    if not value:
         return None
     if _is_fully_qualified(value, pathmod):
         # Already names one folder. Still worth writing back if expanding is what
@@ -686,11 +699,11 @@ def check_working_directory(
         try:
             # Before moving, or a relative override the caller wrote would end up
             # naming a folder under the new directory instead of theirs.
-            pin_relative_overrides(environ, cwd, pathmod, abspath, expandvars)
+            pin_relative_overrides(environ, cwd, pathmod, abspath, expandvars, expanduser)
             # This interpreter read PYTHONPATH before the guard ran, and it keeps
             # the entries as written: a relative one is resolved on every import,
             # so it has to be anchored here as well as in the environment.
-            pin_relative_sys_path(cwd, pathmod, syspath, abspath, isdir)
+            pin_relative_sys_path(cwd, pathmod, syspath, abspath, isdir, expanduser)
         except Exception as error:
             # An environment we cannot pin is one we must not move underneath.
             # Both reasons are real: a drive with no current directory of its own,

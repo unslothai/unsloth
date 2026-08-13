@@ -1143,6 +1143,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
+    // uv reads this as written and Studio treats a non-blank value as
+    // authoritative, so an update would install from a different cache.
+    "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
@@ -1350,11 +1353,41 @@ fn names_a_path(name: &str, value: &str) -> bool {
 /// invent a failure for a value the child is never going to see.
 const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
 
+/// `~` and `~name`, resolved the way ntpath.expanduser resolves them.
+///
+/// Written out rather than skipped, because only some readers of these names
+/// expand it themselves: llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to
+/// Path(), so a moved child would look for a folder called "~" beside its new
+/// working directory.
+fn expand_windows_user(value: &str, home: &std::path::Path) -> String {
+    if !value.starts_with('~') {
+        return value.to_string();
+    }
+    let end = value[1..]
+        .find(['\\', '/'])
+        .map_or(value.len(), |offset| offset + 1);
+    let (name, rest) = (&value[1..end], &value[end..]);
+    let home = home.to_string_lossy();
+    let base = if name.is_empty() {
+        home.into_owned()
+    } else {
+        // ~someone-else is the sibling of this profile, as ntpath resolves it.
+        // Split on the string, not with Path::parent: these are Windows paths
+        // whichever platform the code is running on.
+        match home.rfind(['\\', '/']) {
+            Some(cut) => format!("{}{}", &home[..cut + 1], name),
+            None => return value.to_string(),
+        }
+    };
+    format!("{}{}", base, rest)
+}
+
 fn relative_override_pins_from(
     cwd: Option<std::path::PathBuf>,
     work_dir: &std::path::Path,
     lookup: impl Fn(&str) -> Option<String>,
     absolute: impl Fn(&str) -> Option<std::path::PathBuf>,
+    home: Option<&std::path::Path>,
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     let Some(cwd) = cwd else {
         // The directory being left is unknown, so nothing can be anchored to it.
@@ -1410,8 +1443,11 @@ fn relative_override_pins_from(
         let Some(value) = lookup(name) else { continue };
         let original = value.trim().to_string();
         let value = expanded(name, &original);
-        // A `~` value does not consult the working directory.
-        if value.is_empty() || value.starts_with('~') {
+        let value = match home {
+            Some(home) => expand_windows_user(&value, home),
+            None => value,
+        };
+        if value.is_empty() {
             continue;
         }
         if is_fully_qualified(&value) {
@@ -1442,16 +1478,16 @@ fn relative_override_pins_from(
             // the caller: an empty component means the working directory itself,
             // and a leading `~` is never expanded there, so Python reads
             // `~\plugins` as an ordinary relative folder.
-            if *name == "PYTHONPATH" && (entry.is_empty() || entry.starts_with('~')) {
-                let anchored = if entry.is_empty() {
-                    cwd.clone()
-                } else {
-                    cwd.join(&entry)
-                };
-                entries.push(anchored.to_string_lossy().into_owned());
+            // An empty PYTHONPATH component means the working directory itself.
+            if *name == "PYTHONPATH" && entry.is_empty() {
+                entries.push(cwd.to_string_lossy().into_owned());
                 continue;
             }
-            if entry.is_empty() || entry.starts_with('~') || is_fully_qualified(&entry) {
+            let entry = match home {
+                Some(home) => expand_windows_user(&entry, home),
+                None => entry,
+            };
+            if entry.is_empty() || is_fully_qualified(&entry) {
                 entries.push(entry);
                 continue;
             }
@@ -1481,6 +1517,7 @@ fn relative_override_pins(
         // GetFullPathNameW on Windows, which is what knows each drive's own
         // current directory.
         |value| std::path::absolute(value).ok(),
+        dirs::home_dir().as_deref(),
     )
 }
 
@@ -2968,7 +3005,7 @@ mod managed_cli_working_dir_tests {
             // every managed spawn, so they are never pinned.
             "UNSLOTH_COMPILE_LOCATION" => Some("  studio  ".to_string()),
             "OLLAMA_MODELS" => Some("D:\\models".to_string()),
-            "HF_HUB_CACHE" => Some("~/hub".to_string()),
+            "HF_HUB_CACHE" => Some("C:\\hub".to_string()),
             "XDG_CACHE_HOME" => Some("   ".to_string()),
             "LLAMA_SERVER_PATH" => Some("\\srv\\llama-server".to_string()),
             // Relative to drive D's own current directory, not to the cwd.
@@ -2984,7 +3021,7 @@ mod managed_cli_working_dir_tests {
         };
 
         let pins =
-            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute).unwrap();
+            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me"))).unwrap();
         assert_eq!(
             pins,
             vec![
@@ -3007,28 +3044,28 @@ mod managed_cli_working_dir_tests {
         // An unresolvable drive-relative value refuses the whole move rather
         // than being dropped: a child moved with that override still relative
         // would read and write somewhere else than the caller named.
-        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None).is_err());
+        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me"))).is_err());
 
         // Staying put is the common case: nothing is rewritten, so a desktop
         // started from a project folder keeps every override as it was.
         assert!(
-            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute)
+            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")))
                 .unwrap()
                 .is_empty()
         );
         // The directory being left is unknown, so a relative override cannot be
         // anchored to it and the move is refused rather than retargeting it.
-        assert!(relative_override_pins_from(None, &work_dir, env, absolute).is_err());
+        assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me"))).is_err());
         // With nothing relative left to preserve, an unknown directory is fine.
         let absolute_only = |name: &str| match name {
             "HF_HOME" => Some("D:\\cache".to_string()),
-            "HF_HUB_CACHE" => Some("~/hub".to_string()),
+            "HF_HUB_CACHE" => Some("C:\\hub".to_string()),
             // Removed for every managed child, so never in the way.
             "UNSLOTH_STUDIO_HOME" => Some("studio".to_string()),
             _ => None,
         };
         assert!(
-            relative_override_pins_from(None, &work_dir, absolute_only, absolute)
+            relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")))
                 .unwrap()
                 .is_empty()
         );
@@ -3294,6 +3331,20 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_tilde_is_written_out_the_way_expanduser_writes_it() {
+        let home = std::path::Path::new("C:\\Users\\me");
+        assert_eq!(expand_windows_user("~", home), "C:\\Users\\me");
+        assert_eq!(expand_windows_user("~\\llama.cpp", home), "C:\\Users\\me\\llama.cpp");
+        assert_eq!(expand_windows_user("~/llama.cpp", home), "C:\\Users\\me/llama.cpp");
+        // ~name is the sibling profile, as ntpath resolves it.
+        assert_eq!(expand_windows_user("~other\\x", home), "C:\\Users\\other\\x");
+        // Nothing else is touched.
+        for value in ["cache", "C:\\cache", "a~b"] {
+            assert_eq!(expand_windows_user(value, home), value);
+        }
+    }
+
+    #[test]
     fn every_spelling_expandvars_takes_is_expanded_here_too() {
         let lookup = |name: &str| match name {
             "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
@@ -3363,12 +3414,12 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |_| None,
+            Some(std::path::Path::new("C:\\Users\\me")),
         )
         .unwrap();
         let expected = format!(
-            "{};{};C:\\shared\\lib",
-            cwd.to_string_lossy(),
-            cwd.join("~\\plugins").to_string_lossy()
+            "{};C:\\Users\\me\\plugins;C:\\shared\\lib",
+            cwd.to_string_lossy()
         );
         assert_eq!(pins, vec![("PYTHONPATH", PathBuf::from(expected))]);
     }
@@ -3391,6 +3442,7 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |_| None,
+            Some(std::path::Path::new("C:\\Users\\me")),
         )
         .unwrap();
         assert_eq!(
@@ -3421,6 +3473,7 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |_| None,
+            Some(std::path::Path::new("C:\\Users\\me")),
         )
         .unwrap();
         assert_eq!(
@@ -3450,6 +3503,7 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |_| None,
+            Some(std::path::Path::new("C:\\Users\\me")),
         )
         .unwrap();
         assert!(pins.is_empty(), "a non-path value was rewritten: {pins:?}");
@@ -3469,9 +3523,14 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |_| None,
+            Some(std::path::Path::new("C:\\Users\\me")),
         )
         .unwrap();
-        let expected = format!("{};D:\\shared;~\\mine", cwd.join("trusted").to_string_lossy());
+        // `~` is written out: only some readers of these names expand it.
+        let expected = format!(
+            "{};D:\\shared;C:\\Users\\me\\mine",
+            cwd.join("trusted").to_string_lossy()
+        );
         assert_eq!(
             pins,
             vec![(
@@ -3540,6 +3599,7 @@ mod managed_cli_working_dir_tests {
                         .map(|(_, value)| value.clone())
                 },
                 absolute,
+                Some(std::path::Path::new("C:\\Users\\me")),
             )
             .unwrap();
             if round == 0 {

@@ -320,6 +320,12 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
 # ── unsloth_cli: the message the user actually reads ──
 
 
+def _expand_windows_user(value: str, environ: dict[str, str]) -> str:
+    """The real ntpath.expanduser, against the fake environment."""
+    with mock.patch.dict(os.environ, environ, clear = True):
+        return ntpath.expanduser(value)
+
+
 def _expand_windows_vars(value: str, environ: dict[str, str]) -> str:
     """The real ntpath.expandvars, against the fake environment.
 
@@ -403,7 +409,7 @@ def _guard_outcome(
         chdir = _chdir,
         pathmod = fake_path,
         sep = "\\",
-        expanduser = lambda _p: userprofile,
+        expanduser = lambda path: _expand_windows_user(path, environ),
         makedirs = _makedirs,
         # Only a folder that really holds System32 counts as a Windows directory.
         # A Windows root holds System32; sys.path entries are directories only
@@ -1014,9 +1020,9 @@ def test_cli_guard_pins_every_storage_root_override_studio_reads():
     assert not missing, f"relative values of {missing} would be retargeted by the move"
 
 
-@pytest.mark.parametrize("value", [r"C:\elsewhere\custom", r"~\custom", r"\\server\share\c"])
+@pytest.mark.parametrize("value", [r"C:\elsewhere\custom", r"\\server\share\c"])
 def test_cli_guard_leaves_an_already_anchored_override_alone(value: str):
-    """An absolute, UNC or ~ value does not depend on the working directory."""
+    """An absolute or UNC value does not depend on the working directory."""
     environ_out: dict[str, str] = {}
     _guard_outcome(
         r"C:\Windows\System32",
@@ -1231,7 +1237,9 @@ def test_cli_guard_pins_the_token_path_and_the_special_pythonpath_entries():
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     assert environ_out["HF_TOKEN_PATH"] == r"C:\Windows\System32\secrets\token"
     assert environ_out["PYTHONPATH"] == (
-        r"C:\Windows\System32;C:\Windows\System32\~\plugins;C:\shared\lib"
+        # The empty component is the folder being left; `~` names the profile,
+        # which is what the caller meant and what expanduser answers.
+        r"C:\Windows\System32;C:\Users\me\plugins;C:\shared\lib"
     )
 
 
