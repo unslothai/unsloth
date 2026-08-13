@@ -398,89 +398,128 @@ export const ja = {
         revokeError: "プレビューリンクを失効させることができませんでした",
       },
       remoteAccess: {
-        methodLabel:"リモートアクセス方法",
-        methodDescription:"接続するたびにリモートアドレスを変更するか選びます。",
-        temporaryMethod:"一時",
-        customMethod:"カスタム",
-        sectionTitle:"リモートアクセス",
-        description:"Cloudflare 経由で他のデバイスから Unsloth と API を使用します。",
-        progressConnecting:"接続中",
-        progressOpeningLink:"安全なリンクを開いています",
-        progressCheckingHostname:"ホスト名を確認中",
-        progressDisconnecting:"切断中",
-        stateOff:"オフ",
-        stateStarting:"起動中",
-        stateOnline:"オンライン",
-        stateStopping:"停止中",
-        stateError:"エラー",
-        stateUnavailable:"利用不可",
-        ownerLaunch:"起動時に管理",
-        ownerColab:"Colab で管理",
-        copied:"コピーしました",
-        copyUrl:"URL をコピー",
-        qrTitle:"スマートフォンで開く",
-        qrDescription:"スキャンしてスマートフォンのブラウザでリモート URL を開きます。",
-        remoteUrl:"リモート URL",
-        remoteUrlReady:"リモートリンクの準備ができました。",
-        urlHint:"この URL とリモートパスワードを知っている人はサインインできます。",
-        streamingSupported:"このトンネルはストリーミング応答に対応しています。",
-        streamingBuffered:"一時トンネルは完了までストリーミング応答を保留します。",
-        passwordLabel:"リモートパスワード",
-        passwordDescription:"リモートブラウザでは unsloth としてサインインします。デスクトップアプリは自動的にサインインします。",
-        customHostnameTitle:"カスタムホスト名",
-        customHostnameDescription:"独自のホスト名を使い、同じアドレスを維持します。",
-        hostnameLabel:"完全なホスト名",
-        hostnamePlaceholder:"unsloth.example.com",
-        setupAction:"設定",
-        setupConfirmTitle:"このホスト名を設定しますか？",
-        setupConfirmAction:"確認",
-        setupConfirmDescription:"下のホスト名を確認してください。続いて Cloudflare がこのトンネルの認可を求めます。このホスト名が属するドメインを選び、Authorize をクリックしてください。",
-        setupPreparing:"このトンネルを認可できるよう Cloudflare を開いています…",
-        setupAuthorize:"Cloudflare での認可を待っています。{hostname} が属するドメインを選び、Authorize をクリックしてください。",
-        removeProgress:"Unsloth から保存済み接続を削除中...",
-        openCloudflare:"Cloudflare を開く",
-        removeAction:"削除",
-        removeTitle:"このカスタムトンネルを Unsloth から削除しますか？",
-        removeDescription:"Unsloth が保存した内容のみを削除します。トンネルと DNS レコードは、Cloudflare で削除するまで残ります。",
-        removeTunnelHint:"Cloudflare で次のトンネルを削除してください：",
-        tunnelNameUnavailable:"トンネル名を取得できません",
-        openCloudflareTunnels:"Cloudflare のトンネルを開く",
-        removeDnsHint:"次に、この DNS レコードを削除してください：",
-        openCloudflareDns:"DNS レコードを開く",
-        removeConfirm:"Unsloth から削除",
-        removeLocally:"接続中のトンネルを削除するには、Unsloth を実行しているマシンで設定を開いてください。",
-        dnsConflict:"{hostname} は Cloudflare で既に別の宛先を指しています。その DNS レコードを削除するか、別のホスト名を設定してください。",
-        requestFailed:"リモートアクセス要求に失敗しました。",
-        runtimeFailed:"リモートアクセスが予期せず停止しました。再試行するか、サーバーログを確認してください。",
-        startAction:"開始",
-        stopAction:"停止",
-        autoStartLabel:"自動的に開始",
-        autoStartTemporary:"Unsloth の起動時に新しい一時 URL を作成します。今切断してもこの設定はオフになりません。",
-        autoStartCustom:"Unsloth の起動時にこのカスタムホスト名へ接続します。今切断してもこの設定はオフになりません。",
-        autoStartCustomMissing:"下でカスタムホスト名を設定するまで、これは何も接続しません。",
-        blockServerStarting:"サーバーの起動が完了するとリモートアクセスを利用できます。",
-        blockCustomNotConfigured:"リモートアクセスを開始する前に、下でカスタムホスト名を設定してください。",
-        blockPasswordDesktop:"リモートアクセスを開始する前に、下でリモートパスワードを設定してください。",
-        blockPasswordWeb:"ホスト管理者にリモートパスワードの設定を依頼してください。",
-        blockExplicitlyDisabled:"このサーバーの起動時にリモートアクセスが無効化されました。",
-        blockLaunchManaged:"このトンネルはサーバーの起動コマンドによって管理されています。",
-        blockColabManaged:"このトンネルは Colab セッションによって管理されています。",
-        blockColab:"リモートアクセス設定は Colab によって管理されています。",
-        dnsConflictUnknown:"このホスト名は Cloudflare で既に別の宛先を指しています。その DNS レコードを削除するか、別のホスト名を設定してください。",
-        errorInvalidHostname:"完全なホスト名ではありません。unsloth.example.com のような形式で入力してください。",
-        errorWrongDomain:"Cloudflare で認可したドメインは {hostname} を含んでいません。設定をやり直し、このホスト名が属するドメインを選んでください。",
-        errorHostnameUnreachable:"トンネルは接続しましたが、{hostname} が開きませんでした。このカスタムトンネルを削除して設定をやり直し、このホスト名が属するドメインを選んでください。",
-        errorCertificateExists:"{path} に Cloudflare 証明書が既に存在し、Unsloth は上書きしません。そのファイルを移動または削除してから設定をやり直してください。",
-        errorBusy:"別のリモートアクセス操作が実行中です。完了を待ってから再試行してください。",
-        errorIdentityExists:"カスタムトンネルは既に設定済みです。別のホスト名を設定する前に削除してください。",
-        errorUnavailable:"Cloudflare に接続できませんでした。このマシンのインターネット接続を確認してから再試行してください。",
-        errorCancelled:"セットアップは取り消されました。準備ができたら再度設定してください。",
-        errorLoginTimeout:"Cloudflare の認可が時間内に完了しませんでした。設定をやり直し、Cloudflare のページが開いたら Authorize をクリックしてください。",
-        errorLoginFailed:"Cloudflare は認可を完了しませんでした。設定をやり直してください。",
-        errorSetupFailed:"カスタムトンネルを完了できませんでした。設定をやり直すか、サーバーログを確認してください。",
-        errorTeardownFailed:"保存されたカスタムトンネルを削除できませんでした。再試行するか、サーバーログを確認してください。",
-        errorTeardownManual:"カスタムトンネルを Unsloth から削除しました。",
-        errorUnknown:"カスタムトンネルの変更が完了しませんでした。再試行するか、サーバーログを確認してください。",
+        methodLabel: "リモートアクセス方法",
+        methodDescription:
+          "接続するたびにリモートアドレスを変更するか選びます。",
+        temporaryMethod: "一時",
+        customMethod: "カスタム",
+        sectionTitle: "リモートアクセス",
+        description:
+          "Cloudflare 経由で他のデバイスから Unsloth と API を使用します。",
+        progressConnecting: "接続中",
+        progressOpeningLink: "安全なリンクを開いています",
+        progressCheckingHostname: "ホスト名を確認中",
+        progressDisconnecting: "切断中",
+        stateOff: "オフ",
+        stateStarting: "起動中",
+        stateOnline: "オンライン",
+        stateStopping: "停止中",
+        stateError: "エラー",
+        stateUnavailable: "利用不可",
+        ownerLaunch: "起動時に管理",
+        ownerColab: "Colab で管理",
+        copied: "コピーしました",
+        copyUrl: "URL をコピー",
+        qrTitle: "スマートフォンで開く",
+        qrDescription:
+          "スキャンしてスマートフォンのブラウザでリモート URL を開きます。",
+        remoteUrl: "リモート URL",
+        remoteUrlReady: "リモートリンクの準備ができました。",
+        urlHint:
+          "この URL とリモートパスワードを知っている人はサインインできます。",
+        streamingSupported:
+          "このトンネルはストリーミング応答に対応しています。",
+        streamingBuffered:
+          "一時トンネルは完了までストリーミング応答を保留します。",
+        passwordLabel: "リモートパスワード",
+        passwordDescription:
+          "リモートブラウザでは unsloth としてサインインします。デスクトップアプリは自動的にサインインします。",
+        customHostnameTitle: "カスタムホスト名",
+        customHostnameDescription:
+          "独自のホスト名を使い、同じアドレスを維持します。",
+        hostnameLabel: "完全なホスト名",
+        hostnamePlaceholder: "unsloth.example.com",
+        setupAction: "設定",
+        setupConfirmTitle: "このホスト名を設定しますか？",
+        setupConfirmAction: "確認",
+        setupConfirmDescription:
+          "下のホスト名を確認してください。続いて Cloudflare がこのトンネルの認可を求めます。このホスト名が属するドメインを選び、Authorize をクリックしてください。",
+        setupPreparing:
+          "このトンネルを認可できるよう Cloudflare を開いています…",
+        setupAuthorize:
+          "Cloudflare での認可を待っています。{hostname} が属するドメインを選び、Authorize をクリックしてください。",
+        removeProgress: "Unsloth から保存済み接続を削除中...",
+        openCloudflare: "Cloudflare を開く",
+        removeAction: "削除",
+        removeTitle: "このカスタムトンネルを Unsloth から削除しますか？",
+        removeDescription:
+          "Unsloth が保存した内容のみを削除します。トンネルと DNS レコードは、Cloudflare で削除するまで残ります。",
+        removeTunnelHint: "Cloudflare で次のトンネルを削除してください：",
+        tunnelNameUnavailable: "トンネル名を取得できません",
+        openCloudflareTunnels: "Cloudflare のトンネルを開く",
+        removeDnsHint: "次に、この DNS レコードを削除してください：",
+        openCloudflareDns: "DNS レコードを開く",
+        removeConfirm: "Unsloth から削除",
+        removeLocally:
+          "接続中のトンネルを削除するには、Unsloth を実行しているマシンで設定を開いてください。",
+        dnsConflict:
+          "{hostname} は Cloudflare で既に別の宛先を指しています。その DNS レコードを削除するか、別のホスト名を設定してください。",
+        requestFailed: "リモートアクセス要求に失敗しました。",
+        runtimeFailed:
+          "リモートアクセスが予期せず停止しました。再試行するか、サーバーログを確認してください。",
+        startAction: "開始",
+        stopAction: "停止",
+        autoStartLabel: "自動的に開始",
+        autoStartTemporary:
+          "Unsloth の起動時に新しい一時 URL を作成します。今切断してもこの設定はオフになりません。",
+        autoStartCustom:
+          "Unsloth の起動時にこのカスタムホスト名へ接続します。今切断してもこの設定はオフになりません。",
+        autoStartCustomMissing:
+          "下でカスタムホスト名を設定するまで、これは何も接続しません。",
+        blockServerStarting:
+          "サーバーの起動が完了するとリモートアクセスを利用できます。",
+        blockCustomNotConfigured:
+          "リモートアクセスを開始する前に、下でカスタムホスト名を設定してください。",
+        blockPasswordDesktop:
+          "リモートアクセスを開始する前に、下でリモートパスワードを設定してください。",
+        blockPasswordWeb:
+          "ホスト管理者にリモートパスワードの設定を依頼してください。",
+        blockExplicitlyDisabled:
+          "このサーバーの起動時にリモートアクセスが無効化されました。",
+        blockLaunchManaged:
+          "このトンネルはサーバーの起動コマンドによって管理されています。",
+        blockColabManaged:
+          "このトンネルは Colab セッションによって管理されています。",
+        blockColab: "リモートアクセス設定は Colab によって管理されています。",
+        dnsConflictUnknown:
+          "このホスト名は Cloudflare で既に別の宛先を指しています。その DNS レコードを削除するか、別のホスト名を設定してください。",
+        errorInvalidHostname:
+          "完全なホスト名ではありません。unsloth.example.com のような形式で入力してください。",
+        errorWrongDomain:
+          "Cloudflare で認可したドメインは {hostname} を含んでいません。設定をやり直し、このホスト名が属するドメインを選んでください。",
+        errorHostnameUnreachable:
+          "トンネルは接続しましたが、{hostname} が開きませんでした。このカスタムトンネルを削除して設定をやり直し、このホスト名が属するドメインを選んでください。",
+        errorCertificateExists:
+          "{path} に Cloudflare 証明書が既に存在し、Unsloth は上書きしません。そのファイルを移動または削除してから設定をやり直してください。",
+        errorBusy:
+          "別のリモートアクセス操作が実行中です。完了を待ってから再試行してください。",
+        errorIdentityExists:
+          "カスタムトンネルは既に設定済みです。別のホスト名を設定する前に削除してください。",
+        errorUnavailable:
+          "Cloudflare に接続できませんでした。このマシンのインターネット接続を確認してから再試行してください。",
+        errorCancelled:
+          "セットアップは取り消されました。準備ができたら再度設定してください。",
+        errorLoginTimeout:
+          "Cloudflare の認可が時間内に完了しませんでした。設定をやり直し、Cloudflare のページが開いたら Authorize をクリックしてください。",
+        errorLoginFailed:
+          "Cloudflare は認可を完了しませんでした。設定をやり直してください。",
+        errorSetupFailed:
+          "カスタムトンネルを完了できませんでした。設定をやり直すか、サーバーログを確認してください。",
+        errorTeardownFailed:
+          "保存されたカスタムトンネルを削除できませんでした。再試行するか、サーバーログを確認してください。",
+        errorTeardownManual: "カスタムトンネルを Unsloth から削除しました。",
+        errorUnknown:
+          "カスタムトンネルの変更が完了しませんでした。再試行するか、サーバーログを確認してください。",
       },
       notifications: {
         sectionTitle: "通知",

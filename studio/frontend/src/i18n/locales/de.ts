@@ -423,89 +423,128 @@ export const de = {
         revokeError: "Vorschaulinks konnten nicht widerrufen werden",
       },
       remoteAccess: {
-        methodLabel:"Methode für Fernzugriff",
-        methodDescription:"Wähle, ob sich die Remote-Adresse bei jeder Verbindung ändert.",
-        temporaryMethod:"Temporär",
-        customMethod:"Benutzerdefiniert",
-        sectionTitle:"Remotezugriff",
-        description:"Unsloth und seine APIs über Cloudflare von anderen Geräten verwenden.",
-        progressConnecting:"Verbindung wird hergestellt",
-        progressOpeningLink:"Sicherer Link wird geöffnet",
-        progressCheckingHostname:"Hostname wird geprüft",
-        progressDisconnecting:"Verbindung wird getrennt",
-        stateOff:"Aus",
-        stateStarting:"Wird gestartet",
-        stateOnline:"Online",
-        stateStopping:"Wird beendet",
-        stateError:"Fehler",
-        stateUnavailable:"Nicht verfügbar",
-        ownerLaunch:"Vom Start verwaltet",
-        ownerColab:"Von Colab verwaltet",
-        copied:"Kopiert",
-        copyUrl:"URL kopieren",
-        qrTitle:"Auf dem Smartphone öffnen",
-        qrDescription:"Scannen, um die Remote-URL im Browser des Smartphones zu öffnen.",
-        remoteUrl:"Remote-URL",
-        remoteUrlReady:"Der Remote-Link ist bereit.",
-        urlHint:"Jeder mit dieser URL und dem Remote-Passwort kann sich anmelden.",
-        streamingSupported:"Dieser Tunnel unterstützt Streaming-Antworten.",
-        streamingBuffered:"Temporäre Tunnel puffern Streaming-Antworten bis zum Abschluss.",
-        passwordLabel:"Remote-Passwort",
-        passwordDescription:"Remote-Browser melden sich als unsloth an. Die Desktop-App meldet sich weiterhin automatisch an.",
-        customHostnameTitle:"Benutzerdefinierter Hostname",
-        customHostnameDescription:"Verwende deinen eigenen Hostnamen für eine gleichbleibende Adresse.",
-        hostnameLabel:"Vollständiger Hostname",
-        hostnamePlaceholder:"unsloth.example.com",
-        setupAction:"Einrichten",
-        setupConfirmTitle:"Diesen Hostnamen einrichten?",
-        setupConfirmAction:"Bestätigen",
-        setupConfirmDescription:"Prüfe den Hostnamen unten. Cloudflare bittet dich anschließend, diesen Tunnel zu autorisieren: Wähle die Domain, zu der dieser Hostname gehört, und klicke auf Authorize.",
-        setupPreparing:"Cloudflare wird geöffnet, damit du diesen Tunnel autorisieren kannst …",
-        setupAuthorize:"Warte auf deine Autorisierung in Cloudflare. Wähle die Domain, zu der {hostname} gehört, und klicke auf Authorize.",
-        removeProgress:"Gespeicherte Verbindung wird aus Unsloth entfernt...",
-        openCloudflare:"Cloudflare öffnen",
-        removeAction:"Entfernen",
-        removeTitle:"Diesen benutzerdefinierten Tunnel aus Unsloth entfernen?",
-        removeDescription:"Damit wird nur entfernt, was Unsloth gespeichert hat. Der Tunnel und sein DNS-Eintrag bleiben in Cloudflare, bis du sie dort löschst.",
-        removeTunnelHint:"Lösche diesen Tunnel in Cloudflare:",
-        tunnelNameUnavailable:"Tunnelname nicht verfügbar",
-        openCloudflareTunnels:"Cloudflare-Tunnel öffnen",
-        removeDnsHint:"Lösche danach diesen DNS-Eintrag:",
-        openCloudflareDns:"DNS-Einträge öffnen",
-        removeConfirm:"Aus Unsloth entfernen",
-        removeLocally:"Öffne die Einstellungen auf dem Unsloth-Rechner, um diesen verbundenen Tunnel zu entfernen.",
-        dnsConflict:"{hostname} verweist in Cloudflare bereits auf etwas anderes. Lösche diesen DNS-Eintrag oder richte einen anderen Hostnamen ein.",
-        requestFailed:"Remotezugriffsanfrage fehlgeschlagen.",
-        runtimeFailed:"Der Fernzugriff wurde unerwartet beendet. Versuche es erneut oder prüfe die Serverprotokolle.",
-        startAction:"Starten",
-        stopAction:"Stopp",
-        autoStartLabel:"Automatisch starten",
-        autoStartTemporary:"Beim Start von Unsloth eine neue temporäre URL erstellen. Das Trennen ändert diese Einstellung nicht.",
-        autoStartCustom:"Beim Start von Unsloth diesen benutzerdefinierten Hostnamen verbinden. Das Trennen ändert diese Einstellung nicht.",
-        autoStartCustomMissing:"Damit wird nichts verbunden, bis du unten einen benutzerdefinierten Hostnamen einrichtest.",
-        blockServerStarting:"Der Fernzugriff ist verfügbar, sobald der Server vollständig gestartet ist.",
-        blockCustomNotConfigured:"Richte unten einen benutzerdefinierten Hostnamen ein, bevor du den Fernzugriff startest.",
-        blockPasswordDesktop:"Lege unten ein Remote-Passwort fest, bevor du den Fernzugriff startest.",
-        blockPasswordWeb:"Bitte den Host-Administrator, ein Fernzugriffspasswort festzulegen.",
-        blockExplicitlyDisabled:"Der Fernzugriff wurde beim Start dieses Servers deaktiviert.",
-        blockLaunchManaged:"Dieser Tunnel wird durch den Startbefehl des Servers verwaltet.",
-        blockColabManaged:"Dieser Tunnel wird von der Colab-Sitzung verwaltet.",
-        blockColab:"Die Fernzugriffseinstellungen werden von Colab verwaltet.",
-        dnsConflictUnknown:"Dieser Hostname verweist in Cloudflare bereits auf etwas anderes. Lösche diesen DNS-Eintrag oder richte einen anderen Hostnamen ein.",
-        errorInvalidHostname:"Das ist kein vollständiger Hostname. Gib einen wie unsloth.example.com ein.",
-        errorWrongDomain:"Die in Cloudflare autorisierte Domain deckt {hostname} nicht ab. Richte es erneut ein und wähle die Domain, zu der dieser Hostname gehört.",
-        errorHostnameUnreachable:"Der Tunnel ist verbunden, aber {hostname} wurde nicht geöffnet. Entferne diesen benutzerdefinierten Tunnel, richte ihn erneut ein und wähle die Domain, zu der dieser Hostname gehört.",
-        errorCertificateExists:"Unter {path} existiert bereits ein Cloudflare-Zertifikat, das Unsloth nicht überschreibt. Verschiebe oder lösche die Datei und richte es erneut ein.",
-        errorBusy:"Eine andere Änderung am Fernzugriff läuft noch. Warte, bis sie abgeschlossen ist, und versuche es erneut.",
-        errorIdentityExists:"Ein benutzerdefinierter Tunnel ist bereits eingerichtet. Entferne ihn, bevor du einen anderen Hostnamen einrichtest.",
-        errorUnavailable:"Cloudflare war nicht erreichbar. Prüfe die Internetverbindung dieses Rechners und versuche es erneut.",
-        errorCancelled:"Die Einrichtung wurde abgebrochen. Richte sie erneut ein, wenn du bereit bist.",
-        errorLoginTimeout:"Cloudflare wurde nicht rechtzeitig autorisiert. Richte es erneut ein und klicke auf Authorize, sobald die Cloudflare-Seite öffnet.",
-        errorLoginFailed:"Cloudflare hat die Autorisierung nicht abgeschlossen. Richte es erneut ein.",
-        errorSetupFailed:"Der benutzerdefinierte Tunnel konnte nicht fertiggestellt werden. Richte ihn erneut ein oder prüfe die Serverprotokolle.",
-        errorTeardownFailed:"Der gespeicherte benutzerdefinierte Tunnel konnte nicht entfernt werden. Versuche es erneut oder prüfe die Serverprotokolle.",
-        errorTeardownManual:"Der benutzerdefinierte Tunnel wurde aus Unsloth entfernt.",
-        errorUnknown:"Die Änderung am benutzerdefinierten Tunnel wurde nicht abgeschlossen. Versuche es erneut oder prüfe die Serverprotokolle.",
+        methodLabel: "Methode für Fernzugriff",
+        methodDescription:
+          "Wähle, ob sich die Remote-Adresse bei jeder Verbindung ändert.",
+        temporaryMethod: "Temporär",
+        customMethod: "Benutzerdefiniert",
+        sectionTitle: "Remotezugriff",
+        description:
+          "Unsloth und seine APIs über Cloudflare von anderen Geräten verwenden.",
+        progressConnecting: "Verbindung wird hergestellt",
+        progressOpeningLink: "Sicherer Link wird geöffnet",
+        progressCheckingHostname: "Hostname wird geprüft",
+        progressDisconnecting: "Verbindung wird getrennt",
+        stateOff: "Aus",
+        stateStarting: "Wird gestartet",
+        stateOnline: "Online",
+        stateStopping: "Wird beendet",
+        stateError: "Fehler",
+        stateUnavailable: "Nicht verfügbar",
+        ownerLaunch: "Vom Start verwaltet",
+        ownerColab: "Von Colab verwaltet",
+        copied: "Kopiert",
+        copyUrl: "URL kopieren",
+        qrTitle: "Auf dem Smartphone öffnen",
+        qrDescription:
+          "Scannen, um die Remote-URL im Browser des Smartphones zu öffnen.",
+        remoteUrl: "Remote-URL",
+        remoteUrlReady: "Der Remote-Link ist bereit.",
+        urlHint:
+          "Jeder mit dieser URL und dem Remote-Passwort kann sich anmelden.",
+        streamingSupported: "Dieser Tunnel unterstützt Streaming-Antworten.",
+        streamingBuffered:
+          "Temporäre Tunnel puffern Streaming-Antworten bis zum Abschluss.",
+        passwordLabel: "Remote-Passwort",
+        passwordDescription:
+          "Remote-Browser melden sich als unsloth an. Die Desktop-App meldet sich weiterhin automatisch an.",
+        customHostnameTitle: "Benutzerdefinierter Hostname",
+        customHostnameDescription:
+          "Verwende deinen eigenen Hostnamen für eine gleichbleibende Adresse.",
+        hostnameLabel: "Vollständiger Hostname",
+        hostnamePlaceholder: "unsloth.example.com",
+        setupAction: "Einrichten",
+        setupConfirmTitle: "Diesen Hostnamen einrichten?",
+        setupConfirmAction: "Bestätigen",
+        setupConfirmDescription:
+          "Prüfe den Hostnamen unten. Cloudflare bittet dich anschließend, diesen Tunnel zu autorisieren: Wähle die Domain, zu der dieser Hostname gehört, und klicke auf Authorize.",
+        setupPreparing:
+          "Cloudflare wird geöffnet, damit du diesen Tunnel autorisieren kannst …",
+        setupAuthorize:
+          "Warte auf deine Autorisierung in Cloudflare. Wähle die Domain, zu der {hostname} gehört, und klicke auf Authorize.",
+        removeProgress: "Gespeicherte Verbindung wird aus Unsloth entfernt...",
+        openCloudflare: "Cloudflare öffnen",
+        removeAction: "Entfernen",
+        removeTitle: "Diesen benutzerdefinierten Tunnel aus Unsloth entfernen?",
+        removeDescription:
+          "Damit wird nur entfernt, was Unsloth gespeichert hat. Der Tunnel und sein DNS-Eintrag bleiben in Cloudflare, bis du sie dort löschst.",
+        removeTunnelHint: "Lösche diesen Tunnel in Cloudflare:",
+        tunnelNameUnavailable: "Tunnelname nicht verfügbar",
+        openCloudflareTunnels: "Cloudflare-Tunnel öffnen",
+        removeDnsHint: "Lösche danach diesen DNS-Eintrag:",
+        openCloudflareDns: "DNS-Einträge öffnen",
+        removeConfirm: "Aus Unsloth entfernen",
+        removeLocally:
+          "Öffne die Einstellungen auf dem Unsloth-Rechner, um diesen verbundenen Tunnel zu entfernen.",
+        dnsConflict:
+          "{hostname} verweist in Cloudflare bereits auf etwas anderes. Lösche diesen DNS-Eintrag oder richte einen anderen Hostnamen ein.",
+        requestFailed: "Remotezugriffsanfrage fehlgeschlagen.",
+        runtimeFailed:
+          "Der Fernzugriff wurde unerwartet beendet. Versuche es erneut oder prüfe die Serverprotokolle.",
+        startAction: "Starten",
+        stopAction: "Stopp",
+        autoStartLabel: "Automatisch starten",
+        autoStartTemporary:
+          "Beim Start von Unsloth eine neue temporäre URL erstellen. Das Trennen ändert diese Einstellung nicht.",
+        autoStartCustom:
+          "Beim Start von Unsloth diesen benutzerdefinierten Hostnamen verbinden. Das Trennen ändert diese Einstellung nicht.",
+        autoStartCustomMissing:
+          "Damit wird nichts verbunden, bis du unten einen benutzerdefinierten Hostnamen einrichtest.",
+        blockServerStarting:
+          "Der Fernzugriff ist verfügbar, sobald der Server vollständig gestartet ist.",
+        blockCustomNotConfigured:
+          "Richte unten einen benutzerdefinierten Hostnamen ein, bevor du den Fernzugriff startest.",
+        blockPasswordDesktop:
+          "Lege unten ein Remote-Passwort fest, bevor du den Fernzugriff startest.",
+        blockPasswordWeb:
+          "Bitte den Host-Administrator, ein Fernzugriffspasswort festzulegen.",
+        blockExplicitlyDisabled:
+          "Der Fernzugriff wurde beim Start dieses Servers deaktiviert.",
+        blockLaunchManaged:
+          "Dieser Tunnel wird durch den Startbefehl des Servers verwaltet.",
+        blockColabManaged:
+          "Dieser Tunnel wird von der Colab-Sitzung verwaltet.",
+        blockColab: "Die Fernzugriffseinstellungen werden von Colab verwaltet.",
+        dnsConflictUnknown:
+          "Dieser Hostname verweist in Cloudflare bereits auf etwas anderes. Lösche diesen DNS-Eintrag oder richte einen anderen Hostnamen ein.",
+        errorInvalidHostname:
+          "Das ist kein vollständiger Hostname. Gib einen wie unsloth.example.com ein.",
+        errorWrongDomain:
+          "Die in Cloudflare autorisierte Domain deckt {hostname} nicht ab. Richte es erneut ein und wähle die Domain, zu der dieser Hostname gehört.",
+        errorHostnameUnreachable:
+          "Der Tunnel ist verbunden, aber {hostname} wurde nicht geöffnet. Entferne diesen benutzerdefinierten Tunnel, richte ihn erneut ein und wähle die Domain, zu der dieser Hostname gehört.",
+        errorCertificateExists:
+          "Unter {path} existiert bereits ein Cloudflare-Zertifikat, das Unsloth nicht überschreibt. Verschiebe oder lösche die Datei und richte es erneut ein.",
+        errorBusy:
+          "Eine andere Änderung am Fernzugriff läuft noch. Warte, bis sie abgeschlossen ist, und versuche es erneut.",
+        errorIdentityExists:
+          "Ein benutzerdefinierter Tunnel ist bereits eingerichtet. Entferne ihn, bevor du einen anderen Hostnamen einrichtest.",
+        errorUnavailable:
+          "Cloudflare war nicht erreichbar. Prüfe die Internetverbindung dieses Rechners und versuche es erneut.",
+        errorCancelled:
+          "Die Einrichtung wurde abgebrochen. Richte sie erneut ein, wenn du bereit bist.",
+        errorLoginTimeout:
+          "Cloudflare wurde nicht rechtzeitig autorisiert. Richte es erneut ein und klicke auf Authorize, sobald die Cloudflare-Seite öffnet.",
+        errorLoginFailed:
+          "Cloudflare hat die Autorisierung nicht abgeschlossen. Richte es erneut ein.",
+        errorSetupFailed:
+          "Der benutzerdefinierte Tunnel konnte nicht fertiggestellt werden. Richte ihn erneut ein oder prüfe die Serverprotokolle.",
+        errorTeardownFailed:
+          "Der gespeicherte benutzerdefinierte Tunnel konnte nicht entfernt werden. Versuche es erneut oder prüfe die Serverprotokolle.",
+        errorTeardownManual:
+          "Der benutzerdefinierte Tunnel wurde aus Unsloth entfernt.",
+        errorUnknown:
+          "Die Änderung am benutzerdefinierten Tunnel wurde nicht abgeschlossen. Versuche es erneut oder prüfe die Serverprotokolle.",
       },
       notifications: {
         sectionTitle: "Benachrichtigungen",

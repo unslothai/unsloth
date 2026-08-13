@@ -1033,7 +1033,10 @@ function CustomTunnelPanel({
         />
       ) : null}
       {provisioning || !status.customError ? null : (
-        <div className="mt-3 text-xs leading-snug text-destructive" role="alert">
+        <div
+          className="mt-3 text-xs leading-snug text-destructive"
+          role="alert"
+        >
           <p>{localizedCustomError(status, t)}</p>
         </div>
       )}
