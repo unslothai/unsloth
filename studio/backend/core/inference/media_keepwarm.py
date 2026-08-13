@@ -47,6 +47,9 @@ class _Tracker:
         self._last_active = time.monotonic()
         # The model identity the last tick saw, so a fresh load counts as activity.
         self.seen: Any = None
+        # Whether the last tick found work in flight, so the tick that sees it end can
+        # start the TTL there rather than at the last busy poll.
+        self.was_busy = False
 
     def note_pending(self) -> None:
         with self._lock:
@@ -82,28 +85,34 @@ class _Tracker:
 
 _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
 
-# Suffixes of the tracked routes, matched the way llama_keepwarm matches its own: endswith,
-# so */generate-progress and */generate/cancel (polled while the user watches) are not activity.
-# The load routes are here too: a load registers with the backend only part way through its
-# POST, so sampling loading_repo_ids() cannot see one that has been accepted but not started.
-# Holding the gate for the whole request closes that window rather than narrowing it.
-_OWNER_SUFFIXES = (
-    (("/images/generate", "/images/generations", "/images/load"), DIFFUSION),
-    (("/video/generate", "/video/load"), VIDEO),
-)
-
-# Same prefixes llama_keepwarm tracks on: the media routes are mounted under both.
-_OWNER_PREFIXES = ("/v1/", "/api/inference/")
+# The concrete mounted paths, not any path that ends in one of them: FastAPI answers
+# /v1/anything/images/generations with a 404 without ever running an endpoint, and stamping
+# that as activity would let unauthenticated 404s keep a pipeline resident past every TTL.
+# Only the generate and load routes: */generate-progress and */generate/cancel are polled
+# while the user watches, so they must not count as activity.
+#
+# The load routes are here because a load registers with the backend only part way through
+# its POST, so sampling loading_repo_ids() cannot see one that has been accepted but not yet
+# started. Holding the gate for the whole request closes that window rather than narrowing it.
+#
+# test_media_keepwarm asserts every one of these is a real route on the routers main.py
+# mounts, so a rename cannot silently drop the protection an in-flight generation rides on.
+_TRACKED_PATHS = {
+    # studio_router, mounted at /api/inference only.
+    "/api/inference/images/generate": DIFFUSION,
+    "/api/inference/images/load": DIFFUSION,
+    # video_router, likewise.
+    "/api/inference/video/generate": VIDEO,
+    "/api/inference/video/load": VIDEO,
+    # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
+    "/api/inference/images/generations": DIFFUSION,
+    "/v1/images/generations": DIFFUSION,
+}
 
 
 def owner_for_path(path: str) -> Optional[str]:
     """Which media backend a tracked inference path generates or loads on, if any."""
-    if not path.startswith(_OWNER_PREFIXES):
-        return None
-    for suffixes, owner in _OWNER_SUFFIXES:
-        if path.endswith(suffixes):
-            return owner
-    return None
+    return _TRACKED_PATHS.get(path)
 
 
 @contextlib.asynccontextmanager
@@ -200,6 +209,16 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             # the work, and the backend is never torn down under it.
             tracker.note_activity()
             tracker.seen = identity
+            tracker.was_busy = True
+            return
+        if tracker.was_busy:
+            # The work ended between two ticks. A video generation outlives its POST, so the
+            # only activity it stamps after that is the busy polls, and dating the TTL from
+            # the last of those spends up to one poll interval of the keep-warm window the
+            # user configured before the model was even free. Start it here instead.
+            tracker.was_busy = False
+            tracker.seen = identity
+            tracker.note_activity()
             return
         if identity != tracker.seen:
             # A (re)loaded model counts as activity so it survives at least one TTL before

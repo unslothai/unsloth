@@ -73,6 +73,7 @@ def media(monkeypatch):
         monkeypatch.setattr(tracker, "_pending", 0)
         monkeypatch.setattr(tracker, "_last_active", time.monotonic())
         monkeypatch.setattr(tracker, "seen", None)
+        monkeypatch.setattr(tracker, "was_busy", False, raising = False)
     return engines
 
 
@@ -224,8 +225,12 @@ def test_an_in_flight_load_is_not_unloaded(media, monkeypatch):
     engine.loading = ("unsloth/FLUX.1-schnell",)
     _step(arb.DIFFUSION)
     assert engine.unloads == 0
-    # Once it lands, the same state IS collectable: the load was what spared it.
+    # Once it lands, the same state IS collectable: the load was what spared it. One tick
+    # later, though -- the tick that finds the load done starts the TTL from there, since a
+    # load that outlives its POST stamps no activity of its own when it finishes.
     engine.loading = ()
+    _step(arb.DIFFUSION)
+    assert engine.unloads == 0
     _step(arb.DIFFUSION)
     assert engine.unloads == 1
 
@@ -270,6 +275,28 @@ def test_reload_after_an_idle_unload_works(media, monkeypatch):
     _step()
     _step()
     assert engine.unloads == 1 and engine.status()["loaded"]
+
+
+def test_the_ttl_starts_when_the_background_work_ends(media, monkeypatch):
+    # A video generation outlives its POST: the response is sent at once and the job runs on
+    # in a worker, so after that only the busy polls stamp activity. Dating the TTL from the
+    # last of those spends up to a whole poll interval of the keep-warm window the user
+    # configured before the model was even free. The tick that finds the work done starts it.
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    engine = media[arb.VIDEO]
+    engine.active = True
+    _step()
+    # The job ends just after that tick, so the newest stamp is already a poll old -- here,
+    # far older than the TTL, which is the same thing with the clock wound on.
+    _idle(arb.VIDEO)
+    engine.active = False
+    _step()
+    assert engine.unloads == 0
+    # A restart, not a one-tick reprieve: the whole TTL runs from the end of the work.
+    _step()
+    assert engine.unloads == 0
+    _step(arb.VIDEO)
+    assert engine.unloads == 1
 
 
 def test_a_different_model_restarts_the_ttl(media, monkeypatch):
@@ -409,6 +436,46 @@ def test_generate_routes_map_to_their_backend():
     assert mk.owner_for_path("/v1/chat/completions") is None
 
 
+def test_a_path_that_is_not_a_mounted_route_is_not_tracked():
+    # A recognised prefix and a recognised tail is not a route. FastAPI answers these with a
+    # 404 without running an endpoint, and _finish() excludes only 401/403 from stamping
+    # activity, so an unauthenticated caller could hold a multi-GB pipeline resident forever
+    # by repeating one below the TTL.
+    assert mk.owner_for_path("/v1/not-a-route/images/generations") is None
+    assert mk.owner_for_path("/api/inference/nope/video/generate") is None
+    # The Studio routes are mounted under /api/inference only; /v1 carries the OpenAI shape.
+    assert mk.owner_for_path("/v1/images/generate") is None
+    assert mk.owner_for_path("/v1/video/load") is None
+
+
+def test_every_tracked_path_is_a_route_that_is_actually_mounted():
+    # Exact matching costs this: a renamed route would silently stop being tracked, and an
+    # untracked generate is one an idle tick can tear the pipeline down under. So pin the
+    # list to the routers main.py mounts, in both directions.
+    from routes.inference import router as inference_router
+    from routes.inference import studio_router
+    from routes.video import router as video_router
+
+    mounted = {
+        prefix + route.path
+        for router, prefixes in (
+            (inference_router, ("/api/inference", "/v1")),
+            (studio_router, ("/api/inference",)),
+            (video_router, ("/api/inference",)),
+        )
+        for route in router.routes
+        for prefix in prefixes
+    }
+    assert not set(mk._TRACKED_PATHS) - mounted
+    for path in mounted:
+        if ("/images/" in path or "/video/" in path) and path.rsplit("/", 1)[-1] in (
+            "generate",
+            "generations",
+            "load",
+        ):
+            assert mk.owner_for_path(path) is not None, path
+
+
 def test_load_routes_map_to_their_backend():
     # A load registers with the backend only PART WAY through its POST, so the route has
     # to hold the gate for the whole of it: sampling loading_repo_ids() cannot see a load
@@ -479,6 +546,47 @@ def test_the_middleware_counts_a_generation_against_its_backend(media, monkeypat
 
 async def _noop():
     return None
+
+
+def test_a_cancelled_wait_on_the_media_gate_leaves_no_chat_request_behind(media, monkeypatch):
+    # The generate routes are counted on BOTH sides, and the media gate is held for the
+    # length of a teardown. A client that disconnects while waiting on it used to leave the
+    # process-wide chat count positive for good: chat idle unload would never fire again and
+    # every training start would go on being told an inference request was running.
+    import core.inference.llama_keepwarm as lk
+    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
+
+    monkeypatch.setattr(lk, "_inflight", 0)
+    monkeypatch.setattr(lk, "_pending", 0)
+    tracker = mk._TRACKERS[arb.DIFFUSION]
+
+    async def _app(scope, receive, send):
+        raise AssertionError("the request was cancelled before it could reach the app")
+
+    async def _run():
+        # Stand in for the tick: the gate is taken for the whole check-and-unload.
+        tracker.gate.acquire()
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/inference/images/generate",
+            }
+            task = asyncio.ensure_future(
+                LlamaKeepWarmMiddleware(_app)(scope, None, lambda message: _noop())
+            )
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            tracker.gate.release()
+
+    asyncio.run(_run())
+    assert lk._inflight == 0
+    assert lk._pending == 0
+    assert tracker._inflight == 0
+    assert tracker._pending == 0
 
 
 def test_an_unauthenticated_probe_does_not_keep_the_pipeline_warm(media, monkeypatch):

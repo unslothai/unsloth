@@ -321,7 +321,17 @@ class LlamaKeepWarmMiddleware:
                 if not started:
                     _note_unpending()
         if media_owner is not None:
-            await media_keepwarm.begin_request(media_owner)
+            try:
+                await media_keepwarm.begin_request(media_owner)
+            except BaseException:
+                # The generate routes are tracked on both sides, and this gate can be held
+                # for the length of a teardown. A client that disconnects while waiting on
+                # it never reaches the _finish below, so balance the chat count here or it
+                # stays positive for the life of the process: chat idle unload would never
+                # fire again and every training start would see an inference request.
+                if chat_tracked:
+                    _note_untracked_end()
+                raise
         ended = {"done": False}
         status = {"code": None}
 
