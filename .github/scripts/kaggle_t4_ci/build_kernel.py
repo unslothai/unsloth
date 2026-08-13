@@ -350,12 +350,45 @@ if proc.stderr.strip():
 print("{PAYLOAD_SENTINEL} returncode " + str(proc.returncode), flush=True)
 
 # Re-emit the report on its own line so the driver log alone is enough to
-# judge the run, even if artifact collection fails entirely.
+# judge the run, even if artifact collection fails entirely. Parsed and
+# re-serialized COMPACTLY rather than echoed: every payload writes this file
+# indented, the launcher scans whole lines for the prefix, and echoing the
+# indented text verbatim therefore hands it a lone `{{` to decode. The
+# recovery path meant for the case where the payload's own compact line fell
+# out of the retained stdout tail was thus the one case it could not recover.
+report = None
 report_path = OUT / "t4_smoke_report.json"
 if report_path.exists():
-    print("{RESULT_PREFIX}" + report_path.read_text(), flush=True)
+    try:
+        report = json.loads(report_path.read_text())
+    except Exception as exc:
+        print("{PAYLOAD_SENTINEL} REPORT UNREADABLE " + repr(exc)[:300], flush=True)
+        report = None
+
+if isinstance(report, dict):
+    print("{RESULT_PREFIX}" + json.dumps(report), flush=True)
 else:
-    print("{PAYLOAD_SENTINEL} NO REPORT WRITTEN", flush=True)
+    # A VERDICT, not missing evidence, and the distinction decides whether
+    # this job can go red at all. The child ran; a nonzero exit with no
+    # readable report is a CUDA segfault, a native abort or an OOM kill, and
+    # the definitive exit status for it is in hand right here. Printing only
+    # "NO REPORT WRITTEN" left the launcher with nothing to extract, and no
+    # reports at all is `infra` while a partner report is `partial` -- both
+    # green. So the crash is reported as the failure it is.
+    print("{PAYLOAD_SENTINEL} NO USABLE REPORT WRITTEN rc=" + str(proc.returncode), flush=True)
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "payload process",
+        "passed": False,
+        "returncode": proc.returncode,
+        "failures": [
+            "the payload process exited " + str(proc.returncode) + " and left no "
+            "readable t4_smoke_report.json, so it died before it could judge "
+            "itself. Its own report is the only thing that could have made this "
+            "leg green.",
+        ],
+        "stderr_tail": proc.stderr[-2000:],
+    }}), flush=True)
 
 print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # Deliberately does NOT raise. A failing payload must not abort its partner
