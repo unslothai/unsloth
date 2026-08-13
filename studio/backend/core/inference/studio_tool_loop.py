@@ -46,6 +46,7 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
@@ -280,7 +281,7 @@ class _Turn:
     hosted_results: dict[str, dict[str, str]] = field(default_factory = dict)
 
     def note_hosted_tool_event(self, event: Any) -> None:
-        """Record a provider-side tool result carried on ``_toolEvent``.
+        """Record a provider-side tool call carried on ``_toolEvent``.
 
         These reach the client as their own frames but are not part of the
         assistant message this loop replays, so when a hosted tool and a local
@@ -288,20 +289,68 @@ class _Turn:
         provider just produced. Studio's own events do not come through here:
         the loop writes those as a top-level ``type``, so ``_toolEvent`` is
         unambiguously the provider's side.
+
+        Both halves matter. The ``tool_end`` producers generally omit
+        ``tool_name``, and for Gemini code execution the code that ran is only
+        ever in the ``tool_start`` arguments, so a result recorded on its own
+        replays as an unlabelled value the model cannot interpret.
         """
-        if not isinstance(event, dict) or event.get("type") != "tool_end":
+        if not isinstance(event, dict):
             return
         call_id = event.get("tool_call_id")
-        result = event.get("result")
         if not isinstance(call_id, str) or not call_id:
             return
-        if not isinstance(result, str) or not result.strip():
+        kind = event.get("type")
+
+        if kind == "tool_start":
+            name = event.get("tool_name")
+            entry = self.hosted_results.setdefault(call_id, {})
+            if isinstance(name, str) and name:
+                entry["name"] = name
+            arguments = event.get("arguments")
+            if isinstance(arguments, dict) and arguments:
+                # The operation itself: Gemini puts the executed language and
+                # code here, and a search puts its query.
+                entry["arguments"] = json.dumps(arguments, separators = (",", ":"))[:2000]
             return
+
+        if kind != "tool_end":
+            return
+        entry = self.hosted_results.setdefault(call_id, {})
         name = event.get("tool_name")
-        self.hosted_results[call_id] = {
-            "name": name if isinstance(name, str) and name else "tool",
-            "result": result,
-        }
+        if isinstance(name, str) and name:
+            entry["name"] = name
+        result = event.get("result")
+        if isinstance(result, str) and result.strip():
+            # Same normalisation local results get: __IMAGES__ and friends are
+            # frontend sentinels carrying a full data URI, and replaying one
+            # sends megabytes of base64 the model cannot read anyway.
+            entry["result"] = strip_result_for_model(result)
+        if event.get("image_b64"):
+            # image_generation reports an empty result and carries the picture
+            # separately. Record that it happened rather than the bytes, so the
+            # follow-up turn knows the image exists without paying for it.
+            entry["produced_image"] = True
+
+    def hosted_replay_text(self) -> str:
+        """The provider-run calls of this turn, as prose for the next request."""
+        blocks: list[str] = []
+        for entry in self.hosted_results.values():
+            result = entry.get("result", "")
+            produced_image = entry.get("produced_image")
+            if not result and not produced_image:
+                # A start with no outcome says only that something began.
+                continue
+            name = entry.get("name") or "tool"
+            header = f"[{name} result]"
+            arguments = entry.get("arguments")
+            if arguments:
+                header = f"[{name} {arguments}]"
+            body = result if result else "(produced an image)"
+            if result and produced_image:
+                body = f"{result}\n(produced an image)"
+            blocks.append(f"{header}\n{body}")
+        return "\n\n".join(blocks)
 
     def merge_structured(self, raw_calls: list[Any]) -> None:
         for raw_call in raw_calls:
@@ -1099,7 +1148,8 @@ async def stream_with_studio_tools(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
-        if turn.hosted_results:
+        hosted_text = turn.hosted_replay_text()
+        if hosted_text:
             # A tool the provider ran itself in this same turn. Its output went
             # to the client as its own frame but is not otherwise part of this
             # message, so without this the follow-up request drops what the
@@ -1107,10 +1157,6 @@ async def stream_with_studio_tools(
             # Replayed as text rather than as native items: the shape differs
             # per provider (Gemini codeExecutionResult, an OpenAI image call),
             # while every provider can read its own prior turn's prose.
-            hosted_text = "\n\n".join(
-                f"[{entry['name']} result]\n{entry['result']}"
-                for entry in turn.hosted_results.values()
-            )
             assistant_message["content"] = (
                 f"{assistant_message['content']}\n\n{hosted_text}"
                 if assistant_message["content"]

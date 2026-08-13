@@ -358,6 +358,114 @@ def test_an_event_without_a_call_id_is_ignored(executed):
     assert "orphan" not in _replayed(transport)
 
 
+def test_a_frontend_image_sentinel_is_not_replayed(executed):
+    """__IMAGES__ carries a full data URI for the card, not for the model.
+
+    Replaying it verbatim would put megabytes of base64 into the next request as
+    assistant text, costing context and tokens for something the model cannot
+    read. Local results already go through the same stripper.
+    """
+    huge = "data:image/png;base64," + ("A" * 20000)
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "tool_name": "code_execution",
+                        "result": '4\n__IMAGES__:["' + huge + '"]',
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "4" in replayed
+    assert "__IMAGES__" not in replayed
+    assert "AAAA" not in replayed
+
+
+def test_the_start_events_operation_labels_the_result(executed):
+    """The tool_end producers generally omit tool_name.
+
+    For Gemini code execution the code that ran is only in the start event, so a
+    result recorded alone replays as an unlabelled value the model cannot
+    interpret.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "hosted-1",
+                        "arguments": {"language": "python", "code": "print(2 + 2)"},
+                    }
+                ),
+                _hosted_event(
+                    {"type": "tool_end", "tool_call_id": "hosted-1", "result": "4"},
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "code_execution" in replayed, "the tool name came only from the start event"
+    assert "print(2 + 2)" in replayed, "the operation that produced the result was lost"
+    assert "4" in replayed
+
+
+def test_a_generated_image_is_noted_without_its_bytes(executed):
+    """image_generation reports an empty result and carries the picture apart.
+
+    Requiring non-empty text dropped it entirely, but replaying the base64 is
+    the same mistake as the sentinel, so record only that it happened.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "image_generation",
+                        "tool_call_id": "hosted-1",
+                        "arguments": {},
+                    }
+                ),
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "result": "",
+                        "image_b64": "B" * 5000,
+                        "image_mime": "image/png",
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "image_generation" in replayed
+    assert "produced an image" in replayed
+    assert "BBBB" not in replayed, "the base64 must not reach the next request"
+
+
 def test_a_turn_with_no_hosted_tool_replays_exactly_as_before(executed):
     """The common case must be untouched by any of this."""
     transport = FakeTransport(
