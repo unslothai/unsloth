@@ -1,74 +1,109 @@
-# What the Kaggle GPU budget buys, and where the sampling percentages come from
+# What the Kaggle GPU budget buys, and where the sampling percentage comes from
 
-The two workflows both spend one shared Kaggle account's weekly GPU quota. The
-percentages in them are not preferences; they are the output of the arithmetic
-below. This file is here so the next person to change a percentage changes it
-against measurements rather than against a guess.
+One workflow spends this account's weekly GPU quota today:
+`.github/workflows/kaggle-t4-notebook-ci.yml`. The percentage in it is not a
+preference; it is the output of the arithmetic below. This file is here so the
+next person to change it changes it against measurements rather than against a
+guess.
 
-Measured 2026-08-11 against `unslothai/unsloth`, 28-day window from 2026-07-14.
+**The workflow header is the source of truth.** The BUDGET block at the top of
+`kaggle-t4-notebook-ci.yml` carries the same arithmetic beside the settings it
+justifies, so it cannot drift from them silently the way this file can. If the
+two ever disagree, the workflow is right and this file is stale; fix this file.
+
+Measured 2026-08-11 against `unslothai/unsloth`, 7-day window, or on real
+Kaggle sessions. None of it is estimated.
 
 ## The demand side
 
 | quantity | measured |
 |---|---|
-| commits to `main` | 985 in 28 days, ~35/day, ~246/week |
-| PRs created | 1157 in 28 days, ~41/day, ~289/week |
-| PRs touching watched paths | 8 of 60 sampled, **13%** |
+| commits to `main` | 479/week |
+| ... touching the paths filter | 45 (9.4%) |
+| PRs opened | 567/week |
+| ... touching the paths filter | 7.5% (9 of a 120 sample), so 43/week |
+| commits carried by those PRs | 4.33 each |
 
-"Watched paths" is what the notebook CI is actually about: `unsloth/`,
-`unsloth_zoo`, `pyproject.toml`, `tests/kaggle/`,
-`.github/workflows/kaggle*`. A PR that only edits Studio frontend or docs
-cannot regress a T4 training run, and spending a GPU session on it buys
-nothing.
+"Watched paths" is what the notebook CI is actually about, and it is exactly
+the `paths:` list in the workflow: `unsloth/**`, `tests/kaggle/**`,
+`.github/scripts/kaggle_t4_ci/**`, the workflow file itself, and
+`pyproject.toml` (the payloads install the commit under test as a
+distribution, so how it is built and what it depends on is part of what this
+tests). A PR that only edits Studio frontend or docs cannot regress a T4
+training run, and spending a GPU session on it buys nothing.
 
-So the events that COULD justify a run are roughly `289 * 0.13 ~= 38
-PRs/week`, plus pushes to main at a similar filtered rate. Call it ~75
-candidate events per week.
+Eligible invocations per week:
+
+| event | count |
+|---|---|
+| push to main | 45 |
+| pull_request opened | 43 |
+| pull_request synchronize | 0 .. 143 |
+| **total** | **88 .. 231** |
+
+`synchronize` is one event per push after the first and is bounded above by
+the commit count those PRs carry.
 
 ## The supply side
 
-Kaggle gives one account **30 GPU-hours/week**, and the quota is shared
-between the two workflows and any manual probing. Measured session costs:
+Kaggle gives this account **60 GPU-hours/week** at time of writing. Kaggle's
+documented baseline is 30h; the surplus is a discretionary "floating"
+allowance that can be withdrawn, so treat 30h as the number that is
+guaranteed. This workflow is allotted **40 GPU-h/week** of it.
+
+Measured session cost, on kernels `066cd463` (control + canary, 263s of
+payload) and `8161ceb9` / `7ab727f1` (gpt-oss, 375s of payload):
 
 | kernel | wall clock |
 |---|---|
-| notebook CI kernel (2 legs, 2xT4) | ~35-50 min |
-| Studio GPU kernel | ~30-40 min |
+| kernel 1 (control + canary) | 0.10 h |
+| kernel 2 (gptoss + frontier) | 0.13 h |
+| **one invocation** | **~0.25 h** |
 
-A session bills its wall clock once, not per card, so a 2-leg kernel is one
-charge. Round to **0.75 GPU-h per launch**.
+A session bills its wall clock once, not per card, so the second T4 of each
+kernel is free. That is why `frontier` costs nothing to carry.
 
-Reserving ~5h/week for manual probing and reruns leaves ~25h, which is
-**~33 launches/week** across both workflows.
+## The sampling rate
 
-## The split, and why the percentages look inverted
+Solve at the pessimistic end of the eligible range, targeting 30h rather than
+the full 40 so an unusually busy week does not spend the allowance before the
+quota floor has to intervene:
 
-33 launches against ~75 candidate events is a **~44% ceiling** if everything
-went to one workflow. It does not: the notebook CI takes the larger share
-because it covers more surface (training, inference, export, four library
-sets), and Studio takes the smaller.
+```
+231 x r x 0.25 h = 30 h   ->   r = 0.52, set to 40%
+```
 
-The percentages in the workflows are per-event sampling rates applied AFTER
-the path filter, which is why they read lower than 44% looks:
+So the workflow runs `--percent 40` with `--reserve-hours 20` and
+`--budget-hours 2`. Expected spend at 40%:
 
-* notebook CI at `--percent 15` with `--reserve-hours 25`
-* Studio at `--percent 5` with `--reserve-hours 10`
+| week | invocations | spend |
+|---|---|---|
+| quiet | 88 x 0.40 | 8.8 GPU-h |
+| busy | 231 x 0.40 | 23.1 GPU-h |
 
-15% of ~75 filtered events is ~11 launches/week, ~8 GPU-h. 5% is ~4
-launches/week, ~3 GPU-h. Together ~11 GPU-h/week against a 25h allowance,
-which leaves headroom for the reruns that a red run always causes and for the
-weeks when merge volume spikes.
+against the 40 GPU-h allowance: 15% to 39% of the 60h account.
 
-The reserve-hours figures differ because they are floors, not shares: each
-workflow stands itself down when the account's remaining quota drops below
-its own reserve, and the notebook CI reserves more because its sessions are
-longer and it is the one that must not be starved.
+## Why the reserve, and not just the rate
+
+The rate sets the EXPECTED spend. The reserve sets the CEILING. Against a 60h
+account, refusing to start below 20h remaining means CI can never have spent
+more than 40h in a week, whatever the arithmetic above got wrong. Raise
+`--reserve-hours` to throttle CI harder; do not raise it above roughly 45 or
+CI will never run at all on a week with any other usage.
+
+The worst case, if every sampled launch ran to both kernel ceilings, is far
+above the allowance and is not what controls the spend. The reserve is.
 
 ## What would change these numbers
 
-* A second Kaggle account doubles supply and the percentages could roughly
+* A second Kaggle account doubles supply and the percentage could roughly
   double with it.
-* The path filter is the biggest lever on demand. It is at 13% now; widening
-  the watched set is what makes the sampling rate feel too low.
-* If session cost rises above ~1 GPU-h (more legs per kernel, bigger models),
-  re-derive rather than assuming the percentages still hold.
+* The path filter is the biggest lever on demand. Widening the watched set is
+  what makes the sampling rate feel too low.
+* **The rate is set for THIS payload set and does not survive a change to it.**
+  Wiring the `grpo` leg would roughly double kernel 2 and put a busy week over
+  the allowance, so that change comes with a recomputation of this file and of
+  the workflow header, not just a line in `legs.KERNELS`.
+* If a second workflow ever starts spending this account, the split has to be
+  derived here first. There is no second consumer today, and the reserve is
+  sized on that.

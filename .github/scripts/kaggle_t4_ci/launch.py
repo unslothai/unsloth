@@ -273,6 +273,16 @@ def sweep_orphans() -> list[str]:
     return reclaimed
 
 
+def _pushed(ok: bool, reason: str, out: str, attempted: list[str]) -> dict:
+    """A push outcome, always carrying the slugs the call filed.
+
+    A failed attempt may still have landed -- Kaggle answers a committed
+    push with a 5xx often enough for it to be a known issue -- so the slug
+    is reported rather than forgotten, and the caller can reconcile it.
+    """
+    return {"ok": ok, "reason": reason, "detail": out.strip()[:400], "attempts": attempted}
+
+
 def push(
     notebook: Path,
     user: str,
@@ -281,46 +291,83 @@ def push(
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
-    A fresh slug per attempt is not cosmetic: reusing one lets a later
-    status or output call attach a PREVIOUS attempt's results, which reads
-    as a pass that never happened.
+    A fresh slug per attempt is not cosmetic, and the reason is Kaggle's own
+    versioning. Pushing to an id that ALREADY exists does not replace or
+    supersede what is there: it files a new version and starts a SECOND
+    batch session, and the running one keeps running. Meanwhile
+    ``kernels status`` and ``kernels/output`` send no version label, so they
+    answer for the newest session only. Reuse a slug across a retry and the
+    evidence collected belongs to whichever execution happened to be latest,
+    while the other consumes a session slot and its quota unseen.
+
+    That matters here because the retried failures are exactly the ambiguous
+    ones -- a reset connection, an aborted transfer, a 5xx -- where Kaggle
+    may well have accepted the push whose response never arrived. So each
+    attempt also DELETES the previous attempt's slug before pushing again:
+    deletion is kernel-level, it costs one call, and it is what frees the
+    session slot the retry is likely waiting on.
+
+    Returns the slug of the accepted attempt, plus ``attempts``: every slug
+    this call filed, newest last. A push whose CLI stalled comes back with
+    ``orphan_slug`` and no ``slug`` instead: that kernel may exist and may be
+    billing, so it is recorded in the in-flight registry and released on the
+    way out rather than waited on.
     """
     base = _slugify("unsloth t4 ci")[:32]
-    slug_name = f"{base}-{uuid.uuid4().hex[:8]}"
-    # The slug is derived from the TITLE, not from the metadata id. A
-    # mismatch files the kernel at an unexpected address and every later
-    # status/output call 403s, so assert the round trip.
-    title = slug_name.replace("-", " ")
-    assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
+    attempted: list[str] = []
+
+    def _discard(slug: str) -> None:
+        """Best effort. The attempt usually created nothing at all."""
+        try:
+            subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+        except Exception:  # noqa: BLE001
+            _log(f"could not discard the previous push attempt {slug}")
 
     workdir = Path(tempfile.mkdtemp(prefix = "kaggle-t4-ci-"))
     try:
-        code_file = workdir / f"{slug_name}.ipynb"
-        shutil.copy(notebook, code_file)
-        (workdir / "kernel-metadata.json").write_text(
-            json.dumps(
-                {
-                    "id": f"{user}/{slug_name}",
-                    "title": title,
-                    "code_file": code_file.name,
-                    "language": "python",
-                    "kernel_type": "notebook",
-                    "is_private": "true",
-                    "enable_gpu": "true",
-                    "enable_internet": "true",
-                    "machine_shape": accelerator,
-                    "dataset_sources": [],
-                    "competition_sources": [],
-                    "kernel_sources": [],
-                    "model_sources": [],
-                },
-                indent = 2,
-            ),
-            encoding = "utf-8",
-        )
-
         out = ""
         for attempt in range(PUSH_ATTEMPTS):
+            if attempted:
+                _discard(attempted[-1])
+            slug_name = f"{base}-{uuid.uuid4().hex[:8]}"
+            # The slug is derived from the TITLE, not from the metadata id. A
+            # mismatch files the kernel at an unexpected address and every later
+            # status/output call 403s, so assert the round trip.
+            title = slug_name.replace("-", " ")
+            assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
+            attempted.append(f"{user}/{slug_name}")
+
+            for stale in workdir.glob("*.ipynb"):
+                stale.unlink()
+            code_file = workdir / f"{slug_name}.ipynb"
+            shutil.copy(notebook, code_file)
+            (workdir / "kernel-metadata.json").write_text(
+                json.dumps(
+                    {
+                        "id": f"{user}/{slug_name}",
+                        "title": title,
+                        "code_file": code_file.name,
+                        "language": "python",
+                        "kernel_type": "notebook",
+                        "is_private": "true",
+                        "enable_gpu": "true",
+                        "enable_internet": "true",
+                        "machine_shape": accelerator,
+                        "dataset_sources": [],
+                        "competition_sources": [],
+                        "kernel_sources": [],
+                        "model_sources": [],
+                    },
+                    indent = 2,
+                ),
+                encoding = "utf-8",
+            )
+
             try:
                 proc = subprocess.run(
                     [
@@ -357,35 +404,37 @@ def push(
                 # Deliberately NOT returned as "slug" -- the caller must not
                 # wait on a kernel that may never have been created.
                 _log("push timed out after 600s; treating as Kaggle transport")
-                orphan = f"{user}/{slug_name}"
+                orphan = attempted[-1]
                 _inflight_add(orphan)
-                return {
-                    "ok": False,
-                    "reason": "push_timeout",
-                    "detail": f"kaggle kernels push exceeded 600s (attempt {attempt + 1})",
-                    "orphan_slug": orphan,
-                }
+                timed_out = _pushed(
+                    False,
+                    "push_timeout",
+                    f"kaggle kernels push exceeded 600s (attempt {attempt + 1})",
+                    attempted,
+                )
+                timed_out["orphan_slug"] = orphan
+                return timed_out
             out = proc.stdout + proc.stderr
             lowered = out.lower()
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
-                    return {"ok": False, "reason": "slug_mismatch", "detail": out.strip()[:400]}
+                    return _pushed(False, "slug_mismatch", out, attempted)
                 # Recorded the instant it exists, before anything can go
                 # wrong downstream: a kernel that is billing but unknown to
                 # the registry is exactly the case the registry is for.
-                _inflight_add(f"{user}/{slug_name}")
-                return {"ok": True, "slug": f"{user}/{slug_name}"}
+                _inflight_add(attempted[-1])
+                return {"ok": True, "slug": attempted[-1], "attempts": attempted}
             if any(m in lowered for m in CAPACITY_MARKERS):
-                return {"ok": False, "reason": "at_capacity", "detail": out.strip()[:400]}
+                return _pushed(False, "at_capacity", out, attempted)
             if attempt + 1 == PUSH_ATTEMPTS or not any(m in lowered for m in THROTTLED_PUSH):
-                return {"ok": False, "reason": "push_failed", "detail": out.strip()[:400]}
+                return _pushed(False, "push_failed", out, attempted)
             delay = PUSH_BACKOFF_SEC * (2**attempt)
             _log(
                 f"push looks throttled, retrying in {delay}s "
                 f"(attempt {attempt + 1}/{PUSH_ATTEMPTS})"
             )
             time.sleep(delay)
-        return {"ok": False, "reason": "push_failed", "detail": out.strip()[:400]}
+        return _pushed(False, "push_failed", out, attempted)
     finally:
         shutil.rmtree(workdir, ignore_errors = True)
 
@@ -521,18 +570,25 @@ def fetch_evidence(
 def flatten_kernel_log(raw: str) -> str:
     """A kernel log as flat text, whichever shape Kaggle returned it in.
 
-    `kernels/output` hands `log` back as a JSON array of {stream_name, time,
-    data} records rather than as text, one record per line, so reading the
+    ``kernels/output`` hands ``log`` back as a JSON array of
+    ``{stream_name, time, data}`` records rather than as text, so reading the
     file verbatim shows a wall of JSON and NOTHING in it starts with a
-    payload prefix. Records are also cut by write rather than by line, so the
-    join has to happen before any line splitting.
+    payload prefix. A payload whose executed notebook never came back -- the
+    exact case this fallback exists for -- was therefore read as no report at
+    all and its verdict downgraded to ``infra``.
 
-    Same treatment as `report.py::kernel_log_text` and
-    `collect_evidence.py::iter_text`; anything reading a kernel.log needs it.
+    The records are also cut by write rather than by line, so the join has to
+    happen before any line splitting or a report straddling two records is
+    lost.
+
+    Same treatment as ``report.py::kernel_log_text`` and
+    ``collect_evidence.py::iter_text``; anything reading a kernel.log needs
+    it, and all three are kept because the scripts run as separate processes
+    and none of them imports another.
     """
     try:
         records = json.loads(raw)
-    except json.JSONDecodeError:
+    except ValueError:
         return raw
     if not isinstance(records, list):
         return raw
@@ -751,6 +807,10 @@ def main() -> int:
             "slug": pushed.get("slug"),
             # A push whose CLI stalled: never waited on, always released.
             "orphan_slug": pushed.get("orphan_slug"),
+            # Every slug the push filed, accepted or not. A push that
+            # reported an error may still have landed, and this is the only
+            # record of what to reconcile against the account afterwards.
+            "attempted": pushed.get("attempts") or [],
             "state": None,
             "push_error": None
             if pushed["ok"]

@@ -145,10 +145,12 @@ class _FakeApi:
         kernels,
         statuses = None,
         unreadable = (),
+        gone = (),
     ):
         self.kernels = list(kernels)
         self.statuses = statuses or {}
         self.unreadable = set(unreadable)
+        self.gone = set(gone)
         self.checked = []
 
     def kernels_list(
@@ -164,6 +166,8 @@ class _FakeApi:
 
     def kernels_status(self, ref):
         self.checked.append(ref)
+        if ref in self.gone:
+            raise RuntimeError("404 Client Error: Not Found")
         if ref in self.unreadable:
             raise RuntimeError("500")
         return _FakeStatus(f"KernelWorkerStatus.{self.statuses.get(ref, 'COMPLETE')}")
@@ -268,15 +272,40 @@ def test_statuses_that_all_come_back_unreadable_are_not_read_as_idle():
     assert clear is False and "unknown" in why
 
 
-def test_some_unreadable_statuses_do_not_block_a_readable_idle_account():
-    """Deleted kernels 404 routinely; that must not wedge the gate shut."""
+def test_deleted_kernels_do_not_block_a_readable_idle_account():
+    """Deleted kernels 404 routinely; that must not wedge the gate shut.
+
+    The launcher deletes every kernel it pushes, so a 404 in the window is the
+    ordinary case rather than an exceptional one, and it is not an unknown
+    state: the slot is definitively free.
+    """
     from gate import concurrency_verdict, survey_kernels
 
     api = _FakeApi(
-        [_FakeKernel("u/gone", _ago(1)), _FakeKernel("u/done", _ago(2))], unreadable = ("u/gone",)
+        [_FakeKernel("u/gone", _ago(1)), _FakeKernel("u/done", _ago(2))], gone = ("u/gone",)
     )
     survey = survey_kernels(api, now = _now())
+    assert survey["gone"] == 1 and survey["unreadable"] == 0
     assert concurrency_verdict(survey) == (True, "")
+
+
+def test_one_unreadable_status_stands_the_job_down():
+    """The hole a "only if ALL of them are unreadable" test left open.
+
+    One in-window kernel whose status answered 5xx may be the human session
+    this job yields to. "The ones we could read were idle" says nothing about
+    the one we could not, and proceeding takes the account's last slot.
+    """
+    from gate import concurrency_verdict, survey_kernels
+
+    api = _FakeApi(
+        [_FakeKernel("u/maybe", _ago(1)), _FakeKernel("u/done", _ago(2))],
+        unreadable = ("u/maybe",),
+    )
+    survey = survey_kernels(api, now = _now())
+    assert survey["unreadable"] == 1 and survey["busy"] == []
+    clear, why = concurrency_verdict(survey)
+    assert clear is False and "unknown" in why
 
 
 def _busy(*refs) -> dict:
@@ -1677,17 +1706,123 @@ def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
 
 
 def test_the_band_check_is_on_unless_a_dispatch_turns_it_off():
-    """The one way to run without a band check is explicit and it warns.
+    """The band check goes off for exactly two reasons, and both announce it.
 
     The reference itself is now named by the control leg rather than by the
-    workflow, so what this asserts is the OFF switch: that there is exactly
-    one, that it is a dispatch input, and that it announces itself.
+    workflow, so what this asserts is the OFF switches: the explicit dispatch
+    input, and the step-count mismatch that would otherwise make a custom
+    max_steps run red on arithmetic rather than on the code. Both warn.
     """
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert 'if [ "$SKIP_BAND" = "true" ]' in source
     assert "::warning title=Reference band check disabled" in source
-    assert source.count("SKIP='--skip-reference'") == 1
-    assert source.count("$SKIP") == 2  # the assignment guard and the use
+    assert 'elif [ "$MAX_STEPS" != "$REF_STEPS" ]' in source
+    assert "::warning title=Reference band check skipped" in source
+    assert source.count("SKIP='--skip-reference'") == 2
+    assert source.count("$SKIP") == 2  # the SKIP_BAND guard and the use
+
+
+def test_applying_the_opt_in_label_can_start_a_run():
+    """The gate advertises the label; the trigger has to subscribe to it.
+
+    GitHub's default pull_request activity types are opened, synchronize and
+    reopened, so without an explicit `types` the advertised override does
+    nothing until an unrelated event happens to fire.
+    """
+    wf = _workflow()
+    on = wf[True] if True in wf else wf["on"]
+    assert "labeled" in on["pull_request"]["types"]
+    for default in ("opened", "synchronize", "reopened"):
+        assert default in on["pull_request"]["types"], "the defaults are lost once types is set"
+
+
+def test_packaging_metadata_is_watched_by_both_triggers():
+    """Every payload installs the commit under test as a distribution."""
+    wf = _workflow()
+    on = wf[True] if True in wf else wf["on"]
+    assert "pyproject.toml" in on["pull_request"]["paths"]
+    assert "pyproject.toml" in on["push"]["paths"]
+
+
+def test_the_job_deadline_exceeds_the_launchers_worst_case():
+    """A runner killed mid-run takes finish() -> release() with it.
+
+    The launcher's own constants bound how long it can take: two sequential
+    pushes of PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus the
+    backoffs, then --max-wait of polling, then the deletions. The job timeout
+    has to sit above that, or a pushed kernel is orphaned and bills quota to
+    its own ceiling.
+    """
+    launch = (CI_DIR / "launch.py").read_text(encoding = "utf-8")
+    import re as _re
+
+    attempts = int(_re.search(r"^PUSH_ATTEMPTS = (\d+)", launch, _re.M).group(1))
+    backoff = int(_re.search(r"^PUSH_BACKOFF_SEC = (\d+)", launch, _re.M).group(1))
+    per_push = attempts * 600 + sum(backoff * 2**i for i in range(attempts - 1))
+
+    source = WORKFLOW.read_text(encoding = "utf-8")
+    max_wait = int(_re.search(r"--max-wait (\d+)", source).group(1))
+    deletions = 2 * 180
+
+    worst = 2 * per_push + max_wait + deletions
+    timeout_s = _workflow()["jobs"]["t4-smoke"]["timeout-minutes"] * 60
+    assert timeout_s > worst, (
+        f"the launcher can take {worst}s and the job is killed at {timeout_s}s"
+    )
+
+
+def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
+    """The gate job's survey is stale by the time a queued run gets the slot.
+
+    t4-smoke queues on an account-wide group with cancel-in-progress false, so
+    a second sampled run can wait out the first before pushing. The quota
+    floor and the in-flight survey have to be re-asked with the slot in hand.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    assert "Recheck the Kaggle account" in names
+    recheck = steps[names.index("Recheck the Kaggle account")]
+    assert recheck["id"] == "recheck"
+    # --force skips the sampling draw only; the dice were rolled by the gate.
+    assert "--force true" in recheck["run"]
+    assert "--reserve-hours" in recheck["run"] and "--kernels" in recheck["run"]
+    # and it is the last thing before the push.
+    assert names[names.index("Recheck the Kaggle account") + 2] == "Launch on Kaggle and collect"
+    launch = steps[names.index("Launch on Kaggle and collect")]
+    assert launch["if"] == "steps.recheck.outputs.should_run == 'true'"
+
+
+def test_the_harness_suite_runs_before_any_kernel_is_pushed():
+    """Nothing else collects it: pyproject limits testpaths to tests/security."""
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    assert names.index("Test the harness") < names.index("Build the kernel notebooks")
+    assert "tests/kaggle/test_t4_smoke_harness.py" in steps[names.index("Test the harness")]["run"]
+
+
+def test_every_leg_installs_one_pinned_zoo_commit():
+    """A branch name lets control and canary resolve two different commits.
+
+    zoo is not in pins/control.txt either, so the control leg -- the one leg
+    with a committed reference band -- would otherwise install whatever main
+    was when its own pip ran.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    pins = steps[names.index("Pin the zoo revision and read the reference")]
+    assert "git ls-remote" in pins["run"]
+    build = steps[names.index("Build the kernel notebooks")]
+    assert "--zoo-ref '${{ steps.pins.outputs.zoo_ref }}'" in build["run"]
+    assert "--zoo-ref main" not in build["run"]
+
+
+def test_the_harness_and_the_package_under_test_are_one_snapshot():
+    """The default pull_request checkout is the merge ref, not the head."""
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+    ref_step = next(s for s in steps if s.get("id") == "ref")
+    assert "github.event.pull_request.head.sha || github.sha" in ref_step["run"]
 
 
 def test_the_workflow_takes_its_kernel_plan_from_the_leg_registry():

@@ -19,14 +19,15 @@
 #   kernel 1   control   tiny Qwen2.5-0.5B SFT, PINNED library set
 #              canary    the same run on the newest permitted library set
 #   kernel 2   gptoss    gpt-oss-20b LoRA: torch.compile and float32 on sm_75
-#              (free T4, reserved for the grpo leg)
+#              frontier  the same SFT run on the newest transformers and trl
+#                        on PyPI, above the ceiling zoo's metadata permits
 #
-# A fourth leg, `grpo` (Qwen3-4B through a vLLM engine), is written and NOT
-# wired: three probe sessions never reached a training step, all three for
-# the same reason, and none of them to do with sm_75, memory or GRPO. The
-# measurements and what would have to change are on legs.UNWIRED. The second
-# kernel's spare T4 costs nothing -- a session bills its wall clock once, not
-# per card -- and is where that leg goes when its install works.
+# A fifth leg, `grpo` (Qwen3-4B through a vLLM engine), is written and NOT
+# wired: its vLLM standby path hits an intermittent illegal memory access on
+# Turing, one session in three. The measurements and what would have to
+# change are on legs.UNWIRED. The second kernel's second T4 costs nothing --
+# a session bills its wall clock once, not per card -- which is why frontier
+# sits there rather than waiting for a kernel of its own.
 #
 # **control and canary are one instrument, not two tests.** They run the
 # same payload, seed, dataset and step count on the two cards of the same
@@ -104,6 +105,9 @@
 #
 #   commits on main                                479
 #     ... touching the paths filter below            45   (9.4%)
+#       measured BEFORE pyproject.toml joined the filter. It is one file and
+#       a rarely touched one, so the eligible counts below move by a little
+#       rather than by a lot; the 20h reserve is what holds either way.
 #   pull requests opened                            567
 #     ... touching the paths filter                7.5%   (9 of a 120 sample)
 #     = pull requests that can trigger this          43
@@ -175,16 +179,46 @@
 # artifact, and never travels to the Kaggle kernel: the kernel receives the
 # notebook and nothing else. Fork pull requests do not receive the secret,
 # and the gate skips cleanly when it is absent.
+#
+# WHERE THE TRUST BOUNDARY ACTUALLY IS, since it is easy to draw it in the
+# wrong place. A SAME-REPOSITORY pull request does receive the secret, and on
+# `pull_request` GitHub runs the workflow file from the merge ref, so the YAML
+# in a pull request is the YAML that executes. Running the gate and the
+# launcher from a trusted base-branch copy would therefore protect nothing:
+# whoever can edit gate.py in a pull request can edit this file too.
+#
+# It is not a hole this workflow opens either. Per GitHub's own hardening
+# guidance, "Any user with write access to your repository has read access to
+# all secrets configured in your repository" -- a push to any branch runs a
+# workflow with the repository's secrets, no pull request needed. The boundary
+# is repository write access, and it is the same boundary for every secret
+# here.
+#
+# If that blast radius is ever judged too wide for this particular token, the
+# mechanism is an ENVIRONMENT secret with required reviewers (plus deleting the
+# repository-level copy, or the environment buys nothing), not a trusted copy
+# of a script. The cost is a human approval on every sampled run, which is why
+# it is not done here.
 
 name: Kaggle T4 Notebook CI
 
 on:
   pull_request:
+    # `labeled` is NOT one of GitHub's defaults -- those are opened,
+    # synchronize and reopened -- so without it the kaggle-t4-ci opt-in the
+    # gate advertises does nothing until some unrelated event happens to fire.
+    # The gate reads the label off the event payload, so the label has to be
+    # able to start a run of its own.
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'unsloth/**'
       - 'tests/kaggle/**'
       - '.github/scripts/kaggle_t4_ci/**'
       - '.github/workflows/kaggle-t4-notebook-ci.yml'
+      # The payloads install the commit under test as a distribution, so the
+      # file that says how it is built and what it depends on is part of what
+      # this workflow tests. BUDGET.md counted it as a watched path already.
+      - 'pyproject.toml'
   push:
     branches: [main]
     paths:
@@ -192,6 +226,7 @@ on:
       - 'tests/kaggle/**'
       - '.github/scripts/kaggle_t4_ci/**'
       - '.github/workflows/kaggle-t4-notebook-ci.yml'
+      - 'pyproject.toml'
   workflow_dispatch:
     inputs:
       force:
@@ -287,10 +322,28 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    # 120 min: the kernel ceilings are 45 and 60, the two run concurrently,
-    # and collection of the executed notebooks adds a few. This only fires
-    # if the launcher itself wedged.
-    timeout-minutes: 120
+    # THIS DEADLINE MUST EXCEED THE LAUNCHER'S WORST CASE, with headroom, and
+    # that is a stronger requirement than "long enough for a normal run".
+    # Nothing else stops a pushed kernel: the runner being killed here takes
+    # launch.py's finish() -> release() with it, and a kernel that nobody
+    # deletes bills quota to its own ceiling (Kaggle's push-time timeout has
+    # been measured NOT to stop a wedged one).
+    #
+    # The launcher's worst case, from launch.py's own constants:
+    #   push, per notebook   PUSH_ATTEMPTS 4 x subprocess timeout 600s
+    #                        + PUSH_BACKOFF_SEC backoffs 45 + 90 + 180
+    #                        = 2715s
+    #   two notebooks, pushed sequentially            5430s   (90.5 min)
+    #   polling, which only STARTS after both pushes  5400s   (90 min, from
+    #                                                  --max-wait below)
+    #   evidence download + release()'s two 180s deletions   ~360s
+    #   ----------------------------------------------------------------
+    #   total                                       ~11190s   (~187 min)
+    #
+    # 200 leaves ~13 min of headroom on that. A normal run is ~15 min; this
+    # only fires if the launcher wedged. Lower --max-wait or PUSH_ATTEMPTS
+    # before lowering this.
+    timeout-minutes: 200
     # Deliberately NOT keyed on the ref. The Kaggle account is one global
     # resource with a 2-kernel cap and this job takes both, so two runs of
     # this workflow on different branches must not overlap.
@@ -306,8 +359,16 @@ jobs:
         with:
           egress-policy: audit
 
+      # ONE SNAPSHOT, harness and package alike. The default checkout for a
+      # pull_request is GitHub's synthetic merge revision, while the ref the
+      # kernels install is the PR head; if the base branch has moved since the
+      # branch point those are different trees, and the run would then report
+      # on a combination of payload scripts, reference and legs.py that exists
+      # nowhere. Checking out the same head SHA the launcher installs keeps
+      # the two in step.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -317,10 +378,30 @@ jobs:
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==1.7.4.5'
 
+      # BEFORE anything is built or pushed. The suite is CPU-only and runs in
+      # about two seconds; it parses every generated cell, checks the leg
+      # wiring, the report verdicts, the pin handling and this file's own
+      # trigger and timeout wiring. The root pyproject.toml sets
+      # testpaths = ["tests/security"], so a bare pytest never collects it and
+      # no other workflow runs it -- which means without this step a broken
+      # harness is discovered forty minutes into a Kaggle session instead of
+      # here, having spent the quota to find out.
+      #
+      # torch from the CPU index and transformers WITHOUT it: the payload
+      # modules the suite imports need both to import at all, and the CPU
+      # wheel is a minute against a session that costs quota. Measured in a
+      # bare venv with exactly these three: 149 passed.
+      - name: Test the harness
+        run: |
+          python -m pip install --quiet pytest transformers
+          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pytest tests/kaggle/test_t4_smoke_harness.py -q
+
       # The ref the kernels install and test. For a pull request that is
       # the head SHA, so they exercise the proposed code and not the merge
-      # base. Pinned to a SHA rather than a branch name so a push landing
-      # mid-run cannot change what was tested.
+      # base, and it is the SHA checked out above. Pinned to a SHA rather
+      # than a branch name so a push landing mid-run cannot change what was
+      # tested.
       - name: Resolve the ref under test
         id: ref
         run: |
@@ -330,6 +411,36 @@ jobs:
           fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "testing unslothai/unsloth@$REF"
+
+      # unsloth-zoo is resolved ONCE, here, and every leg installs that exact
+      # commit.
+      #
+      # Passing the branch name instead is not equivalent. zoo is not in
+      # pins/control.txt either, so the control leg -- the one leg with a
+      # committed reference band -- would install whatever main happened to be
+      # at the moment its own pip ran, and every payload pips independently on
+      # the kernel: the control and the canary could resolve two different zoo
+      # commits within one session, which is exactly the uncontrolled variable
+      # the pairing exists to exclude. The report records a distribution
+      # version, not a commit, so the drift would not even be visible after
+      # the fact.
+      #
+      # Also reads the step count the committed reference was captured at, so
+      # the build step below can tell whether the band check applies to this
+      # run at all.
+      - name: Pin the zoo revision and read the reference
+        id: pins
+        run: |
+          ZOO_REF="$(git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main | cut -f1)"
+          if [ -z "$ZOO_REF" ]; then
+            echo "::warning title=Could not resolve unsloth-zoo main::falling back to the branch name, so this run is not reproducible against a zoo commit"
+            ZOO_REF=main
+          fi
+          echo "zoo_ref=$ZOO_REF" >> "$GITHUB_OUTPUT"
+          echo "testing against unslothai/unsloth-zoo@$ZOO_REF"
+          REF_STEPS="$(python -c "import json,sys; print(json.load(open('tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json')).get('config',{}).get('max_steps',''))")"
+          echo "reference_max_steps=$REF_STEPS" >> "$GITHUB_OUTPUT"
+          echo "committed reference was captured at max_steps=$REF_STEPS"
 
       # --all-kernels builds every kernel in legs.KERNELS and emits the
       # launcher's --notebook arguments and the expected payload count, so
@@ -346,18 +457,30 @@ jobs:
         id: build
         env:
           SKIP_BAND: ${{ inputs.skip_reference_band }}
+          MAX_STEPS: ${{ inputs.max_steps || 10 }}
+          REF_STEPS: ${{ steps.pins.outputs.reference_max_steps }}
         run: |
           SKIP=''
           if [ "$SKIP_BAND" = "true" ]; then
             SKIP='--skip-reference'
             echo "::warning title=Reference band check disabled::this run was dispatched with skip_reference_band, so the control leg's metrics are compared against nothing. Only a reference-recapture run should look like this."
+          elif [ "$MAX_STEPS" != "$REF_STEPS" ]; then
+            # A reference is a trace of ONE step count and the payload refuses
+            # to compare across counts (check_reference returns
+            # step_count_mismatch, which reference_failures turns red). So a
+            # dispatch with max_steps != the reference's own count could only
+            # ever fail on the arithmetic rather than on the code. Drop the
+            # band instead of failing the run; the rest of the control leg's
+            # assertions still apply.
+            SKIP='--skip-reference'
+            echo "::warning title=Reference band check skipped::this run is $MAX_STEPS steps and the committed reference was captured at $REF_STEPS, which are not comparable. The band check is off for this run; everything else the control leg asserts still applies."
           fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel \
             --all-kernels \
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
-            --zoo-ref main \
+            --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
             --smoke-args "--max-steps ${{ inputs.max_steps || 10 }}" \
             --per-run-timeout 3300 \
             $SKIP
@@ -374,8 +497,45 @@ jobs:
       # One value for both kernels because Kaggle takes it per push, and the
       # larger requirement wins: kernel 2 downloads a 12GB gpt-oss checkpoint
       # before it trains anything.
+      # THE GATE'S ANSWER CAN BE STALE BY THE TIME WE GET HERE, and this is
+      # the first point at which it cannot be.
+      #
+      # The `gate` job surveys quota and in-flight kernels before this job
+      # exists, and this job then queues on the account-wide concurrency group
+      # above with cancel-in-progress false. So when two refs are sampled in
+      # together, the second one's approval can be up to a full run old by the
+      # time it holds the slot, and a human session or another consumer can
+      # have spent the reserve in between. Re-asking here, with the slot in
+      # hand and immediately before the push, is the only version of the
+      # question whose answer is still true when it is acted on.
+      #
+      # --force true skips the SAMPLING draw and only the sampling draw: the
+      # dice were already rolled by the gate job and rerolling them here would
+      # discard a run that was legitimately sampled in. The quota floor and
+      # the concurrency survey run in full.
+      - name: Recheck the Kaggle account
+        id: recheck
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/gate.py \
+            --force true \
+            --kernels 2 \
+            --budget-hours 2 \
+            --reserve-hours 20
+
+      # Through the environment rather than an inline expression, so nothing
+      # the Kaggle API put in that string is ever interpolated into a shell.
+      - name: Report the stale approval
+        if: steps.recheck.outputs.should_run != 'true'
+        env:
+          REASON: ${{ steps.recheck.outputs.reason }}
+        run: |
+          echo "::warning title=Stood down at the second check::${REASON}"
+
       - name: Launch on Kaggle and collect
         id: launch
+        if: steps.recheck.outputs.should_run == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
@@ -405,9 +565,12 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+      # Only when the launcher actually ran. A run that stood down at the
+      # recheck has no evidence to report on, and reporting "0 of 4 payloads"
+      # for it would read as a failure rather than as the skip it is.
       - name: Report
-        if: always()
+        if: always() && steps.recheck.outputs.should_run == 'true'
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
-            --expect '${{ steps.build.outputs.payloads || 3 }}'
+            --expect '${{ steps.build.outputs.payloads || 4 }}'
