@@ -114,7 +114,12 @@ export function LlamaBackendSection() {
           <Button
             size="sm"
             onClick={apply}
-            disabled={!dirty}
+            // The same hard blockers as the Select above, not just dirtiness. An
+            // environment pin with an automatic choice that has since drifted leaves
+            // selectionApplied false, so the row is dirty while the Select is disabled:
+            // Apply would then be the only live control, and the server rightly refuses
+            // it with environment_override. Do not offer an action that cannot succeed.
+            disabled={!dirty || !status?.supported || envLocked}
             data-testid="llama-backend-apply"
           >
             {running
