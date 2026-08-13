@@ -49,6 +49,14 @@ const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
+/// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
+/// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
+/// the NSIS uninstaller drops it on any non-update run (installer.nsi), and an antivirus
+/// quarantine or a registry cleaner takes it the same way. Reading the setting back off the
+/// registry alone, as this file used to, turns every one of those into a silent, permanent
+/// "off" that the user only discovers the next morning.
+const LAUNCH_AT_LOGIN_PREFERENCE_FILE: &str = "launch-at-login-v1";
+
 struct CloseToTrayState(AtomicBool);
 
 fn new_close_to_tray_state() -> CloseToTrayState {
@@ -188,6 +196,75 @@ fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<()
     })
 }
 
+fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
+}
+
+/// The stored answer, or None when this install has never been told one.
+///
+/// None is not false: an install that predates this file, or one whose preference could not be
+/// read, has no record to restore from, and inventing one would enable autostart for someone who
+/// never asked. Only an explicit `true` ever puts an entry back.
+fn read_launch_at_login_preference(config_dir: &Path) -> Option<bool> {
+    let path = launch_at_login_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(enabled) => Some(enabled),
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid launch-at-login preference {}: {error}",
+                    path.display()
+                );
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            warn!(
+                "Could not read launch-at-login preference {}: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn write_launch_at_login_preference(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = launch_at_login_preference_path(config_dir);
+    fs::write(&path, format!("{enabled}\n")).map_err(|error| {
+        format!(
+            "Failed to save launch-at-login preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// Record the answer without letting a failed write fail the toggle: the OS entry is the thing
+/// the user asked for and it is already written. Losing the record only costs the restore.
+fn store_launch_at_login_preference(app: &tauri::AppHandle, enabled: bool) {
+    match app.path().app_config_dir() {
+        Ok(dir) => {
+            if let Err(error) = write_launch_at_login_preference(&dir, enabled) {
+                warn!("Could not record the launch-at-login preference: {error}");
+            }
+        }
+        Err(error) => warn!("Could not determine app configuration directory: {error}"),
+    }
+}
+
+fn stored_launch_at_login_preference(app: &tauri::AppHandle) -> Option<bool> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .and_then(|dir| read_launch_at_login_preference(&dir))
+}
+
 fn initialize_close_to_tray(app: &tauri::AppHandle) {
     let enabled = app
         .path()
@@ -266,6 +343,9 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
     if enabled {
         harden_autostart_entry(&app);
     }
+    // After the OS write, so a failed one leaves no record to restore from, and on both arms:
+    // a stored `false` is what stops the restore from arguing with someone turning this off.
+    store_launch_at_login_preference(&app, enabled);
     autolaunch.is_enabled().map_err(|error| error.to_string())
 }
 
@@ -311,6 +391,89 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
     };
     if let Some(quoted) = quoted_windows_run_command(&value) {
         let _ = run.set_value(name, &quoted);
+    }
+}
+
+/// Whether Windows itself holds the entry disabled, from the StartupApproved bytes.
+///
+/// Task Manager's Startup tab and Settings > Apps > Startup disable an entry by writing a
+/// timestamp into the last eight bytes here; they never delete the Run value. Read the same way
+/// auto-launch reads it, or this would disagree with the `is_enabled` that sent us here: fewer
+/// than eight bytes is not a timestamp, and auto-launch treats that as enabled.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn startup_approved_disabled(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && !bytes.iter().rev().take(8).all(|byte| *byte == 0)
+}
+
+/// Restore a *deleted* entry, never a disabled one.
+///
+/// The distinction is the whole safety argument. Turning autostart off in Task Manager is a
+/// decision, and re-enabling it on the next launch would be the app overruling the user once a
+/// day. Deletion is not a decision anybody makes: no Windows UI removes the Run value, so an
+/// absent one against a stored `true` is something that happened *to* the install.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn should_restore_autostart_entry(
+    stored: Option<bool>,
+    entry_present: bool,
+    disabled: bool,
+) -> bool {
+    stored == Some(true) && !entry_present && !disabled
+}
+
+/// (Run value present, disabled by Windows). Unreadable registry reads as "present and disabled",
+/// the pair that restores nothing: a key we cannot read is not evidence anything was removed.
+#[cfg(windows)]
+fn windows_autostart_entry_state(app: &tauri::AppHandle) -> (bool, bool) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let name = &app.package_info().name;
+    let Ok(run) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        KEY_QUERY_VALUE,
+    ) else {
+        return (true, true);
+    };
+    let present = run.get_value::<String, _>(name).is_ok();
+    let disabled = hkcu
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            KEY_QUERY_VALUE,
+        )
+        .ok()
+        .and_then(|approved| approved.get_raw_value(name).ok())
+        // No override recorded is the state a never-touched entry is in.
+        .is_some_and(|value| startup_approved_disabled(&value.bytes));
+    (present, disabled)
+}
+
+/// Whether an autostart entry the OS reports as off should be written back.
+///
+/// Windows only, and deliberately so. Removing a login item is a first-class gesture on the other
+/// two: macOS System Settings > Login Items deletes the LaunchAgent, and GNOME's startup UI
+/// deletes the .desktop file, so a restore there would resurrect something the user just removed.
+/// Windows has no such gesture, which is why its entry going missing is a bug and not a choice.
+fn restore_missing_autostart_entry(app: &tauri::AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        let (present, disabled) = windows_autostart_entry_state(app);
+        let restore = should_restore_autostart_entry(
+            stored_launch_at_login_preference(app),
+            present,
+            disabled,
+        );
+        if restore {
+            info!(
+                "The \"Run Unsloth at login\" entry is gone but was last set to on; restoring it."
+            );
+        }
+        restore
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        false
     }
 }
 
@@ -473,7 +636,13 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
         return;
     }
     let autolaunch = app.autolaunch();
-    if !autolaunch.is_enabled().unwrap_or(false) {
+    if autolaunch.is_enabled().unwrap_or(false) {
+        // Adopt an entry made before this install kept a record, so the first thing that
+        // deletes it can be undone rather than being the one loss that teaches us to care.
+        if stored_launch_at_login_preference(app).is_none() {
+            store_launch_at_login_preference(app, true);
+        }
+    } else if !restore_missing_autostart_entry(app) {
         return;
     }
     if autolaunch.enable().is_ok() {
@@ -1860,6 +2029,59 @@ mod tests {
         fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
 
         assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn launch_at_login_preference_round_trips_and_starts_with_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Not Some(false): an install that has never been told cannot be restored to anything.
+        assert_eq!(read_launch_at_login_preference(dir.path()), None);
+        write_launch_at_login_preference(dir.path(), true).unwrap();
+        assert_eq!(read_launch_at_login_preference(dir.path()), Some(true));
+        write_launch_at_login_preference(dir.path(), false).unwrap();
+        assert_eq!(read_launch_at_login_preference(dir.path()), Some(false));
+    }
+
+    #[test]
+    fn an_unreadable_launch_at_login_preference_restores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(launch_at_login_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert_eq!(read_launch_at_login_preference(dir.path()), None);
+        assert!(!should_restore_autostart_entry(None, false, false));
+    }
+
+    #[test]
+    fn only_a_deleted_entry_with_a_stored_yes_is_restored() {
+        // The bug this exists for: the value is gone and the user had asked for it.
+        assert!(should_restore_autostart_entry(Some(true), false, false));
+
+        // Turned off in Task Manager. The value survives, so re-enabling would overrule them.
+        assert!(!should_restore_autostart_entry(Some(true), true, true));
+        // Deleted *and* disabled: still their decision, so it stays gone.
+        assert!(!should_restore_autostart_entry(Some(true), false, true));
+        // Nothing to restore: never asked for, or turned off on purpose.
+        assert!(!should_restore_autostart_entry(None, false, false));
+        assert!(!should_restore_autostart_entry(Some(false), false, false));
+        // Already there. reconcile_autostart_entry repoints it; this decides nothing.
+        assert!(!should_restore_autostart_entry(Some(true), true, false));
+    }
+
+    /// Read the same bytes auto-launch reads, or a restore would fight the `is_enabled` it follows.
+    #[test]
+    fn startup_approved_bytes_are_read_the_way_auto_launch_reads_them() {
+        // What auto-launch's own enable() writes: a 0x02 lead and eight zero bytes after it.
+        assert!(!startup_approved_disabled(&[
+            0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
+        // Disabled in Task Manager: 0x03, and the last eight bytes hold the timestamp.
+        assert!(startup_approved_disabled(&[
+            0x03, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
+        ]));
+        // Too short to carry a timestamp, which auto-launch counts as enabled.
+        assert!(!startup_approved_disabled(&[0x02, 0, 0, 0]));
+        assert!(!startup_approved_disabled(&[]));
     }
 
     #[test]
