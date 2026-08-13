@@ -88,8 +88,7 @@ def test_select_track_prefers_an_exact_locale_over_an_earlier_regional_sibling()
     assert _select_track(tracks, {}, ["pt-AO"])["languageCode"] == "pt-PT"
     # A human base-language track outranks an auto-generated exact match.
     assert (
-        _select_track([_track("pt"), _track("pt-BR", "asr")], {}, ["pt-BR"])["languageCode"]
-        == "pt"
+        _select_track([_track("pt"), _track("pt-BR", "asr")], {}, ["pt-BR"])["languageCode"] == "pt"
     )
 
 
