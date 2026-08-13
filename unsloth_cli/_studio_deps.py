@@ -123,19 +123,27 @@ def _venv_site_packages(root: Path) -> List[Path]:
     A venv upgraded in place can retain lib/pythonX.Y directories from older
     interpreters. Globbing all of them makes ordinary packages look duplicated,
     even though only the active interpreter's directory is importable.
+
+    Deduplicated by real path: purelib hardcodes `lib` while platlib follows
+    sys.platlibdir, so a lib64 build (Fedora, SuSE) names one directory twice
+    through venv's lib64 -> lib symlink.
     """
 
     def existing_inside_root(values) -> List[Path]:
         resolved_root = _resolved(root)
         out: List[Path] = []
+        seen: set = set()
         for value in values:
             if not value:
                 continue
             path = Path(value)
-            if not path.is_dir() or not _resolved(path).is_relative_to(resolved_root):
+            if not path.is_dir():
                 continue
-            if path not in out:
-                out.append(path)
+            resolved = _resolved(path)
+            if not resolved.is_relative_to(resolved_root) or resolved in seen:
+                continue
+            seen.add(resolved)
+            out.append(path)
         return out
 
     if _resolved(root) == _resolved(Path(sys.prefix)):
@@ -355,17 +363,31 @@ def _scan_paths() -> Dict[str, list]:
     Empty when the interpreter's site-packages cannot be resolved, which leaves
     the scan at its default of the whole sys.path: over-scanning is the safe
     direction here, since the alternative is looking at nothing.
+
+    Deduplicated by real path, because purelib hardcodes `lib` while platlib
+    follows sys.platlibdir. On a lib64 build (Fedora, SuSE) those are two names
+    for one directory, and scanning both would report every installed package
+    as having duplicate metadata.
     """
     import sysconfig
 
     paths = []
+    seen: set = set()
     for key in ("purelib", "platlib"):
         try:
             entry = sysconfig.get_paths().get(key)
         except Exception:
             continue
-        if entry and entry not in paths and os.path.isdir(entry):
-            paths.append(entry)
+        if not entry or not os.path.isdir(entry):
+            continue
+        try:
+            resolved = os.path.realpath(entry)
+        except OSError:
+            resolved = entry
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        paths.append(entry)
     return {"path": paths} if paths else {}
 
 
@@ -425,7 +447,14 @@ def _installer_rewritten(rel: str) -> bool:
 
 
 def _installed_distribution_groups():
-    """Canonical name -> installed metadata records in this interpreter's tree."""
+    """Canonical name -> installed metadata records in this interpreter's tree.
+
+    Each record is (distribution, display name, readable). A nameless or
+    unreadable METADATA still belongs to the distribution its directory is
+    named after, and still makes that distribution ambiguous -- which is what
+    install_manifest.installed_versions() reports for the same directory. It
+    is never file-checkable, so it is marked unreadable rather than trusted.
+    """
     from importlib.metadata import distributions
 
     groups: Dict[str, list] = {}
@@ -433,9 +462,17 @@ def _installed_distribution_groups():
         try:
             name = dist.metadata.get("Name")
         except Exception:
-            continue
+            name = None
         if name:
-            groups.setdefault(_canonical(name), []).append((dist, name))
+            groups.setdefault(_canonical(name), []).append((dist, name, True))
+            continue
+        # Wheel metadata directory names escape name separators as underscores,
+        # so splitting off the final version is unambiguous.
+        path = getattr(dist, "_path", None)
+        stem = os.path.basename(os.fspath(path)) if path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator and path_name:
+            groups.setdefault(_canonical(path_name), []).append((dist, path_name, False))
     return groups
 
 
@@ -451,6 +488,10 @@ def installed_metadata_conflicts(
     version. importlib.metadata.version() chooses the first finder result rather
     than identifying which RECORD owns the package tree, so none of the records
     can safely drive the file-damage check until the package is reinstalled.
+
+    A single unreadable record counts too, matching
+    install_manifest.metadata_conflict(): pip cannot parse it either, so it must
+    be reported rather than silently skipped.
     """
     included = None if names is None else {_canonical(name) for name in names}
     excluded = {_canonical(name) for name in exclude_names}
@@ -460,10 +501,10 @@ def installed_metadata_conflicts(
         if (included is not None and canonical not in included) or canonical in excluded:
             continue
         records = groups[canonical]
-        if len(records) < 2:
+        if len(records) < 2 and all(readable for _dist, _name, readable in records):
             continue
         details: List[str] = []
-        for dist, _name in records:
+        for dist, _name, _readable in records:
             try:
                 version = dist.version or "unknown version"
             except Exception:
@@ -526,8 +567,12 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     entries: List[tuple] = []
     owners: Dict[str, int] = {}
     for records in _installed_distribution_groups().values():
-        ambiguous = len(records) > 1
-        for dist, name in records:
+        # An unreadable record cannot be trusted to describe the package tree
+        # any more than a duplicated one can.
+        ambiguous = len(records) > 1 or not all(
+            readable for _dist, _name, readable in records
+        )
+        for dist, name, _readable in records:
             try:
                 record = dist.read_text("RECORD")
             except Exception:

@@ -24,6 +24,7 @@ import contextlib
 import pathlib
 import shutil
 import sys
+import sysconfig
 
 import pytest
 import typer
@@ -451,3 +452,92 @@ def test_an_editable_checkout_is_not_owned_by_a_surrounding_venv(tmp_path, deps)
     module = _load(module_path, "manifest_in_editable_checkout")
 
     assert deps._venv_root_for_module(module) is None
+
+
+def test_scan_paths_dedupes_a_lib64_symlink(tmp_path, monkeypatch, deps):
+    """A lib64 build names one site-packages twice.
+
+    purelib hardcodes `lib` while platlib follows sys.platlibdir, and venv
+    creates lib64 as a symlink to lib, so Fedora and SuSE would otherwise scan
+    the same directory twice and report EVERY installed package as having
+    duplicate metadata -- failing `unsloth studio update` on a healthy venv.
+    """
+    real = tmp_path / "lib" / "python3.13" / "site-packages"
+    real.mkdir(parents = True)
+    (tmp_path / "lib64").symlink_to("lib")
+    alias = tmp_path / "lib64" / "python3.13" / "site-packages"
+
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(real), "platlib": str(alias)}
+    )
+
+    assert deps._scan_paths() == {"path": [str(real)]}
+
+
+def test_a_foreign_lib64_venv_reports_no_duplicates(tmp_path, deps):
+    venv = tmp_path / "managed"
+    real = venv / "lib" / "python3.13" / "site-packages"
+    real.mkdir(parents = True)
+    (venv / "lib64").symlink_to("lib")
+    (venv / "pyvenv.cfg").write_text(
+        "home = /usr/bin\nversion = 3.13.0\n", encoding = "utf-8"
+    )
+    dist_info = real / "unsloth-2026.8.15.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n", encoding = "utf-8"
+    )
+
+    found = deps._distributions_in(venv)
+
+    assert found is not None
+    installed, conflicts = found
+    assert installed["unsloth"] == "2026.8.15"
+    assert conflicts == set()
+
+
+def test_a_nameless_local_record_is_reported_as_a_conflict(tmp_path, monkeypatch, deps):
+    """install_manifest.installed_versions() calls this state a conflict, so the
+    CLI's own check has to agree: pip cannot parse the record either."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    for name, metadata in (
+        ("unsloth-2026.8.15.dist-info", "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n"),
+        ("unsloth-2026.8.12.dist-info", "Metadata-Version: 2.1\nVersion: 2026.8.12\n"),
+    ):
+        entry = site / name
+        entry.mkdir()
+        (entry / "METADATA").write_text(metadata, encoding = "utf-8")
+
+    monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
+
+    conflicts = deps.installed_metadata_conflicts(names = ("unsloth",))
+
+    assert len(conflicts) == 1
+    assert "unsloth: multiple metadata records" in conflicts[0]
+
+
+def test_a_single_unreadable_record_is_reported_as_a_conflict(tmp_path, monkeypatch, deps):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    entry = site / "unsloth-2026.8.15.dist-info"
+    entry.mkdir()
+    (entry / "METADATA").write_bytes(b"Metadata-Version: 2.1\nName: un\xffsloth\n")
+
+    monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
+
+    assert deps.installed_metadata_conflicts(names = ("unsloth",))
+
+
+def test_one_readable_record_is_not_a_conflict(tmp_path, monkeypatch, deps):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    entry = site / "unsloth-2026.8.15.dist-info"
+    entry.mkdir()
+    (entry / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n", encoding = "utf-8"
+    )
+
+    monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
+
+    assert deps.installed_metadata_conflicts(names = ("unsloth",)) == []
