@@ -245,8 +245,16 @@ jobs:
               -RedirectStandardOutput $controlOut -RedirectStandardError $controlErr `
               -Wait -PassThru
             $exitCode = $process.ExitCode
+            # One file per attempt. Enforcement was observed going live on the
+            # fourth try, and a single overwritten log left the evidence artifact
+            # showing an earlier attempt's output next to a passing step, which
+            # reads like a contradiction.
+            "attempt ${attempt}: exit $exitCode" |
+              Set-Content -LiteralPath "logs\negative-control-$attempt.log" -Encoding UTF8
             Get-Content -LiteralPath $controlOut, $controlErr |
-              Set-Content -LiteralPath logs\negative-control.log -Encoding UTF8
+              Add-Content -LiteralPath "logs\negative-control-$attempt.log" -Encoding UTF8
+            Copy-Item -LiteralPath "logs\negative-control-$attempt.log" `
+              -Destination logs\negative-control.log -Force
             Write-Host "attempt ${attempt}: exit $exitCode"
             if ($exitCode -eq 0) { break }
             Start-Sleep -Seconds 10
