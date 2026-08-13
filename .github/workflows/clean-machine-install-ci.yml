@@ -363,7 +363,17 @@ jobs:
             fi
             [ -x "$PY" ] || { echo "::error::installer left no managed Python at $PY"; exit 1; }
             # These representative native wheels load without the developer-only dylib patch.
-            "$PY" -c "import numpy, safetensors, tokenizers, torch; print('native wheels loaded', numpy.__version__, torch.__version__)"
+            # torch is exempt on exactly the hosts install.sh puts in GGUF-only mode whatever the
+            # flags say: macOS on x86_64, which is its MAC_INTEL rule and covers both a real Intel
+            # Mac and Apple Silicon under Rosetta. PyTorch dropped x86_64 macOS wheels in Jan 2024,
+            # so torch is legitimately absent there and asserting it made this leg permanently red.
+            # Narrow on purpose: the other three wheels are still asserted, and every host that
+            # DOES expect torch still fails without it.
+            if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
+              "$PY" -c "import numpy, safetensors, tokenizers; print('native wheels loaded (GGUF-only, no torch)', numpy.__version__)"
+            else
+              "$PY" -c "import numpy, safetensors, tokenizers, torch; print('native wheels loaded', numpy.__version__, torch.__version__)"
+            fi
           fi
           STUDIO_HOME="$HOME_DIR" bash .github/scripts/assert-llama-loads.sh
           # Rosetta 2 is on this runner and not on a fresh Mac, so llama-server launching
