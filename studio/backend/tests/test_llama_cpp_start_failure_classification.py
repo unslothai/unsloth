@@ -1213,17 +1213,17 @@ class TestAnEncodedSecretIsStillRedacted:
     @pytest.mark.parametrize(
         "dump",
         [
-            '{"DB_PASSWORD": "pa\\"ss\\\\word-12345"}',   # JSON escaped
-            'DB_PASSWORD=pa"ss\\word-12345',              # bare
-            "DB_PASSWORD='pa\"ss\\word-12345'",           # shell quoted
-            "DB_PASSWORD: pa\"ss\\word-12345",            # yaml-ish
-            "DB_PASSWORD=pa%22ss%5Cword-12345",           # url encoded
-            "DB_PASSWORD=secret123456,PORT=8080",         # one of several pairs
+            '{"DB_PASSWORD": "pa\\"ss\\\\word-12345"}',  # JSON escaped
+            'DB_PASSWORD=pa"ss\\word-12345',  # bare
+            "DB_PASSWORD='pa\"ss\\word-12345'",  # shell quoted
+            'DB_PASSWORD: pa"ss\\word-12345',  # yaml-ish
+            "DB_PASSWORD=pa%22ss%5Cword-12345",  # url encoded
+            "DB_PASSWORD=secret123456,PORT=8080",  # one of several pairs
         ],
     )
     def test_no_recognisable_fragment_survives(self, dump):
         msg = _classify(dump, "/m.gguf", "u/x", 1, None, log_path = "/tmp/l.log")
-        for fragment in ("ss\\word", "pa%22", "secret123456", "pa\\\"ss"):
+        for fragment in ("ss\\word", "pa%22", "secret123456", 'pa\\"ss'):
             assert fragment not in msg, msg
         assert "***" in msg
 
@@ -1259,6 +1259,7 @@ class TestAnEncodedSecretIsStillRedacted:
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
         import time
+
         start = time.monotonic()
         _classify(blob, "/m.gguf", "u/x", 1)
         assert time.monotonic() - start < 2.0
@@ -1338,15 +1339,19 @@ class TestTheLibraryNameIsBounded:
 
     def test_an_absurd_install_name_is_truncated(self):
         huge = "lib" + "A" * 100000 + ".dylib"
-        out = (f"dyld[9]: Library not loaded: @rpath/{huge}\n"
-               f"  Reason: tried: '/a/{huge}' (no such file)\n")
+        out = (
+            f"dyld[9]: Library not loaded: @rpath/{huge}\n"
+            f"  Reason: tried: '/a/{huge}' (no such file)\n"
+        )
         msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
         assert len(msg) < 4000, len(msg)
         assert "..." in msg
 
     def test_a_real_install_name_is_untouched(self):
-        out = ("dyld[9]: Library not loaded: @rpath/libllama.dylib\n"
-               "  Reason: tried: '/a/libllama.dylib' (no such file)\n")
+        out = (
+            "dyld[9]: Library not loaded: @rpath/libllama.dylib\n"
+            "  Reason: tried: '/a/libllama.dylib' (no such file)\n"
+        )
         msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
         assert "libllama.dylib" in msg
         assert "..." not in msg
