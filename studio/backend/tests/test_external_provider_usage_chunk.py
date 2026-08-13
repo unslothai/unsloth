@@ -236,6 +236,45 @@ def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
     assert any("ok" in line for line in lines)
 
 
+def test_top_k_forwarded_for_openai_compat_connections(monkeypatch):
+    # The sidebar advertises Top-K for the self-hosted OAI-compat family
+    # (vLLM / llama.cpp / Ollama / custom) and the frontend sends it, but the
+    # OpenAI-compat request body dropped it, so the control had no effect.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run(top_k):
+        client = _make_custom_client()
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "Qwen/Qwen3-0.6B",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+                top_k = top_k,
+            )
+        )
+        await client.close()
+
+    _drive(run(20))
+    assert captured["body"].get("top_k") == 20
+
+    # 0 = "Off" must never be forwarded (some servers reject it); mirror the
+    # Anthropic path's `top_k > 0` guard.
+    _drive(run(0))
+    assert "top_k" not in captured["body"]
+
+
 def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
     import importlib.util
     import sys

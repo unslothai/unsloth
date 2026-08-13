@@ -1107,6 +1107,14 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
+        # top_k is a standard OpenAI-compat sampling knob (vLLM, llama.cpp,
+        # Ollama). The frontend advertises and sends it for the self-hosted
+        # family; without this it was silently dropped here, so the sidebar
+        # control had no effect. 0 = "Off" is never sent, mirroring the
+        # Anthropic path.
+        if top_k is not None and top_k > 0:
+            body["top_k"] = top_k
+
         # Drop fields the registry flags as unusable so reasoning-class models
         # with fixed defaults (Kimi k2.6 etc) don't 400 on pydantic defaults
         # the route layer still fills in.
