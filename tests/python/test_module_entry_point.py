@@ -346,7 +346,10 @@ def test_the_module_docstring_documents_the_user_site_exception():
     assert "pip install --user" in source
     assert "-I implies -s" in source
     # The escape hatch it points at has to be the real one.
-    assert "sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]" in source
+    assert (
+        "sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]"
+        in source
+    )
 
 
 @requires_console_script
