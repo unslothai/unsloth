@@ -37,7 +37,11 @@ from core.inference.studio_tool_loop import (
 _DONE = "data: [DONE]"
 
 
-def _sse(delta = None, finish = None, **extra) -> str:
+def _sse(
+    delta = None,
+    finish = None,
+    **extra,
+) -> str:
     choice: dict = {"index": 0, "delta": delta if delta is not None else {}}
     if finish is not None:
         choice["finish_reason"] = finish
@@ -67,7 +71,13 @@ WEB = _tool("web_search")
 class FakeTransport:
     """Replays scripted turns; records what the loop asked for each time."""
 
-    def __init__(self, turns, *, heals = True, max_turns = 20):
+    def __init__(
+        self,
+        turns,
+        *,
+        heals = True,
+        max_turns = 20,
+    ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
         self.requests: list[dict] = []
@@ -170,9 +180,19 @@ def _visible_text(lines) -> str:
     return "".join(text)
 
 
-def _call_turn(call_id = "c1", name = "web_search", arguments = '{"query":"q"}'):
+def _call_turn(
+    call_id = "c1",
+    name = "web_search",
+    arguments = '{"query":"q"}',
+):
     return [
-        _sse({"tool_calls": [{"index": 0, "id": call_id, "function": {"name": name, "arguments": arguments}}]}),
+        _sse(
+            {
+                "tool_calls": [
+                    {"index": 0, "id": call_id, "function": {"name": name, "arguments": arguments}}
+                ]
+            }
+        ),
         _sse(finish = "tool_calls"),
         _DONE,
     ]
@@ -205,9 +225,9 @@ def test_truncated_healed_call_releases_its_own_markup(executed):
     visible = _visible_text(lines)
     assert "Let me compute that. " in visible
     assert " follow-up" in visible
-    assert '<tool_call>{"name": "web_search", "arguments": {"query": "42"}}</tool_call>' in visible, (
-        f"the promoted span was lost from the stream: {visible!r}"
-    )
+    assert (
+        '<tool_call>{"name": "web_search", "arguments": {"query": "42"}}</tool_call>' in visible
+    ), f"the promoted span was lost from the stream: {visible!r}"
 
 
 def test_untruncated_healed_call_still_hides_its_markup(executed):
@@ -223,7 +243,17 @@ def test_truncated_structured_call_relays_nothing_extra(executed):
     """A provider-emitted call had no markup removed, so there is none to give back."""
     turn = [
         _sse({"content": "thinking"}),
-        _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"que'}}]}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "function": {"name": "web_search", "arguments": '{"que'},
+                    }
+                ]
+            }
+        ),
         _sse(finish = "length"),
         _DONE,
     ]
@@ -275,8 +305,16 @@ def _overflow_turns():
             _sse(
                 {
                     "tool_calls": [
-                        {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"query":"a"}'}},
-                        {"index": 1, "id": "c2", "function": {"name": "web_search", "arguments": '{"query":"b"}'}},
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {"name": "web_search", "arguments": '{"query":"a"}'},
+                        },
+                        {
+                            "index": 1,
+                            "id": "c2",
+                            "function": {"name": "web_search", "arguments": '{"query":"b"}'},
+                        },
                     ]
                 }
             ),
@@ -293,9 +331,9 @@ def test_budget_exhausted_call_does_not_close_a_card_it_never_opened(executed):
     lines = _run(transport, max_calls = 1)
 
     assert len(executed) == 1, "the budget must still be enforced"
-    assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start"), (
-        "every closed card must have been opened, in order"
-    )
+    assert _card_ids(lines, "tool_end") == _card_ids(
+        lines, "tool_start"
+    ), "every closed card must have been opened, in order"
 
 
 def test_budget_exhausted_result_is_declared_by_an_assistant_tool_call(executed):

@@ -62,12 +62,14 @@ def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def _client(monkeypatch, captured: dict, body: bytes = _TOOL_CALL_STREAM):
+def _client(
+    monkeypatch,
+    captured: dict,
+    body: bytes = _TOOL_CALL_STREAM,
+):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
-        return httpx.Response(
-            200, content = body, headers = {"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
 
     monkeypatch.setattr(
         ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
@@ -82,10 +84,7 @@ def _client(monkeypatch, captured: dict, body: bytes = _TOOL_CALL_STREAM):
 def _run(client, messages):
     async def go():
         lines = [
-            line
-            async for line in client.stream_chat_completion(
-                messages = messages, model = "gpt-5.1"
-            )
+            line async for line in client.stream_chat_completion(messages = messages, model = "gpt-5.1")
         ]
         await client.close()
         return lines
@@ -214,9 +213,13 @@ def test_assistant_text_still_precedes_the_function_call(monkeypatch):
         ],
     )
 
-    assert [
-        item.get("type") or item.get("role") for item in captured["body"]["input"]
-    ] == ["user", "reasoning", "assistant", "function_call", "function_call_output"]
+    assert [item.get("type") or item.get("role") for item in captured["body"]["input"]] == [
+        "user",
+        "reasoning",
+        "assistant",
+        "function_call",
+        "function_call_output",
+    ]
 
 
 def test_reasoning_is_dropped_when_the_turn_had_only_server_builtins(monkeypatch):
@@ -253,9 +256,7 @@ def test_reasoning_is_dropped_when_the_turn_had_only_server_builtins(monkeypatch
         ],
     )
 
-    assert not [
-        item for item in captured["body"]["input"] if item.get("type") == "reasoning"
-    ]
+    assert not [item for item in captured["body"]["input"] if item.get("type") == "reasoning"]
 
 
 def test_a_conversation_without_reasoning_is_unchanged(monkeypatch):
@@ -280,6 +281,9 @@ def test_a_conversation_without_reasoning_is_unchanged(monkeypatch):
         ],
     )
 
-    assert [
-        item.get("type") or item.get("role") for item in captured["body"]["input"]
-    ] == ["user", "assistant", "function_call", "function_call_output"]
+    assert [item.get("type") or item.get("role") for item in captured["body"]["input"]] == [
+        "user",
+        "assistant",
+        "function_call",
+        "function_call_output",
+    ]

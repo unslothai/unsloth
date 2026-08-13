@@ -50,7 +50,11 @@ def _tool(name: str) -> dict:
 WEB = _tool("web_search")
 
 
-def _name_fragment(index: int, fragment: str, call_id: str = "c1") -> str:
+def _name_fragment(
+    index: int,
+    fragment: str,
+    call_id: str = "c1",
+) -> str:
     """One delta carrying part of a tool call's name."""
     return "data: " + json.dumps(
         {
@@ -73,7 +77,11 @@ def _name_fragment(index: int, fragment: str, call_id: str = "c1") -> str:
     )
 
 
-def _arguments(index: int, chunk: str, call_id: str = "c1") -> str:
+def _arguments(
+    index: int,
+    chunk: str,
+    call_id: str = "c1",
+) -> str:
     return "data: " + json.dumps(
         {
             "choices": [
@@ -95,13 +103,17 @@ def _arguments(index: int, chunk: str, call_id: str = "c1") -> str:
 
 
 def _finish(reason: str = "tool_calls") -> str:
-    return "data: " + json.dumps(
-        {"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}
-    )
+    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
 
 
 class FakeTransport:
-    def __init__(self, turns, *, heals = False, max_turns = 20):
+    def __init__(
+        self,
+        turns,
+        *,
+        heals = False,
+        max_turns = 20,
+    ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
         self.requests: list[dict] = []

@@ -77,6 +77,7 @@ def _request():
 @pytest.fixture(autouse = True)
 def _clean_policy():
     from state.tool_policy import reset_tool_policy
+
     reset_tool_policy()
     yield
     reset_tool_policy()
@@ -130,13 +131,13 @@ def _run(inf, payload):
 
 # ── Task 2: hosted vs local, A/B against the merge base ──────────────
 
+
 # The gate as it stood at merge base b3376300: only the Codex subscription ran
 # Studio's tools on an external provider. Every other provider took the plain
 # passthrough, whatever the request said about tools. Kept as executable code so
 # the expectations below are derived from the old behaviour, not restated.
 def _merge_base_takes_studio_loop(payload, provider_type: str) -> bool:
     from routes.inference import _explicit_studio_tool_loop_requested
-
     return (
         provider_type == "openai_codex"
         and payload.stream is True
@@ -161,9 +162,7 @@ SELF_HOSTED_PROVIDERS = ("llama_cpp", "vllm", "ollama", "custom")
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 @pytest.mark.parametrize("selection", HOSTED_SELECTIONS)
-def test_a_hosted_tool_request_still_reaches_the_provider(
-    monkeypatch, provider_type, selection
-):
+def test_a_hosted_tool_request_still_reaches_the_provider(monkeypatch, provider_type, selection):
     """Shape 1: only hosted names, on a provider that hosts them."""
     inf = _install(monkeypatch, provider_type)
     payload = _payload(enable_tools = True, enabled_tools = selection)
@@ -189,9 +188,7 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
 
 
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
-def test_a_self_hosted_provider_still_runs_studios_own_web_search(
-    monkeypatch, provider_type
-):
+def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, provider_type):
     """Shape 2, the PR's primary use case: a self-hosted server has no hosted
     tools at all, so the same body can only mean Studio's local loop."""
     assert provider_hosted_tools(provider_type) == frozenset()
@@ -239,7 +236,6 @@ def test_a_unknown_tool_names_never_read_as_hosted(monkeypatch):
 @pytest.mark.parametrize("bad", [None, 5, {"web_search": True}, ["web_search", 5]])
 def test_a_malformed_enabled_tools_is_not_a_hosted_request(bad):
     from routes.inference import _selects_only_provider_hosted_tools
-
     payload = SimpleNamespace(enabled_tools = bad, mcp_enabled = False)
     assert _selects_only_provider_hosted_tools(payload, "openai") is False
 
@@ -305,13 +301,18 @@ def test_b_the_external_and_codex_paths_derive_the_gate_identically():
     ],
 )
 def test_b_auto_mode_prompts_on_risk_not_on_the_tool_name(name, arguments, high_risk):
-    """"auto" is per-call, not per-tool: ordinary development commands run and
+    """ "auto" is per-call, not per-tool: ordinary development commands run and
     credential/escalation/egress ones prompt. Pinned because the docstring on
     `permission_mode` promises exactly this."""
     assert is_high_risk_tool_call(name, arguments) is high_risk
 
 
-def _run_loop(monkeypatch, *, code: str, verdict: str = "allow"):
+def _run_loop(
+    monkeypatch,
+    *,
+    code: str,
+    verdict: str = "allow",
+):
     """Drive the real loop with the real risk classifier under auto/gate-on."""
     import json
 

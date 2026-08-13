@@ -11792,8 +11792,7 @@ async def _proxy_to_external_provider(
         # Scoped to that one workflow rather than to "internal", because the other
         # internal key Studio mints is held by a user-authored recipe subprocess.
         allow_saved_key = (
-            not _request_has_api_key(request)
-            or _request_is_saved_credential_workflow(request)
+            not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
         ),
     )
 

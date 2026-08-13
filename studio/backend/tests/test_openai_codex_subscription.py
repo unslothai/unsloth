@@ -1178,9 +1178,10 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
     assert client.requests[1]["tools"] is None
     assert client.requests[1]["tool_choice"] == "none"
     replayed = client.requests[1]["messages"]
-    assert [
-        message["tool_call_id"] for message in replayed if message["role"] == "tool"
-    ] == ["call_1", "call_2"]
+    assert [message["tool_call_id"] for message in replayed if message["role"] == "tool"] == [
+        "call_1",
+        "call_2",
+    ]
     # The shared loop carries the local loops' closing nudge, so the tool results
     # are no longer the tail of the conversation.
     assert replayed[-1]["role"] == "user"

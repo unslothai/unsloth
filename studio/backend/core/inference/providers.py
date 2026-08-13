@@ -463,9 +463,7 @@ def provider_hosted_tools(provider_type: str | None) -> frozenset[str]:
 # provider entry extends it by declaring its own tools. Mirrored on the frontend
 # as _SERVER_SIDE_BUILTIN_TOOL_NAMES (external_provider.py) for card labelling.
 HOSTED_TOOL_NAMES: frozenset[str] = frozenset(
-    name
-    for info in PROVIDER_REGISTRY.values()
-    for name in (info.get("hosted_tools") or ())
+    name for info in PROVIDER_REGISTRY.values() for name in (info.get("hosted_tools") or ())
 )
 
 

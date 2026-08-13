@@ -77,7 +77,11 @@ def _mint_internal(monkeypatch, inf, name):
         monkeypatch.setattr(inf.auth_storage, "internal_api_key_name", lambda raw: name)
 
 
-def _install(monkeypatch, provider_type = "openai", record_keys = None):
+def _install(
+    monkeypatch,
+    provider_type = "openai",
+    record_keys = None,
+):
     from core.inference.providers import get_base_url
     from routes import inference as inf
 
@@ -93,7 +97,12 @@ def _install(monkeypatch, provider_type = "openai", record_keys = None):
         },
     )
 
-    def _resolve(provider_id, encrypted, *, allow_saved_key = True):
+    def _resolve(
+        provider_id,
+        encrypted,
+        *,
+        allow_saved_key = True,
+    ):
         if record_keys is not None:
             record_keys.append(allow_saved_key)
         return "k"
@@ -116,7 +125,11 @@ def _payload(**overrides):
     return ChatCompletionRequest(**base)
 
 
-def _run(inf, payload, request = None):
+def _run(
+    inf,
+    payload,
+    request = None,
+):
     async def go():
         resp = await inf._proxy_to_external_provider(
             payload, request or _request(), current_subject = "t"
@@ -267,7 +280,6 @@ def test_the_codex_loop_keeps_reporting_its_own_model(monkeypatch):
 def test_the_usage_chunk_falls_back_only_when_no_model_is_known():
     """`"external"` is the last resort, so it must not be what a real run reports."""
     from core.inference.studio_tool_loop import ToolLoopRun
-
     assert ToolLoopRun(messages = []).model is None
 
 
@@ -357,9 +369,9 @@ def test_the_external_disconnect_watcher_is_awaited_after_cancel():
     import ast
     import pathlib
 
-    source = (
-        pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py"
-    ).read_text(encoding = "utf-8")
+    source = (pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(source)
     cancels = [
         node

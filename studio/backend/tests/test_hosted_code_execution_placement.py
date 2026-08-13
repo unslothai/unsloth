@@ -28,15 +28,13 @@ def test_studio_really_has_no_local_code_execution():
     assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
 
-@pytest.mark.parametrize(
-    "provider_type", ["openai", "anthropic", "gemini"]
-)
+@pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini"])
 def test_hosted_code_execution_rides_along_with_a_studio_tool(provider_type):
     """RAG or MCP selects the Studio loop; the Code pill must still reach the
     provider's sandbox rather than being dropped on the way."""
-    assert hosted_only_tools(
-        provider_type, ["search_knowledge_base", "code_execution"]
-    ) == ["code_execution"]
+    assert hosted_only_tools(provider_type, ["search_knowledge_base", "code_execution"]) == [
+        "code_execution"
+    ]
 
 
 def test_the_local_code_tools_still_win_when_a_request_names_both():
