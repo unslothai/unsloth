@@ -123,11 +123,22 @@ export function mapBackendModelConfigToTrainingPatch(
   const gradAccum = toNumber(training?.gradient_accumulation_steps);
   if (gradAccum !== undefined) patch.gradientAccumulation = gradAccum;
 
-  const warmupSteps = toNumber(training?.warmup_steps);
-  if (warmupSteps !== undefined) patch.warmupSteps = warmupSteps;
-
   const maxSteps = toNumber(training?.max_steps);
   if (maxSteps !== undefined) patch.maxSteps = maxSteps;
+
+  const warmupSteps = toNumber(training?.warmup_steps);
+  if (warmupSteps !== undefined) {
+    patch.warmupSteps = warmupSteps;
+  } else {
+    // Ten shipped model_defaults express warmup as a ratio and set no
+    // warmup_steps, default.yaml among them, so reading only warmup_steps left
+    // every one of them on the generic UI default. Derive the steps the same way
+    // studio/backend/core/training/worker.py does when it falls back.
+    const warmupRatio = toNumber(training?.warmup_ratio);
+    if (warmupRatio !== undefined && maxSteps !== undefined && maxSteps > 0) {
+      patch.warmupSteps = Math.round(warmupRatio * maxSteps);
+    }
+  }
 
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;
