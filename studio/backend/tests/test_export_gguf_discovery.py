@@ -676,8 +676,14 @@ class _ImatrixNamingModel:
     def __init__(self, on_disk_name):
         self.on_disk_name = on_disk_name
 
-    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method,
-                             imatrix_file = None, token = None):
+    def save_pretrained_gguf(
+        self,
+        model_save_path,
+        tokenizer,
+        quantization_method,
+        imatrix_file = None,
+        token = None,
+    ):
         _gguf(Path(model_save_path) / "Model.IQ2_XXS.gguf")
         _gguf(Path(model_save_path) / self.on_disk_name)
 
@@ -686,20 +692,27 @@ _NFC = unicodedata.normalize("NFC", "im\u00e4trix")
 _NFD = unicodedata.normalize("NFD", "im\u00e4trix")
 
 
-@pytest.mark.parametrize("on_disk,requested", [
-    ("imatrix_unsloth.gguf", "/x/imatrix_unsloth.gguf_file"),
-    (f"{_NFD}.gguf", f"/x/{_NFC}.gguf_file"),   # APFS stores NFD, the request carried NFC
-    (f"{_NFC}.gguf", f"/x/{_NFD}.gguf_file"),   # and the other way round
-])
+@pytest.mark.parametrize(
+    "on_disk,requested",
+    [
+        ("imatrix_unsloth.gguf", "/x/imatrix_unsloth.gguf_file"),
+        (f"{_NFD}.gguf", f"/x/{_NFC}.gguf_file"),  # APFS stores NFD, the request carried NFC
+        (f"{_NFC}.gguf", f"/x/{_NFD}.gguf_file"),  # and the other way round
+    ],
+)
 def test_the_materialized_imatrix_is_never_exported_as_a_model(
-    monkeypatch, tmp_path, on_disk, requested,
+    monkeypatch, tmp_path, on_disk, requested
 ):
     _m, backend, save_dir, _cwd = _backend(
-        monkeypatch, tmp_path, _ImatrixNamingModel(on_disk),
+        monkeypatch,
+        tmp_path,
+        _ImatrixNamingModel(on_disk),
     )
 
     success, message, _p = backend.export_gguf(
-        str(save_dir), "iq2_xxs", imatrix_file = requested,
+        str(save_dir),
+        "iq2_xxs",
+        imatrix_file = requested,
     )
 
     assert success is True, message
@@ -714,6 +727,7 @@ def test_a_broken_unsloth_zoo_does_not_fail_a_plain_export(monkeypatch, tmp_path
     AttributeError (partially initialised module), neither of which `except ImportError`
     caught, so it took down every GGUF export -- imatrix or not.
     """
+
     class _Exploding(types.ModuleType):
         def __getattr__(self, name):
             raise RuntimeError("half-built native dep")

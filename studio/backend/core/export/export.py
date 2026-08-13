@@ -265,7 +265,6 @@ def _is_imatrix(path, imatrix_path):
 
 def _folded(path):
     import unicodedata
-
     return unicodedata.normalize("NFC", os.path.normcase(os.fspath(path)))
 
 
@@ -1214,7 +1213,8 @@ class ExportBackend:
                     unrelocated = []
                     if model_tmp_path.is_dir():
                         unrelocated = sorted(
-                            str(p) for p in model_tmp_path.rglob("*.gguf")
+                            str(p)
+                            for p in model_tmp_path.rglob("*.gguf")
                             if not _is_imatrix(p, imatrix_path)
                         )
                     if unrelocated:
