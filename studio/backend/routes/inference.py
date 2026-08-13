@@ -15457,7 +15457,14 @@ async def reveal_sandbox_dir(
     try:
         await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir))
     except FileNotFoundError:
-        # Deleted between resolving it and opening it, so there is nothing to show.
+        # Two different things raise this: the sandbox going between resolving
+        # it and opening it, and Popen failing to find the file manager itself
+        # on a host that has none. Only the first is "this chat has no folder";
+        # reporting the second that way sends the user looking for a missing
+        # chat instead of a missing xdg-open.
+        if os.path.isdir(sandbox_dir):
+            logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager")
         raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
     except Exception:
         logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)

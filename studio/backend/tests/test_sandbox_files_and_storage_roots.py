@@ -4864,6 +4864,184 @@ def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypat
     assert opened == []
 
 
+def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, monkeypatch):
+    """``xdg-open`` is absent on a headless host, and ``Popen`` raises the same
+    ``FileNotFoundError`` for a missing LAUNCHER as for a missing target.
+
+    Conflating them tells a user whose files are sitting right there that the
+    chat has no folder, and sends them looking for a bug in the chat rather
+    than installing a file manager.
+    """
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+
+    def no_launcher(path):
+        raise FileNotFoundError(2, "No such file or directory", "xdg-open")
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", no_launcher)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 500
+    assert sandbox.is_dir(), "the folder was there the whole time"
+
+
+def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, monkeypatch):
+    """An id with a slash cannot travel in a path segment, because ASGI decodes
+    ``%2F`` before routing, so the client sends ``/sandbox/_/reveal?session=``.
+
+    The listing route already reads it; this one has to agree, or every chat
+    with an id the router cannot carry silently reveals the wrong folder.
+    """
+    import asyncio
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    asked = []
+    sandbox = tmp_path / "sandbox" / "resolved"
+    sandbox.mkdir(parents = True)
+
+    def resolve(session_id, create):
+        asked.append(session_id)
+        return str(sandbox)
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", resolve)
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: None)
+
+    asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir(
+            "_", request = None, token = None, session = "thread/with/slashes"
+        )
+    )
+    assert asked == ["thread/with/slashes"], "the placeholder segment was resolved instead"
+
+
+def test_revealing_authenticates_before_it_touches_the_filesystem(tmp_path, monkeypatch):
+    """Resolution scans the sandbox root, so an unauthenticated caller must not
+    reach it -- and must certainly not reach the file manager."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+
+    resolved = []
+    opened = []
+
+    async def refuse(request, token):
+        raise HTTPException(status_code = 401, detail = "Not authenticated")
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", refuse)
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda *a, **k: resolved.append(a) or "")
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 401
+    assert resolved == [] and opened == []
+
+
+def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path, monkeypatch):
+    """The id is a name, not a path. Every one of these must derive a name
+    inside the root, find nothing there, and launch nothing."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    opened = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
+
+    for probe in (
+        "../../../../etc",
+        "..",
+        "/etc",
+        "thread/../../../etc",
+        "..\\..\\windows",
+        "C:\\Windows",
+        "con",
+        "x" * 300,
+    ):
+        with pytest.raises(HTTPException) as caught:
+            asyncio.new_event_loop().run_until_complete(
+                inference.reveal_sandbox_dir(
+                    "_", request = None, token = None, session = probe
+                )
+            )
+        assert caught.value.status_code == 404, probe
+        resolved = inference._sandbox_dir_for(probe, create = False)
+        assert not os.path.exists("/etc/.unsloth_sandbox")
+        assert Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists(), probe
+    assert opened == [], "a refused id must never reach the file manager"
+
+
+def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
+    """The new POST route sits on the same path the download route matches with
+    ``{filename:path}``. It is POST-only, so a file called ``reveal`` is still
+    reachable -- and that is worth pinning, because widening the method list
+    later would silently take it away.
+    """
+    from routes.inference import router
+
+    scope = {"type": "http", "method": "GET", "path": "/sandbox/thread-1/reveal",
+             "headers": [], "root_path": ""}
+    matched = [r for r in router.routes if r.matches(scope)[0].name == "FULL"]
+    assert [r.endpoint.__name__ for r in matched] == ["serve_sandbox_file"]
+
+    scope["method"] = "POST"
+    matched = [r for r in router.routes if r.matches(scope)[0].name == "FULL"]
+    assert [r.endpoint.__name__ for r in matched] == ["reveal_sandbox_dir"]
+
+
+def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, monkeypatch):
+    """The helper this PR moved had one caller before it. That caller must
+    behave exactly as it did at the merge base, including for the symlinked
+    entries a Hugging Face cache is made of.
+    """
+    import asyncio
+
+    from routes import models
+    from utils.paths import path_utils
+
+    real = tmp_path / "blobs" / "model.gguf"
+    real.parent.mkdir(parents = True)
+    real.write_bytes(b"gguf")
+    link = tmp_path / "snapshot" / "model.gguf"
+    link.parent.mkdir(parents = True)
+    link.symlink_to(real)
+
+    opened = []
+    monkeypatch.setattr(models, "_resolve_cached_model_path", lambda repo_id, variant: link)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", opened.append)
+
+    result = asyncio.new_event_loop().run_until_complete(
+        models.reveal_cached_model(
+            repo_id = "unsloth/Llama-3.2-1B", variant = None, current_subject = "unsloth"
+        )
+    )
+    assert result == {"status": "ok", "path": str(link)}
+    assert opened == [link], "a symlinked cache entry must still be revealed"
+
+
 def test_a_kept_sandbox_is_offered_even_when_deletion_was_asked_for():
     """A sandbox the backend could not remove comes back as kept, and by then
     the chat has gone: this offer is the only notice and the only retry."""
