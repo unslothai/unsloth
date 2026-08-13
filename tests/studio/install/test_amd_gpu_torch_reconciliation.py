@@ -1029,6 +1029,29 @@ def test_a_preserved_cuda_wheel_is_not_rocm_ready_through_a_spoof_clear(monkeypa
     assert torch_ready is False
 
 
+def test_a_settled_rocm_venv_is_still_reported_as_ready(monkeypatch):
+    """The other side of the flag: readiness is what installs bitsandbytes and clears the
+    repair ledger, so a host with the right wheel must keep reporting True."""
+    plan, torch_ready, _ = _plan_tuple(monkeypatch, imports_as_rocm = True, version = "2.11.0")
+    assert plan is None
+    assert torch_ready is True
+
+
+def test_a_clear_only_plan_is_still_reported_as_ready(monkeypatch):
+    """Same for the exit that returns a plan: the wheel is right, only the spoof goes."""
+    strix = ("gfx1151", "gfx1151", "gfx1151", {"gfx1151"})
+    plan, torch_ready, _ = _plan_tuple(
+        monkeypatch,
+        imports_as_rocm = True,
+        version = "2.11.0+rocm7.2.0",
+        installed_rocm_family = "gfx1151",
+        selected_strix_result = strix,
+    )
+    assert plan is not None and plan.install_torch is False
+    assert plan.clear_hsa_spoof_gfx == "gfx1151"
+    assert torch_ready is True
+
+
 def test_a_hidden_nvidia_gpu_does_not_protect_an_unimportable_torch(monkeypatch):
     assert (
         _plan(
