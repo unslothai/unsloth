@@ -3360,8 +3360,12 @@ def _load_h3_native_offload(
     return backend._state, list(backend._state.pipe.offload_flags)
 
 
-# Both fixtures carry the H3 marker ensure_h3_sd_cpp_binary gates on and differ only in the graph-cut options.
-_H3_HELP = "  --ref-video           MiniMax-H3 Ref2VA reference video frame directory\n"
+# Both fixtures carry the project banner the identity gate reads and the H3 marker
+# ensure_h3_sd_cpp_binary gates on, and differ only in the graph-cut options.
+_H3_HELP = (
+    "stable-diffusion.cpp version master-813\n"
+    "  --ref-video           MiniMax-H3 Ref2VA reference video frame directory\n"
+)
 _GRAPH_CUT_HELP = (
     _H3_HELP + "  --max-vram <string>   VRAM budget\n  --stream-layers       prefetch\n"
 )
