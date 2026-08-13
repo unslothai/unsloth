@@ -872,9 +872,7 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
             if depth:
                 continue  # a comprehension: its target is scoped to the comprehension
             k = j + 1
-            while k < len(stmt) and not (
-                stmt[k].type == tokenize.NAME and stmt[k].string == "in"
-            ):
+            while k < len(stmt) and not (stmt[k].type == tokenize.NAME and stmt[k].string == "in"):
                 k += 1
             # The target binds what an ordinary assignment would: `for a, b
             # in ...` rebinds both, `for holder.b in ...` rebinds neither -

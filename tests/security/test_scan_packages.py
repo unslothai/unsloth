@@ -2883,9 +2883,7 @@ def test_a_rebinding_cancels_only_after_its_own_right_hand_side():
         assert _high(payload), f"{stmt} must be flagged"
 
     # And the rebinding still silences what comes after it.
-    after = (
-        "import builtins as b\nimport marshal\nmod = __import__('os')\nb = load()\nb.eval(x)\n"
-    )
+    after = "import builtins as b\nimport marshal\nmod = __import__('os')\nb = load()\nb.eval(x)\n"
     assert _high(after, "pkg/_infer.py") == [], "a call past the rebinding is not the builtin"
 
 
@@ -3005,7 +3003,11 @@ def test_a_comprehension_target_does_not_rebind_the_surrounding_alias():
     # Python 3, so `[x for b in xs]` leaves the module alias exactly as it was.
     # Reading it as an ordinary `for` cancelled `b` at the call below.
     prelude = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
-    for comprehension in ("ys = [x for b in xs]", "ys = sum(x for b in xs)", "ys = {k: v for b in xs}"):
+    for comprehension in (
+        "ys = [x for b in xs]",
+        "ys = sum(x for b in xs)",
+        "ys = {k: v for b in xs}",
+    ):
         payload = f"{prelude}{comprehension}\nb.exec(marshal.loads(BLOB))\n"
         assert _high(payload), f"{comprehension} must not cancel the alias"
 
