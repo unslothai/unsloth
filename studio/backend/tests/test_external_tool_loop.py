@@ -1313,9 +1313,7 @@ def test_rag_autoinject_runs_before_the_first_provider_turn(monkeypatch):
             "messages": [{"role": "user", "content": "Passage: unsloth trains fast."}],
         },
     )
-    client = _FakeClient(
-        [[_chunk(content = "It trains fast."), _finish("stop"), "data: [DONE]"]]
-    )
+    client = _FakeClient([[_chunk(content = "It trains fast."), _finish("stop"), "data: [DONE]"]])
     lines = asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
@@ -1329,9 +1327,7 @@ def test_rag_autoinject_runs_before_the_first_provider_turn(monkeypatch):
     )
     first_turn = client.calls[0]["messages"]
     assert first_turn[-1]["content"] == "Passage: unsloth trains fast."
-    assert any(
-        event.get("tool_name") == "search_knowledge_base" for event in _events(lines)
-    )
+    assert any(event.get("tool_name") == "search_knowledge_base" for event in _events(lines))
 
 
 def test_ask_mode_skips_rag_autoinject(monkeypatch):
@@ -1343,9 +1339,7 @@ def test_ask_mode_skips_rag_autoinject(monkeypatch):
         "build_rag_autoinject",
         lambda conversation, rag_scope: pytest.fail("autoinject must not run under ask"),
     )
-    client = _FakeClient(
-        [[_chunk(content = "Ask me to search."), _finish("stop"), "data: [DONE]"]]
-    )
+    client = _FakeClient([[_chunk(content = "Ask me to search."), _finish("stop"), "data: [DONE]"]])
     asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(

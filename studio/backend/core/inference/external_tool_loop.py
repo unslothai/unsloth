@@ -566,7 +566,6 @@ async def stream_chat_completion_with_local_tools(
     autoinject = None
     if not skip_autoinject:
         from core.inference.tools import build_rag_autoinject
-
         autoinject = await asyncio.to_thread(build_rag_autoinject, conversation, rag_scope)
     if autoinject:
         for event in autoinject["events"]:
