@@ -57,7 +57,7 @@ import {
   parseExternalModelId,
 
   providerLocalToolsEnabled,
-  providerModelSupportsStudioTools,
+  providerStudioToolsEnabled,
   providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
@@ -4013,11 +4013,10 @@ export function createOpenAIStreamAdapter(
           )
         : null;
 
-      const externalUsesStudioTools =
-        providerModelSupportsStudioTools(
-          externalProvider?.providerType,
-          externalSelection?.modelId,
-        ) === true;
+      const externalUsesStudioTools = providerStudioToolsEnabled(
+        externalProvider,
+        externalSelection?.modelId,
+      );
 
       const supportsStudioToolsForThisTurn = isExternalRequest
         ? externalUsesStudioTools
@@ -5060,6 +5059,7 @@ export function createOpenAIStreamAdapter(
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
                     bypass_permissions: bypassPermissions,
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                     tool_call_timeout:
                       runtime.toolCallTimeout >= 9999
@@ -5140,7 +5140,12 @@ export function createOpenAIStreamAdapter(
                       : { confirm_tool_calls: permissionMode === "ask" }),
                     bypass_permissions: bypassPermissions,
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
+                    tool_call_timeout:
+                      runtime.toolCallTimeout >= 9999
+                        ? 9999
+                        : runtime.toolCallTimeout * 60,
                   }
                 : {}),
               provider_id: externalProvider.id,

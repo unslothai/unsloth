@@ -139,7 +139,7 @@ import {
   isExternalModelId,
   parseExternalModelId,
 
-  providerModelSupportsStudioTools,
+  providerStudioToolsEnabled,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
@@ -2234,11 +2234,7 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      supportsTools:
-        providerModelSupportsStudioTools(
-          provider?.providerType,
-          selection.modelId,
-        ) === true,
+      supportsTools: providerStudioToolsEnabled(provider, selection.modelId),
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
@@ -2787,11 +2783,10 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          supportsTools:
-            providerModelSupportsStudioTools(
-              selectedProvider?.providerType,
-              selectedExternal?.modelId,
-            ) === true,
+          supportsTools: providerStudioToolsEnabled(
+            selectedProvider,
+            selectedExternal?.modelId,
+          ),
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,

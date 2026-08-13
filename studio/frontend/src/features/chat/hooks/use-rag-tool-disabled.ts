@@ -3,7 +3,7 @@
 
 import {
   parseExternalModelId,
-  providerModelSupportsStudioTools,
+  providerStudioToolsEnabled,
 } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -24,9 +24,6 @@ export function useRagToolDisabled(): boolean {
     : undefined;
   const externalWithoutStudioTools =
     externalSelection !== null &&
-    providerModelSupportsStudioTools(
-      externalProvider?.providerType,
-      externalSelection.modelId,
-    ) !== true;
+    !providerStudioToolsEnabled(externalProvider, externalSelection.modelId);
   return modelLoaded && (externalWithoutStudioTools || !supportsTools);
 }

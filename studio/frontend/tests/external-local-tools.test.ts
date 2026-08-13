@@ -12,9 +12,13 @@ import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
 
-const { providerLocalToolsEnabled, supportsProviderLocalTools } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  providerLocalToolsEnabled,
+  providerModelSupportsStudioTools,
+  providerStudioToolsEnabled,
+  setProviderModelCapabilities,
+  supportsProviderLocalTools,
+} = await import("../src/features/chat/external-providers.ts");
 const { mergeLocalProviderOptions } = await import(
   "../src/features/chat/sync-external-providers.ts"
 );
@@ -73,6 +77,31 @@ test("the opt-in defaults off and never applies to a hosted provider", () => {
   );
   assert.equal(providerLocalToolsEnabled(null), false);
   assert.equal(providerLocalToolsEnabled(undefined), false);
+});
+
+test("registry wildcard capability still requires the connection opt-in", () => {
+  setProviderModelCapabilities("vllm", {
+    "*": { studio_tools: true },
+  });
+  assert.equal(providerModelSupportsStudioTools("vllm", "any-model"), true);
+  assert.equal(providerStudioToolsEnabled(provider("vllm"), "any-model"), false);
+  assert.equal(
+    providerStudioToolsEnabled(
+      provider("vllm", { enableLocalTools: true }),
+      "any-model",
+    ),
+    true,
+  );
+});
+
+test("curated per-model Studio tools need no connection opt-in", () => {
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-test": { studio_tools: true },
+  });
+  assert.equal(
+    providerStudioToolsEnabled(provider("openai_codex"), "gpt-test"),
+    true,
+  );
 });
 
 test("a backend sync keeps the browser-local opt-in", () => {

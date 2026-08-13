@@ -22,6 +22,7 @@ class ProviderRegistryEntry(BaseModel):
     )
 
     model_capabilities: dict[str, dict[str, bool]] = Field(default_factory = dict)
+    hidden: bool = False
     supports_streaming: bool = Field(
         True, description = "Whether this provider supports SSE streaming"
     )

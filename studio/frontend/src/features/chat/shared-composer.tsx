@@ -111,7 +111,7 @@ import {
   parseExternalModelId,
   providerModelSupportsVision,
 
-  providerModelSupportsStudioTools,
+  providerStudioToolsEnabled,
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -807,11 +807,10 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  const externalUsesStudioTools =
-    providerModelSupportsStudioTools(
-      selectedExternalProvider?.providerType,
-      externalSelection?.modelId,
-    ) === true;
+  const externalUsesStudioTools = providerStudioToolsEnabled(
+    selectedExternalProvider,
+    externalSelection?.modelId,
+  );
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;

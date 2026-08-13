@@ -11257,29 +11257,29 @@ def _build_external_messages(
     return result
 
 
-def _external_local_tool_names(payload: ChatCompletionRequest, provider_type: str) -> list[str]:
-    """Local tool names this external request may run, or ``[]`` when it may not.
+async def _external_local_tools(payload: ChatCompletionRequest, provider_type: str) -> list[dict]:
+    """Studio tools this external request may run, or ``[]`` when it may not.
 
     The loop only opens when the request explicitly asks for Unsloth's tool
     runtime on a self-hosted OpenAI-compat server. ``tool_choice="none"`` and
     caller-supplied ``tools`` both opt out: the first is an explicit "no
     tools", the second is passthrough where the caller drives function calling.
     """
-    from core.inference.external_tool_loop import (
-        local_tool_loop_supported,
-        select_local_tool_names,
-    )
-    from state.tool_policy import get_tool_policy
+    from core.inference.external_tool_loop import local_tool_loop_supported
 
-    if get_tool_policy() is False:
-        return []
-    if payload.enable_tools is not True or payload.tools:
+    if not _explicit_studio_tool_loop_requested(payload) or payload.tools:
         return []
     if isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none":
         return []
+    if payload.max_tool_calls_per_message is not None and payload.max_tool_calls_per_message <= 0:
+        return []
     if not local_tool_loop_supported(provider_type):
         return []
-    return select_local_tool_names(payload.enabled_tools)
+    return await _select_request_tools(
+        payload,
+        tools_on = payload.enable_tools is True,
+        mcp_allowed = bool(payload.mcp_enabled),
+    )
 
 
 def _append_external_tool_nudge(messages: list[dict], nudge: str) -> list[dict]:
@@ -11343,7 +11343,7 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
-    local_tool_names = _external_local_tool_names(payload, provider_type)
+    local_tools = await _external_local_tools(payload, provider_type)
     codex_studio_tool_loop = (
         provider_type == "openai_codex" and _explicit_studio_tool_loop_requested(payload)
     )
@@ -11351,7 +11351,7 @@ async def _proxy_to_external_provider(
         payload.confirm_tool_calls
         and not payload.bypass_permissions
         and not codex_studio_tool_loop
-        and not local_tool_names
+        and not local_tools
         and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
@@ -11679,7 +11679,7 @@ async def _proxy_to_external_provider(
             detail = "external_model is required when using an external provider.",
         )
 
-    if local_tool_names and not payload.stream:
+    if local_tools and not payload.stream:
         raise HTTPException(
             status_code = 400,
             detail = openai_error_body(
@@ -11700,13 +11700,14 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    local_tools: list[dict] = []
-    if local_tool_names:
-        from core.inference.tools import ALL_TOOLS
-        local_tools = [tool for tool in ALL_TOOLS if tool["function"]["name"] in local_tool_names]
+    if local_tools:
+        local_tool_nudge = _build_tool_action_nudge(tools = local_tools, model_name = model)
+        local_tool_nudge = _apply_rag_nudge(
+            local_tool_nudge, local_tools, rag_scope = payload.rag_scope
+        )
         chat_messages = _append_external_tool_nudge(
             chat_messages,
-            _build_tool_action_nudge(tools = local_tools, model_name = model),
+            local_tool_nudge,
         )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -11777,6 +11778,8 @@ async def _proxy_to_external_provider(
                 permission_mode = payload.permission_mode,
                 disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 nudge_tool_calls = payload.nudge_tool_calls,
+                rag_scope = payload.rag_scope,
+                tool_choice = payload.tool_choice,
                 **_provider_stream_kwargs,
             )
         else:

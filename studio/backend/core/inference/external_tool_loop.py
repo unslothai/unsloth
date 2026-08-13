@@ -14,8 +14,8 @@ identical tool cards.
 Hosted providers are deliberately excluded. OpenAI, Anthropic, Gemini,
 OpenRouter and Kimi run their own server-side tools, already wired through
 ``enabled_tools`` in ``external_provider.py``; sending them a local tool
-catalog would duplicate or conflict with those. ``search_knowledge_base``
-(RAG) is excluded everywhere: retrieval stays local-only.
+catalog would duplicate or conflict with those. Selected RAG and MCP tools may
+join the self-hosted catalog because Studio still owns their execution.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import asyncio
 import copy
 import json
 import threading
-from typing import Any, AsyncGenerator, Callable, Iterable, Optional, Sequence
+from typing import Any, AsyncGenerator, Callable, Optional, Sequence
 
 from loggers import get_logger
 
@@ -59,12 +59,6 @@ from state.tool_approvals import (
 
 logger = get_logger(__name__)
 
-
-# these self-hosted servers ship no tool runtime, so ours has nothing to collide with.
-LOCAL_TOOL_LOOP_PROVIDER_TYPES = frozenset({"vllm", "ollama", "llama_cpp", "custom"})
-
-# search_knowledge_base and render_html are excluded: RAG and Canvas stay local-only.
-LOCAL_TOOL_LOOP_TOOL_NAMES = ("web_search", "python", "terminal")
 
 # matches the local loops' default budget (generate_chat_completion_with_tools).
 DEFAULT_MAX_TOOL_ITERATIONS = 25
@@ -112,23 +106,11 @@ def _holdback_len(text: str) -> int:
 
 def local_tool_loop_supported(provider_type: Optional[str]) -> bool:
     """Whether this provider type may run the local tool loop."""
-    if not provider_type or provider_type not in LOCAL_TOOL_LOOP_PROVIDER_TYPES:
+    if not provider_type:
         return False
-    from core.inference.providers import get_provider_info
+    from core.inference.providers import provider_runs_local_tools
 
-    return bool((get_provider_info(provider_type) or {}).get("supports_tool_calling"))
-
-
-def select_local_tool_names(enabled_tools: Optional[Iterable[str]]) -> list[str]:
-    """Filter a request's ``enabled_tools`` down to what this loop may run.
-
-    Order follows ``LOCAL_TOOL_LOOP_TOOL_NAMES`` so the advertised catalog is
-    stable regardless of the order the client listed its pills in.
-    """
-    if not enabled_tools:
-        return []
-    requested = {str(name) for name in enabled_tools}
-    return [name for name in LOCAL_TOOL_LOOP_TOOL_NAMES if name in requested]
+    return provider_runs_local_tools(provider_type)
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -146,6 +128,22 @@ def _first_delta(chunk: dict[str, Any]) -> dict[str, Any]:
         return {}
     delta = choices[0].get("delta")
     return delta if isinstance(delta, dict) else {}
+
+
+def _delta_text(content: Any) -> str:
+    """Normalize text from string or structured OpenAI-compatible deltas."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") not in ("text", "input_text"):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
 
 
 def _merge_usage(totals: dict[str, int], usage: Any) -> None:
@@ -240,8 +238,8 @@ class _TurnAccumulator:
         thinking = delta.get("reasoning_content")
         if isinstance(thinking, str) and thinking:
             self.reasoning += thinking
-        content = delta.get("content")
-        if isinstance(content, str) and content:
+        content = _delta_text(delta.get("content"))
+        if content:
             self.text += content
             content = self._gate_content(content)
         else:
@@ -507,6 +505,8 @@ async def stream_chat_completion_with_local_tools(
     permission_mode: Optional[str] = None,
     disable_parallel_tool_use: bool = False,
     nudge_tool_calls: Optional[bool] = None,
+    rag_scope: Any = None,
+    tool_choice: Any = None,
     execute_tool: Optional[Callable[..., str]] = None,
     **stream_kwargs: Any,
 ) -> AsyncGenerator[str, None]:
@@ -538,7 +538,7 @@ async def stream_chat_completion_with_local_tools(
     effective_timeout = (
         None if tool_call_timeout is not None and tool_call_timeout >= 9999 else tool_call_timeout
     )
-    remaining_iterations = max(1, max_tool_iterations)
+    remaining_iterations = max(0, max_tool_iterations)
     executed_calls = 0
     # budgeted apart from each other so a pre-tool nudge cannot spend the post-tool one.
     reprompt_count = 0
@@ -546,11 +546,13 @@ async def stream_chat_completion_with_local_tools(
     last_reprompt_text = ""
     # only the opening turn resumes a partial; later turns start from a tool result.
     continue_final_message = bool(stream_kwargs.pop("continue_final_message", False))
+    forced_tool_choice = tool_choice
+    tool_denied = False
 
     try:
         while True:
             # past the budget the catalog is dropped, so the last pass has to answer.
-            tools_allowed = remaining_iterations > 0
+            tools_allowed = remaining_iterations > 0 and not controller.force_final_answer
             active_tools = controller.active_tools() if tools_allowed else []
             enabled_tool_names = set(_tool_names(active_tools))
             turn = _TurnAccumulator(
@@ -565,6 +567,7 @@ async def stream_chat_completion_with_local_tools(
                 messages = conversation,
                 model = model,
                 tools = active_tools or None,
+                tool_choice = forced_tool_choice if active_tools else None,
                 stream = True,
                 continue_final_message = continue_final_message,
                 **stream_kwargs,
@@ -626,6 +629,8 @@ async def stream_chat_completion_with_local_tools(
             pending_calls = turn.ordered_tool_calls() if turn.wants_tools else text_calls
             if disable_parallel_tool_use:
                 pending_calls = pending_calls[:1]
+            if pending_calls and tools_allowed:
+                forced_tool_choice = None
 
             if not pending_calls or not tools_allowed:
                 # tool_calls emitted after the catalog was dropped are ignored, never executed.
@@ -647,6 +652,7 @@ async def stream_chat_completion_with_local_tools(
                     and auto_heal_tool_calls
                     # none keeps the default-on re-prompt; false disables it.
                     and (nudge_tool_calls is None or nudge_tool_calls)
+                    and not tool_denied
                     and active_tools
                     and not turn.shown.strip()
                     and used < cap
@@ -698,6 +704,7 @@ async def stream_chat_completion_with_local_tools(
             tool_messages: list[dict[str, Any]] = []
             nudge_messages: list[dict[str, Any]] = []
             resolved_provisional: set[str] = set()
+            turn_executed_real_tool = False
 
             for raw_call in pending_calls:
                 decision = controller.prepare_call(raw_call)
@@ -762,6 +769,7 @@ async def stream_chat_completion_with_local_tools(
                         yield _status_sse(decision.status_text)
                     if verdict == "deny":
                         decision_slot = None
+                        tool_denied = True
                         resolved_provisional.add(decision.tool_call_id)
                         yield _sse(
                             {
@@ -792,6 +800,7 @@ async def stream_chat_completion_with_local_tools(
                         "timeout": effective_timeout,
                         "session_id": session_id,
                         "thread_id": thread_id,
+                        "rag_scope": rag_scope,
                         "disable_sandbox": bypass_permissions,
                     }
                     if accepts_output_callback(execute_tool):
@@ -826,6 +835,7 @@ async def stream_chat_completion_with_local_tools(
                     tool_stream.close()
                 completion = controller.record_result(decision, result)
                 executed_calls += 1
+                turn_executed_real_tool = True
                 resolved_provisional.add(decision.tool_call_id)
                 yield _sse(completion.tool_end_event())
                 tool_messages.append(completion.tool_message())
@@ -840,7 +850,8 @@ async def stream_chat_completion_with_local_tools(
                 conversation.append(assistant_message)
             conversation.extend(tool_messages)
             append_deferred_nudges(conversation, nudge_messages)
-            remaining_iterations -= 1
+            if turn_executed_real_tool:
+                remaining_iterations -= 1
             if remaining_iterations == 0 and not controller.force_final_answer:
                 # the catalog is gone from here on, so say why rather than letting
                 # the next pass ask for a tool that is no longer offered.

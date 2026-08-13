@@ -281,6 +281,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # payload's base_url when the registry entry has none.
         "base_url": "",
         "default_models": [],
+        "model_capabilities": {"*": {"studio_tools": True}},
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -298,6 +299,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # User-supplied via provider_base_url.
         "base_url": "",
         "default_models": [],
+        "model_capabilities": {"*": {"studio_tools": True}},
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -314,6 +316,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Ollama",
         "base_url": "http://localhost:11434/v1",
         "default_models": [],
+        "model_capabilities": {"*": {"studio_tools": True}},
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -330,6 +333,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "llama.cpp",
         "base_url": "http://localhost:8080/v1",
         "default_models": [],
+        "model_capabilities": {"*": {"studio_tools": True}},
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -383,6 +387,12 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     """Return the registry entry for a provider type, or None if unknown."""
     return PROVIDER_REGISTRY.get(provider_type)
+
+
+def provider_runs_local_tools(provider_type: str) -> bool:
+    """Whether Studio may execute tools for this provider's models."""
+    capabilities = (PROVIDER_REGISTRY.get(provider_type) or {}).get("model_capabilities", {})
+    return bool((capabilities.get("*") or {}).get("studio_tools"))
 
 
 def get_base_url(provider_type: str) -> str | None:
@@ -544,15 +554,9 @@ def validate_provider_base_url(base_url: str) -> str:
 
 
 def list_available_providers() -> list[dict[str, Any]]:
-    """Return all registered providers (for the /registry endpoint).
-
-    Hidden entries are filtered out: they exist only for backend lookups and
-    are surfaced via ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown.
-    """
+    """Return all registered providers for the registry endpoint."""
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if info.get("hidden"):
-            continue
         result.append(
             {
                 "provider_type": provider_type,
@@ -560,6 +564,7 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "base_url": info["base_url"],
                 "default_models": info["default_models"],
                 "model_capabilities": info.get("model_capabilities", {}),
+                "hidden": bool(info.get("hidden", False)),
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),

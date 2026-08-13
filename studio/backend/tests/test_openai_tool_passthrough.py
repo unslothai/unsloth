@@ -51,6 +51,7 @@ from routes.inference import (
     _effective_max_tokens,
     _effective_openai_max_tokens,
     _effective_openai_max_tokens_from_values,
+    _external_local_tools,
     _extract_content_parts,
     _friendly_error,
     _friendly_upstream_error,
@@ -354,6 +355,41 @@ class TestChatCompletionRequestToolFields:
 
     def test_tool_choice_string_required(self):
         assert self._make(tool_choice = "required").tool_choice == "required"
+
+    def test_external_local_tools_use_registry_gate(self, monkeypatch):
+        from routes import inference as inference_route
+
+        selected = [{"type": "function", "function": {"name": "mcp_lookup"}}]
+        captured = {}
+
+        async def fake_select(payload, *, tools_on, mcp_allowed):
+            captured.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
+            return selected
+
+        monkeypatch.setattr(inference_route, "_select_request_tools", fake_select)
+        payload = self._make(
+            enable_tools = True,
+            mcp_enabled = True,
+            stream = True,
+        )
+        assert asyncio.run(_external_local_tools(payload, "ollama")) == selected
+        assert captured == {"tools_on": True, "mcp_allowed": True}
+        assert asyncio.run(_external_local_tools(payload, "openai")) == []
+
+    def test_external_local_tools_honor_zero_budget(self, monkeypatch):
+        from routes import inference as inference_route
+
+        async def fail_select(*_args, **_kwargs):
+            raise AssertionError("zero tool budget must skip tool selection")
+
+        monkeypatch.setattr(inference_route, "_select_request_tools", fail_select)
+        payload = self._make(
+            enable_tools = True,
+            enabled_tools = ["python"],
+            max_tool_calls_per_message = 0,
+            stream = True,
+        )
+        assert asyncio.run(_external_local_tools(payload, "vllm")) == []
 
     def test_tool_choice_string_none(self):
         assert self._make(tool_choice = "none").tool_choice == "none"

@@ -81,8 +81,6 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
 const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
-const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
-
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -1129,10 +1127,7 @@ export function ChatProvidersSettings({
                     <SelectSeparator />
                     <SelectGroup>
                       {registry
-                        .filter(
-                          (entry) =>
-                            !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
-                        )
+                        .filter((entry) => !entry.hidden)
                         .map((entry) => (
                           <SelectItem
                             key={entry.provider_type}

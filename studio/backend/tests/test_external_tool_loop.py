@@ -17,9 +17,10 @@ import pytest
 
 from core.inference.external_tool_loop import (
     local_tool_loop_supported,
-    select_local_tool_names,
     stream_chat_completion_with_local_tools,
 )
+from core.inference.providers import PROVIDER_REGISTRY
+from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 
 
 def _chunk(**delta) -> str:
@@ -78,6 +79,20 @@ PYTHON_TOOL = {
     "type": "function",
     "function": {"name": "python", "parameters": {"type": "object", "properties": {}}},
 }
+RAG_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge_base",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+MCP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "mcp__docs__lookup",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
 
 
 async def _collect(gen) -> list[str]:
@@ -118,25 +133,14 @@ def _content(lines: list[str]) -> str:
 
 
 def test_local_tool_loop_supported_only_for_self_hosted_providers():
-    for provider_type in ("vllm", "ollama", "llama_cpp", "custom"):
-        assert local_tool_loop_supported(provider_type) is True, provider_type
-    # hosted providers ship their own server-side tools; the local loop must
-    # never advertise a competing catalog to them.
-    for provider_type in ("openai", "anthropic", "gemini", "openrouter", "kimi", None, ""):
-        assert local_tool_loop_supported(provider_type) is False, provider_type
-
-
-def test_select_local_tool_names_filters_and_orders():
-    assert select_local_tool_names(["terminal", "web_search", "python"]) == [
-        "web_search",
-        "python",
-        "terminal",
-    ]
-    # rag stays local-only and the hosted builtin names are not local tools.
-    assert select_local_tool_names(["search_knowledge_base"]) == []
-    assert select_local_tool_names(["render_html", "web_fetch", "code_execution"]) == []
-    assert select_local_tool_names(None) == []
-    assert select_local_tool_names([]) == []
+    supported = {
+        provider_type
+        for provider_type in PROVIDER_REGISTRY
+        if local_tool_loop_supported(provider_type)
+    }
+    assert supported == {"vllm", "ollama", "llama_cpp", "custom"}
+    assert local_tool_loop_supported(None) is False
+    assert local_tool_loop_supported("") is False
 
 
 # ── loop ─────────────────────────────────────────────────────────
@@ -253,6 +257,21 @@ def test_answer_without_tool_calls_passes_straight_through():
     assert lines[-1] == "data: [DONE]"
 
 
+def test_structured_content_parts_are_normalized_to_text():
+    client = _FakeClient([[_chunk(content = [{"type": "text", "text": "hello"}]), _finish("stop")]])
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+            )
+        )
+    )
+    assert _content(lines) == "hello"
+
+
 def test_iteration_budget_drops_the_catalog_for_the_final_pass():
     tool_turn = [
         _chunk(
@@ -286,6 +305,150 @@ def test_iteration_budget_drops_the_catalog_for_the_final_pass():
     # budget spent: the last request carries no catalog, so the model has to answer.
     assert client.calls[1]["tools"] is None
     assert lines[-1] == "data: [DONE]"
+
+
+def test_forced_tool_choice_applies_until_the_first_call():
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "python", "arguments": '{"code":"1"}'},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+            ],
+            [_chunk(content = "done"), _finish("stop")],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "run it"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                tool_choice = "required",
+                execute_tool = lambda *a, **k: "1",
+            )
+        )
+    )
+    assert client.calls[0]["tool_choice"] == "required"
+    assert client.calls[1]["tool_choice"] is None
+
+
+def test_zero_iteration_budget_sends_no_tool_catalog():
+    client = _FakeClient([[_chunk(content = "done"), _finish("stop")]])
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "answer"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                max_tool_iterations = 0,
+                execute_tool = lambda *a, **k: pytest.fail("no tool should run"),
+            )
+        )
+    )
+    assert client.calls[0]["tools"] is None
+    assert _content(lines) == "done"
+
+
+def test_selected_mcp_tool_executes_with_rag_scope():
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_mcp",
+                            "function": {
+                                "name": "mcp__docs__lookup",
+                                "arguments": '{"query":"tools"}',
+                            },
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+            ],
+            [_chunk(content = "found it"), _finish("stop")],
+        ]
+    )
+    seen = {}
+
+    def _execute(name, arguments, **kwargs):
+        seen.update(name = name, arguments = arguments, **kwargs)
+        return "result"
+
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "search"}],
+                model = "qwen3-14b",
+                tools = [MCP_TOOL, RAG_TOOL],
+                rag_scope = {"project_id": "project-1"},
+                execute_tool = _execute,
+            )
+        )
+    )
+    assert seen["name"] == "mcp__docs__lookup"
+    assert seen["arguments"] == {"query": "tools"}
+    assert seen["rag_scope"] == {"project_id": "project-1"}
+
+
+def test_duplicate_noop_does_not_spend_a_tool_iteration():
+    def tool_turn(call_id: str, code: str) -> list[str]:
+        return [
+            _chunk(
+                tool_calls = [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": code}),
+                        },
+                    }
+                ]
+            ),
+            _finish("tool_calls"),
+        ]
+
+    client = _FakeClient(
+        [
+            tool_turn("call_1", "1"),
+            tool_turn("call_2", "1"),
+            tool_turn("call_3", "2"),
+            [_chunk(content = "done"), _finish("stop")],
+        ]
+    )
+    executed = []
+
+    def _execute(_name, arguments, **_kwargs):
+        executed.append(arguments["code"])
+        return arguments["code"]
+
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "run both"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                max_tool_iterations = 2,
+                execute_tool = _execute,
+            )
+        )
+    )
+    assert executed == ["1", "2"]
+    assert [bool(call["tools"]) for call in client.calls] == [True, True, True, False]
 
 
 def test_usage_is_summed_into_one_trailing_chunk():
@@ -436,6 +599,52 @@ def test_disabled_tool_call_is_suppressed_and_nudged():
     follow_up = client.calls[1]["messages"]
     assert follow_up[-1]["role"] == "user"
     assert "not enabled" in follow_up[-1]["content"]
+
+
+def test_forced_final_answer_ignores_more_model_tool_calls():
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_disabled",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": '{"command":"ls"}',
+                            },
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+            ],
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_ignored",
+                            "function": {"name": "python", "arguments": '{"code":"1"}'},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+            ],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "list files"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: pytest.fail("no tool should run"),
+            )
+        )
+    )
+    assert client.calls[1]["tools"] is None
 
 
 # ── parity with the local loops ──────────────────────────────────
@@ -1042,3 +1251,44 @@ def test_approval_wait_flushes_card_on_a_separate_event_loop_turn():
     card_index = next(i for i, line in enumerate(lines) if '"tool_start"' in line)
     assert lines.index(keepalives[0]) > card_index
     assert first_post_card_turn_advanced is True
+
+
+def test_denied_call_does_not_trigger_an_action_nudge(monkeypatch):
+    import core.inference.external_tool_loop as loop_module
+
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "python", "arguments": '{"code":"1"}'},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+            ],
+            [_chunk(reasoning = "I will try Python now."), _finish("stop")],
+        ]
+    )
+    monkeypatch.setattr(loop_module, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_module, "wait_tool_decision", lambda *_args, **_kwargs: "deny")
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "run it"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                session_id = "sess-1",
+                confirm_tool_calls = True,
+                permission_mode = "ask",
+                execute_tool = lambda *a, **k: pytest.fail("denied tool should not run"),
+            )
+        )
+    )
+    assert len(client.calls) == 2
+    statuses = [event.get("content") for event in _events(lines) if event["type"] == "tool_status"]
+    assert NUDGE_TOOL_CALLS_STATUS not in statuses

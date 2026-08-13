@@ -196,7 +196,19 @@ export function providerModelSupportsStudioTools(
 ): boolean | null {
   if (!providerType || !modelId) return null;
   hydrateProviderModelCapabilities();
-  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.studio_tools;
+  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  const modelValue = capabilities?.[modelId]?.studio_tools;
+  if (typeof modelValue === "boolean") return modelValue;
+  const providerValue = capabilities?.["*"]?.studio_tools;
+  return typeof providerValue === "boolean" ? providerValue : null;
+}
+
+export function providerTypeSupportsStudioTools(
+  providerType: string | null | undefined,
+): boolean | null {
+  if (!providerType) return null;
+  hydrateProviderModelCapabilities();
+  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.["*"]?.studio_tools;
   return typeof value === "boolean" ? value : null;
 }
 
@@ -224,6 +236,11 @@ export const CUSTOM_PROVIDER_PRESETS = [
     modelIdsPlaceholder: "gpt-oss:20b\nqwen3:14b",
   },
 ] as const;
+
+const LOCAL_TOOL_PROVIDER_FALLBACK = new Set<string>([
+  ...CUSTOM_PROVIDER_PRESETS.map((preset) => preset.providerType),
+  LEGACY_CUSTOM_PROVIDER_TYPE,
+]);
 
 const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
   [LEGACY_CUSTOM_PROVIDER_TYPE]: CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -262,18 +279,12 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
-// mirrors LOCAL_TOOL_LOOP_PROVIDER_TYPES in backend/core/inference/external_tool_loop.py.
-const LOCAL_TOOLS_PROVIDER_TYPES = new Set<string>([
-  "vllm",
-  "ollama",
-  "llama_cpp",
-  LEGACY_CUSTOM_PROVIDER_TYPE,
-]);
-
 export function supportsProviderLocalTools(
   providerType: string | null | undefined,
 ): boolean {
-  return providerType != null && LOCAL_TOOLS_PROVIDER_TYPES.has(providerType);
+  const capability = providerTypeSupportsStudioTools(providerType);
+  if (capability !== null) return capability;
+  return providerType != null && LOCAL_TOOL_PROVIDER_FALLBACK.has(providerType);
 }
 
 /** whether local tools are enabled for this connection. */
@@ -285,6 +296,21 @@ export function providerLocalToolsEnabled(
     supportsProviderLocalTools(provider.providerType) &&
     provider.enableLocalTools === true
   );
+}
+
+export function providerStudioToolsEnabled(
+  provider: ExternalProviderConfig | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (
+    !provider ||
+    providerModelSupportsStudioTools(provider.providerType, modelId) !== true
+  ) {
+    return false;
+  }
+  return providerTypeSupportsStudioTools(provider.providerType) === true
+    ? providerLocalToolsEnabled(provider)
+    : true;
 }
 
 /** OpenAI-compat custom types that may expose GET /v1/models. */
