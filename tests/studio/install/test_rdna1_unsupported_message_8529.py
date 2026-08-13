@@ -870,7 +870,11 @@ class TestVulkanAdvice:
             "$ROCmUnsupportedGfxArch.",
             1,
         ),
-        (_SETUP_PS1, "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch", 1),
+        (
+            _SETUP_PS1,
+            "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch",
+            1,
+        ),
         (_SETUP_SH, "no ROCm PyTorch wheels Unsloth installs", 1),
     ]
 
