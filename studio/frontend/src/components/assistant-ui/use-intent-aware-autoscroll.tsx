@@ -49,6 +49,14 @@ const UPWARD_DETACH_THRESHOLD_PX = 2;
 // on every resize/mutation, so streaming keeps it pinned; settles this
 // long after the last change.
 const FOLLOW_SETTLE_MS = 600;
+// How often a quiet pinned frame re-checks layout for the rest of the follow
+// window. Content can grow with no mutation record and no border-box resize
+// (an image decoding, a font-display: swap webfont, a late KaTeX pass), and
+// the MutationObserver below deliberately excludes style, so only a frame that
+// reads layout notices. 100ms rather than every frame: six times fewer forced
+// layouts, and the view is back on the bottom within about a tenth of a second
+// (the timer, plus the frame it schedules: measured at 115ms).
+const SETTLE_CHECK_MS = 100;
 // Max stabilizer compensation. Absorbs sub-frame transients (~5-15px shiki
 // re-renders, ~8px action-bar drift). Larger shrinks are intentional
 // content removals (delete, regenerate clear, reasoning collapse); padding
@@ -158,6 +166,11 @@ export function useIntentAwareAutoScroll(): {
   const attach = useCallback(
     (el: HTMLElement, isRebind: boolean) => {
       let rafId: number | null = null;
+      let settleTimer: number | null = null;
+      let settleCheckDue = false;
+      // Whether a layout signal arrived since the last frame. Starts true so the first frame
+      // after attach always runs a follow pass.
+      let layoutChanged = true;
       let lastScrollTop = el.scrollTop;
       let lastClientWidth = el.clientWidth;
       let lastClientHeight = el.clientHeight;
@@ -228,9 +241,21 @@ export function useIntentAwareAutoScroll(): {
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
       };
 
+      const clearSettleCheck = (): void => {
+        if (settleTimer !== null) {
+          clearTimeout(settleTimer);
+          settleTimer = null;
+        }
+        settleCheckDue = false;
+      };
+
       const detach = (): void => {
         userDetachedRef.current = true;
         followUntilRef.current = 0;
+        // Hygiene, not correctness: `following` is gated on userDetached before `settling` is
+        // consulted, so a queued check could not re-pin anyway. It can no longer do anything, so
+        // it should not sit on a timer for the rest of the window.
+        clearSettleCheck();
         // The stabilizer only matters while pinning. Once the user
         // scrolls up, drop residual padding so the bottom stays flush on
         // return. Safe mid-content: shrinking scrollHeight can't cap their
@@ -245,22 +270,53 @@ export function useIntentAwareAutoScroll(): {
         }
       };
 
+      // A quiet pinned frame stops chaining and hands what is left of the window to this timer,
+      // which re-arms itself while the window is open. See SETTLE_CHECK_MS for what it is for.
+      const scheduleSettleCheck = (): void => {
+        if (settleTimer !== null) {
+          return;
+        }
+        const remaining = followUntilRef.current - performance.now();
+        if (remaining <= 0) {
+          return;
+        }
+        settleTimer = window.setTimeout(
+          () => {
+            settleTimer = null;
+            // The window may have closed by the time the frame runs; this grants that frame one
+            // last follow pass rather than dropping it into the settle branch.
+            settleCheckDue = true;
+            requestTick();
+          },
+          Math.min(SETTLE_CHECK_MS, remaining),
+        );
+      };
+
       // Single rAF loop. Within the follow window and not detached, pin to
-      // bottom and report isAtBottom=true each frame; otherwise settle on
-      // the DOM. Edge-triggered: scroll/resize/mutation call requestTick(),
-      // and the loop self-perpetuates only while pinning is active.
+      // bottom and report isAtBottom=true; otherwise settle on the DOM.
+      // Edge-triggered: scroll/resize/mutation call requestTick(). The loop re-arms itself only
+      // while layout is still moving, since chaining on the window alone read layout every
+      // frame for as long as a message streamed.
       const tick = (): void => {
         rafId = null;
+        const settling = settleCheckDue;
+        settleCheckDue = false;
         const following =
           !userDetachedRef.current &&
-          performance.now() < followUntilRef.current;
+          (settling || performance.now() < followUntilRef.current);
 
         if (following) {
-          if (!atBottomStrict() && el.scrollHeight > el.clientHeight) {
+          const pinned = atBottomStrict();
+          if (!pinned && el.scrollHeight > el.clientHeight) {
             el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
           }
           setIsAtBottom(true);
-          requestTick();
+          if (layoutChanged || !pinned) {
+            layoutChanged = false;
+            requestTick();
+            return;
+          }
+          scheduleSettleCheck();
           return;
         }
 
@@ -440,6 +496,7 @@ export function useIntentAwareAutoScroll(): {
       // first so the stabilizer sees follow as active; stabilize before
       // pinning so we scroll to the post-adjustment scrollHeight.
       const onLayoutChange = (): void => {
+        layoutChanged = true;
         extendFollow();
         const scrollHeight = stabilize();
         pinIfFollowing(scrollHeight);
@@ -505,6 +562,7 @@ export function useIntentAwareAutoScroll(): {
           cancelAnimationFrame(rafId);
           rafId = null;
         }
+        clearSettleCheck();
         resizeObserver.disconnect();
         mutationObserver.disconnect();
         el.removeEventListener("wheel", onWheel);

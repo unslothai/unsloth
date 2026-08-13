@@ -1,0 +1,341 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Main-thread cost of a streaming deep research run (#8483).
+
+The report: on Ubuntu 26.04 under Wayland the desktop app froze on "Writing the report" and
+again while closing the research detail pane -- spinner stopped, nothing clickable, force quit.
+
+What this measures, and what it cannot: Chromium is not the WebKitGTK webview the desktop app
+embeds on Linux, and `studio/src-tauri/src/linux_webkit.rs` forces that webview onto the SHM
+software renderer on Wayland, where the frame budget is far tighter than anything measured here.
+So an absolute pass here does not prove the reporter's machine is fixed. What transfers is the
+*work*: long tasks, forced layouts and style recalcs during the stream, and whether the window
+still takes clicks afterwards. Those are the quantities the fixes move.
+
+It drives smoke-research.html, which mounts the real ResearchActivityPanel and the real
+MarkdownPreview against the real store, so nothing here is a mock of the code under test. Runs
+against a vite dev server; no backend, no auth, no GPU.
+
+Run:
+    cd studio/frontend && npx vite --port 5183 &
+    SMOKE_BASE_URL=http://127.0.0.1:5183 python tests/studio/playwright_research_freeze.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _playwright_robust import chromium_launch_args  # noqa: E402
+
+BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:5183")
+LABEL = os.environ.get("SMOKE_LABEL", "tree")
+OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-research-freeze"))
+OUT.mkdir(parents = True, exist_ok = True)
+
+# ~12.5 events/s is what the store's 80ms coalescing window admits during synthesis; 240 of
+# them is a ~20s run, long enough for a follow loop to show and short enough to repeat.
+DELTA_COUNT = int(os.environ.get("SMOKE_DELTA_COUNT", "240"))
+DELTA_GAP_MS = int(os.environ.get("SMOKE_DELTA_GAP_MS", "80"))
+
+# A report the size a real deep research run produces, with the three things that cost the most
+# to render: fenced code (shiki), a table, and display math (KaTeX).
+REPORT_SECTION = """
+## Section {n}
+
+British cultural exports carry {n} distinct threads, and the reception of each varies by
+audience, decade and medium. The paragraph below exists to give the renderer real prose to
+lay out, with **emphasis**, `inline code`, and a [link](https://example.invalid/{n}).
+
+| Aspect | Reception | Note |
+| --- | --- | --- |
+| Broadcasting | Mixed | Public service model |
+| Music | Positive | Export driven |
+
+```python
+def section_{n}(values):
+    return sum(value * {n} for value in values)
+```
+"""
+
+
+def info(message: str) -> None:
+    print(f"[research-freeze] {message}", flush = True)
+
+
+def build_report(sections: int) -> str:
+    body = "\n".join(REPORT_SECTION.format(n = n) for n in range(1, sections + 1))
+    return f"# Deep research report\n\n{body}\n\n$$\\sum_{{i=1}}^{{n}} x_i^2$$\n"
+
+
+LONGTASK_INIT = """
+(() => {
+  window.__longTasks = [];
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        window.__longTasks.push({ start: entry.startTime, duration: entry.duration });
+      }
+    }).observe({ type: "longtask", buffered: true });
+  } catch (e) { /* longtask unsupported: the CDP metrics below still apply */ }
+  // A timer-driven frame pump replaces requestAnimationFrame. Chromium in a container produces
+  // only a couple of real frames a second (software rendering, offscreen), which flattens a
+  // per-frame loop into nothing and would let a runaway one pass. Pumping at a fixed 16ms makes
+  // the count a property of the code under test rather than of this machine's compositor.
+  window.__rafCount = 0;
+  let nextHandle = 1;
+  const pending = new Map();
+  window.requestAnimationFrame = (cb) => {
+    const handle = nextHandle++;
+    pending.set(
+      handle,
+      setTimeout(() => {
+        pending.delete(handle);
+        window.__rafCount += 1;
+        cb(performance.now());
+      }, 16),
+    );
+    return handle;
+  };
+  window.cancelAnimationFrame = (handle) => {
+    const timer = pending.get(handle);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      pending.delete(handle);
+    }
+  };
+})();
+"""
+
+
+SCROLLER = '[aria-label="Research activity timeline"]'
+DISTANCE_FROM_BOTTOM = (
+    f"() => {{ const el = document.querySelector('{SCROLLER}');"
+    " return Math.round(el.scrollHeight - el.scrollTop - el.clientHeight); }"
+)
+LATEST_BUTTON_VISIBLE = (
+    "() => [...document.querySelectorAll('button')]"
+    ".some((button) => button.textContent.trim() === 'Latest')"
+)
+
+
+def metrics(cdp) -> dict[str, float]:
+    got = cdp.send("Performance.getMetrics")
+    return {m["name"]: m["value"] for m in got["metrics"]}
+
+
+def delta(before: dict[str, float], after: dict[str, float], name: str) -> float:
+    return round(after.get(name, 0.0) - before.get(name, 0.0), 4)
+
+
+def run() -> dict:
+    results: dict = {"label": LABEL, "base": BASE}
+    with sync_playwright() as p:
+        # Headed under Xvfb by default (SMOKE_HEADLESS=1 to override): headless Chromium
+        # throttles requestAnimationFrame to a few callbacks a second with no compositor, which
+        # silently flattens the very per-frame loop this file exists to measure.
+        headless = os.environ.get("SMOKE_HEADLESS", "0") == "1"
+        browser = p.chromium.launch(
+            headless = headless, args = chromium_launch_args()
+        )
+        context = browser.new_context(viewport = {"width": 1440, "height": 900})
+        # Deliberately NOT installing the view-transition killer: it forces
+        # `body { pointer-events: auto !important }`, which is precisely the symptom under test.
+        context.add_init_script(LONGTASK_INIT)
+        # A token, and a 200 for every backend call: without them the app's auth guard sees a
+        # 401 and navigates to /login, which throws the harness away mid-run. The pattern is
+        # anchored on the origin so it cannot swallow vite's own module URLs under src/.../api/.
+        context.add_init_script(
+            "localStorage.setItem('unsloth_auth_token', 'research-freeze-smoke');"
+        )
+        context.route(
+            re.compile(rf"^{re.escape(BASE)}/api/"),
+            lambda route: route.fulfill(
+                status = 200, content_type = "application/json", body = "{}"
+            ),
+        )
+        page = context.new_page()
+        page.goto(f"{BASE}/smoke-research.html", wait_until = "domcontentloaded")
+        page.wait_for_function("() => Boolean(window.__research)", timeout = 30_000)
+        cdp = context.new_cdp_session(page)
+        cdp.send("Performance.enable")
+
+        page.evaluate("window.__research.seed()")
+        page.wait_for_timeout(500)
+
+        # 1. The streaming phase.
+        before = metrics(cdp)
+        page.evaluate(
+            """async ([count, gap]) => {
+                window.__longTasks.length = 0;
+                window.__rafCount = 0;
+                for (let i = 0; i < count; i += 1) {
+                    window.__research.delta("token " + i + " ");
+                    if (i % 4 === 0) window.__research.reportDelta(i * 32);
+                    // A new step every 8 deltas, so the list grows the way a real run's does
+                    // rather than mutating one row in place.
+                    if (i % 8 === 0) window.__research.step(i / 8);
+                    await new Promise((r) => setTimeout(r, gap));
+                }
+            }""",
+            [DELTA_COUNT, DELTA_GAP_MS],
+        )
+        page.wait_for_timeout(1200)
+        after = metrics(cdp)
+        long_tasks = page.evaluate("window.__longTasks")
+        results["stream"] = {
+            "events": DELTA_COUNT,
+            "wall_ms": DELTA_COUNT * DELTA_GAP_MS,
+            "raf_callbacks": page.evaluate("window.__rafCount"),
+            "long_tasks": len(long_tasks),
+            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
+            "layout_count": delta(before, after, "LayoutCount"),
+            "recalc_style_count": delta(before, after, "RecalcStyleCount"),
+            "layout_ms": round(delta(before, after, "LayoutDuration") * 1000, 1),
+            "recalc_style_ms": round(delta(before, after, "RecalcStyleDuration") * 1000, 1),
+            "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
+            "activities": page.evaluate("window.__research.state().activities"),
+        }
+
+        # 2. Idle after the stream: the follow loop must stop when the list goes quiet.
+        page.evaluate("window.__rafCount = 0")
+        page.wait_for_timeout(2000)
+        results["idle_raf_callbacks_per_2s"] = page.evaluate("window.__rafCount")
+
+        # 3. Publishing the finished report -- the commit the freeze was reported on.
+        report = build_report(int(os.environ.get("SMOKE_REPORT_SECTIONS", "40")))
+        before = metrics(cdp)
+        page.evaluate("window.__longTasks.length = 0")
+        page.evaluate("md => window.__research.publishReport(md)", report)
+        # A click during the parse: if the main thread is blocked this lands late but must land.
+        page.click('[data-smoke="click-probe"]')
+        page.wait_for_timeout(3000)
+        after = metrics(cdp)
+        long_tasks = page.evaluate("window.__longTasks")
+        results["report"] = {
+            "chars": len(report),
+            "long_tasks": len(long_tasks),
+            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
+            "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
+            "clicks_registered": page.evaluate("window.__research.clicks()"),
+            "rendered": page.evaluate(
+                "() => Boolean(document.querySelector('[data-smoke=\\\"report\\\"] h1'))"
+            ),
+        }
+
+        # 4. Modal lifecycle: approval unmounts PlanReview's Dialog while it is still open, and
+        # closing the pane unmounts the panel under it. Either one stranding
+        # `body { pointer-events: none }` leaves the whole window unclickable.
+        page.evaluate("window.__research.clearReport()")
+        page.evaluate("window.__research.awaitApproval()")
+        page.wait_for_timeout(600)
+        dialog_open = page.evaluate(
+            "() => Boolean(document.querySelector('[role=\\\"dialog\\\"]'))"
+        )
+        body_during = page.evaluate("() => document.body.style.pointerEvents")
+        page.evaluate("window.__research.approve()")
+        page.wait_for_timeout(600)
+        body_after_approve = page.evaluate("() => document.body.style.pointerEvents")
+        clicks_before = page.evaluate("window.__research.clicks()")
+        page.click('[data-smoke="click-probe"]', timeout = 5000)
+        clicks_after_approve = page.evaluate("window.__research.clicks()")
+
+        page.evaluate("window.__research.awaitApproval()")
+        page.wait_for_timeout(600)
+        page.evaluate("window.__research.closePanel()")
+        page.wait_for_timeout(600)
+        body_after_close = page.evaluate("() => document.body.style.pointerEvents")
+        page.click('[data-smoke="click-probe"]', timeout = 5000)
+        clicks_after_close = page.evaluate("window.__research.clicks()")
+
+        results["modal"] = {
+            "dialog_opened": dialog_open,
+            "body_pointer_events_while_open": body_during,
+            "body_pointer_events_after_approve": body_after_approve,
+            "body_pointer_events_after_close": body_after_close,
+            "click_after_approve": clicks_after_approve > clicks_before,
+            "click_after_close": clicks_after_close > clicks_after_approve,
+        }
+
+        # 5. Detaching from the bottom. The follow loop must both keep the view pinned while the
+        # list grows and let go the moment the reader scrolls up, including a flick shorter than
+        # the bottom threshold: a follow step still pending at that moment used to run anyway and
+        # reconcile isAtBottom back to true, so "Latest" never appeared and nothing corrected it.
+        page.evaluate("window.__research.openPanel()")
+        page.wait_for_timeout(300)
+        page.evaluate("() => { for (let i = 100; i < 130; i += 1) window.__research.step(i); }")
+        page.wait_for_timeout(1500)
+        overflowing = page.evaluate(f"() => {{ const el = document.querySelector('{SCROLLER}'); return el.scrollHeight > el.clientHeight; }}")
+        followed_distance = page.evaluate(DISTANCE_FROM_BOTTOM)
+        latest_while_following = page.evaluate(LATEST_BUTTON_VISIBLE)
+        # A mutation, then one macrotask so the observer has queued its follow step, then a small
+        # upward flick while that step is still pending.
+        page.evaluate(
+            f"""async () => {{
+                const el = document.querySelector('{SCROLLER}');
+                el.firstElementChild.setAttribute("aria-hidden", "false");
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                el.dispatchEvent(new WheelEvent("wheel", {{ deltaY: -40, bubbles: true }}));
+                el.scrollTop = el.scrollHeight - el.clientHeight - 8;
+                el.dispatchEvent(new Event("scroll"));
+            }}"""
+        )
+        page.wait_for_timeout(600)
+        results["detach"] = {
+            "overflowing": overflowing,
+            "distance_while_following": followed_distance,
+            "latest_while_following": latest_while_following,
+            "distance_after_flick": page.evaluate(DISTANCE_FROM_BOTTOM),
+            "latest_after_flick": page.evaluate(LATEST_BUTTON_VISIBLE),
+        }
+
+        page.screenshot(path = str(OUT / f"{LABEL}.png"), full_page = False)
+        context.close()
+        browser.close()
+    return results
+
+
+def main() -> int:
+    results = run()
+    out = OUT / f"{LABEL}.json"
+    out.write_text(json.dumps(results, indent = 2))
+    info(json.dumps(results, indent = 2))
+    info(f"wrote {out}")
+
+    failures: list[str] = []
+    modal = results["modal"]
+    if not modal["dialog_opened"]:
+        failures.append("plan review dialog never opened; the modal checks proved nothing")
+    if modal["body_pointer_events_after_approve"] == "none":
+        failures.append("body pointer-events stranded at none after approve")
+    if modal["body_pointer_events_after_close"] == "none":
+        failures.append("body pointer-events stranded at none after closing the pane")
+    if not modal["click_after_approve"] or not modal["click_after_close"]:
+        failures.append("a click did not reach its handler after a modal path")
+    if not results["report"]["rendered"]:
+        failures.append("the report never rendered")
+    detach = results["detach"]
+    if not detach["overflowing"]:
+        failures.append("the activity list never overflowed; the detach checks proved nothing")
+    if detach["distance_while_following"] > 2:
+        failures.append(
+            f"the view was {detach['distance_while_following']}px off the bottom while following"
+        )
+    if detach["latest_while_following"]:
+        failures.append("'Latest' was offered while the view was still following")
+    if not detach["latest_after_flick"]:
+        failures.append("'Latest' did not appear after a flick shorter than the bottom threshold")
+    for problem in failures:
+        info(f"FAIL {problem}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
