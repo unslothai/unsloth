@@ -584,8 +584,8 @@ _SUMMARY_GUARD_ANCHOR = "_covered_disp_gfx=$(_infer_linux_amd_gfx_arch"
 
 
 def _summary_guard_snippet() -> str:
-    """The peer guard as install.sh ships it, from its anchor to the `fi` that closes
-    the else. Extracted rather than retyped: gutting it in install.sh fails here."""
+    """The peer guard as install.sh ships it. Extracted rather than retyped, so gutting
+    it there fails here."""
     src = _INSTALL_SH.read_text(encoding = "utf-8").replace("\r\n", "\n")
     start = src.find(_SUMMARY_GUARD_ANCHOR)
     assert start != -1, "install.sh: the CPU summary's peer guard was not found"
@@ -649,10 +649,9 @@ _RX_7900 = (
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this host")
 class TestInstallShCpuSummaryBlamesTheRightCard:
     """The end-of-run summary reaches its lspci lookup even when the arch read fine, so
-    unlike the arm in get_torch_index_url it is not covered by an empty-probe gate. A
-    host pairing an RX 5700 with an RX 7900 lands on CPU whenever the 7900's ROCm is too
-    old, and naming the 5700 there would replace the upgrade advice with advice that is
-    false for the card that caused the fallback."""
+    unlike the arm in get_torch_index_url it has no empty-probe gate. An RX 5700 beside
+    an RX 7900 lands on CPU whenever the 7900's ROCm is too old, and naming the 5700
+    there would replace the upgrade advice with advice false for the card at fault."""
 
     @pytest.mark.parametrize("lines", [[_RX_5700], [_RX_580]], ids = ["rx5700", "rx580"])
     def test_a_lone_uncovered_card_is_still_named(self, tmp_path, lines):

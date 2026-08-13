@@ -4498,11 +4498,11 @@ case "$TORCH_INDEX_URL" in
             elif _has_amd_rocm_gpu; then
                 # A generation ROCm never covered is not a missing SDK (unslothai#8529).
                 # Unlike the arm in get_torch_index_url, this one runs even when the arch
-                # read fine, so it needs its own peer guard: a host pairing an RX 5700
-                # with an RX 7900 lands here whenever the 7900's ROCm is too old, and
-                # blaming the 5700 would replace the upgrade advice with wrong advice.
-                # _infer_linux_amd_gfx_arch scans every display adapter, so a covered
-                # answer means the fallback was not this card's fault. Messaging only.
+                # read fine, so it needs its own peer guard: an RX 5700 beside an RX 7900
+                # lands here whenever the 7900's ROCm is too old, and blaming the 5700
+                # would replace the upgrade advice with advice that is false for the card
+                # that caused the fallback. _infer_linux_amd_gfx_arch scans every display
+                # adapter, so a covered answer clears this one. Messaging only.
                 _covered_disp_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null) || _covered_disp_gfx=""
                 if [ -n "$_covered_disp_gfx" ] && _amd_arch_index_family_for_gfx "$_covered_disp_gfx" >/dev/null 2>&1; then
                     _unsup_disp_gfx=""

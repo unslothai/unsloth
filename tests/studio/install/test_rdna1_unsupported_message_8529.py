@@ -1134,12 +1134,11 @@ class TestVulkanAdvice:
             ), f"README teaches the legacy spelling in a copy-paste block: {line!r}"
 
     def test_readme_does_not_promise_vulkan_to_macos(self):
-        """The block sits under a combined "macOS, Linux, WSL" heading, but macOS has
-        no Vulkan llama.cpp bundle: install_llama_prebuilt.py logs that the variable is
-        ignored and installs the Metal build instead. An Intel Mac carrying one of these
-        very cards (the 16-inch MacBook Pro shipped Radeon Pro 5300M/5500M/5600M, all in
-        the table above) would follow the documented command and get nothing.
-        """
+        """The block sits under a combined "macOS, Linux, WSL" heading, but macOS has no
+        Vulkan llama.cpp bundle: install_llama_prebuilt.py logs that the variable is
+        ignored and installs Metal. An Intel Mac carrying one of these very cards (the
+        16-inch MacBook Pro shipped Radeon Pro 5300M/5500M/5600M, all rows above) would
+        follow the documented command and get nothing."""
         prebuilt = (PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py").read_text(
             encoding = "utf-8"
         )
