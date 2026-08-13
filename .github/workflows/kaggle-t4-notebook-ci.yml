@@ -370,24 +370,29 @@ jobs:
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==1.7.4.5'
 
-      # BEFORE anything is built or pushed. The suite is CPU-only and runs in
-      # about two seconds; it parses every generated cell, checks the leg
-      # wiring, the report verdicts, the pin handling and this file's own
-      # trigger and timeout wiring. The root pyproject.toml sets
-      # testpaths = ["tests/security"], so a bare pytest never collects it and
-      # no other workflow runs it -- which means without this step a broken
-      # harness is discovered forty minutes into a Kaggle session instead of
-      # here, having spent the quota to find out.
+      # BEFORE anything is built or pushed. The suites are CPU-only and run in
+      # under a minute; they parse every generated cell, check the leg wiring,
+      # the report verdicts, the payload's own pass/fail rules, the pin
+      # handling and this file's trigger, budget and timeout wiring. The root
+      # pyproject.toml sets testpaths = ["tests/security"], so a bare pytest
+      # never collects them and no other workflow runs them -- which means
+      # without this step a broken harness is discovered forty minutes into a
+      # Kaggle session instead of here, having spent the quota to find out.
+      #
+      # The whole DIRECTORY, not one file: naming a file is how the two suites
+      # added after it (the transport tests and the payload-assertion tests,
+      # which cover the report extraction, the reference checks and the leg
+      # isolation) ended up collected by nothing at all.
       #
       # torch from the CPU index and transformers WITHOUT it: the payload
-      # modules the suite imports need both to import at all, and the CPU
+      # modules the suites import need both to import at all, and the CPU
       # wheel is a minute against a session that costs quota. Measured in a
-      # bare venv with exactly these three: 149 passed.
+      # bare venv with exactly these three: 226 passed.
       - name: Test the harness
         run: |
           python -m pip install --quiet pytest transformers
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pytest tests/kaggle/test_t4_smoke_harness.py -q
+          python -m pytest tests/kaggle -q
 
       # The ref the kernels install and test. For a pull request that is
       # the head SHA, so they exercise the proposed code and not the merge

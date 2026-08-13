@@ -1824,7 +1824,34 @@ def test_the_harness_suite_runs_before_any_kernel_is_pushed():
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
     names = [s.get("name") for s in steps]
     assert names.index("Test the harness") < names.index("Build the kernel notebooks")
-    assert "tests/kaggle/test_t4_smoke_harness.py" in steps[names.index("Test the harness")]["run"]
+    assert "python -m pytest tests/kaggle -q" in steps[names.index("Test the harness")]["run"]
+
+
+def test_every_cpu_suite_in_the_directory_is_collected_by_that_step():
+    """Naming one file leaves the others collected by nothing at all.
+
+    pyproject.toml restricts default discovery to tests/security, so a suite
+    that this step does not name is not run by any invocation anywhere -- and
+    the two suites added after this step was written cover the report
+    extraction, the payload verdicts, the reference checks and the per-leg
+    isolation, which is most of what a Kaggle session would otherwise be spent
+    discovering.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    run = steps[names.index("Test the harness")]["run"]
+    suites = sorted(p.name for p in (Path(__file__).resolve().parent).glob("test_*.py"))
+    assert len(suites) >= 3, suites
+    argument = run.split("python -m pytest ")[1].split()[0]
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", argument, "--collect-only", "-q"],
+        capture_output = True,
+        text = True,
+        cwd = Path(__file__).resolve().parents[2],
+    )
+    assert collected.returncode == 0, collected.stdout[-2000:]
+    for suite in suites:
+        assert f"tests/kaggle/{suite}" in collected.stdout, f"{suite} is collected by nothing"
 
 
 def test_every_leg_installs_one_pinned_zoo_commit():
