@@ -11,6 +11,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
+import functools
 import glob
 import importlib
 import importlib.util
@@ -4113,28 +4114,51 @@ def _stage_replacement(name: str):
     index is still reachable, keeps that install offline-safe.
 
     pip and not uv because uv has no `wheel` subcommand, so uv's own index
-    variables have to be handed across explicitly to keep the provenance.
+    variables and upload cutoff have to be handed across explicitly to keep the
+    provenance and the reproducibility policy the other installs run under.
     """
+    cutoff_args = _uv_upload_cutoff_args()
+    if cutoff_args is None:
+        _safe_print(
+            _red(
+                "   UV_EXCLUDE_NEWER is set but this pip is too old to honour it "
+                "(needs 25.3 for --uploaded-prior-to); leaving the install alone."
+            ),
+            file = sys.stderr,
+        )
+        return None
     staging = tempfile.mkdtemp(prefix = "unsloth_metadata_repair_")
-    cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", staging, name]
-    env = _install_env_for_cmd(cmd)
-    index_env = _uv_index_env_for_pip()
-    if index_env:
-        env = dict(env if env is not None else os.environ)
-        env.update(index_env)
-    result = subprocess.run(
-        cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        env = env,
-        **_windows_hidden_subprocess_kwargs(),
-    )
-    if result.returncode != 0 or not glob.glob(os.path.join(staging, "*.whl")):
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "wheel",
+        "--no-deps",
+        *cutoff_args,
+        "--wheel-dir",
+        staging,
+        name,
+    ]
+    base_env = _install_env_for_cmd(cmd)
+    for overrides in _staging_index_envs():
+        if overrides:
+            env = dict(base_env if base_env is not None else os.environ)
+            env.update(overrides)
+        else:
+            env = base_env
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        if result.returncode == 0 and glob.glob(os.path.join(staging, "*.whl")):
+            return staging
         if VERBOSE and result.stdout:
             _safe_print(_redact_install_output(result.stdout))
-        shutil.rmtree(staging, ignore_errors = True)
-        return None
-    return staging
+    shutil.rmtree(staging, ignore_errors = True)
+    return None
 
 
 def _repair_duplicate_core_metadata(
@@ -4438,34 +4462,91 @@ def _uv_index_values(name: str) -> "list[str]":
     return [value for value in values if value]
 
 
-def _uv_index_env_for_pip() -> "dict[str, str]":
-    """Translate uv's index configuration into the pip equivalents.
+def _uv_index_sources() -> "list[str]":
+    """uv's indexes in uv's own priority order, highest first.
+
+    `--index` outranks the deprecated `--extra-index-url`, which outranks the default
+    index; `--index-url` is the deprecated spelling of `--default-index`.
+    """
+    default = _uv_index_values("UV_DEFAULT_INDEX") or _uv_index_values("UV_INDEX_URL")
+    ordered = _uv_index_values("UV_INDEX") + _uv_index_values("UV_EXTRA_INDEX_URL") + default
+    seen, sources = set(), []
+    for url in ordered:
+        if url in seen:
+            continue
+        seen.add(url)
+        sources.append(url)
+    return sources
+
+
+def _staging_index_envs() -> "list[dict[str, str]]":
+    """Pip environments to try when staging, one per uv index, in uv's order.
 
     uv reads UV_DEFAULT_INDEX / UV_INDEX / UV_FIND_LINKS and pip reads none of them, so a
     machine configured only through uv would stage a repair replacement from public PyPI
     while every other install came from its private mirror. The repair then uninstalls the
     private build and reinstalls the public wheel, silently changing provenance.
 
-    Only fills variables pip does not already have: an explicit pip setting is the more
-    specific instruction. Empty unless uv is the package manager in use.
+    Translating them into PIP_INDEX_URL plus PIP_EXTRA_INDEX_URL would restore the reach
+    but not the semantics: uv's default index-strategy is first-index, meaning it stops at
+    the first index that carries the package, which is what stops a public release
+    shadowing a private one. pip has no equivalent -- index-url and extra-index-url form
+    one candidate pool and the highest version wins. So each index is offered alone, in
+    order, and the first that can build the wheel is the one used.
+
+    A single pass with no overrides when uv is not in use, when pip already names its own
+    index (the more specific instruction), or when uv names none either.
     """
-    if not USE_UV:
-        return {}
-    env: dict[str, str] = {}
-    default = _uv_index_values("UV_DEFAULT_INDEX") or _uv_index_values("UV_INDEX_URL")
-    extra = _uv_index_values("UV_INDEX") + _uv_index_values("UV_EXTRA_INDEX_URL")
-    if not default and extra:
-        # uv resolves --index entries ahead of the default index, so the first one is the
-        # closest pip equivalent of a default when nothing else names one.
-        default, extra = extra[:1], extra[1:]
-    if default and not os.environ.get("PIP_INDEX_URL"):
-        env["PIP_INDEX_URL"] = default[0]
-    if extra and not os.environ.get("PIP_EXTRA_INDEX_URL"):
-        env["PIP_EXTRA_INDEX_URL"] = " ".join(extra)
     find_links = _uv_index_values("UV_FIND_LINKS")
+    shared: dict[str, str] = {}
     if find_links and not os.environ.get("PIP_FIND_LINKS"):
-        env["PIP_FIND_LINKS"] = " ".join(find_links)
-    return env
+        # Additive in both tools, so it applies to every attempt rather than ordering them.
+        shared["PIP_FIND_LINKS"] = " ".join(find_links)
+    if not USE_UV or os.environ.get("PIP_INDEX_URL"):
+        return [shared]
+    sources = _uv_index_sources()
+    if not sources:
+        return [shared]
+    envs = []
+    for url in sources:
+        env = dict(shared)
+        env["PIP_INDEX_URL"] = url
+        # An inherited extra index would re-pool the candidates this ordering separates.
+        env["PIP_EXTRA_INDEX_URL"] = ""
+        envs.append(env)
+    return envs
+
+
+def _uv_upload_cutoff_args() -> "list[str] | None":
+    """pip arguments carrying UV_EXCLUDE_NEWER, or None when it cannot be honoured.
+
+    uv's --exclude-newer limits candidates by upload time, and staging runs pip, which
+    ignores the variable and would stage a release the user's policy excludes. pip's
+    --uploaded-prior-to is the same filter and takes the same date spellings, but it only
+    exists from pip 25.3. Refusing to stage is the correct answer on an older pip: the
+    repair then aborts with the installation still intact, rather than quietly installing
+    a wheel the cutoff forbids.
+    """
+    cutoff = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
+    if not cutoff:
+        return []
+    if not _pip_supports_upload_cutoff():
+        return None
+    return ["--uploaded-prior-to", cutoff]
+
+
+@functools.lru_cache(maxsize = 1)
+def _pip_supports_upload_cutoff() -> bool:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--help"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except OSError:
+        return False
+    return b"--uploaded-prior-to" in (result.stdout or b"")
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":

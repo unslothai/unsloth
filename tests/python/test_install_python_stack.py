@@ -9,6 +9,7 @@ import inspect
 import io
 import os
 import re
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -1014,50 +1015,93 @@ class TestDuplicateCoreMetadataRepair:
         )
         assert env is not None and env.get("PIP_REQUIRE_HASHES") == "0"
 
+    def _uv_only(self, monkeypatch):
+        monkeypatch.setattr(ips, "USE_UV", True)
+        for var in (
+            "PIP_INDEX_URL",
+            "PIP_EXTRA_INDEX_URL",
+            "PIP_FIND_LINKS",
+            "UV_INDEX",
+            "UV_EXTRA_INDEX_URL",
+            "UV_INDEX_URL",
+            "UV_DEFAULT_INDEX",
+            "UV_FIND_LINKS",
+            "UV_EXCLUDE_NEWER",
+        ):
+            monkeypatch.delenv(var, raising = False)
+
     def test_staging_carries_the_uv_index_across_to_pip(self, monkeypatch):
         """uv has no wheel subcommand, so staging runs pip, which reads none of
         uv's index variables and would otherwise stage from public PyPI while
         every other install came from the private mirror."""
-        monkeypatch.setattr(ips, "USE_UV", True)
-        for var in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS"):
-            monkeypatch.delenv(var, raising = False)
+        self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple")
         monkeypatch.setenv("UV_INDEX", "internal=https://mirror.corp/internal")
         monkeypatch.setenv("UV_FIND_LINKS", "/opt/wheels")
-        env = ips._uv_index_env_for_pip()
-        assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple"
-        # A named uv index is `label=url`; pip takes the URL alone.
-        assert env["PIP_EXTRA_INDEX_URL"] == "https://mirror.corp/internal"
-        assert env["PIP_FIND_LINKS"] == "/opt/wheels"
+        envs = ips._staging_index_envs()
+        # A named uv index is `label=url`; pip takes the URL alone. --index outranks
+        # the default index, so the private source is tried first.
+        assert [env["PIP_INDEX_URL"] for env in envs] == [
+            "https://mirror.corp/internal",
+            "https://mirror.corp/simple",
+        ]
+        assert all(env["PIP_FIND_LINKS"] == "/opt/wheels" for env in envs)
 
-    def test_a_lone_uv_index_becomes_the_pip_default(self, monkeypatch):
-        """uv resolves --index entries ahead of the default index, so with
-        nothing else naming one the first entry is the closest pip equivalent."""
-        monkeypatch.setattr(ips, "USE_UV", True)
-        for var in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX_URL"):
-            monkeypatch.delenv(var, raising = False)
-        monkeypatch.setenv("UV_INDEX", "https://a.corp/simple https://b.corp/simple")
-        env = ips._uv_index_env_for_pip()
-        assert env["PIP_INDEX_URL"] == "https://a.corp/simple"
-        assert env["PIP_EXTRA_INDEX_URL"] == "https://b.corp/simple"
+    def test_each_uv_index_is_offered_alone(self, monkeypatch):
+        """uv's default index-strategy is first-index: it stops at the first index
+        carrying the package, which is what stops a public release shadowing a
+        private one. pip pools index-url with extra-index-url and takes the highest
+        version, so pooling them here would reintroduce dependency confusion."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_INDEX", "https://private.corp/simple")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple")
+        envs = ips._staging_index_envs()
+        assert len(envs) == 2
+        assert all(env["PIP_EXTRA_INDEX_URL"] == "" for env in envs)
 
     def test_an_explicit_pip_index_outranks_the_uv_translation(self, monkeypatch):
-        monkeypatch.setattr(ips, "USE_UV", True)
+        self._uv_only(monkeypatch)
         monkeypatch.setenv("PIP_INDEX_URL", "https://pip.corp/simple")
         monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv.corp/simple")
-        assert "PIP_INDEX_URL" not in ips._uv_index_env_for_pip()
+        assert ips._staging_index_envs() == [{}]
 
     def test_a_query_string_is_not_mistaken_for_a_named_index(self, monkeypatch):
-        monkeypatch.setattr(ips, "USE_UV", True)
-        monkeypatch.delenv("PIP_INDEX_URL", raising = False)
+        self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple?token=abc")
-        env = ips._uv_index_env_for_pip()
-        assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple?token=abc"
+        assert ips._staging_index_envs()[0]["PIP_INDEX_URL"] == (
+            "https://mirror.corp/simple?token=abc"
+        )
 
     def test_no_uv_translation_when_pip_is_the_package_manager(self, monkeypatch):
+        self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", False)
         monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple")
-        assert ips._uv_index_env_for_pip() == {}
+        assert ips._staging_index_envs() == [{}]
+
+    def test_staging_falls_through_to_the_next_uv_index(self, monkeypatch):
+        """One index per attempt means the package simply not being on the private
+        mirror must not fail the repair."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(
+            ips,
+            "_staging_index_envs",
+            lambda: [{"PIP_INDEX_URL": "https://a/s"}, {"PIP_INDEX_URL": "https://b/s"}],
+        )
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(kwargs["env"]["PIP_INDEX_URL"])
+            wheel_dir = cmd[cmd.index("--wheel-dir") + 1]
+            if len(seen) == 2:
+                Path(wheel_dir, "unsloth-1.0-py3-none-any.whl").write_text("")
+                return types.SimpleNamespace(returncode = 0, stdout = b"")
+            return types.SimpleNamespace(returncode = 1, stdout = b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        staged = ips._stage_replacement("unsloth")
+        assert staged is not None
+        assert seen == ["https://a/s", "https://b/s"]
+        shutil.rmtree(staged, ignore_errors = True)
 
     def test_the_staging_command_runs_with_the_translated_index(self, monkeypatch):
         captured = {}
@@ -1068,11 +1112,49 @@ class TestDuplicateCoreMetadataRepair:
             return types.SimpleNamespace(returncode = 1, stdout = b"")
 
         monkeypatch.setattr(ips.subprocess, "run", fake_run)
-        monkeypatch.setattr(ips, "_uv_index_env_for_pip", lambda: {"PIP_INDEX_URL": "https://m/s"})
+        monkeypatch.setattr(ips, "_staging_index_envs", lambda: [{"PIP_INDEX_URL": "https://m/s"}])
         assert ips._stage_replacement("unsloth") is None
         assert captured["env"]["PIP_INDEX_URL"] == "https://m/s"
         # The hash relaxation for `pip wheel` survives the index merge.
         assert captured["env"]["PIP_REQUIRE_HASHES"] == "0"
+
+    def test_the_uv_upload_cutoff_reaches_pip(self, monkeypatch):
+        """UV_EXCLUDE_NEWER limits candidates by upload time and pip ignores it, so
+        staging could install a release the user's policy excludes. pip's
+        --uploaded-prior-to is the same filter and takes the same date spellings
+        (checked on pip 26.2: a bare 2020-01-01 staged six 1.13.0, not 1.17.0)."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2026-01-01")
+        monkeypatch.setattr(ips, "_pip_supports_upload_cutoff", lambda: True)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return types.SimpleNamespace(returncode = 1, stdout = b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        assert ips._stage_replacement("unsloth") is None
+        assert "--uploaded-prior-to" in captured["cmd"]
+        assert captured["cmd"][captured["cmd"].index("--uploaded-prior-to") + 1] == "2026-01-01"
+
+    def test_an_unhonourable_cutoff_leaves_the_install_alone(self, monkeypatch, capsys):
+        """--uploaded-prior-to only exists from pip 25.3. Staging a newer wheel
+        anyway would silently break the policy, so the repair aborts instead, with
+        the duplicate still in place and the package still installed."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2026-01-01")
+        monkeypatch.setattr(ips, "_pip_supports_upload_cutoff", lambda: False)
+
+        def fake_run(*args, **kwargs):
+            raise AssertionError("pip must not run when the cutoff cannot be honoured")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        assert ips._stage_replacement("unsloth") is None
+        assert "UV_EXCLUDE_NEWER" in capsys.readouterr().err
+
+    def test_no_cutoff_argument_without_the_variable(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        assert ips._uv_upload_cutoff_args() == []
 
     @pytest.mark.parametrize("label", ("_restore_from_staged", "the repair fallback"))
     def test_the_staged_wheel_is_reinstalled_with_pip_not_uv(self, monkeypatch, label):
@@ -1244,7 +1326,8 @@ class TestDuplicateCoreMetadataRepair:
         that follows runs --no-index, so its isolated build cannot fetch
         setuptools and the package stays uninstalled."""
         source = inspect.getsource(ips._stage_replacement).replace(" ", "")
-        assert '"wheel","--no-deps","--wheel-dir"' in source
+        assert '"wheel",\n"--no-deps",' in source
+        assert '"--wheel-dir",\nstaging,' in source
         assert '"download"' not in source
         assert 'glob.glob(os.path.join(staging,"*.whl"))' in source
 
