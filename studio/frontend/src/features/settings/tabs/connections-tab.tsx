@@ -24,7 +24,10 @@ export function ConnectionsTab() {
   );
 
   return (
-    <div data-testid="connections-tab-content">
+    <div
+      data-testid="connections-tab-content"
+      className="pb-8 sm:pb-10"
+    >
       <ChatProvidersSettings
         providers={providers}
         onProvidersChange={setProviders}

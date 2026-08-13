@@ -13,7 +13,14 @@ import type {
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
-import { noteRagAvailability, noteRagResponse } from "./rag-availability";
+import { noteRagResponse } from "./rag-availability";
+import {
+  createDatasetKnowledgeBase,
+  deleteDatasetKnowledgeBase,
+  listAllKnowledgeBases,
+  updateDatasetKnowledgeBase,
+  type KnowledgeBaseWriteInput,
+} from "./platform-dataset-adapter";
 
 const RAG_BASE = "/api/rag";
 
@@ -79,71 +86,32 @@ async function ragUpload(
   return json as DocumentUploadResult;
 }
 
-export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
-  const data = await ragRequest<{
-    knowledgeBases: KnowledgeBase[];
-    ragAvailable?: boolean;
-    ragUnavailableReason?: string | null;
-  }>("/knowledge-bases");
-  // The one endpoint that degrades to 200 instead of 503, so an empty list here means
-  // either an empty store or a host where RAG cannot run. The marker tells them apart.
-  noteRagAvailability(data);
-  return data.knowledgeBases ?? [];
+export function listKnowledgeBases(
+  signal?: AbortSignal,
+): Promise<KnowledgeBase[]> {
+  return listAllKnowledgeBases(signal);
 }
 
-export function createKnowledgeBase(payload: {
-  name: string;
-  description?: string;
-}): Promise<{ id: string; name: string }> {
-  return ragRequest("/knowledge-bases", {
-    method: "POST",
-    body: {
-      name: payload.name,
-      ...(payload.description ? { description: payload.description } : {}),
-    },
-  });
+export function createKnowledgeBase(
+  payload: KnowledgeBaseWriteInput,
+  signal?: AbortSignal,
+): Promise<KnowledgeBase> {
+  return createDatasetKnowledgeBase(payload, signal);
 }
 
 export function updateKnowledgeBase(
   kbId: string,
-  payload: { name?: string; description?: string },
-): Promise<{ ok: boolean }> {
-  const body: Record<string, unknown> = {};
-  if (payload.name !== undefined) body.name = payload.name;
-  if (payload.description !== undefined) body.description = payload.description;
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "PATCH",
-    body,
-  });
+  payload: KnowledgeBaseWriteInput,
+  signal?: AbortSignal,
+): Promise<KnowledgeBase> {
+  return updateDatasetKnowledgeBase(kbId, payload, signal);
 }
 
-export function deleteKnowledgeBase(kbId: string): Promise<{ ok: boolean }> {
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "DELETE",
-  });
-}
-
-export async function listKnowledgeBaseDocuments(
+export function deleteKnowledgeBase(
   kbId: string,
-): Promise<RagDocument[]> {
-  const data = await ragRequest<{ documents: RagDocument[] }>(
-    `/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
-  );
-  return data.documents ?? [];
-}
-
-export function uploadKnowledgeBaseDocument(
-  kbId: string,
-  file: UploadSource,
-  ocr?: boolean,
-  caption?: boolean,
-): Promise<DocumentUploadResult> {
-  return ragUpload(
-    `/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
-    file,
-    ocr,
-    caption,
-  );
+  signal?: AbortSignal,
+): Promise<void> {
+  return deleteDatasetKnowledgeBase(kbId, signal);
 }
 
 export async function listThreadDocuments(

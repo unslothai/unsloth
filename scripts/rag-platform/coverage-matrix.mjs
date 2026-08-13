@@ -186,6 +186,9 @@ const PHASE_OVERRIDES = [
   // datasets is split across five phases by the plan §4 rows.
   [/^\/api\/v1\/datasets\/\{p\}\/documents/, 5],
   [/^\/api\/v1\/datasets\/\{p\}\/(chunks|search)/, 6],
+  [/^\/api\/v1\/datasets\/search$/, 10],
+  [/^\/api\/v1\/datasets\/\{p\}\/(any_artifact|any_skill|embedding)$/, 10],
+  [/^\/api\/v1\/datasets\/\{p\}\/\{p\}$/, 10],
   [/^\/api\/v1\/datasets\/\{p\}\/embedding\/check$/, 10],
   [/^\/api\/v1\/datasets\/(\{p\}\/)?(metadata|tags)/, 10],
   [
@@ -1462,6 +1465,55 @@ for (const [key, [status, uiPath, service]] of Object.entries(
     };
   }
 }
+
+const PHASE4_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/dataset-api.test.ts",
+  "src/features/rag/api/platform-dataset-adapter.test.ts",
+  "src/features/rag/components/knowledge-base-dialog.test.tsx",
+];
+
+Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "python-api|GET /api/v1/datasets": {
+    status: "implemented",
+    uiPath:
+      "Chat composer → RAG → Manage knowledge bases → paginated/searchable list",
+    typedService:
+      "src/integrations/platform-backend/dataset-api.ts#listPlatformDatasets",
+    evidence: PHASE4_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/datasets": {
+    status: "implemented",
+    uiPath:
+      "Chat composer → RAG → Manage knowledge bases → Yeni → Oluştur",
+    typedService:
+      "src/integrations/platform-backend/dataset-api.ts#createPlatformDataset",
+    evidence: PHASE4_TEST_EVIDENCE,
+  },
+  "python-api|DELETE /api/v1/datasets": {
+    status: "implemented",
+    uiPath:
+      "Chat composer → RAG → Manage knowledge bases → Delete → confirmed Sil",
+    typedService:
+      "src/integrations/platform-backend/dataset-api.ts#deletePlatformDatasets",
+    evidence: PHASE4_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/datasets/{p}": {
+    status: "implemented",
+    uiPath:
+      "Chat composer → RAG → Manage knowledge bases → dataset edit action",
+    typedService:
+      "src/integrations/platform-backend/dataset-api.ts#getPlatformDataset",
+    evidence: PHASE4_TEST_EVIDENCE,
+  },
+  "go-api|PUT /api/v1/datasets/{p}": {
+    status: "implemented",
+    uiPath:
+      "Chat composer → RAG → Manage knowledge bases → dataset edit → Değişiklikleri kaydet",
+    typedService:
+      "src/integrations/platform-backend/dataset-api.ts#updatePlatformDataset",
+    evidence: PHASE4_TEST_EVIDENCE,
+  },
+});
 
 /**
  * Per-route findings verified against the running backend that a reader of the

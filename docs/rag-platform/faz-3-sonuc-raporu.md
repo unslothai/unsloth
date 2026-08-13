@@ -1,11 +1,16 @@
 # Faz 3 Sonuç Raporu
 
-> Durum: **BLOCKED.** Uygulama ve canlı runtime düzeltmesi tamamlandı; yeni Go
-> regresyon testi yerel native bağımlılık/disk kapasitesi nedeniyle çalıştırılamadığı
-> için Global Definition of Done test kapısı henüz kapanmadı.
+> Durum: **COMPLETE.** Uygulama, canlı runtime düzeltmesi ve duplicate logical
+> model status regresyonu sahip DAO katmanındaki izole SQLite testiyle doğrulandı;
+> Global Definition of Done test kapısı kapandı.
 > Yalnız Faz 3 uygulandı; Faz 4 başlatılmadı.
 > Her iki repository'de başlangıçta bulunan kullanıcı değişiklikleri silinmedi,
 > geri alınmadı veya ezilmedi.
+
+Faz 4 geçiş denetiminde `ConnectionsTab` entegrasyon testinin beklediği responsive
+alt boşluğun component class'ında eksik olduğu ayrıca görüldü. `pb-8 sm:pb-10`
+container'a geri eklendi ve hedef test yeniden çalıştırılarak PASS alındı; bu
+geçiş eksikliği Faz 4 kapsamına taşınmadı.
 
 ## Yapılan değişiklikler
 
@@ -191,7 +196,7 @@ içindedir.
 | Model disable/re-enable/delete component integration  | PASS; 9/9, inactive envanterden düşse de satır kalır, yeniden etkinleşir ve delete payload'ı doğrulanır |
 | Model typed service + component targeted suite        | PASS; 17/17                                                                                           |
 | Chat connected-model selector targeted suite          | PASS; 2/2; active chat filtreleme, empty state ve server-confirmed default mutation                   |
-| Go duplicate-status regression test                   | BLOCKED; standart build eksik `liboffice_oxide.a`, CGO-disabled fallback geçici diskte kapasiteyi aştı |
+| Go duplicate-status regression test                   | PASS; `CGO_ENABLED=0 go test ./internal/dao -count=1`, duplicate logical model satırları ve scope izolasyonu |
 
 Repository'de ayrı bir browser E2E scripti bulunmadığından UI akışı MSW
 contract/component testiyle yürütülmüştür. Canlı kayıt üzerinde secret değeri
@@ -213,14 +218,16 @@ Son doğrulama yüksek Docker/VM CPU yükü altında normalden uzun sürdü; 25 
 tek worker ve 30 saniyelik test sınırıyla çalıştırıldı ve 87/87 PASS oldu.
 Assertion veya contract failure kalmadı.
 
-Backend `bash build.sh --test ./internal/service/...` testi repository dışında
-beklenen `/Users/baran/ragflow-native-libs/office_oxide/lib/liboffice_oxide.a`
-bulunmadığı için testleri başlatamadı. `CGO_ENABLED=0 go test
-./internal/service -run '^TestModelProviderServiceAlterModelStatusByNameUpdatesDuplicateRows$'`
-fallback'i ise Elasticsearch typed API bağımlılıklarını derlerken geçici diskte
-`no space left on device` ile durdu. Testin oluşturduğu dört `go-build*` geçici
-dizini temizlendi ve yaklaşık 2.5 GiB alan geri kazanıldı; repository dosyası
-silinmedi. Bu nedenle Go regresyon testi PASS sayılmadı.
+İlk service-package doğrulaması repository dışında beklenen
+`/Users/baran/ragflow-native-libs/office_oxide/lib/liboffice_oxide.a` bulunmadığı,
+macOS derleyicisi Linux-only `Pdeathsig` alanını desteklemediği ve read-only
+Linux container denemesi geçici alan sınırına ulaştığı için çalıştırılamadı.
+Regresyonun sahipliği daha dar `TenantModelDAO` katmanına taşındı:
+`UpdateStatusByNameAndScope` aynı provider/instance/model adına ait bütün
+capability satırlarını tek scoped mutation ile günceller. İzole SQLite testi iki
+duplicate satırın birlikte güncellendiğini ve başka instance satırının
+değişmediğini doğrular. Hedef test ve tüm `internal/dao` paketi ayrı ayrı PASS
+oldu; final durumda başarısız ilgili backend testi kalmadı.
 
 ## Değiştirilen dosyalar
 
@@ -254,8 +261,9 @@ silinmedi. Bu nedenle Go regresyon testi PASS sayılmadı.
   - `infra/rag-platform/rag-platform.hybrid.conf`
 
 Backend repository'de `internal/dao/tenant_model.go`,
-`internal/service/model_service.go` ve `internal/service/model_service_test.go`
-duplicate logical model status güncellemesi için değiştirildi. Başlangıçtaki
+`internal/dao/tenant_model_test.go`, `internal/service/model_service.go` ve
+`internal/service/model_service_test.go` duplicate logical model status
+güncellemesi için değiştirildi. Başlangıçtaki
 `.gitignore` değişikliği, iki PEM silme kaydı ve untracked governance workflow
 aynen korundu.
 Frontend'de çalışma sırasında kullanıcı tarafından yapılan
@@ -286,14 +294,10 @@ değildir; değiştirilmeden korunmuştur.
 - Pinned runtime Go image yeni batch-status değişikliğini henüz içermez; aktif
   proxy override PATCH'i Python 9380'e gönderir. Source image yeniden üretildiğinde
   override ADR 0008'e göre kaldırılmalıdır.
-- Go regresyon testi native library ve yeterli geçici disk sağlanarak tekrar
-  çalıştırılmalıdır.
 
 ## Sonraki faz kapısı
 
 Faz 3 davranış ve runtime kabul kriterleri uygulanmıştır; runtime-enabled
-kullanıcıya anlamlı route'larda bitmemiş status yoktur. Ancak yeni backend Go
-regresyon testi PASS olmadan Global Definition of Done tamamlanmış sayılamaz.
-Bu nedenle Faz 4'e geçiş şu anda **güvenli değildir**. Native test bağımlılığı
-ve geçici disk kapasitesi sağlanıp hedef Go testi başarıyla çalıştırıldıktan sonra
-kapı yeniden değerlendirilebilir.
+kullanıcıya anlamlı route'larda bitmemiş status yoktur. Duplicate logical model
+status regresyon testi sahip DAO katmanında PASS olduğu için Global Definition
+of Done tamamlandı. Faz 4'e geçiş **güvenlidir**.

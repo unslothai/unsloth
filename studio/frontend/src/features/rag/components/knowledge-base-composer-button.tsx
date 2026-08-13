@@ -5,7 +5,7 @@ import { XIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { type FC, useCallback, useEffect, useState } from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -56,21 +56,27 @@ export function KnowledgeBaseComposerButton({
   const [kbsLoaded, setKbsLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const refreshAbortRef = useRef<AbortController | undefined>(undefined);
 
   const refresh = useCallback(async () => {
+    refreshAbortRef.current?.abort();
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
     try {
-      const rows = await listKnowledgeBases();
+      const rows = await listKnowledgeBases(controller.signal);
+      if (controller.signal.aborted) return;
       setKbs(rows);
     } catch {
       // Keep prior state on failure.
     } finally {
-      setKbsLoaded(true);
+      if (!controller.signal.aborted) setKbsLoaded(true);
     }
   }, []);
 
   // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
+    return () => refreshAbortRef.current?.abort();
   }, [refresh]);
 
   // If the selected KB was deleted, fall back to thread source so we never send a

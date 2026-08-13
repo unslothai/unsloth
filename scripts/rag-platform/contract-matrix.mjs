@@ -14,7 +14,7 @@
  *              call sites, and a stale left-hand column is worse than none.
  *   declared   The backend target, the transform and the phase are hand-written
  *              in MAPPINGS below, because no static rule can decide that
- *              `/api/rag/knowledge-bases` becomes `/api/v1/datasets`.
+ *              a Studio-local auth route becomes its `/api/v1/users/me` equivalent.
  *
  * Every declared backend target is then re-checked against the generated
  * endpoint coverage matrix: if a target is not a route that exists and is
@@ -350,31 +350,6 @@ const MAPPINGS = {
     phase: 9,
   },
 
-  // --- knowledge bases -> datasets (Faz 4) ------------------------------
-  "GET /api/rag/knowledge-bases": {
-    to: "GET /api/v1/datasets",
-    transform:
-      "`knowledgeBases[]` becomes the platform dataset page envelope; the `ragAvailable` degradation marker has no platform analogue and must be dropped rather than faked.",
-    phase: 4,
-  },
-  "POST /api/rag/knowledge-bases": {
-    to: "POST /api/v1/datasets",
-    transform:
-      "`{name,description}` maps across, but the platform also needs the embedding model and parser configuration Studio never sent; Faz 3 readiness supplies them.",
-    phase: 4,
-  },
-  "PATCH /api/rag/knowledge-bases/{p}": {
-    to: "PUT /api/v1/datasets/<dataset_id>",
-    transform: "Verb changes from PATCH to PUT; the platform update is a full-object write.",
-    phase: 4,
-  },
-  "DELETE /api/rag/knowledge-bases/{p}": {
-    to: "DELETE /api/v1/datasets",
-    transform:
-      "Not a per-id delete: the platform takes the id list in the request body, so a single-id delete sends a one-element array.",
-    phase: 4,
-  },
-
   // --- documents (Faz 5) ------------------------------------------------
   "GET /api/rag/documents": {
     to: null,
@@ -386,18 +361,6 @@ const MAPPINGS = {
     to: "DELETE /api/v1/datasets/<dataset_id>/documents",
     transform:
       "Requires a `dataset_id` the current caller does not hold, and takes ids in the body. Document identity in the UI must start carrying its dataset.",
-    phase: 5,
-  },
-  "GET /api/rag/knowledge-bases/{p}/documents": {
-    to: "GET /api/v1/datasets/<dataset_id>/documents",
-    transform:
-      "Same question, platform envelope; the reply adds `run`/`progress`/`progress_msg` parse state that Studio's document model has no field for yet.",
-    phase: 5,
-  },
-  "POST /api/rag/knowledge-bases/{p}/documents": {
-    to: "POST /api/v1/datasets/<dataset_id>/documents",
-    transform:
-      "Multipart upload maps directly, but Studio treats upload as terminal while the platform needs a separate `documents/parse` trigger, so the adapter must chain the two and then poll.",
     phase: 5,
   },
   "GET /api/rag/documents/{p}/preview-target": {

@@ -6,7 +6,13 @@ export interface KnowledgeBase {
   name: string;
   description?: string | null;
   createdAt?: string | null;
+  updatedAt?: string | null;
   documentCount?: number;
+  embeddingModel?: string;
+  permission?: "me" | "team";
+  chunkMethod?: string;
+  parserConfig?: Record<string, unknown>;
+  pipelineId?: string | null;
 }
 
 /** Index status: pending -> running -> completed | failed. */

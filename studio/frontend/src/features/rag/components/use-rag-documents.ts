@@ -8,7 +8,6 @@ import {
   deleteDocument,
   getJob,
   streamJobEvents,
-  uploadKnowledgeBaseDocument,
   uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
@@ -52,7 +51,6 @@ function itemSignature(item: RagUploadItem): string {
 }
 
 export type RagDocumentScope =
-  | { type: "kb"; kbId: string }
   | { type: "thread"; threadId: string }
   | { type: "project"; projectId: string };
 
@@ -90,9 +88,7 @@ export function useRagDocuments(
   const uploadInFlightRef = useRef(false);
 
   const scopeKey = scope
-    ? scope.type === "kb"
-      ? `kb:${scope.kbId}`
-      : scope.type === "project"
+    ? scope.type === "project"
         ? `project:${scope.projectId}`
         : `thread:${scope.threadId}`
     : null;
@@ -247,7 +243,6 @@ export function useRagDocuments(
       // cannot cancel the only refresh after prevScopeKeyRef has advanced.
       setDocuments([]);
       if (scope) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         void refresh();
       }
     } else if (prev === null && scope && !uploadInFlightRef.current) {
@@ -299,14 +294,7 @@ export function useRagDocuments(
                 ).nativePathLease,
               };
         const result =
-          activeScope.type === "kb"
-            ? await uploadKnowledgeBaseDocument(
-                activeScope.kbId,
-                file,
-                ocr,
-                caption,
-              )
-            : activeScope.type === "project"
+          activeScope.type === "project"
               ? await uploadProjectDocument(
                   activeScope.projectId,
                   file,

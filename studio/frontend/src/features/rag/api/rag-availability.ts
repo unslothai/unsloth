@@ -9,7 +9,7 @@ import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 //
 // A machine where sqlite-vec imports but its native library will not load has a working
 // server and a dead RAG engine. The router says so rather than raising: GET
-// /api/rag/knowledge-bases answers 200 with an availability marker beside the (empty)
+// The legacy extension list probe answers 200 with an availability marker beside the (empty)
 // list, and every other RAG endpoint answers 503 with the same reason. Without this
 // store both readings are dropped on the floor and the Knowledge bases dialog looks
 // like an empty store, offering a Create button that can only 503.
