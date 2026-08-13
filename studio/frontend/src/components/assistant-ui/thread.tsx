@@ -2561,15 +2561,19 @@ const Composer: FC<{
     ? composerPasteDraftKey(draftThreadId)
     : null;
   const lastDraftKeyRef = useRef(draftKey);
-  const lastPasteDraftKeyRef = useRef<string | null>(null);
+  // Which key the paste restore has finished for. The save effect writes only
+  // for that key, so a draft is never cleared before it has been put back.
+  const restoredPasteKeyRef = useRef<string | null>(null);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     composer.setText(draft);
-    // The composer outlives a thread switch, so restore only into one that
-    // holds no paste already; the stored draft keeps until it can come back.
+    if (restoredPasteKeyRef.current === pasteDraftKey) return;
+    // The composer outlives a thread switch, so wait for the outgoing paste to
+    // clear rather than stacking this thread's draft on top of it. Changing
+    // attachments re-runs this effect, which is how that retry happens.
     if (
       composer
         .getState()
@@ -2579,20 +2583,23 @@ const Composer: FC<{
     ) {
       return;
     }
-    for (const text of pasteDraftKey ? readPasteDraft(pasteDraftKey) : []) {
-      void composer.addAttachment(createPastedTextFile(text));
+    const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
+    if (stored.length === 0) {
+      restoredPasteKeyRef.current = pasteDraftKey;
+      return;
     }
-  }, [draftKey, pasteDraftKey, aui]);
+    // Claim the key only once the attachments are in, so the save effect
+    // cannot write an empty composer over the draft still being restored.
+    void Promise.all(
+      stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
+    ).finally(() => {
+      restoredPasteKeyRef.current = pasteDraftKey;
+    });
+  }, [draftKey, pasteDraftKey, pastedTextDraftSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
-    if (lastPasteDraftKeyRef.current !== pasteDraftKey) {
-      // The restore above has not landed for this key yet; writing now would
-      // clear the very draft it is about to put back.
-      lastPasteDraftKeyRef.current = pasteDraftKey;
-      return;
-    }
-    if (!pasteDraftKey) return;
+    if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
     const pastes = aui
       .composer()
       .getState()
