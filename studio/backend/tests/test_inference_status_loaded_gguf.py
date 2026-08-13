@@ -183,11 +183,14 @@ def test_status_publishes_the_running_pass_through_arguments(status_route):
     assert status.requested_llama_extra_args == ["--numa", "distribute"]
 
 
-def test_a_load_that_passed_none_reports_none(status_route):
-    # Empty and never-set read alike: a client only ever resends a non-empty list.
+def test_an_explicit_empty_list_is_not_a_missing_one(status_route):
+    # A rollback resends this field only when it has one, and omitting it is what
+    # makes /load inherit. A model that was running with no extras must come back
+    # with none, not with the arguments of the load that just failed.
     backend = _StatusBackend("org/A-GGUF")
     backend.requested_extra_args = []
-    assert status_route(backend).requested_llama_extra_args is None
+    assert status_route(backend).requested_llama_extra_args == []
+    # None is the one case where nothing was ever set, and inheriting is right.
     backend.requested_extra_args = None
     assert status_route(backend).requested_llama_extra_args is None
 

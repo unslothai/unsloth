@@ -4264,10 +4264,19 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # getattr, unlike the rest of this block: the drift check below is what turns
         # a backend missing a runtime field into one clear error naming all of them,
         # and reading the attribute here would pre-empt it with a bare AttributeError.
+        # An explicit [] is NOT None here. A rollback resends this field only when it
+        # has one, and omitting it is what makes /load inherit, so a model that was
+        # running with no extras would come back carrying the arguments of the load
+        # that just failed. None stays for "nothing was ever set", which is the only
+        # case where inheriting is the right answer.
         requested_llama_extra_args = (
             None
             if llama_backend.is_diffusion
-            else (list(getattr(llama_backend, "requested_extra_args", None) or []) or None)
+            else (
+                None
+                if getattr(llama_backend, "requested_extra_args", None) is None
+                else list(llama_backend.requested_extra_args)
+            )
         ),
     )
     unresolved = (

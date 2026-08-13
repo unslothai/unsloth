@@ -61,3 +61,15 @@ test("the rollback still resends that baseline explicitly", () => {
     /stateBeforeUnload\.loadedLlamaExtraArgs != null\s*\n?\s*\? \{ llama_extra_args: stateBeforeUnload\.loadedLlamaExtraArgs \}/,
   );
 });
+
+test("an explicit empty list is kept apart from an unknown one", () => {
+  // The rollback sends this field only when it has one, and omitting it is what
+  // makes /load inherit: a model launched with no extras would otherwise come back
+  // carrying the arguments of the load that just failed. null stays for "never told".
+  assert.match(RUNTIME, /loadLlamaExtraArgs !== undefined\s*\n?\s*\? \(loadLlamaExtraArgs \?\? \[\]\)/);
+  // The status echo goes in as it arrives, so a server running none reads as [].
+  assert.match(
+    APPLIER,
+    /loadedLlamaExtraArgs: status\.requested_llama_extra_args \?\? null/,
+  );
+});

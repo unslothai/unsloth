@@ -10291,6 +10291,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
         secrets: Sequence[Optional[str]] = (),
+        extra_args: Optional[Sequence[str]] = None,
     ) -> str:
         """Classify, then redact, whatever the classification quoted.
 
@@ -10314,6 +10315,7 @@ class LlamaCppBackend:
                 binary,
                 log_path,
                 secrets,
+                extra_args,
             ),
             secrets,
         )
@@ -10327,6 +10329,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
         secrets: Sequence[Optional[str]] = (),
+        extra_args: Optional[Sequence[str]] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -10463,9 +10466,30 @@ class LlamaCppBackend:
             if _why.lower() in {"stoi", "stof", "stod", "stoul", "stoll"}:
                 _why = "the value is not a number"
             _tail = f": {_why}" if _why else ""
+            # Whose flag it is decides the advice. Studio emits its own options
+            # conditionally on the capability probe, so a build that reads
+            # "--flash-attn on" differently rejects a value the box never held, and
+            # sending that reader to edit their extra arguments points them at a
+            # setting they cannot use to fix it. Named here only when the extras
+            # really do carry the flag; an alias spelling falls back to the neutral
+            # wording rather than guessing.
+            _owned_by_user = False
+            if extra_args:
+                from core.inference.llama_server_args import _flag_name
+
+                _failed_flag = _flag_name(_arg)
+                _owned_by_user = _failed_flag is not None and any(
+                    _flag_name(str(token)) == _failed_flag for token in extra_args
+                )
+            if _owned_by_user:
+                return (
+                    f"llama-server rejected the value for '{_arg}'{_tail}. Fix it in "
+                    f"the extra arguments for this model."
+                )
             return (
-                f"llama-server rejected the value for '{_arg}'{_tail}. Fix it in "
-                f"the extra arguments for this model."
+                f"llama-server rejected the value for '{_arg}'{_tail}. Check it in "
+                f"this model's extra arguments, or reinstall llama.cpp if you did "
+                f"not set it."
             )
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
@@ -15483,6 +15507,7 @@ class LlamaCppBackend:
                             binary,
                             self._llama_log_path,
                             (self._api_key,),
+                            self._extra_args,
                         )
                         self._cleanup_failed_cpu_fallback()
                         self._vram_fraction_pending = None
@@ -16057,6 +16082,7 @@ class LlamaCppBackend:
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
+                                    self._extra_args,
                                 )
                                 _raise_terminal_load_failure(
                                     self._mmproj_retry_failure_message(
@@ -16093,6 +16119,7 @@ class LlamaCppBackend:
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
+                                    self._extra_args,
                                 )
                             )
 

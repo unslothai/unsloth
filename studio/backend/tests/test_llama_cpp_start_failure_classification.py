@@ -1563,6 +1563,52 @@ class TestRejectedArguments:
         assert "not a number" in msg
         assert "stoi" not in msg
 
+    def test_a_value_error_on_a_flag_the_user_did_not_set_stays_neutral(self):
+        # Studio emits its own options conditionally on the capability probe, so a
+        # build that reads "--flash-attn on" differently rejects a value the box
+        # never held. Sending that reader to edit their extra arguments points them
+        # at a setting they cannot use to fix it.
+        msg = _classify(
+            'error while handling argument "--flash-attn": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--flash-attn" in msg
+        assert "reinstall llama.cpp" in msg
+
+    def test_a_value_error_on_a_flag_the_user_did_set_names_the_box(self):
+        # Ownership established: the extras really do carry the flag, so the box is
+        # where the fix is.
+        msg = LlamaCppBackend._classify_llama_start_failure(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+            None,
+            None,
+            (),
+            ["--numa", "wherever"],
+        )
+        assert "--numa" in msg
+        assert "Fix it in the extra arguments" in msg
+        assert "reinstall" not in msg
+
+    def test_an_alias_spelling_falls_back_to_the_neutral_wording(self):
+        # -fa and --flash-attn are the same option to llama.cpp but not to this
+        # comparison, and a wrong "you set this" is worse than a neutral one.
+        msg = LlamaCppBackend._classify_llama_start_failure(
+            'error while handling argument "--flash-attn": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+            None,
+            None,
+            (),
+            ["-fa", "on"],
+        )
+        assert "reinstall llama.cpp" in msg
+
     def test_an_ordinary_failure_is_untouched(self):
         # The two new branches sit ahead of the generic diagnosis, so this pins
         # that they do not swallow it.

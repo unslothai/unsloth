@@ -1474,11 +1474,15 @@ export function useChatModelRuntime() {
               // What this model is running, for the rollback below. An omitted field
               // inherited the resident process's list, so the last thing we knew
               // still holds unless this was a different model.
+              //
+              // An explicit empty list is recorded as empty, not as null: the
+              // rollback sends this field only when it has one, and omitting it is
+              // what makes /load inherit, so a model that was launched with no
+              // extras would come back carrying the arguments of the load that just
+              // failed. null stays for "we were never told".
               loadedLlamaExtraArgs:
                 loadLlamaExtraArgs !== undefined
-                  ? loadLlamaExtraArgs != null && loadLlamaExtraArgs.length > 0
-                    ? loadLlamaExtraArgs
-                    : null
+                  ? (loadLlamaExtraArgs ?? [])
                   : resetsPerModelSettings
                     ? null
                     : (stateBeforeUnload.loadedLlamaExtraArgs ?? null),
