@@ -55,6 +55,14 @@ class _FakeModel:
     """Not a PeftModel; the preflight is called with an explicit needs_merge."""
 
 
+class _FakeAdapterModel:
+    """Stands in for a PeftModel: monkeypatch `S.PeftModel` onto this class.
+
+    Building a real one needs a base model and an adapter config, and the
+    preflight only ever asks `isinstance`.
+    """
+
+
 class _ModelWithEmbeddings:
     """Answers the two embedding getters a weight-only export leaves alone."""
 
@@ -264,7 +272,10 @@ class TestKaggleRedirectWiring:
         )
         monkeypatch.setattr(S, "free_bytes", fake_free)
         S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
-        assert probed == ["/tmp/unsloth_saves/model"]
+        # The `_gguf` sibling is measured as well, but nothing measures the
+        # directory the redirect moved away from.
+        assert probed[0] == "/tmp/unsloth_saves/model"
+        assert all(path.startswith("/tmp/unsloth_saves/model") for path in probed)
 
     def test_merge_preflight_never_rewrites_a_repo_id(self, monkeypatch):
         """`push_to_hub=True` makes save_directory "user/model", not a path."""
@@ -279,13 +290,17 @@ class TestKaggleRedirectWiring:
         assert result == "danielhanchen/my-model"
         assert called == []
 
-    @pytest.mark.parametrize("save_method", ["lora", "merged_4bit"])
-    def test_merge_preflight_only_applies_to_exports_that_write_16bit(
-        self, monkeypatch, save_method
-    ):
+    def test_merge_preflight_skips_an_export_that_writes_no_checkpoint(self, monkeypatch):
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("/tmp/x", "moved"))
         monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
-        assert S._preflight_merge_disk(_FakeModel(), "model", save_method) == "model"
+        assert S._preflight_merge_disk(_FakeModel(), "model", "merged_4bit") == "model"
+
+    def test_merge_preflight_skips_adapters(self, monkeypatch):
+        """`lora` on a real PeftModel writes adapters, which are megabytes."""
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("/tmp/x", "moved"))
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        assert S._preflight_merge_disk(_FakeAdapterModel(), "model", "lora") == "model"
 
     def test_merge_preflight_takes_the_redirect(self, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -800,6 +815,209 @@ class TestFallbackCheckpointDtype:
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         S._preflight_gguf_disk(model, "model", "q4_k_m", needs_merge = True)
         assert asked == [100 * GB + n_parameters * 2]
+
+
+class TestFullModelSavedAsLora:
+    """`lora` on a model with no adapter writes the WHOLE model.
+
+    `unsloth_generic_save` and `unsloth_save_model` both fall back to
+    `save_pretrained` there, so the checkpoint is the size of the model and
+    fills /kaggle/working exactly like a merge. Skipping the preflight on the
+    method name alone let that through.
+    """
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        asked = []
+        # Deliberately not the size of the checkpoint: a full-model save is
+        # written with no cast, so believing this figure is the bug.
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        return asked
+
+    @staticmethod
+    def _float32_model():
+        import torch
+
+        return torch.nn.Linear(8, 8, dtype = torch.float32)
+
+    def test_a_full_model_lora_save_is_sized(self, sized):
+        model = self._float32_model()
+        expected = sum(p.numel() * p.element_size() for p in model.parameters())
+        S._preflight_merge_disk(model, "model", "lora")
+        assert sized == [_with_merge_headroom(expected)]
+
+    def test_it_is_sized_at_the_tensors_own_dtype(self, sized):
+        """Four bytes per parameter for fp32, not the two a merge writes."""
+        model = self._float32_model()
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._full_model_checkpoint_bytes(model) == n_parameters * 4
+        S._preflight_merge_disk(model, "model", "lora")
+        assert sized == [_with_merge_headroom(n_parameters * 4)]
+
+    def test_a_sixteen_bit_model_is_sized_at_two_bytes(self):
+        import torch
+
+        model = torch.nn.Linear(8, 8, dtype = torch.bfloat16)
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._full_model_checkpoint_bytes(model) == n_parameters * 2
+
+    def test_an_adapter_save_is_still_skipped(self, sized, monkeypatch):
+        """A real PeftModel writes adapters only; moving those buys nothing."""
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        assert S._preflight_merge_disk(_FakeAdapterModel(), "model", "lora") == "model"
+        assert sized == []
+
+    @pytest.mark.parametrize("save_method", ["LoRA", " lora "])
+    def test_the_supported_spellings_are_measured_too(self, sized, save_method):
+        S._preflight_merge_disk(self._float32_model(), "model", save_method)
+        assert len(sized) == 1
+
+    def test_an_unmeasurable_model_is_left_alone(self, sized):
+        assert S._preflight_merge_disk(_FakeModel(), "model", "lora") == "model"
+        assert sized == []
+
+    def test_the_redirect_is_taken(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            S, "kaggle_tmp_redirect", lambda *a, **k: ("/tmp/unsloth_saves/model", "moved")
+        )
+        assert S._preflight_merge_disk(self._float32_model(), "model", "lora") == (
+            "/tmp/unsloth_saves/model"
+        )
+        assert "moved" in capsys.readouterr().out
+
+    def test_the_message_does_not_call_it_a_merge(self, monkeypatch):
+        described = []
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                described.append(what) or (save_directory, None)
+            ),
+        )
+        S._preflight_merge_disk(self._float32_model(), "model", "lora")
+        assert described == ["model checkpoint"]
+
+    def test_the_fallback_really_writes_the_whole_model(self):
+        """The sizing above is only right while this stays true."""
+        import inspect
+
+        source = inspect.getsource(S.unsloth_generic_save)
+        assert "_is_peft = isinstance(model, PeftModel)" in source
+        assert "model.save_pretrained(save_directory, **_save_kwargs)" in source
+
+
+class TestTheGgufSiblingIsMeasuredToo:
+    """The GGUF files land in `save_directory + "_gguf"`, a SIBLING.
+
+    So they are on the PARENT's filesystem, which is the same disk as
+    `save_directory` unless that path is itself a mount point or a symlink
+    onto another one. Measuring only `save_directory` then passes an export
+    whose quants fill a filesystem nobody looked at.
+
+    Only a strictly tighter sibling changes anything, so a single filesystem
+    behaves exactly as before.
+    """
+
+    @pytest.fixture
+    def split(self, monkeypatch):
+        """Free space per path, and the estimate split into its two halves."""
+        state = {"free": 1000 * GB, "sibling_free": 1000 * GB}
+
+        def fake_free(path):
+            return state["sibling_free"] if str(path).endswith("_gguf") else state["free"]
+
+        def fake_estimate(**kwargs):
+            if kwargs.get("base_cache_copy"):
+                return 48 * GB
+            # Without the checkpoint: the intermediate conversion + quants.
+            return 34 * GB if kwargs.get("needs_merge", True) else 18 * GB
+
+        monkeypatch.setattr(S, "free_bytes", fake_free)
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def test_a_tighter_sibling_filesystem_refuses(self, split):
+        """`model` is a symlink onto a big disk; `model_gguf` is not."""
+        split.update(free = 1000 * GB, sibling_free = 10 * GB)
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert "model_gguf" in str(error.value)
+
+    @pytest.mark.parametrize(
+        "free_gb,expected",
+        [(1000, ("model", True)), (40, ("model", False))],
+    )
+    def test_one_filesystem_is_unchanged(self, split, free_gb, expected):
+        """Both probes return the same figure, so nothing new can fire."""
+        split.update(free = free_gb * GB, sibling_free = free_gb * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == expected
+
+    def test_a_roomier_sibling_is_not_a_refusal(self, split):
+        split.update(free = 10 * GB, sibling_free = 1000 * GB)
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        # The ordinary refusal, about the checkpoint's own filesystem.
+        assert "model_gguf" not in str(error.value)
+
+    def test_the_sibling_is_sized_without_the_checkpoint(self, split):
+        """20GB holds the quants but not the merge, and only the quants go there."""
+        split.update(free = 1000 * GB, sibling_free = 20 * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
+
+    def test_an_unmeasurable_sibling_leaves_the_decision_alone(self, split, monkeypatch):
+        monkeypatch.setattr(
+            S, "free_bytes", lambda path: None if str(path).endswith("_gguf") else 1000 * GB
+        )
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
+
+    def test_an_unmeasurable_save_directory_leaves_the_decision_alone(self, split, monkeypatch):
+        monkeypatch.setattr(
+            S, "free_bytes", lambda path: 1 * GB if str(path).endswith("_gguf") else None
+        )
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
+
+    def test_the_sibling_measured_is_the_redirect_target(self, split, monkeypatch):
+        probed = []
+        monkeypatch.setattr(
+            S, "kaggle_tmp_redirect", lambda *a, **k: ("/tmp/unsloth_saves/model", "moved")
+        )
+        monkeypatch.setattr(S, "free_bytes", lambda path: probed.append(path) or 1000 * GB)
+        S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert probed == ["/tmp/unsloth_saves/model", "/tmp/unsloth_saves/model_gguf"]
+
+    def test_an_estimator_that_cannot_size_the_sibling_keeps_the_main_guard(
+        self, split, monkeypatch
+    ):
+        """The new call must not be able to switch the whole preflight off."""
+
+        def fake_estimate(**kwargs):
+            if not kwargs.get("needs_merge", True):
+                raise TypeError("older unsloth_zoo")
+            return 48 * GB if kwargs.get("base_cache_copy") else 34 * GB
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
+        split.update(free = 10 * GB, sibling_free = 10 * GB)
+        with pytest.raises(RuntimeError):
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+
+    def test_the_export_writes_where_the_preflight_measured(self):
+        """One definition, so the two cannot drift apart."""
+        import inspect
+
+        assert S._gguf_output_directory("model") == "model_gguf"
+        source = inspect.getsource(S.unsloth_save_pretrained_gguf)
+        assert "gguf_directory = _gguf_output_directory(save_directory)" in source
+        assert 'f"{save_directory}_gguf"' not in inspect.getsource(S._preflight_gguf_disk)
 
 
 class TestDisabledImatrixIsNotSizedAsAnImatrix:

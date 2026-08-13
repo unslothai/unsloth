@@ -2983,6 +2983,24 @@ def _quantized_sibling_bytes(model, merge_bytes, weight_bits):
     return int((merge_bytes - unquantized) * weight_bits / 16) + unquantized
 
 
+def _full_model_checkpoint_bytes(model):
+    """Bytes `save_pretrained` writes for a model with no adapter to merge.
+
+    Measured from the parameters' real storage rather than assumed to be a
+    16-bit merge, because this checkpoint is written with no cast: an fp32
+    model costs four bytes per parameter, a 4-bit one its packed storage.
+    Zero when the model cannot be measured, which leaves the caller with
+    today's behaviour.
+    """
+    try:
+        total = 0
+        for parameter in model.parameters():
+            total += parameter.numel() * parameter.element_size()
+        return int(total)
+    except Exception:
+        return 0
+
+
 def _same_filesystem(left, right):
     """True when two existing paths sit on the same mount."""
     return os.stat(left).st_dev == os.stat(right).st_dev
@@ -3054,13 +3072,23 @@ def _preflight_merge_disk(
     # The torchao portable exports are the same shape as the compressed ones
     # from here: a quantized sibling at `save_directory + "-<suffix>"`.
     torchao = _normalize_torchao_method(method)
-    if compressed is None and torchao is None and method != "merged_16bit":
+    # `lora` on a model that has no adapter writes the WHOLE model instead:
+    # both `unsloth_generic_save` and `unsloth_save_model` fall back to
+    # `save_pretrained` there, so a full fine-tune asked for "lora" fills
+    # /kaggle/working exactly like a merge. A real PeftModel writes adapters
+    # only and is still skipped.
+    full_model_lora = method == "lora" and not isinstance(
+        model, (PeftModel, PeftModelForCausalLM)
+    )
+    if compressed is None and torchao is None and method != "merged_16bit" and not full_model_lora:
         return save_directory
     try:
         # A merge writes 2 bytes per logical parameter and no GGUF at all, so
         # this is `model_16bit_bytes` and not the GGUF export estimate: that
         # one always prices an intermediate GGUF conversion this never does.
-        need = model_16bit_bytes(model)
+        # The full-model fallback casts nothing, so it is sized from the
+        # tensors' own dtype instead.
+        need = _full_model_checkpoint_bytes(model) if full_model_lora else model_16bit_bytes(model)
         if need <= 0:
             return save_directory
         # What the torchao staging directory costs on whatever filesystem
@@ -3081,7 +3109,7 @@ def _preflight_merge_disk(
         new_directory, message = kaggle_tmp_redirect(
             save_directory,
             need_bytes = need,
-            what = "16-bit merge",
+            what = "model checkpoint" if full_model_lora else "16-bit merge",
         )
     except Exception:
         return save_directory
@@ -3182,6 +3210,15 @@ def _fallback_checkpoint_extra_bytes(model):
         return 0
 
 
+def _gguf_output_directory(save_directory):
+    """Where the GGUF files land: a SIBLING of `save_directory`, not a child.
+
+    One definition for the preflight and for the export itself, so the disk
+    that gets measured cannot drift from the disk that gets written.
+    """
+    return f"{save_directory}_gguf"
+
+
 def _preflight_gguf_disk(
     model,
     save_directory,
@@ -3264,6 +3301,21 @@ def _preflight_gguf_disk(
             extra = _fallback_checkpoint_extra_bytes(model)
             need += extra
             need_with_cache += extra
+        # The same estimate without the checkpoint: what lands in the `_gguf`
+        # sibling directory, which is the intermediate conversion plus every
+        # quant. Only used when that sibling turns out to be on a different,
+        # smaller filesystem than `save_directory`. Its own try, so an
+        # estimator that cannot answer this leaves the main guard standing
+        # rather than turning the whole preflight off.
+        try:
+            need_sibling = estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = methods,
+                first_conversion = first_conversion,
+                needs_merge = False,
+            )
+        except Exception:
+            need_sibling = 0
     except Exception:
         # Sizing is best effort. A failure here must not stop an export that
         # would otherwise have worked.
@@ -3281,6 +3333,34 @@ def _preflight_gguf_disk(
         save_directory = new_directory
 
     free = free_bytes(save_directory)
+
+    # The quants and the intermediate GGUF are written to a SIBLING of
+    # `save_directory`, so they live on the parent's filesystem. That is the
+    # same disk `free` just measured unless `save_directory` is itself a mount
+    # point or a symlink onto another one, and then the aggregate above was
+    # measured against a filesystem the GGUF files never touch. Only a
+    # strictly tighter sibling can change the outcome, so on one filesystem
+    # this is inert, and an unmeasurable path leaves the decision exactly as
+    # it was.
+    gguf_directory = _gguf_output_directory(save_directory)
+    gguf_free = free_bytes(gguf_directory)
+    if (
+        free is not None
+        and gguf_free is not None
+        and gguf_free < free
+        and gguf_free < need_sibling
+    ):
+        raise RuntimeError(
+            f"Unsloth: Not enough disk space to convert to GGUF.\n"
+            f"The GGUF files are written to `{gguf_directory}`, which is on a different "
+            f"filesystem from `{save_directory}` and has {gguf_free / 1024**3:.1f}GB free; "
+            f"the intermediate `{first_conversion}` conversion and the quants need about "
+            f"{need_sibling / 1024**3:.1f}GB there.\n"
+            f"Options: free space on that filesystem, export fewer quantization methods, or "
+            f"point `save_directory` at a path whose parent directory has the room.\n"
+            f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+        )
+
     if free is None or free >= need_with_cache:
         return save_directory, True
 
@@ -3537,7 +3617,9 @@ def unsloth_save_pretrained_gguf(
     del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input.
-    gguf_directory = f"{save_directory}_gguf"
+    # Same definition the preflight sized, so the disk it measured is the one
+    # these files land on.
+    gguf_directory = _gguf_output_directory(save_directory)
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
