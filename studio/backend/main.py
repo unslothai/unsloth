@@ -1961,7 +1961,12 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device, export_capability, video_capability
+    from utils.hardware import (
+        get_device,
+        export_capability,
+        video_capability,
+        cpu_frequency_mhz,
+    )
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
@@ -1970,11 +1975,8 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     memory = psutil.virtual_memory()
 
-    try:
-        cpu_freq = psutil.cpu_freq()
-    except Exception as e:
-        logger.debug(f"Failed to get CPU frequency: {e}")
-        cpu_freq = None
+    # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
+    cpu_freq_mhz = cpu_frequency_mhz()
 
     try:
         disk = psutil.disk_usage(os.path.abspath(os.sep))
@@ -2017,9 +2019,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),
             "usage_percent": psutil.cpu_percent(interval = None),
-            "frequency_mhz": round(cpu_freq.current, 2)
-            if cpu_freq and cpu_freq.current is not None
-            else None,
+            "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
             "total_gb": round(memory.total / 1024**3, 2),
