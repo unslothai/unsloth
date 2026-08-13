@@ -5473,6 +5473,29 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    # "Off" spellings ggml itself ignores (it tests presence); we honour them.
+    _UNIFIED_MEMORY_OFF = frozenset({"", "0", "false", "no", "off"})
+
+    @staticmethod
+    def _unified_memory_opted_out(env = None) -> bool:
+        """True when GGML_CUDA_ENABLE_UNIFIED_MEMORY must be ABSENT from this launch.
+
+        ggml tests presence, not value, so `=0` is not an off switch (#8651). Both
+        opt-outs (UNSLOTH_DISABLE_UNIFIED_MEMORY=1, mirroring UNSLOTH_DISABLE_DC_TUNING,
+        or a falsy GGML_CUDA_ENABLE_UNIFIED_MEMORY) must end in the name unset.
+        Fails open (False) so a bad env never blocks a load.
+        """
+        try:
+            source = os.environ if env is None else env
+            if str(source.get("UNSLOTH_DISABLE_UNIFIED_MEMORY", "")).strip() == "1":
+                return True
+            value = source.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY")
+            if value is None:
+                return False
+            return str(value).strip().lower() in LlamaCppBackend._UNIFIED_MEMORY_OFF
+        except Exception:
+            return False
+
     # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
     # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
     # workstation parts as substrings: "a100" must not fire on "RTX A1000".
@@ -14121,12 +14144,19 @@ class LlamaCppBackend:
                         env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use shared
-                # system RAM. setdefault so a user value wins. Not on Vulkan (nor DC
-                # below): gpu_indices are ggml ordinals, not CUDA/ROCm ids. Tracked by
-                # OWNERSHIP, so the arch-crash retry withdraws it only when THIS launch
-                # set it.
+                # system RAM. Not on Vulkan (nor DC below): gpu_indices are ggml
+                # ordinals, not CUDA/ROCm ids. Ownership-tracked, so the arch-crash
+                # retry withdraws it only when THIS launch set it.
                 _unified_env_applied = False
-                if not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
+                _unified_opt_out = self._unified_memory_opted_out(env)
+                if _unified_opt_out:
+                    # ggml tests presence, so passing a user's "0" through would
+                    # ENABLE what they turned off (#8651). Only absence is off.
+                    if env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None) is not None:
+                        logger.info(
+                            "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"
+                        )
+                elif not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
                     _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
@@ -14730,7 +14760,11 @@ class LlamaCppBackend:
                                 "Arch-crash retry targets discrete GPU(s); dropped "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY for the respawn."
                             )
-                        elif _retry_wants_unified and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env:
+                        elif (
+                            _retry_wants_unified
+                            and not _unified_opt_out  # the opt-out outlives the respawn
+                            and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+                        ):
                             env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
                             _unified_env_applied = True
                             logger.info(
