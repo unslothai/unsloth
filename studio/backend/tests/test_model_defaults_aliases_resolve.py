@@ -17,9 +17,7 @@ import pytest
 
 from utils.models.model_config import load_model_defaults
 
-_DEFAULTS_DIR = (
-    Path(__file__).parent.parent / "assets" / "configs" / "model_defaults"
-)
+_DEFAULTS_DIR = Path(__file__).parent.parent / "assets" / "configs" / "model_defaults"
 _ALSO_APPLIES_RE = re.compile(r"^#\s*Also applies to:\s*(.+)$", re.MULTILINE)
 
 
