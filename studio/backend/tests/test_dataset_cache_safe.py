@@ -40,13 +40,50 @@ def test_windows_symlink_privilege_failure_retries_with_regular_files(monkeypatc
     monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
 
     from huggingface_hub import constants
+    from huggingface_hub import file_download
 
     monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False)
+    monkeypatch.setattr(
+        file_download,
+        "_are_symlinks_supported_in_dir",
+        {"dataset-cache": True},
+    )
 
     assert cache_safe.load_dataset_cache_safe("Org/Data", split = "train") == {"loaded": True}
     assert len(calls) == 2
     assert os.environ["HF_HUB_DISABLE_SYMLINKS"] == "1"
     assert constants.HF_HUB_DISABLE_SYMLINKS is True
+    assert file_download._are_symlinks_supported_in_dir == {"dataset-cache": False}
+
+
+def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
+    calls = []
+
+    from huggingface_hub import constants
+    from huggingface_hub import file_download
+
+    monkeypatch.delattr(constants, "HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.setattr(
+        file_download,
+        "_are_symlinks_supported_in_dir",
+        {"dataset-cache": True},
+    )
+
+    def load_dataset(*args, **kwargs):
+        calls.append((args, kwargs.copy()))
+        if len(calls) == 1:
+            raise WindowsSymlinkPrivilegeError("symlink denied")
+        assert file_download._are_symlinks_supported_in_dir == {"dataset-cache": False}
+        return {"loaded": True}
+
+    _install_fake_datasets(monkeypatch, load_dataset)
+    monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+
+    assert cache_safe.load_dataset_cache_safe("Org/Data") == {"loaded": True}
+    assert len(calls) == 2
+    assert "HF_HUB_DISABLE_SYMLINKS" not in vars(constants)
+    assert os.environ["HF_HUB_DISABLE_SYMLINKS"] == "1"
 
 
 def test_success_does_not_change_windows_symlink_policy(monkeypatch):

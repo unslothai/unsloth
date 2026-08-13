@@ -38,12 +38,18 @@ def _is_windows_symlink_privilege_error(error: OSError) -> bool:
 def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
-    # huggingface_hub reads this environment variable at import time. datasets
-    # has already imported it by the time a cache link fails, so update the live
-    # constant before retrying too.
-    from huggingface_hub import constants
+    # datasets has already imported huggingface_hub by the time a cache link
+    # fails, so update its live state before retrying too. Hub 1.x exposes a
+    # disable constant; the Python 3.9 pin (0.36.2) does not and decides from
+    # this per-directory capability cache instead.
+    from huggingface_hub import constants, file_download
 
-    constants.HF_HUB_DISABLE_SYMLINKS = True
+    if hasattr(constants, "HF_HUB_DISABLE_SYMLINKS"):
+        constants.HF_HUB_DISABLE_SYMLINKS = True
+    symlink_support = getattr(file_download, "_are_symlinks_supported_in_dir", None)
+    if isinstance(symlink_support, dict):
+        for cache_dir in tuple(symlink_support):
+            symlink_support[cache_dir] = False
 
 
 def studio_datasets_cache() -> str:
