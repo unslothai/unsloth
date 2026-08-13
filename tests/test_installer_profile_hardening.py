@@ -126,7 +126,10 @@ def test_profile_hardening_precedes_every_use_it_protects():
     for marker, what in (
         ("$env:UNSLOTH_NO_TORCH -in @(", "the first unset-env test"),
         ("Invoke-WebRequest", "the first in-process download"),
-        ("& $UnslothExe @studioArgs", "the setup handoff"),
+        (
+            "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+            "the setup handoff",
+        ),
     ):
         idx = _locate(code, marker, what)
         assert strict_idx < idx, f"{what} must be reached with strict mode pinned"
@@ -848,7 +851,11 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
     gate = _locate(source, "$previousSetupRuntimeGateHandoff =", "the runtime-gate handoff")
     proxy = _locate(source, "$previousProxyHandoff =", "the proxy handoff save")
-    call = _locate(source, "    try {\n        & $UnslothExe @studioArgs", "the child invocation")
+    call = _locate(
+        source,
+        "    try {\n        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+        "the child invocation",
+    )
     assert gate < call and proxy < call, "the handoff must be in place before the child runs"
 
 
@@ -1580,7 +1587,7 @@ def test_the_proxy_handoff_does_not_outlive_the_installer():
     # Still dropped explicitly once the child it exists for has run.
     cleared = "$UnslothProxyHandoffJson = $null"
     assert cleared in installer
-    child = installer.index("& $UnslothExe @studioArgs")
+    child = installer.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs")
     assert child < installer.index(cleared, child)
 
 

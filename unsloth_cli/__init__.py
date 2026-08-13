@@ -10,12 +10,30 @@ import sys as _sys
 _entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
 _is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
 
-# Typer renders help via rich, whose box characters cp1252 and cp437 cannot encode,
-# so `unsloth --help` dies once stdout is a pipe or a file. Windows gets UTF-8, as
-# unsloth/__init__ already does; elsewhere the caller's encoding is kept and only
-# the error handler is relaxed, so an explicit PYTHONIOENCODING still picks the
-# bytes and only loses unencodable glyphs. Before typer, which binds the stream.
-if _is_entry_point:
+
+_streams_reconfigured = False
+
+
+def _reconfigure_entry_point_streams():
+    """Give the console script streams that can render typer's help.
+
+    Typer renders help via rich, whose box characters cp1252 and cp437 cannot encode,
+    so `unsloth --help` dies once stdout is a pipe or a file. Windows gets UTF-8, as
+    unsloth/__init__ already does; elsewhere the caller's encoding is kept and only
+    the error handler is relaxed, so an explicit PYTHONIOENCODING still picks the
+    bytes and only loses unencodable glyphs.
+
+    Called at most once per process. The console script reaches it twice, from
+    the import-time gate and again through _prepare_entry_point, and off Windows
+    the second call did repeat the work: passing encoding = None keeps the
+    caller's encoding, so the "already utf" guard below cannot become true and a
+    C-locale console was reconfigured, and flushed, one time more than the
+    console script ever did before this file grew a second entry route.
+    """
+    global _streams_reconfigured
+    if _streams_reconfigured:
+        return
+    _streams_reconfigured = True
     _to_utf8 = _sys.platform == "win32"
     for _name in ("stdout", "stderr"):
         _stream = getattr(_sys, _name, None)
@@ -24,7 +42,11 @@ if _is_entry_point:
                 _stream.reconfigure(encoding = "utf-8" if _to_utf8 else None, errors = "replace")
         except Exception:
             pass
-    del _name, _stream, _to_utf8
+
+
+# Before typer, which binds the stream.
+if _is_entry_point:
+    _reconfigure_entry_point_streams()
 
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
@@ -56,10 +78,35 @@ from unsloth_cli.commands.studio import (
 )
 
 
+_entry_point_prepared = False
+
+
+def _prepare_entry_point():
+    """Apply the `unsloth` console-script behaviour to this process.
+
+    Split out for `python -m unsloth_cli`, which cannot use the argv[0] check
+    above: `-m` imports this package in order to find unsloth_cli/__main__.py,
+    so __init__ runs while sys.argv[0] is still "-m" and the gate cannot fire.
+    __main__ rewrites argv[0] and calls this instead.
+
+    Idempotent, because the console script reaches it through the gate below
+    and only the module entry calls it by hand.
+    """
+    global _entry_point_prepared
+    if _entry_point_prepared:
+        return
+    _reconfigure_entry_point_streams()
+    _expand_attached_np_short()
+    # Set last, so a raise leaves the work retryable rather than silently
+    # skipped. Neither call can currently raise -- the first swallows everything
+    # and the second is pure argv manipulation -- but the ordering costs nothing.
+    _entry_point_prepared = True
+
+
 # Canonicalise `-np<N>` only under the `unsloth` console-script;
 # third-party scripts that import unsloth_cli keep their argv intact.
 if _is_entry_point:
-    _expand_attached_np_short()
+    _prepare_entry_point()
 del _entry_base, _is_entry_point
 
 
