@@ -35,6 +35,10 @@ _STDERR_TAIL_CHARS = 600
 # SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV. Deliberately not SIGKILL or SIGTERM, which
 # say something killed the probe, not that the device cannot be used.
 _FATAL_SIGNALS = frozenset({4, 6, 7, 8, 11})
+# How a child reports that it stopped itself for running too long: the reserved exit status
+# it uses on Windows, and SIGALRM from the kernel-enforced deadline everywhere else.
+_WATCHDOG_EXIT_STATUS = 70
+_SIGALRM_NUMBER = 14
 
 # Anything that changes which physical device a device string names, or which kernels the
 # runtime emits for it. A change invalidates a cached verdict, since the same "cuda" or
@@ -69,7 +73,7 @@ _deadline = float(sys.argv[2])
 if hasattr(signal, "alarm"):
     signal.alarm(int(_deadline) or 1)
 else:
-    _watchdog = threading.Timer(_deadline, lambda: os._exit(70))
+    _watchdog = threading.Timer(_deadline, lambda: os._exit(70))  # _WATCHDOG_EXIT_STATUS
     _watchdog.daemon = True
     _watchdog.start()
 
@@ -137,6 +141,21 @@ def _died_by_signal(returncode: int) -> bool:
     if returncode < 0:
         return -returncode in _FATAL_SIGNALS
     return os.name == "nt" and (returncode & 0xC0000000) == 0xC0000000
+
+
+def _hit_its_own_deadline(returncode: int) -> bool:
+    """Whether the child stopped itself for running too long.
+
+    A child that reached its own deadline hung, and a hang is a device failure, so this
+    has to be read as one. Neither form is otherwise recognised: SIGALRM is not a hard
+    fault and would fall through ``_died_by_signal``, and the Windows status is an ordinary
+    non-zero exit. Both were being reported as a healthy device, which then let the parent
+    make the very allocation the probe stands in front of. It only comes up when the parent
+    did not enforce its own shorter timeout first, such as a suspended backend.
+    """
+    if returncode == _WATCHDOG_EXIT_STATUS:
+        return True
+    return os.name != "nt" and returncode == -_SIGALRM_NUMBER
 
 
 def _unknown_verdict(device: str, what_happened: str) -> bool:
@@ -227,6 +246,14 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
         except Exception:  # noqa: BLE001 - no verdict, so the device is not known to work
             _terminate_and_drain(process)
             return _unknown_verdict(device, "could not be read")
+
+        if _hit_its_own_deadline(process.returncode):
+            logger.warning(
+                "torch allocation probe on %s ran past its own deadline and stopped "
+                "itself; treating the device as unusable",
+                device,
+            )
+            return False
 
         if _died_by_signal(process.returncode):
             tail = (stderr or "").strip()[-_STDERR_TAIL_CHARS:]

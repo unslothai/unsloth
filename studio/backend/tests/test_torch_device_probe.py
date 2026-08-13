@@ -220,6 +220,29 @@ def test_child_uses_selected_device_without_preexec(monkeypatch):
     assert "preexec_fn" not in kwargs
 
 
+def test_a_child_that_hit_its_own_deadline_is_a_failed_probe(monkeypatch):
+    # A child that stopped itself hung, and a hang is a device failure. Neither form was
+    # recognised before: SIGALRM is not a hard fault so it fell through _died_by_signal,
+    # and the Windows status is an ordinary non-zero exit. Both read as a healthy device,
+    # which let the parent make the allocation the probe stands in front of.
+    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _patch_popen(monkeypatch, _FakeProcess(returncode = -torch_device_probe._SIGALRM_NUMBER))
+    assert torch_device_probe.device_can_allocate("cuda") is False
+
+
+def test_the_windows_watchdog_status_is_a_failed_probe(monkeypatch):
+    monkeypatch.setattr(torch_device_probe.os, "name", "nt")
+    _patch_popen(monkeypatch, _FakeProcess(returncode = torch_device_probe._WATCHDOG_EXIT_STATUS))
+    assert torch_device_probe.device_can_allocate("cuda") is False
+
+
+def test_the_windows_watchdog_uses_the_status_the_parent_looks_for(monkeypatch):
+    # The child writes the number and the parent matches on the constant; they have to agree.
+    assert (
+        f"os._exit({torch_device_probe._WATCHDOG_EXIT_STATUS})" in torch_device_probe._PROBE_SCRIPT
+    )
+
+
 def test_the_child_deadline_does_not_depend_on_the_gil(monkeypatch):
     # The deadline exists for a torch that hangs in a native call, and that is exactly when
     # a threading.Timer cannot fire: its callback needs the GIL, which a long C call never
