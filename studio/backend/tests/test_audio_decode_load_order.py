@@ -88,8 +88,9 @@ def test_a_datasets_without_the_torchcodec_flag_returns_a_bool():
     fake_datasets.config = fake_config
     fake_features = types.ModuleType("datasets.features")
 
-    saved = {k: sys.modules.get(k) for k in
-             ("datasets", "datasets.features", "datasets.features.audio")}
+    saved = {
+        k: sys.modules.get(k) for k in ("datasets", "datasets.features", "datasets.features.audio")
+    }
     sys.modules["datasets"] = fake_datasets
     sys.modules["datasets.features"] = fake_features
     sys.modules["datasets.features.audio"] = fake_audio
