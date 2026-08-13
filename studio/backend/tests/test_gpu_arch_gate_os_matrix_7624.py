@@ -798,6 +798,7 @@ def _run_auto_load(
     capture = None,
     intent_kwargs = None,
     apu_ram_stub = None,
+    backend = None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the
     real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -819,7 +820,9 @@ def _run_auto_load(
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
-    backend = LlamaCppBackend()
+    # ``backend`` replays a SECOND load onto the state the first one left, which is
+    # the only way to see per-load state that must not be inherited.
+    backend = backend if backend is not None else LlamaCppBackend()
     # ``capture`` hands the post-launch backend back for state the argv and env
     # cannot show (e.g. _gpu_offload_active).
     if capture is not None:
@@ -1243,7 +1246,18 @@ class TestManualSplitLaunchesRespectTheGate:
     took its own env branch, which re-emits the WHOLE visible set -- handing the
     child the very card the gate had just dropped."""
 
-    def _manual_split(self, monkeypatch, tmp_path, targets, *, devices):
+    def _manual_split(
+        self,
+        monkeypatch,
+        tmp_path,
+        targets,
+        *,
+        devices,
+        capture = None,
+        backend = None,
+        tensor_split = (1.0, 1.0),
+        gpu_layers = 20,
+    ):
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(devices, vendor = "amd")
         return _run_auto_load(
@@ -1252,12 +1266,92 @@ class TestManualSplitLaunchesRespectTheGate:
             torch,
             targets,
             returncode = None,
+            capture = capture,
+            backend = backend,
             intent_kwargs = {
                 "gpu_memory_mode": "manual",
-                "gpu_layers": 20,
-                "tensor_split": (1.0, 1.0),
+                "gpu_layers": gpu_layers,
+                "tensor_split": tensor_split,
             },
         )
+
+    def test_the_dropped_ratio_is_recorded_for_the_duplicate_load_check(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Dropping the ratio from the argv is only half the job. The UI re-sends
+        the same request on every Apply, and the duplicate-load check compares the
+        live ``_tensor_split`` against it -- so a launch that drops the ratio and
+        records nothing reads as a different load every time and respawns the same
+        already-normalized server."""
+        capture: dict = {}
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176),
+            ],
+            capture = capture,
+        )
+        backend = capture["backend"]
+        assert backend._tensor_split is None  # gone from the argv
+        assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)  # but not forgotten
+
+    def test_a_covered_host_records_no_drop(self, tmp_path, monkeypatch, probe_env):
+        """The record is the gate's doing. With every card covered the ratio is
+        still live, so nothing may be recorded as dropped -- that entry is what
+        excuses a mismatch, and an unearned one would dedupe a genuine change."""
+        capture: dict = {}
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1031", free_mib = 12176),
+            ],
+            capture = capture,
+        )
+        backend = capture["backend"]
+        assert list(backend._tensor_split) == [1.0, 1.0]
+        assert backend._arch_gate_dropped_tensor_split is None
+
+    def test_a_later_load_does_not_inherit_the_dropped_ratio(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The record excuses a mismatch, so it must not outlive the launch that
+        earned it. A gated split load followed by a load carrying no ratio would
+        otherwise leave the stale entry excusing a request for a split against a
+        server running none, and Apply would silently do nothing."""
+        capture: dict = {}
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176),
+            ],
+            capture = capture,
+        )
+        backend = capture["backend"]
+        assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)
+        # Same backend, second load: covered host, no ratio, so nothing is dropped.
+        self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1031", free_mib = 12176),
+            ],
+            backend = backend,
+            tensor_split = None,
+            gpu_layers = 21,  # differs, so this really relaunches rather than dedupes
+        )
+        assert backend._tensor_split is None
+        assert backend._arch_gate_dropped_tensor_split is None
 
     def test_a_narrowed_host_masks_and_drops_the_ratio(self, tmp_path, monkeypatch, probe_env):
         launches = self._manual_split(

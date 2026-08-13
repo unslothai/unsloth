@@ -966,3 +966,82 @@ class TestArchForcedCpuHoldsNoVram:
         backend = self._backend()
         backend._gpu_offload_active = True
         assert backend.holds_no_vram is False
+
+
+# ── The gated split still dedupes an identical repeat load ─────────────────
+
+
+class _StubProcess:
+    """``is_loaded`` only asks "is not None"; nothing here is ever spawned."""
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout = None):
+        return 0
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+
+_GATED_REQUEST = dict(
+    model_identifier = "owner/repo",
+    hf_variant = "Q4_K_M",
+    n_ctx = 8192,
+    gpu_memory_mode = "manual",
+    gpu_layers = 99,
+    tensor_split = (0.5, 0.5),
+)
+
+
+def _post_gate_backend(dropped, *, live_split = None):
+    """Live state after a manual-split launch the arch gate normalized: the ratio
+    left the argv (``_tensor_split`` is None), and the drop was recorded."""
+    backend = LlamaCppBackend()
+    backend._process = _StubProcess()
+    backend._healthy = True
+    backend._model_identifier = "owner/repo"
+    backend._hf_variant = "Q4_K_M"
+    backend._requested_n_ctx = 8192
+    backend._requested_n_parallel = 1
+    backend._requested_spec_mode = "auto"
+    backend._gpu_memory_mode = "manual"
+    backend._gpu_layers = 99
+    backend._tensor_split = live_split
+    backend._arch_gate_dropped_tensor_split = dropped
+    return backend
+
+
+class TestGatedSplitStillDeduplicates:
+    """The gate drops a ratio sized for GPUs the installed build has no kernels
+    for. The UI re-sends that same ratio on every Apply, and
+    ``_runtime_matches_intent`` compares it against the live ``_tensor_split``,
+    so without the recorded drop each identical request reads as new and
+    respawns the same already-normalized server -- a multi-second teardown and
+    reload of a multi-GB model, on every Apply, forever."""
+
+    def test_identical_repeat_request_matches(self):
+        backend = _post_gate_backend((0.5, 0.5))
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**_GATED_REQUEST)) is True
+
+    def test_a_different_ratio_still_reloads(self):
+        """The excuse is for the ratio that was dropped, not for any ratio."""
+        backend = _post_gate_backend((0.5, 0.5))
+        changed = dict(_GATED_REQUEST, tensor_split = (0.9, 0.1))
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**changed)) is False
+
+    def test_a_launch_that_dropped_nothing_records_nothing(self):
+        """No recorded drop means no excuse: a live server with no split must
+        still reload for a request that asks for one."""
+        backend = _post_gate_backend(None)
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**_GATED_REQUEST)) is False
+
+    def test_no_drop_never_excuses_a_live_split(self):
+        """Both sides None must not read as "the gate dropped this": a server
+        RUNNING a ratio has to reload for a request that asks for none."""
+        backend = _post_gate_backend(None, live_split = [0.5, 0.5])
+        no_split = dict(_GATED_REQUEST, tensor_split = None)
+        assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**no_split)) is False

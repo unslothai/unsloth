@@ -3419,6 +3419,10 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
+        # The ratio the arch gate dropped from this launch's argv. The UI re-sends the
+        # request verbatim, so the duplicate-load check needs to know the live server
+        # already IS the normalized answer to it (#7624).
+        self._arch_gate_dropped_tensor_split: Optional[tuple[float, ...]] = None
         # The ROCm arch gate masked every device away and the child launched with
         # no GPU visible at all (#7624). An automatic request that recovery
         # turned into a zero-VRAM launch, which is why holds_no_vram cannot ask
@@ -4205,8 +4209,20 @@ class LlamaCppBackend:
                     intent.gpu_layers >= 0
                     and (
                         self._n_cpu_moe != intent.n_cpu_moe
-                        or (tuple(self._tensor_split) if self._tensor_split else None)
-                        != (intent.tensor_split or None)
+                        or (
+                            (tuple(self._tensor_split) if self._tensor_split else None)
+                            != (intent.tensor_split or None)
+                            # A ratio the arch gate dropped at launch is this request
+                            # normalized, not a different one. Guarded on a recorded
+                            # drop, never on None == None: a launch that dropped
+                            # nothing must not excuse a live split against a request
+                            # that asks for none. Any OTHER ratio still reloads.
+                            and not (
+                                self._arch_gate_dropped_tensor_split is not None
+                                and self._arch_gate_dropped_tensor_split
+                                == (intent.tensor_split or None)
+                            )
+                        )
                     )
                 )
             ):
@@ -11585,6 +11601,9 @@ class LlamaCppBackend:
                 # The layer/MoE/split knobs apply only with an explicit offload
                 # (manual + gpu_layers >= 0); else record defaults so /status and
                 # /load don't report knobs the server never applied.
+                # Reset per load, unconditionally and before the branch, so a drop
+                # recorded by an earlier launch cannot excuse a mismatch on this one.
+                self._arch_gate_dropped_tensor_split = None
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     self._gpu_layers = gpu_layers
                     self._n_cpu_moe = n_cpu_moe
@@ -14057,6 +14076,14 @@ class LlamaCppBackend:
                                 "has no kernels for some of them."
                             )
                             cmd = _gated_cmd
+                            # The ratio is gone from the argv, but the request that
+                            # asked for it is unchanged and the next Apply re-sends it
+                            # verbatim. Record it, or the duplicate-load check reads
+                            # the normalized server as a different one and tears down
+                            # and rebuilds the same server on every Apply.
+                            self._arch_gate_dropped_tensor_split = (
+                                tuple(self._tensor_split) if self._tensor_split else None
+                            )
                             self._tensor_split = None
                         # Manual mode admits tensor parallelism on the FULL device
                         # count (_effective_gpu_count(None)), which still counts the
