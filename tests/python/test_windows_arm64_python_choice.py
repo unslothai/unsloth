@@ -349,8 +349,10 @@ def test_an_explicit_env_value_beats_the_persisted_tier():
     with install_python_stack._infer_no_datasets(), where any value set wins."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
     assert "$_noDatasetsRequested = ($null -ne $env:UNSLOTH_NO_DATASETS)" in source
-    for guard in ("-not $NoDatasetsMode -and -not $_noDatasetsRequested -and $ReusedSetupPython",
-                  "-not $NoDatasetsMode -and -not $_noDatasetsRequested -and\n"):
+    for guard in (
+        "-not $NoDatasetsMode -and -not $_noDatasetsRequested -and $ReusedSetupPython",
+        "-not $NoDatasetsMode -and -not $_noDatasetsRequested -and\n",
+    ):
         assert guard in source, guard
 
 
@@ -361,7 +363,7 @@ def test_the_winget_bootstrap_rechecks_the_architecture():
     source = SETUP_PS1.read_text(encoding = "utf-8")
     block = source[source.index("winget install -e --id Python.Python.3.12") :][:1600]
     assert "Test-CompatibleSetupPythonArch $_afterWinget.Source" in block
-    assert "Exit-SetupFailure \"No x64 Python 3.11-3.13 was found\"" in block
+    assert 'Exit-SetupFailure "No x64 Python 3.11-3.13 was found"' in block
 
 
 def test_setup_hands_the_resolved_tier_to_the_python_child():
@@ -635,7 +637,7 @@ def test_setup_adopts_the_tier_for_an_arm64_venv_with_no_marker():
     interpreter the way install.ps1 can. The desktop app will not download a new
     build until its backend update succeeds, so that loop strands the app too."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
-    index = source.index("(Get-HostMachineArch) -eq \"arm64\" -and $ReusedSetupPython) {")
+    index = source.index('(Get-HostMachineArch) -eq "arm64" -and $ReusedSetupPython) {')
     block = source[index : index + 1200]
     assert '(Get-PythonPlatformTag $ReusedSetupPython) -eq "win-arm64"' in block
     assert "$NoDatasetsMode = $true" in block
