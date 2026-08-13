@@ -107,6 +107,13 @@ fn spawn_update(
         )
     })?;
 
+    // After the context, not before: pinning an inherited relative PYTHONPATH
+    // would otherwise put back what the Windows branch above dropped, and the
+    // update's PowerShell and setup descendants start further Python processes
+    // that do not clear it. -I only covers the first interpreter.
+    #[cfg(windows)]
+    cmd.env_remove("PYTHONPATH");
+
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 

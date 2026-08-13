@@ -319,6 +319,15 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
 # ── unsloth_cli: the message the user actually reads ──
 
 
+
+def _expand_windows_vars(value: str, environ: dict[str, str]) -> str:
+    """%NAME% against the fake environment: os.path.expandvars would read the host's."""
+    out = value
+    for name, replacement in environ.items():
+        out = out.replace(f"%{name}%", replacement)
+    return out
+
+
 def _guard_outcome(
     cwd: str | None,
     argv: list[str] | None = None,
@@ -399,6 +408,8 @@ def _guard_outcome(
         not in {ntpath.normcase(home) for home in missing_homes},
         # The real sys.path belongs to pytest; the guard gets a copy to pin.
         syspath = syspath if syspath is not None else [],
+        # Windows expansion, from the same environment the guard is reading.
+        expandvars = lambda value: _expand_windows_vars(value, environ),
     )
     if environ_out is not None:
         environ_out.clear()
@@ -1051,16 +1062,13 @@ def test_cli_callback_exits_only_on_a_fatal_outcome():
 
 
 def test_cli_guard_leaves_values_the_working_directory_does_not_resolve():
-    r"""Three readers in the tree treat these as something other than a path, so
+    r"""Two readers in the tree take these as something other than a path, so
     anchoring one would change its meaning instead of preserving it: MLX_HOSTFILE
-    holds either a filename or the host list itself, huggingface_hub expands
-    %VAR% in HF_HOME after the guard is gone, and a bare on/off token is ignored
-    by the pre-quant allowlist precisely so there is no "allow all" mode."""
+    holds either a filename or the host list itself, and a bare on/off token is
+    ignored by the pre-quant allowlist precisely so there is no "allow all" mode."""
     environ_out: dict[str, str] = {}
     values = {
         "MLX_HOSTFILE": '[{"ssh": "node0"}]',
-        "HF_HOME": r"%LOCALAPPDATA%\hf",
-        "SENTENCE_TRANSFORMERS_HOME": "$MY_CACHE",
         "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH": "1",
     }
     _message, colour, chdir_calls = _guard_outcome(
@@ -1072,6 +1080,27 @@ def test_cli_guard_leaves_values_the_working_directory_does_not_resolve():
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     for name, value in values.items():
         assert environ_out[name] == value, f"{name} was rewritten to {environ_out[name]}"
+
+
+def test_cli_guard_expands_a_cache_override_before_deciding():
+    r"""huggingface_hub expands %LOCALAPPDATA% in HF_HOME and Studio's own
+    hf_cache_settings does not, so leaving the value as written sends the two
+    readers to different folders once the process moves. Expanding here settles
+    it; a variable this machine does not set stays literal and is anchored."""
+    environ_out: dict[str, str] = {}
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {
+            "LOCALAPPDATA": r"C:\Users\me\AppData\Local",
+            "HF_HOME": r"%LOCALAPPDATA%\hf",
+            "HF_HUB_CACHE": r"%NOT_SET%\hub",
+        },
+        environ_out = environ_out,
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+    assert environ_out["HF_HOME"] == r"C:\Users\me\AppData\Local\hf"
+    assert environ_out["HF_HUB_CACHE"] == r"C:\Windows\System32\%NOT_SET%\hub"
 
 
 def test_cli_guard_refuses_a_path_attached_to_its_own_option():

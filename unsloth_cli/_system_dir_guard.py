@@ -376,6 +376,7 @@ def pin_relative_overrides(
     cwd,
     pathmod = _os.path,
     abspath = None,
+    expandvars = None,
 ):
     """Rewrite relative path overrides so they keep meaning the folder they did.
 
@@ -385,7 +386,7 @@ def pin_relative_overrides(
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
-        anchored = _anchor(name, value, cwd, pathmod, abspath)
+        anchored = _anchor(name, value, cwd, pathmod, abspath, expandvars)
         if anchored is not None:
             environ[name] = anchored
             pinned.append(name)
@@ -397,7 +398,9 @@ def pin_relative_overrides(
         # anchored on its own; one relative entry is enough to change what the
         # whole list means.
         entries = raw.split(_PATH_LIST_SEPARATOR)
-        anchored_entries = [_anchor(name, e.strip(), cwd, pathmod, abspath) or e for e in entries]
+        anchored_entries = [
+            _anchor(name, e.strip(), cwd, pathmod, abspath, expandvars) or e for e in entries
+        ]
         if anchored_entries != entries:
             environ[name] = _PATH_LIST_SEPARATOR.join(anchored_entries)
             pinned.append(name)
@@ -414,10 +417,13 @@ def pin_relative_overrides(
 # (`unsloth_cli/_inference.py`, `_json_rank_count_from_env`).
 _INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE",))
 
-# Expanded by their reader after the guard has run, so the folder is decided
-# once we are gone: huggingface_hub calls expandvars on HF_HOME (and on the
-# XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE, and Studio
-# calls it on SENTENCE_TRANSFORMERS_HOME (`studio/backend/utils/utils.py`).
+# Names whose readers disagree about %VAR% and $VAR: huggingface_hub calls
+# expandvars on HF_HOME (and on the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE
+# and HF_ASSETS_CACHE, and Studio calls it on SENTENCE_TRANSFORMERS_HOME, but
+# Studio's own hf_cache_settings._canonical() does not, so it would read
+# %LOCALAPPDATA%\hf as a relative folder. Expanding here before deciding settles
+# it: both readers then see one absolute path. Scoped to these names because a
+# directory really called "%data%" is legal, and every other name is read as one.
 _EXPANDED_ENV = frozenset(
     (
         "HF_HOME",
@@ -439,8 +445,6 @@ _TOGGLE_TOKENS = frozenset(("1", "true", "yes", "on", "0", "false", "no", "off")
 def _names_a_path(name, value):
     """Whether the working directory is what resolves this variable's value."""
     if name in _INLINE_JSON_ENV and value.startswith(("[", "{")):
-        return False
-    if name in _EXPANDED_ENV and ("%" in value or "$" in value):
         return False
     if name in _TOGGLE_ENV and value.lower() in _TOGGLE_TOKENS:
         return False
@@ -486,15 +490,25 @@ def _anchor(
     cwd,
     pathmod,
     abspath = None,
+    expandvars = None,
 ):
     """The value rewritten to name the same folder from anywhere, or None.
 
     None means it needs no rewriting: it is empty, it starts with `~` (expanduser
     does not consult the working directory), or it is already fully qualified.
     """
-    value = (value or "").strip()
-    if not value or value.startswith("~") or _is_fully_qualified(value, pathmod):
+    original = value = (value or "").strip()
+    if name in _EXPANDED_ENV and value:
+        # Written out, so the reader that expands and the reader that does not
+        # land in the same folder. An unset variable is left as written, and
+        # expandvars is a no-op on a value that holds none.
+        value = (expandvars or _os.path.expandvars)(value)
+    if not value or value.startswith("~"):
         return None
+    if _is_fully_qualified(value, pathmod):
+        # Already names one folder. Still worth writing back if expanding is what
+        # made it name one, since the reader that does not expand cannot see it.
+        return value if value != original else None
     if not _names_a_path(name, value):
         return None
     if pathmod.splitdrive(value)[0] or value.startswith(("\\", "/")):
@@ -591,6 +605,7 @@ def check_working_directory(
     abspath = None,
     home_isdir = None,
     syspath = None,
+    expandvars = None,
 ):
     """Decide what to do about the current working directory.
 
@@ -628,7 +643,7 @@ def check_working_directory(
         try:
             # Before moving, or a relative override the caller wrote would end up
             # naming a folder under the new directory instead of theirs.
-            pin_relative_overrides(environ, cwd, pathmod, abspath)
+            pin_relative_overrides(environ, cwd, pathmod, abspath, expandvars)
             # This interpreter read PYTHONPATH before the guard ran, and it keeps
             # the entries as written: a relative one is resolved on every import,
             # so it has to be anchored here as well as in the environment.

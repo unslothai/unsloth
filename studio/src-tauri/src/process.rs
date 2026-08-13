@@ -1202,10 +1202,13 @@ fn needs_os_resolution(value: &str) -> bool {
 /// MLX_HOSTFILE holds either a filename or the host list itself, as JSON.
 const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE"];
 
-/// Expanded by their reader after this runs, so the folder is decided later:
-/// huggingface_hub calls expandvars on HF_HOME (and the XDG_CACHE_HOME it
-/// defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE, and Studio calls it on
-/// SENTENCE_TRANSFORMERS_HOME.
+/// Names whose readers disagree about %VAR%: huggingface_hub expands HF_HOME
+/// (and the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE,
+/// and Studio expands SENTENCE_TRANSFORMERS_HOME, but Studio's own
+/// hf_cache_settings does not, so it reads %LOCALAPPDATA%\hf as a relative
+/// folder. Expanding before deciding settles it: both readers then see one
+/// absolute path. Scoped to these names because a directory really called
+/// "%data%" is legal and every other name is read as one.
 const EXPANDED_ENV: &[&str] = &[
     "HF_HOME",
     "HF_HUB_CACHE",
@@ -1219,17 +1222,39 @@ const EXPANDED_ENV: &[&str] = &[
 /// mode; anchoring one would turn it into a real allowlisted directory.
 const TOGGLE_ENV: &[&str] = &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"];
 
+/// %NAME% against the process environment, the way Windows itself would.
+///
+/// The twin of the expansion `unsloth_cli/_system_dir_guard.py` gets from
+/// os.path.expandvars. A name this machine does not set is left as written,
+/// which is also what expandvars does.
+fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else { break };
+        let name = &after[..end];
+        match (name.is_empty(), lookup(name)) {
+            (false, Some(expanded)) => {
+                out.push_str(&rest[..start]);
+                out.push_str(&expanded);
+            }
+            _ => out.push_str(&rest[..start + 1 + end + 1]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Whether the working directory is what resolves this variable's value.
 ///
 /// The twin of `_names_a_path` in `unsloth_cli/_system_dir_guard.py`. Each
 /// exemption is scoped to the variables whose reader proves it, because the
-/// syntax is only special there: a directory really called "[llama]" or
-/// "%data%" is legal on Windows, and UNSLOTH_LLAMA_CPP_PATH is read as one.
+/// syntax is only special there: a directory really called "[llama]" is legal on
+/// Windows, and UNSLOTH_LLAMA_CPP_PATH is read as one.
 fn names_a_path(name: &str, value: &str) -> bool {
     if INLINE_JSON_ENV.contains(&name) && (value.starts_with('[') || value.starts_with('{')) {
-        return false;
-    }
-    if EXPANDED_ENV.contains(&name) && (value.contains('%') || value.contains('$')) {
         return false;
     }
     if TOGGLE_ENV.contains(&name)
@@ -1270,18 +1295,37 @@ fn relative_override_pins_from(
             Ok(cwd.join(value))
         }
     };
+    // Written out, so the reader that expands %VAR% and the reader that does not
+    // land in the same folder. Only for the names that have both.
+    let expanded = |name: &str, value: &str| -> String {
+        if EXPANDED_ENV.contains(&name) {
+            expand_windows_vars(value, &lookup)
+        } else {
+            value.to_string()
+        }
+    };
     let mut pins = Vec::new();
     for name in RELATIVE_PATH_ENV {
         let Some(value) = lookup(name) else { continue };
-        let value = value.trim();
+        let original = value.trim().to_string();
+        let value = expanded(name, &original);
         // A `~` value does not consult the working directory.
         if value.is_empty() || value.starts_with('~') {
             continue;
         }
-        if is_fully_qualified(value) || !names_a_path(name, value) {
+        if is_fully_qualified(&value) {
+            // Already names one folder. Still worth writing back if expanding is
+            // what made it name one: the reader that does not expand cannot see
+            // that on its own.
+            if value != original {
+                pins.push((*name, std::path::PathBuf::from(value)));
+            }
             continue;
         }
-        pins.push((*name, anchor(value)?));
+        if !names_a_path(name, &value) {
+            continue;
+        }
+        pins.push((*name, anchor(&value)?));
     }
     for name in PATH_LIST_ENV {
         let Some(raw) = lookup(name) else { continue };
@@ -1291,16 +1335,17 @@ fn relative_override_pins_from(
         // Only reached on Windows, where the separator is ';'.
         let mut entries: Vec<String> = Vec::new();
         for entry in raw.split(';') {
-            let entry = entry.trim();
-            if entry.is_empty()
-                || entry.starts_with('~')
-                || is_fully_qualified(entry)
-                || !names_a_path(name, entry)
-            {
-                entries.push(entry.to_string());
+            let original = entry.trim().to_string();
+            let entry = expanded(name, &original);
+            if entry.is_empty() || entry.starts_with('~') || is_fully_qualified(&entry) {
+                entries.push(entry);
                 continue;
             }
-            entries.push(anchor(entry)?.to_string_lossy().into_owned());
+            if !names_a_path(name, &entry) {
+                entries.push(entry);
+                continue;
+            }
+            entries.push(anchor(&entry)?.to_string_lossy().into_owned());
         }
         let joined = entries.join(";");
         if joined == raw {
@@ -3081,6 +3126,39 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_cache_override_is_expanded_before_it_is_judged() {
+        // One reader expands %LOCALAPPDATA% and one does not, so the value is
+        // written out here and both then see the same folder.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name| match name {
+                "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
+                "HF_HOME" => Some("%LOCALAPPDATA%\\hf".to_string()),
+                // A name this machine does not set stays as written, and is
+                // anchored like any other relative value.
+                "HF_HUB_CACHE" => Some("%NOT_SET%\\hub".to_string()),
+                _ => None,
+            },
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![
+                (
+                    "HF_HOME",
+                    PathBuf::from("C:\\Users\\me\\AppData\\Local\\hf")
+                ),
+                ("HF_HUB_CACHE", cwd.join("%NOT_SET%\\hub")),
+            ],
+            "an expanded cache override must name one folder for both readers"
+        );
+    }
+
+    #[test]
     fn an_exemption_only_applies_to_the_variable_that_supports_it() {
         // A directory really called "[llama]" or "%data%" is legal on Windows,
         // and the readers of these two names take it as exactly that.
@@ -3119,8 +3197,6 @@ mod managed_cli_working_dir_tests {
             |name| match name {
                 // MLX_HOSTFILE holds either a filename or the host list itself.
                 "MLX_HOSTFILE" => Some("[{\"ssh\": \"node0\"}]".to_string()),
-                // huggingface_hub expands this itself, after we are gone.
-                "HF_HOME" => Some("%LOCALAPPDATA%\\hf".to_string()),
                 // A bare toggle is ignored on purpose: there is no "allow all".
                 "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1".to_string()),
                 _ => None,

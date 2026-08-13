@@ -80,8 +80,31 @@ app = typer.Typer(
 )
 
 
+def _invocation_args(ctx):
+    """The arguments this invocation was given, not the host process's argv.
+
+    A library that calls `app(args = [...])` or CliRunner never touches sys.argv,
+    so reading it there would classify somebody else's command line: a host whose
+    own argv happened to look like a desktop command would move the process out
+    from under the caller's relative paths.
+
+    Click hands the callback the subcommand it is about to run, and from 8.2 on
+    it keeps the tail to itself. Where the tail is unknown it is assumed to hold
+    a path, so an invocation this function cannot read in full is refused rather
+    than relocated. The `unsloth` console script never reaches here: it is
+    classified at import, from the real argv, before any command is imported.
+    """
+    if not ctx.invoked_subcommand:
+        return _sys.argv[1:]
+    tail = [*(getattr(ctx, "args", None) or [])]
+    # "..." stands in for a tail Click did not expose. It is not a flag, which is
+    # what marks an invocation as carrying a caller's path.
+    return [ctx.invoked_subcommand, *(tail or ["..."])]
+
+
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         None,
         "--version",
@@ -97,7 +120,7 @@ def main(
     global _startup_guard
     _guard, _startup_guard = _startup_guard, None
     if _guard is None:
-        _guard = _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform)
+        _guard = _check_working_directory(_invocation_args(ctx), _os.environ, _sys.platform)
     _message, _colour, _fatal = _guard
     if _message is not None:
         typer.secho(_message, fg = _colour, err = True)
