@@ -7,10 +7,12 @@ import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 const ROLLBACK_BLOCKS = 8;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
-const MULTILINE_KATEX_CONTEXT = "$$\nx\n$$\n\n";
+const MULTILINE_KATEX_CONTEXT = "$$\n$$\n\n";
 const BOLD_CONTEXT = "**x**\n\n";
 const SINGLE_ASTERISK_CONTEXT = "*x*\n\n";
 const SINGLE_UNDERSCORE_CONTEXT = "_x_\n\n";
+const INLINE_CODE_ASTERISK_CONTEXT = "`a *b`\n\n";
+const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b`\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
@@ -22,11 +24,15 @@ type RepairParity = {
   boldFence: boolean;
   doubleUnderscore: boolean;
   emphasisDisplayMath: boolean;
+  emphasisInlineCode: boolean;
   emphasisInlineMath: boolean;
+  firstBoldOrSingleUnderscore: "bold" | "singleUnderscore" | null;
   singleAsterisk: boolean;
   singleAsteriskCandidate: boolean;
+  firstSingleAsteriskCandidate: "inlineCode" | "normal" | null;
   singleUnderscore: boolean;
   singleUnderscoreCandidate: boolean;
+  firstSingleUnderscoreCandidate: "inlineCode" | "normal" | null;
   tripleAsterisk: boolean;
   displayMathInlineCode: boolean;
   inlineCode: boolean;
@@ -42,11 +48,15 @@ const createRepairParity = (): RepairParity => ({
   boldFence: false,
   doubleUnderscore: false,
   emphasisDisplayMath: false,
+  emphasisInlineCode: false,
   emphasisInlineMath: false,
+  firstBoldOrSingleUnderscore: null,
   singleAsterisk: false,
   singleAsteriskCandidate: false,
+  firstSingleAsteriskCandidate: null,
   singleUnderscore: false,
   singleUnderscoreCandidate: false,
+  firstSingleUnderscoreCandidate: null,
   tripleAsterisk: false,
   displayMathInlineCode: false,
   inlineCode: false,
@@ -113,7 +123,7 @@ function updateEmphasisMathParity(
   text: string,
   index: number,
 ): number {
-  if (text[index] === "\\") {
+  if (text[index] === "\\" && text[index + 1] === "$") {
     return index + 1;
   }
   if (text[index] !== "$") {
@@ -240,9 +250,13 @@ function updateAsteriskParity(
 ): number {
   if (isSingleAsteriskCandidate(parity, text, index)) {
     parity.singleAsteriskCandidate = true;
+    parity.firstSingleAsteriskCandidate ??= parity.emphasisInlineCode
+      ? "inlineCode"
+      : "normal";
   }
   if (text[index + 1] === "*") {
     parity.boldCandidate = true;
+    parity.firstBoldOrSingleUnderscore ??= "bold";
     parity.bold = !parity.bold;
     return index + 1;
   }
@@ -259,6 +273,10 @@ function updateUnderscoreParity(
 ): number {
   if (isSingleUnderscoreCandidate(parity, text, index)) {
     parity.singleUnderscoreCandidate = true;
+    parity.firstSingleUnderscoreCandidate ??= parity.emphasisInlineCode
+      ? "inlineCode"
+      : "normal";
+    parity.firstBoldOrSingleUnderscore ??= "singleUnderscore";
   }
   if (text[index + 1] === "_") {
     parity.doubleUnderscore = !parity.doubleUnderscore;
@@ -272,6 +290,7 @@ function updateUnderscoreParity(
 
 function updateEmphasisParity(parity: RepairParity, text: string): void {
   for (let index = 0; index < text.length; index += 1) {
+    index = updateEmphasisMathParity(parity, text, index);
     if (text.slice(index, index + 3) === "```") {
       parity.boldFence = !parity.boldFence;
       index += 2;
@@ -280,7 +299,10 @@ function updateEmphasisParity(parity: RepairParity, text: string): void {
     if (parity.boldFence) {
       continue;
     }
-    index = updateEmphasisMathParity(parity, text, index);
+    if (text[index] === "`" && (index === 0 || text[index - 1] !== "\\")) {
+      parity.emphasisInlineCode = !parity.emphasisInlineCode;
+      continue;
+    }
     if (text[index] === "*") {
       index = updateAsteriskParity(parity, text, index);
       continue;
@@ -415,6 +437,12 @@ export class IncrementalMarkdownCache {
   private hasBoldContext = false;
   private hasSingleAsteriskContext = false;
   private hasSingleUnderscoreContext = false;
+  private firstSingleAsteriskContext: "inlineCode" | "normal" | null = null;
+  private firstSingleUnderscoreContext: "inlineCode" | "normal" | null = null;
+  private firstBoldOrSingleUnderscoreContext:
+    | "bold"
+    | "singleUnderscore"
+    | null = null;
   private fullDocumentMode = false;
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
@@ -422,20 +450,37 @@ export class IncrementalMarkdownCache {
     ...parseMarkdownIntoBlocks(markdown),
   ];
 
+  private getSingleUnderscoreContext(): string {
+    if (!this.hasSingleUnderscoreContext) {
+      return "";
+    }
+    return this.firstSingleUnderscoreContext === "inlineCode"
+      ? INLINE_CODE_UNDERSCORE_CONTEXT
+      : SINGLE_UNDERSCORE_CONTEXT;
+  }
+
+  private getSingleAsteriskContext(): string {
+    if (!this.hasSingleAsteriskContext) {
+      return "";
+    }
+    return this.firstSingleAsteriskContext === "inlineCode"
+      ? INLINE_CODE_ASTERISK_CONTEXT
+      : SINGLE_ASTERISK_CONTEXT;
+  }
+
+  private getEmphasisContext(): string {
+    const bold = this.hasBoldContext ? BOLD_CONTEXT : "";
+    const underscore = this.getSingleUnderscoreContext();
+    return this.firstBoldOrSingleUnderscoreContext === "singleUnderscore"
+      ? underscore + bold
+      : bold + underscore;
+  }
+
   private repairTail(): string {
-    let context = "";
-    if (this.hasBoldContext) {
-      context += BOLD_CONTEXT;
-    }
-    if (this.hasSingleAsteriskContext) {
-      context += SINGLE_ASTERISK_CONTEXT;
-    }
-    if (this.hasSingleUnderscoreContext) {
-      context += SINGLE_UNDERSCORE_CONTEXT;
-    }
-    if (this.hasMultilineKatexContext) {
-      context += MULTILINE_KATEX_CONTEXT;
-    }
+    const context =
+      this.getEmphasisContext() +
+      this.getSingleAsteriskContext() +
+      (this.hasMultilineKatexContext ? MULTILINE_KATEX_CONTEXT : "");
     if (!context) {
       return remend(this.tail);
     }
@@ -449,6 +494,9 @@ export class IncrementalMarkdownCache {
     this.hasBoldContext = false;
     this.hasSingleAsteriskContext = false;
     this.hasSingleUnderscoreContext = false;
+    this.firstSingleAsteriskContext = null;
+    this.firstSingleUnderscoreContext = null;
+    this.firstBoldOrSingleUnderscoreContext = null;
   }
 
   private renderFullDocument(markdown: string): IncrementalMarkdownRender {
@@ -471,7 +519,7 @@ export class IncrementalMarkdownCache {
   }
 
   update(markdown: string): IncrementalMarkdownRender {
-    if (this.fullDocumentMode) {
+    if (this.fullDocumentMode && markdown.startsWith(this.source)) {
       this.source = markdown;
       return this.renderFullDocument(markdown);
     }
@@ -506,6 +554,12 @@ export class IncrementalMarkdownCache {
     let committedHasBoldCandidate = false;
     let committedHasSingleAsteriskCandidate = false;
     let committedHasSingleUnderscoreCandidate = false;
+    let committedFirstSingleAsterisk: "inlineCode" | "normal" | null = null;
+    let committedFirstSingleUnderscore: "inlineCode" | "normal" | null = null;
+    let committedFirstBoldOrSingleUnderscore:
+      | "bold"
+      | "singleUnderscore"
+      | null = null;
     let repairBroke = false;
 
     // Remend may synthesize closing syntax at the end of an incomplete tail.
@@ -526,6 +580,10 @@ export class IncrementalMarkdownCache {
         committedHasSingleAsteriskCandidate = parity.singleAsteriskCandidate;
         committedHasSingleUnderscoreCandidate =
           parity.singleUnderscoreCandidate;
+        committedFirstSingleAsterisk = parity.firstSingleAsteriskCandidate;
+        committedFirstSingleUnderscore = parity.firstSingleUnderscoreCandidate;
+        committedFirstBoldOrSingleUnderscore =
+          parity.firstBoldOrSingleUnderscore;
       }
     }
 
@@ -546,9 +604,12 @@ export class IncrementalMarkdownCache {
     this.hasBoldContext ||= committedHasBoldCandidate;
     this.hasSingleAsteriskContext ||= committedHasSingleAsteriskCandidate;
     this.hasSingleUnderscoreContext ||= committedHasSingleUnderscoreCandidate;
+    this.firstSingleAsteriskContext ??= committedFirstSingleAsterisk;
+    this.firstSingleUnderscoreContext ??= committedFirstSingleUnderscore;
+    this.firstBoldOrSingleUnderscoreContext ??=
+      committedFirstBoldOrSingleUnderscore;
     const committedText = this.tail.slice(0, committedLength);
-    const katex = committedText.indexOf("$$");
-    if (katex >= 0 && committedText.indexOf("\n", katex) >= 0) {
+    if (committedText.includes("$$")) {
       this.hasMultilineKatexContext = true;
     }
     this.tail = this.tail.slice(committedLength);

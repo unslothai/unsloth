@@ -61,6 +61,12 @@ const MARKDOWN_CASES = [
   `A ***** marker run.\n\n${paragraphs(12)}x ***y and ***bold`,
   `Plain **bold** and *italic*.\n\n$$\nx+y\n$$\n\n${paragraphs(12)}A ***** marker.\n\n${paragraphs(4, "later")}\`\`\``,
   `Plain **bold** and *italic*.\n\n$$\nx+y\n$$\n\n${paragraphs(12)}Call _private first.\n\n${paragraphs(4, "later")}Plain **b`,
+  `\`\`\`sh\necho $HOME\n\`\`\`\n\n${paragraphs(12)}see *italic`,
+  `\`\`\`text\ncost $$ each\n\`\`\`\n\n${paragraphs(12)}see *italic`,
+  `use \`a *b\` here\n\n${paragraphs(12)}see *italic`,
+  `use \`a _b\` here\n\n${paragraphs(12)}see _italic`,
+  `Call _private first.\n\n${paragraphs(12)}Plain **bold`,
+  `$$E=mc^2$$ is famous\n\n${paragraphs(12)}$$`,
   `A stray \` marker in prose.\n\n${paragraphs(12)}\`tail`,
   `A stray __ marker in prose.\n\n${paragraphs(12)}x__ y __tail`,
   `A stray ~~ marker in prose.\n\n${paragraphs(12)}x~~ y ~~tail`,
@@ -134,6 +140,23 @@ test("a transient marker imbalance can recover incremental parsing", () => {
   const balanced = `${unbalanced}Finish the *italic example.\n\n${paragraphs(20, "later")}`;
   const render = cache.update(balanced);
   assert.ok(render.markdown.length < balanced.length / 2);
+});
+
+test("a non-prefix replacement clears the sticky fallback", () => {
+  const cache = new IncrementalMarkdownCache();
+  cache.update(`takes 5~10 minutes\n\n${paragraphs(100)}`);
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+
+  const replacement = paragraphs(100, "replacement");
+  const render = cache.update(replacement);
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    false,
+  );
+  assert.ok(render.markdown.length < replacement.length / 4);
 });
 
 test("single-dollar parity affects the retained tail repair", () => {
