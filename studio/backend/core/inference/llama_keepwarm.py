@@ -7,6 +7,9 @@ Off by default (idle seconds = 0). When enabled, a background loop unloads the
 loaded GGUF once it has been idle for the configured TTL, freeing VRAM. A
 pure-ASGI middleware tracks in-flight inference requests so a long stream that
 outlives the TTL is never unloaded mid-response.
+
+The same loop and the same middleware drive the image/video side (media_keepwarm),
+so Studio has one idle mechanism rather than one per backend.
 """
 
 from __future__ import annotations
@@ -285,10 +288,11 @@ class LlamaKeepWarmMiddleware:
     async def __call__(self, scope, receive, send):
         # Inference endpoints are all POST; skipping non-POST avoids counting CORS
         # preflight (OPTIONS). ``or ""`` guards an explicit None path.
+        path = scope.get("path") or ""
         if (
             scope.get("type") != "http"
             or scope.get("method") != "POST"
-            or not _is_inference_path(scope.get("path") or "")
+            or not _is_inference_path(path)
         ):
             await self.app(scope, receive, send)
             return
@@ -307,6 +311,13 @@ class LlamaKeepWarmMiddleware:
         finally:
             if not started:
                 _note_unpending()
+        # An image/video generation gets the same bookkeeping against ITS backend, so the
+        # media idle unload cannot free the pipeline this request is about to generate on.
+        from core.inference import media_keepwarm
+
+        media_owner = media_keepwarm.owner_for_path(path)
+        if media_owner is not None:
+            await media_keepwarm.begin_request(media_owner)
         ended = {"done": False}
         status = {"code": None}
 
@@ -315,6 +326,10 @@ class LlamaKeepWarmMiddleware:
             if ended["done"]:
                 return
             ended["done"] = True
+            # Before the untracked early return below: that marks a request as not using the
+            # local GGUF, which says nothing about the media backend it was counted against.
+            if media_owner is not None:
+                media_keepwarm.end_request(media_owner, counted = status["code"] not in (401, 403))
             if scope.get(_UNTRACKED_SCOPE_KEY):
                 return
             # This middleware runs before FastAPI auth, so a 401/403 reaches here
@@ -386,6 +401,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
+        # The image/video half of the tick, in its own guard so neither side can cost the
+        # other an iteration. Inert unless the media TTL is set.
+        try:
+            from core.inference.media_keepwarm import idle_unload_step
+            await idle_unload_step()
+        except Exception as exc:
+            logger.debug("media idle_unload_step failed: %s", exc)
         try:
             ttl = get_auto_unload_idle_seconds()
             if ttl <= 0:

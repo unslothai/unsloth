@@ -369,6 +369,37 @@ def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypat
     assert gpu_arbiter.current_owner() is None
 
 
+def test_idle_unload_frees_the_pipeline_and_the_user_can_reload(client, monkeypatch):
+    # The idle tick frees a model loaded through the route, and the user who comes back
+    # gets a working reload: it drops the pipeline the same way /images/unload does and
+    # stashes nothing, so the load path afterwards is the ordinary one.
+    import asyncio
+    import time
+
+    import core.inference.media_keepwarm as media_keepwarm
+    import utils.openai_auto_switch_settings as auto_switch_settings
+
+    monkeypatch.setattr(auto_switch_settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    tracker = media_keepwarm._TRACKERS[gpu_arbiter.DIFFUSION]
+    monkeypatch.setattr(tracker, "seen", None)
+    monkeypatch.setattr(tracker, "_inflight", 0)
+    monkeypatch.setattr(tracker, "_pending", 0)
+    load = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+
+    assert client.post("/api/inference/images/load", json = load).json()["loaded"] is True
+    asyncio.run(media_keepwarm.idle_unload_step())  # the fresh load survives this tick
+    assert client.get("/api/inference/images/status").json()["loaded"] is True
+
+    tracker._last_active = time.monotonic() - 3600
+    asyncio.run(media_keepwarm.idle_unload_step())
+    assert client.get("/api/inference/images/status").json()["loaded"] is False
+    assert gpu_arbiter.current_owner() is None
+
+    assert client.post("/api/inference/images/load", json = load).json()["loaded"] is True
+    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    assert gen.status_code == 200 and gen.json()["images"][0]["seed"] == 7
+
+
 def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
     # A concurrent /images/load re-acquires DIFFUSION but is not is_loaded yet, so ownership must be kept on the in-flight state alone.
     backend = diffusion_module.get_diffusion_backend()

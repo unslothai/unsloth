@@ -39,6 +39,7 @@ AUTO_UNLOAD_KEEP_KV_SETTING_KEY = "openai_api_auto_unload_keep_kv"
 AUTO_UNLOAD_API_ONLY_SETTING_KEY = "openai_api_auto_unload_api_only"
 MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
 MODEL_IDLE_TTL_ENV_VAR = "UNSLOTH_MODEL_IDLE_TTL"
+MEDIA_IDLE_TTL_ENV_VAR = "UNSLOTH_MEDIA_IDLE_TTL"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED = False
@@ -124,34 +125,40 @@ def _stored_idle_seconds() -> Optional[int]:
     return _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
 
 
-_env_floor_warned = False
+_env_floor_warned: set[str] = set()
 
 
-def _env_idle_seconds() -> Optional[int]:
-    """UNSLOTH_MODEL_IDLE_TTL as a non-negative seconds value, or None if unset/invalid.
+def _env_ttl(var: str) -> Optional[int]:
+    """``var`` as a non-negative seconds value, or None if unset/invalid.
 
     Floored to MIN_AUTO_UNLOAD_IDLE_SECONDS here (with a one-time warning) since
     headless/container deploys have no UI to surface a validation error."""
-    raw = os.environ.get(MODEL_IDLE_TTL_ENV_VAR)
+    raw = os.environ.get(var)
     if raw is None or not raw.strip():
         return None
     parsed = _coerce_int(raw)
     if parsed is None:
         return None
     floored = _apply_idle_floor(parsed)
-    if floored != parsed:
-        global _env_floor_warned
-        if not _env_floor_warned:
-            _env_floor_warned = True
-            from loggers import get_logger
-            get_logger(__name__).warning(
-                "%s=%s is below the %ss minimum; using %ss",
-                MODEL_IDLE_TTL_ENV_VAR,
-                parsed,
-                MIN_AUTO_UNLOAD_IDLE_SECONDS,
-                floored,
-            )
+    if floored != parsed and var not in _env_floor_warned:
+        _env_floor_warned.add(var)
+        from loggers import get_logger
+        get_logger(__name__).warning(
+            "%s=%s is below the %ss minimum; using %ss",
+            var,
+            parsed,
+            MIN_AUTO_UNLOAD_IDLE_SECONDS,
+            floored,
+        )
     return floored
+
+
+def _env_idle_seconds() -> Optional[int]:
+    return _env_ttl(MODEL_IDLE_TTL_ENV_VAR)
+
+
+def _env_media_idle_seconds() -> Optional[int]:
+    return _env_ttl(MEDIA_IDLE_TTL_ENV_VAR)
 
 
 def get_stored_auto_unload_idle_seconds() -> int:
@@ -170,16 +177,21 @@ def get_stored_auto_unload_idle_seconds() -> int:
     return env if env is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
 
 
+def _residency_vetoes_unload() -> bool:
+    """Model Memory residency pins the weights, so no idle TTL applies."""
+    try:
+        from utils.model_memory_settings import get_keep_resident
+        return bool(get_keep_resident())
+    except Exception:
+        return False
+
+
 def get_auto_unload_idle_seconds() -> int:
     """Effective idle TTL the idle loop runs on (0 = never unload)."""
     # Model Memory residency vetoes the TTL. Effective reader only, so the stored
     # reader keeps the number the user typed and it returns when they turn it off.
-    try:
-        from utils.model_memory_settings import get_keep_resident
-        if get_keep_resident():
-            return 0
-    except Exception:
-        pass
+    if _residency_vetoes_unload():
+        return 0
     stored = _stored_idle_seconds()
     if stored is not None:
         # An explicit UI/API value stays gated on auto-switch: off reports 0 so the
@@ -190,6 +202,20 @@ def get_auto_unload_idle_seconds() -> int:
     # enables idle-unload even with auto-switch off (headless/container deploys).
     env = _env_idle_seconds()
     return env if env is not None else 0
+
+
+def get_media_auto_unload_idle_seconds() -> int:
+    """Effective idle TTL for the image and video backends (0 = never unload).
+
+    Defaults to the chat TTL, so the one setting the user already has frees every
+    heavy GPU consumer rather than only the GGUF. UNSLOTH_MEDIA_IDLE_TTL overrides
+    it, including 0 to keep pipelines resident while chat still idle-unloads.
+    Residency vetoes it exactly like the chat reader.
+    """
+    env = _env_media_idle_seconds()
+    if env is None:
+        return get_auto_unload_idle_seconds()
+    return 0 if _residency_vetoes_unload() else env
 
 
 def idle_unload_is_configured() -> bool:
