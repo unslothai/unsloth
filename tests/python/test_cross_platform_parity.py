@@ -712,12 +712,12 @@ class TestPinnedIndexClearsUvEnvParity:
             # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
             # code is cached, which is how arm64 and the Windows containers reported "exited ."
             # and had a working uv read as broken.
-            assert "try { $proc.WaitForExit() } catch {}" in body, (
-                f"{path.name} must settle the exit code before reading it"
-            )
-            assert '$null -eq $code -or "$code" -eq ""' in body, (
-                f"{path.name} must treat a missing exit code as inconclusive"
-            )
+            assert (
+                "try { $proc.WaitForExit() } catch {}" in body
+            ), f"{path.name} must settle the exit code before reading it"
+            assert (
+                '$null -eq $code -or "$code" -eq ""' in body
+            ), f"{path.name} must treat a missing exit code as inconclusive"
             assert (
                 body.count('return "unknown"') == 3
             ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
