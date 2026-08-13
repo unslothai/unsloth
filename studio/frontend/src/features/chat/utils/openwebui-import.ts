@@ -96,7 +96,9 @@ export function isOpenWebUIRecord(value: unknown): boolean {
 
 // Content
 
-const FENCED_CODE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
+// A closed fence first, then an opener that never closed: an answer cut off
+// inside a code block still quotes code, not an Open WebUI construct.
+const FENCED_CODE = /```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$/g;
 const DETAILS_BLOCK = /<details\b([^>]*)>([\s\S]*?)<\/details>/gi;
 const ATTRIBUTE = /([\w-]+)="([^"]*)"/g;
 
@@ -243,6 +245,12 @@ function contentWithDetailsToParts(content: string): unknown[] {
   return parts;
 }
 
+/** Addressable outside Open WebUI: inline data or an absolute url. */
+const PORTABLE_IMAGE = /^(?:https?:|data:)/i;
+
+/** The three names a Responses content part uses for its text. */
+const TEXT_PART_TYPES = new Set(["input_text", "output_text", "text"]);
+
 /** Built-ins studio names differently from the Responses item they arrive in. */
 const BUILTIN_TOOL_NAMES: Record<string, string> = { shell: "code_execution" };
 
@@ -292,10 +300,9 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
         const format = str(item.output_format) ?? "png";
         // A url is already addressable. Wrapping one in a base64 data url makes
         // a permanently broken image out of something that might have rendered.
-        const isUrl = /^(https?:|data:)/i.test(encoded);
         parts.push({
           type: "image",
-          image: isUrl ? encoded : `data:image/${format};base64,${encoded}`,
+          image: PORTABLE_IMAGE.test(encoded) ? encoded : `data:image/${format};base64,${encoded}`,
         });
       }
       continue;
@@ -345,7 +352,8 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       const images: string[] = [];
       for (const part of outputParts) {
         if (!isDict(part)) continue;
-        if (part.type === "input_text" && typeof part.text === "string") {
+        // The backend normalizer accepts all three names for tool result text.
+        if (TEXT_PART_TYPES.has(part.type as string) && typeof part.text === "string") {
           resultText += part.text;
         } else if (part.type === "input_image") {
           const url = str(part.image_url);
@@ -362,9 +370,11 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       } else if (resultText.trim()) {
         pushText(parts, resultText);
       }
-      // A tool that returned images: keep them as image parts so they still render.
+      // A tool that returned images: keep them as image parts so they still
+      // render. A bare `/api/v1/files/<id>` is dead outside Open WebUI, but an
+      // absolute url resolves anywhere the chat is opened.
       for (const image of images) {
-        if (image.startsWith("data:")) parts.push({ type: "image", image });
+        if (PORTABLE_IMAGE.test(image)) parts.push({ type: "image", image });
       }
     }
   }
@@ -545,10 +555,26 @@ function collectNodes(chat: Dict): Node[] {
     }
   };
 
+  // What the roots can reach, before emitting any of it: the rest is trapped in
+  // a cycle and has to be walked between the other branches and the selected
+  // one, so the selected branch is still the last message studio reopens on.
+  const reachable = new Set<string>();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const node = pending.pop() as Node;
+    if (reachable.has(node.id)) continue;
+    reachable.add(node.id);
+    for (const kid of children.get(node.id) ?? []) pending.push(kid);
+  }
+
   const rootRest = roots.filter((node) => !path.has(node.id));
   const rootActive = roots.filter((node) => path.has(node.id));
-  for (const node of [...rootRest, ...rootActive]) walk(node);
-  // Anything only reachable through a parent cycle still belongs in the thread.
+  for (const node of rootRest) walk(node);
+  for (const node of byId.values()) {
+    if (!reachable.has(node.id) && !visited.has(node.id)) walk(node);
+  }
+  for (const node of rootActive) walk(node);
+  // A selected branch trapped in a cycle has no root to have been walked from.
   for (const node of byId.values()) {
     if (!visited.has(node.id)) walk(node);
   }

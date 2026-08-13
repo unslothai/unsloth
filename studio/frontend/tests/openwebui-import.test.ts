@@ -917,3 +917,82 @@ test("a tool that returned only images carries no empty result body", () => {
   assert.equal(call.result, undefined);
   assert.ok(parts(conversation, 0).some((part) => part.type === "image"));
 });
+
+test("a tool result keeps its text under any of the three part names, and portable image urls", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          output: [
+            { type: "function_call", call_id: "c1", name: "lookup", arguments: "{}" },
+            {
+              type: "function_call_output",
+              call_id: "c1",
+              output: [
+                { type: "output_text", text: "first" },
+                { type: "text", text: " second" },
+                { type: "input_text", text: " third" },
+                { type: "input_image", image_url: "https://example.com/chart.png" },
+                { type: "input_image", image_url: "/api/v1/files/local-only" },
+              ],
+            },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const [call] = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.equal(call.result, "first second third");
+  // The absolute url resolves anywhere; the Open WebUI route does not.
+  assert.deepEqual(
+    parts(conversation, 0).filter((part) => part.type === "image"),
+    [{ type: "image", image: "https://example.com/chart.png" }],
+  );
+});
+
+test("details markup inside a fence that was never closed stays code", () => {
+  // An answer interrupted mid-block still quotes the markup, it does not use it.
+  const cut =
+    'Like this:\n```markdown\n<details type="reasoning" done="true">\n<summary>Thought</summary>\n> not mine\n</details>\n';
+  const conversation = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf(
+        [{ id: "a", parentId: null, role: "assistant", content: cut, timestamp: 1 }],
+        "a",
+      ),
+    }),
+    "fallback",
+  );
+  assert.ok(conversation);
+  assert.equal(parts(conversation, 0).some((part) => part.type === "reasoning"), false);
+  assert.ok(text(conversation, 0).includes('<details type="reasoning"'));
+});
+
+test("a disconnected cycle does not displace the branch the user had open", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        { id: "u", parentId: null, role: "user", content: "question", timestamp: 1 },
+        { id: "a", parentId: "u", role: "assistant", content: "the answer", timestamp: 2 },
+        // A component reachable only through its own cycle.
+        { id: "c1", parentId: "c2", role: "user", content: "orphaned one", timestamp: 3 },
+        { id: "c2", parentId: "c1", role: "assistant", content: "orphaned two", timestamp: 4 },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.equal(conversation.messages.length, 4);
+  // Studio reopens on the last message, so it has to be the selected branch.
+  assert.equal(text(conversation, conversation.messages.length - 1), "the answer");
+});

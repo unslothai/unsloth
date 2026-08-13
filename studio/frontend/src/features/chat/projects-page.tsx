@@ -164,6 +164,14 @@ export function ProjectsPage() {
         toast.info("No conversations found in file.", { id: toastId });
         return;
       }
+      if (imported === 0) {
+        // Nothing was created, so however the count is phrased this is a failure.
+        toast.error("Import failed.", {
+          id: toastId,
+          description: `${failed} conversation${failed === 1 ? "" : "s"} could not be saved.`,
+        });
+        return;
+      }
       const dest = projectId
         ? (projects.find((p) => p.id === projectId)?.name ?? "project")
         : "Recents";

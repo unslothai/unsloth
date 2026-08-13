@@ -265,6 +265,14 @@ export function DataTab() {
         toast.info(t("settings.chat.importNoConversations"), { id: toastId });
         return;
       }
+      if (imported === 0) {
+        // Nothing was created, so however the count is phrased this is a failure.
+        toast.error(t("settings.chat.importFailed"), {
+          id: toastId,
+          description: t("settings.chat.importedChatCountPartial", { count: 0, failed }),
+        });
+        return;
+      }
       toast.success(
         failed > 0
           ? t("settings.chat.importedChatCountPartial", { count: imported, failed })
