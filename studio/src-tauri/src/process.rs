@@ -1429,7 +1429,10 @@ fn relative_override_pins_from(
                     Some(home) => expand_windows_user(entry, home),
                     None => entry.to_string(),
                 };
-                if is_fully_qualified(&entry) {
+                // Windows spelling, plus the native one: this branch is the
+                // only part of the pinning that runs off Windows, where
+                // /var/cache is as anchored as C:\\cache is here.
+                if is_fully_qualified(&entry) || std::path::Path::new(&entry).is_absolute() {
                     continue;
                 }
                 return Err(format!(
@@ -3412,6 +3415,27 @@ mod managed_cli_working_dir_tests {
             qualified,
             |_| None,
             home,
+            MANAGED_CHILD_SCRUBBED_ENV
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn a_native_absolute_override_survives_a_lost_directory() {
+        // The lost-directory branch is the one piece of the pinning that runs
+        // off Windows, where an absolute value looks nothing like C:\\cache.
+        let work_dir = PathBuf::from("/home/me/.unsloth");
+        let posix = |name: &str| match name {
+            "XDG_CACHE_HOME" => Some("/var/cache/unsloth".to_string()),
+            _ => None,
+        };
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            posix,
+            |_| None,
+            Some(std::path::Path::new("/home/me")),
             MANAGED_CHILD_SCRUBBED_ENV
         )
         .unwrap()

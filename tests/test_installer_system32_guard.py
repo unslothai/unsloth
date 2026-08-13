@@ -351,7 +351,7 @@ def _guard_outcome(
     drive_cwd: dict[str, str] | None = None,
     missing_homes: tuple[str, ...] = (),
     syspath: list[str] | None = None,
-    real_dirs: tuple[str, ...] = (),
+    real_paths: tuple[str, ...] = (),
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -412,10 +412,11 @@ def _guard_outcome(
         expanduser = lambda path: _expand_windows_user(path, environ),
         makedirs = _makedirs,
         # Only a folder that really holds System32 counts as a Windows directory.
-        # A Windows root holds System32; sys.path entries are directories only
-        # when the caller says so, the way the filesystem would answer.
-        isdir = lambda path: ntpath.normcase(path) in real_windows_dirs
-        or ntpath.normcase(path) in {ntpath.normcase(d) for d in real_dirs},
+        isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
+        # sys.path entries are on disk only when the caller says so, the way the
+        # filesystem would answer.
+        exists = lambda path: ntpath.normcase(path)
+        in {ntpath.normcase(p) for p in real_paths},
         abspath = _abspath,
         home_isdir = lambda path: ntpath.normcase(path)
         not in {ntpath.normcase(home) for home in missing_homes},
@@ -1152,7 +1153,7 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         # setuptools registers this for an editable namespace install and its own
         # path hook accepts it by exact string; it names no directory.
         "__editable__.unsloth-2026.8.15.finder.__path_hook__",
-        # A relative archive: its already-imported packages hold this spelling.
+        # A relative archive: importable, so it moves with the process.
         "modules.zip",
     ]
     _message, colour, chdir_calls = _guard_outcome(
@@ -1161,7 +1162,7 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         environ_extra = {"PYTHONPATH": r"lib;C:\shared\lib"},
         environ_out = environ_out,
         syspath = syspath,
-        real_dirs = ("lib", r".\plugins"),
+        real_paths = ("lib", r".\plugins", "modules.zip"),
     )
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     assert environ_out["PYTHONPATH"] == r"C:\Windows\System32\lib;C:\shared\lib"
@@ -1172,9 +1173,11 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         r"C:\Windows\System32",
         # join, not normpath: the same spelling the environment pinning uses.
         r"C:\Windows\System32\.\plugins",
-        # Neither of these is a directory, so neither is rewritten.
+        # Names nothing on disk: setuptools' editable sentinel, which its own
+        # path hook accepts back by exact string.
         "__editable__.unsloth-2026.8.15.finder.__path_hook__",
-        "modules.zip",
+        # An archive that is really there is anchored like any other root.
+        r"C:\Windows\System32\modules.zip",
     ]
 
 
@@ -1291,7 +1294,7 @@ def test_cli_guard_puts_back_what_it_pinned_when_the_move_fails():
         environ_extra = {"HF_HOME": "cache", "PYTHONPATH": "lib"},
         environ_out = environ_out,
         syspath = syspath,
-        real_dirs = ("lib",),
+        real_paths = ("lib",),
         chdir_error = PermissionError("access denied"),
     )
     assert (colour, chdir_calls) == ("red", [_RELOCATED])

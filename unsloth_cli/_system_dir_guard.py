@@ -468,7 +468,7 @@ def pin_relative_sys_path(
     pathmod = _os.path,
     syspath = None,
     abspath = None,
-    isdir = None,
+    exists = None,
     expanduser = None,
 ):
     """Anchor the relative import roots this interpreter is already carrying.
@@ -477,26 +477,26 @@ def pin_relative_sys_path(
     follow the process rather than the caller reach it: an empty entry means the
     working directory itself, and a leading `~` is never expanded there.
 
-    Only an entry that is a directory right now is touched. The rest of the list
-    is other people's strings: setuptools registers a relative sentinel for an
-    editable namespace install and its own path hook accepts that sentinel by
-    exact equality, and a relative .zip keeps the spelling that its already
-    imported packages hold in their loaders. Rewriting either breaks the import
-    it was meant to protect.
+    Only an entry that names something on disk right now is touched: a folder or
+    an importable archive. What is skipped is the rest of the list, which is
+    other people's strings rather than paths, such as the relative sentinel
+    setuptools registers for an editable namespace install and accepts back by
+    exact equality. Rewriting one of those breaks the import it was meant to
+    protect, and leaving a real archive behind breaks the next import from it.
     """
     if syspath is None:
         import sys as _sys
         syspath = _sys.path
-    if isdir is None:
-        isdir = _os.path.isdir
+    if exists is None:
+        exists = _os.path.exists
     pinned = []
     for index, entry in enumerate(syspath):
         if not isinstance(entry, str):
             continue
         try:
-            # The empty entry is the working directory by definition, so it needs
-            # no test; anything else has to be a real directory.
-            if entry.strip() and not isdir(entry):
+            # The empty entry is the working directory by definition, so it
+            # needs no test; anything else has to name something that is there.
+            if entry.strip() and not exists(entry):
                 continue
             anchored = _anchor_list_entry(
                 "PYTHONPATH", entry, cwd, pathmod, abspath, None, expanduser
@@ -661,6 +661,7 @@ def check_working_directory(
     isdir = None,
     abspath = None,
     home_isdir = None,
+    exists = None,
     syspath = None,
     expandvars = None,
     relocate = True,
@@ -713,7 +714,7 @@ def check_working_directory(
             # This interpreter read PYTHONPATH before the guard ran, and it keeps
             # the entries as written: a relative one is resolved on every import,
             # so it has to be anchored here as well as in the environment.
-            pin_relative_sys_path(cwd, pathmod, syspath, abspath, isdir, expanduser)
+            pin_relative_sys_path(cwd, pathmod, syspath, abspath, exists, expanduser)
         except Exception as error:
             # An environment we cannot pin is one we must not move underneath.
             # Both reasons are real: a drive with no current directory of its own,
