@@ -4370,8 +4370,19 @@ function Install-UvFromPinnedRelease {
         foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
             $src = Join-Path $work $exe
             if (Test-Path -LiteralPath $src) {
-                Copy-Item -LiteralPath $src -Destination (Join-Path $destDir $exe) -Force
-                if ($exe -eq "uv.exe") { $haveUv = $true }
+                $dst = Join-Path $destDir $exe
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+                if ($exe -eq "uv.exe") {
+                    # Invoke-SetupCommand sets ErrorActionPreference to Continue, so a locked or
+                    # ACL-denied destination makes this copy non-terminating and execution still
+                    # reaches here with whatever was already on disk. Compare against the archive
+                    # we just verified: a stale uv.exe must not pass for the one we installed.
+                    try {
+                        $haveUv = (Test-Path -LiteralPath $dst) -and
+                            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                            (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                    } catch { $haveUv = $false }
+                }
             }
         }
         if (-not $haveUv) {

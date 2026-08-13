@@ -3,10 +3,10 @@
 # Unsloth Studio Installer
 #
 # Usage, supported options and the web one-liner are documented in the repository README under
-# "Install Unsloth Studio" -- see https://github.com/unslothai/unsloth#unsloth-studio. They are
-# not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing
-# download-and-run command lines is the first thing a generic script classifier reads, and
-# nothing in the script consults it.
+# "Unsloth Studio (web UI)": https://github.com/unslothai/unsloth#unsloth-studio-web-ui.
+# They are not repeated here: this file ships inside the Linux desktop bundle, where a header
+# rehearsing download-and-run command lines is the first thing a generic script classifier reads,
+# and nothing in the script consults it.
 #
 # A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
 # UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
@@ -2528,8 +2528,16 @@ _uv_install_pinned() {
         for _uip_exe in uv uvx; do
             _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
             if [ -n "$_uip_src" ] && [ -f "$_uip_src" ]; then
-                cp -f "$_uip_src" "$_uip_dest/$_uip_exe" 2>/dev/null || continue
-                chmod +x "$_uip_dest/$_uip_exe" 2>/dev/null || true
+                # Stage then rename. cp onto a destination that is a symlink writes through it,
+                # so an install over `~/.local/bin/uv -> /opt/homebrew/bin/uv` would rewrite the
+                # Homebrew binary in place. rename replaces the link itself, and it is atomic, so
+                # a concurrent reader never sees a half-written uv either.
+                cp -f "$_uip_src" "$_uip_dest/.$_uip_exe.unsloth-new" 2>/dev/null || continue
+                chmod +x "$_uip_dest/.$_uip_exe.unsloth-new" 2>/dev/null || true
+                if ! mv -f "$_uip_dest/.$_uip_exe.unsloth-new" "$_uip_dest/$_uip_exe" 2>/dev/null; then
+                    rm -f "$_uip_dest/.$_uip_exe.unsloth-new" 2>/dev/null || true
+                    continue
+                fi
                 [ "$_uip_exe" = "uv" ] && _uip_placed=1
             fi
         done

@@ -1,8 +1,8 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
-# Usage, options and the web one-liner: see "Install Unsloth Studio" in the README
-# (https://github.com/unslothai/unsloth#unsloth-studio). Not repeated here, because AMSI scans
-# this file in full before a line of it runs and nothing reads the header from inside.
+# Usage, options and the web one-liner: see "Unsloth Studio (web UI)" in the README
+# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here, because
+# AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
@@ -2591,8 +2591,19 @@ exit 0
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
                 $src = Join-Path $work $exe
                 if (Test-Path -LiteralPath $src) {
-                    Copy-Item -LiteralPath $src -Destination (Join-Path $destDir $exe) -Force
-                    if ($exe -eq "uv.exe") { $haveUv = $true }
+                    $dst = Join-Path $destDir $exe
+                    Copy-Item -LiteralPath $src -Destination $dst -Force
+                    if ($exe -eq "uv.exe") {
+                        # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
+                        # a locked or ACL-denied destination leaves whatever was already there and
+                        # execution still reaches this line. Compare against the archive we just
+                        # verified: a stale uv.exe must not pass for the one we meant to install.
+                        try {
+                            $haveUv = (Test-Path -LiteralPath $dst) -and
+                                (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                                (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                        } catch { $haveUv = $false }
+                    }
                 }
             }
             if (-not $haveUv) {

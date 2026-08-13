@@ -181,6 +181,31 @@ else
     bad "an existing uv at the destination is replaced in place"
 fi
 
+# A destination that is a symlink must be replaced, not written through. `~/.local/bin/uv ->
+# /opt/homebrew/bin/uv` is an ordinary layout, and a plain cp there rewrites Homebrew's binary.
+mkdir -p "$WORK/home_link/.local/bin" "$WORK/elsewhere"
+printf 'other package manager owns this' > "$WORK/elsewhere/uv"
+_link_before=$(sha256sum "$WORK/elsewhere/uv" 2>/dev/null || shasum -a 256 "$WORK/elsewhere/uv")
+ln -sf "$WORK/elsewhere/uv" "$WORK/home_link/.local/bin/uv"
+ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_link" > "$WORK/out_link" 2>&1 || true
+_link_after=$(sha256sum "$WORK/elsewhere/uv" 2>/dev/null || shasum -a 256 "$WORK/elsewhere/uv")
+if [ "$_link_before" = "$_link_after" ]; then
+    ok "a symlinked destination is not written through"
+else
+    bad "the install rewrote the file the destination symlink pointed at"
+fi
+if [ ! -L "$WORK/home_link/.local/bin/uv" ] && grep -q 'fake' "$WORK/home_link/.local/bin/uv" 2>/dev/null; then
+    ok "the symlink itself is replaced by the installed uv"
+else
+    bad "the symlink itself is replaced by the installed uv"
+fi
+# The staging file must not survive a run, or the destination collects debris on every upgrade.
+if [ -z "$(find "$WORK/home_link/.local/bin" -name '.uv*.unsloth-new' 2>/dev/null)" ]; then
+    ok "no staging file is left behind"
+else
+    bad "no staging file is left behind"
+fi
+
 # Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
 # installing at all, so every host must either get its own triple or decline to the fallback.
 # $4 libc: musl | none (no ldd and no getconf) | a glibc version | rosetta (Darwin only)
