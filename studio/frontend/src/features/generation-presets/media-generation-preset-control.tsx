@@ -135,7 +135,7 @@ export function MediaGenerationPresetControl({
               Generation presets
             </p>
             {hasUnsavedChanges ? (
-              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-ui-10 font-medium text-amber-700 dark:text-amber-300">
                 Modified
               </span>
             ) : null}
@@ -165,7 +165,7 @@ export function MediaGenerationPresetControl({
                 >
                   <span className="min-w-0 flex-1 truncate">{preset.name}</span>
                   {preset.name === DEFAULT_PRESET_NAME ? (
-                    <span className="text-[10px] font-normal text-muted-foreground">
+                    <span className="text-ui-10 font-normal text-muted-foreground">
                       Built-in
                     </span>
                   ) : null}
