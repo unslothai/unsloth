@@ -51,7 +51,9 @@ def test_a_venv_install_gets_the_isolated_module_route(auth, monkeypatch, window
     directory that happens to hold an unsloth_cli folder cannot shadow the
     managed one.
     """
-    monkeypatch.setattr(auth.sys, "executable", r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe")
+    monkeypatch.setattr(
+        auth.sys, "executable", r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe"
+    )
     monkeypatch.setattr(auth, "_cli_is_inside", lambda _prefix: True)
 
     command = auth._reset_password_command()

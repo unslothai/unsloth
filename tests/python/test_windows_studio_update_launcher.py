@@ -1079,9 +1079,9 @@ def test_only_the_installers_own_cmd_shim_marks_a_root(monkeypatch, studio, tmp_
     (root / "bin" / "unsloth.cmd").write_bytes(body)
     monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
 
-    assert not studio._looks_like_installer_managed_studio_home(root), (
-        f"{label} must not stand in for the installer's own shim"
-    )
+    assert not studio._looks_like_installer_managed_studio_home(
+        root
+    ), f"{label} must not stand in for the installer's own shim"
 
 
 def test_an_oversized_cmd_shim_is_not_read_into_memory(monkeypatch, studio, tmp_path):
