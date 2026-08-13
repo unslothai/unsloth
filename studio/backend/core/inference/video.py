@@ -470,6 +470,9 @@ class _VideoLoadState:
     dtype: str
     kind: str
     engine: str = "diffusers"
+    # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
+    # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
+    gpu_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
@@ -983,20 +986,24 @@ class VideoBackend:
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
-        # This load's card selection, as DiffusionBackend holds it: the load, generate and memory-plan paths each re-resolve the target and must agree.
-        self._gpu_ids: Optional[list[int]] = None
-
-    def _device_target(self) -> DiffusionDeviceTarget:
-        """The device target for this load's card selection, pinned onto the calling thread.
+    def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
+        """The device target for ``ordinal``, pinned onto the calling thread.
 
         ``torch.cuda.set_device`` is thread-local, so this runs on each worker rather than once at
-        load: the daemon thread that builds the pipeline is not the one that denoises.
+        load: the daemon thread that builds the pipeline is not the one that denoises. Called with
+        no argument on the automatic path, so a monkeypatched resolver keeps working.
         """
-        if not self._gpu_ids:
+        if ordinal is None:
             return resolve_diffusion_device_target()
-        target = resolve_diffusion_device_target(self._gpu_ids)
+        target = resolve_diffusion_device_target(ordinal = ordinal)
         apply_diffusion_device_ordinal(target)
         return target
+
+    def _state_device_target(self, state: _VideoLoadState) -> DiffusionDeviceTarget:
+        """The resident pipeline's target, pinned onto the calling thread. Every worker that
+        touches the loaded pipeline goes through this: the weights are on ``state.gpu_ordinal``
+        and ``state.device`` is un-indexed, so an unpinned thread resolves to its own card."""
+        return self._device_target(state.gpu_ordinal)
 
     # ── validation ───────────────────────────────────────────────────────────
 
@@ -1238,8 +1245,15 @@ class VideoBackend:
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        # Before anything is evicted or pulled, so a missing index is the route's 400 rather than a load that dies tens of GB later.
-        resolve_selected_cuda_ordinal(gpu_ids)
+        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
+        # 400 rather than a load that dies tens of GB later, and only once so free VRAM cannot
+        # re-rank the choice after the weights land. Gated on the resolved backend, since XPU /
+        # MPS / CPU ignore physical ids and would otherwise 400 a selection the contract drops.
+        gpu_ordinal = (
+            resolve_selected_cuda_ordinal(gpu_ids)
+            if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+            else None
+        )
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -1266,8 +1280,6 @@ class VideoBackend:
                 raise RuntimeError("A video load is already in progress.")
             self._load_token += 1
             token = self._load_token
-            # Committed only past the validations: stored earlier, a rejected request would move the RESIDENT model's next generation onto another card.
-            self._gpu_ids = list(gpu_ids) if gpu_ids else None
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
             # drops _loading, so the next begin_load would clear the object that worker watches. A fresh object leaves it set.
             cancel_event = threading.Event()
@@ -1291,6 +1303,7 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant,
                 model_kind = model_kind,
                 h3_task = h3_task,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1495,6 +1508,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
+        gpu_ordinal: Optional[int] = None,
         **_: Any,
     ) -> None:
         """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
@@ -1532,7 +1546,7 @@ class VideoBackend:
         # an install nobody is waiting for. The download loop used to be the first check.
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
-        target = self._device_target()
+        target = self._device_target(gpu_ordinal)
         allow_install = _install_allowed()
         binary = ensure_h3_sd_cpp_binary(
             allow_install = allow_install,
@@ -1716,13 +1730,14 @@ class VideoBackend:
                     "again."
                 )
             binary_identity = _sd_cli_identity(binary)
+            # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal
+            # would outlive the decision and be committed against a runtime that never used it.
+            native_ordinal = None if native_device == "cpu" else gpu_ordinal
             # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose between.
             native_device_name = (
                 None
                 if native_device == "cpu"
-                else sd_cpp_device_name_for_ordinal(
-                    binary, resolve_selected_cuda_ordinal(self._gpu_ids)
-                )
+                else sd_cpp_device_name_for_ordinal(binary, native_ordinal)
             )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
@@ -1790,6 +1805,7 @@ class VideoBackend:
                         repo_id = repo_id,
                         base_repo = fam.base_repo,
                         device = native_device,
+                        gpu_ordinal = native_ordinal,
                         dtype = Path(filename).stem.split("-")[-1],
                         kind = "gguf",
                         engine = "sd_cpp",
@@ -3021,6 +3037,8 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
+        # The torch ordinal begin_load resolved for this load, carried rather than re-derived.
+        gpu_ordinal: Optional[int] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
@@ -3086,7 +3104,7 @@ class VideoBackend:
                     # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown must not leave the fence up for the life of the process.
                     self._teardown_waiters -= 1
 
-        target = self._device_target()
+        target = self._device_target(gpu_ordinal)
         device = target.device
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32. CPU stays float32.
         dtype = target.dtype
@@ -3693,6 +3711,7 @@ class VideoBackend:
                     repo_id = repo_id,
                     base_repo = base,
                     device = device,
+                    gpu_ordinal = target.ordinal,
                     dtype = str(dtype).replace("torch.", ""),
                     kind = kind,
                     gguf_filename = gguf_filename,
@@ -4425,6 +4444,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 base_repo = base,
                 device = device,
+                gpu_ordinal = umem_target.ordinal,
                 dtype = str(dtype).replace("torch.", ""),
                 kind = kind,
                 engine = "diffusers",
@@ -4775,6 +4795,11 @@ class VideoBackend:
             # resolution, and there is nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
             try:
+                # FIRST, before any device object exists. begin_generate runs this on a fresh
+                # daemon thread, so until it is pinned the un-indexed state.device below -- the H3
+                # memory probe and every torch.Generator -- resolves to its own default card while
+                # the pipeline sits on the selected one.
+                self._state_device_target(state)
                 fam = state.family
                 first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
                     fam, state.h3_task, first_frame, last_frame, width, height
@@ -5632,8 +5657,6 @@ class VideoBackend:
             self._load_token += 1
             self._cancel_event.set()
             self._loading = None
-            # Nothing is resident, so the next load starts from the automatic pick.
-            self._gpu_ids = None
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
             # Fence generations queued behind the active one too: they hold no cancel event, so the signal cannot reach them.

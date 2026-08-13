@@ -1253,6 +1253,24 @@ def test_load_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
     assert acquired == []
 
 
+def test_load_ignores_a_gpu_selection_off_cuda(client, monkeypatch):
+    # The request contract says physical ids are dropped on XPU / MPS / CPU, so validating them
+    # there turned a documented no-op into a 400.
+    backend = diffusion_module.get_diffusion_backend()
+    _force_engine(monkeypatch, backend, engine_name = "diffusers", device = "mps")
+    import core.inference.diffusion_device as devmod
+
+    def _never(_ids):
+        raise AssertionError("the CUDA resolver must not run off a CUDA target")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _never)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "gpu_ids": [1]},
+    )
+    assert resp.status_code == 200
+
+
 def test_images_info_lists_every_family(client):
     # The pure info endpoint is hardware-independent: one entry per auto-policy family with the quant estimates the UI shows.
     from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB

@@ -152,43 +152,59 @@ def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
 
 
 def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]:
-    """The one CUDA/ROCm physical index a diffusion load should run on, or None for automatic.
+    """The torch ordinal one diffusion load should run on, or None for automatic.
+
+    ``gpu_ids`` carries PHYSICAL GPU ids, the same namespace the chat and training paths take and
+    the UI reports. Torch indexes only the parent-visible subset, so under a
+    ``CUDA_VISIBLE_DEVICES`` mask the two differ in both value and order: ``4,5`` makes physical 4
+    and 5 the valid picks while torch sees 0 and 1, and ``1,0`` reverses them. Validation and the
+    translation therefore go through the hardware layer that owns that mask.
 
     Neither engine shards a diffusion checkpoint: diffusers places whole components and sd.cpp
     assigns whole modules per backend device, so a selection of several cards still resolves to
     one. The most free VRAM wins, which is the rule ``auto_select_gpu_ids`` already applies to
-    training, and a tie takes the lowest index for a stable answer. Picking the FIRST id instead
+    training, and a tie takes the lowest ordinal for a stable answer. Picking the FIRST id instead
     would land on ordinal 0 whenever the user selects everything -- exactly the card that is too
     small on the mixed boxes this selection exists to serve.
 
-    Raises ValueError for an index this host does not have, so the load is refused with a reason
-    rather than quietly running somewhere the user did not choose.
+    Resolved ONCE per load and then carried, never re-derived: free VRAM changes the moment the
+    checkpoint lands, so a second call would answer with a different card than the weights are on.
+
+    Raises ValueError for a selection this host cannot honour, so the load is refused with a
+    reason rather than quietly running somewhere the user did not choose.
     """
     wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
     if not wanted:
         return None
     try:
-        import torch
-        count = torch.cuda.device_count()
-    except Exception as exc:  # noqa: BLE001 -- no torch / no driver: reported, never guessed
-        raise ValueError(f"GPU selection needs a working CUDA or ROCm torch build: {exc}") from exc
-    out_of_range = [gpu_id for gpu_id in wanted if gpu_id < 0 or gpu_id >= count]
-    if out_of_range:
-        raise ValueError(
-            f"Requested GPU {out_of_range} but this host has {count} CUDA device(s). "
-            f"Clear the GPU selection to use the default device."
+        from utils.hardware.hardware import (
+            get_parent_visible_gpu_ids,
+            resolve_requested_gpu_ids,
         )
-    if len(wanted) == 1:
-        return wanted[0]
+    except Exception as exc:  # noqa: BLE001 -- without the hardware layer the mask is unknowable
+        raise ValueError(f"GPU selection is unavailable on this host: {exc}") from exc
+    allowed = resolve_requested_gpu_ids(wanted)
+    visible = get_parent_visible_gpu_ids()
+    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that
+    # id's position in the mask. Unmasked, the layer reports range(physical count) and this is
+    # the identity mapping.
+    ordinals = [visible.index(gpu_id) for gpu_id in allowed if gpu_id in visible]
+    if not ordinals:
+        raise ValueError(
+            f"Requested GPU {wanted} but none of them are visible to this process "
+            f"(visible: {visible}). Clear the GPU selection to use the default device."
+        )
+    if len(ordinals) == 1:
+        return ordinals[0]
 
-    def _free_vram(gpu_id: int) -> int:
+    def _free_vram(ordinal: int) -> int:
         try:
             import torch
-            return int(torch.cuda.mem_get_info(gpu_id)[0])
+            return int(torch.cuda.mem_get_info(ordinal)[0])
         except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
             return -1
 
-    return max(wanted, key = lambda gpu_id: (_free_vram(gpu_id), -gpu_id))
+    return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
 
 
 def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
@@ -209,7 +225,7 @@ def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
         pass
 
 
-def resolve_diffusion_device_target(gpu_ids: Optional[list[int]] = None) -> DiffusionDeviceTarget:
+def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
     """Resolve the torch device + dtype + capability flags for diffusion.
 
     Prefers Studio's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
@@ -217,9 +233,10 @@ def resolve_diffusion_device_target(gpu_ids: Optional[list[int]] = None) -> Diff
     probe. Torch is optional: without it the native sd.cpp engine still runs, so a missing torch
     reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
 
-    ``gpu_ids`` is the user's card selection, honoured only on CUDA / ROCm, where physical indices
-    are what the runners speak. Everything else ignores it: XPU ordinals have no applicator, and
-    MPS / CPU have nothing to choose between.
+    ``ordinal`` is an ALREADY-RESOLVED torch index from ``resolve_selected_cuda_ordinal``, carried
+    for the life of one load rather than re-derived here. Honoured only on CUDA / ROCm, where a
+    device index is what the runners speak; XPU ordinals have no applicator and MPS / CPU have
+    nothing to choose between, so both ignore it.
     """
     try:
         import torch
@@ -248,14 +265,14 @@ def resolve_diffusion_device_target(gpu_ids: Optional[list[int]] = None) -> Diff
     if DeviceType is not None and studio_device is not None:
         if _studio_device_is(studio_device, DeviceType, "CUDA"):
             if torch.cuda.is_available():
-                return _cuda_or_rocm_target(torch, is_rocm = is_rocm, gpu_ids = gpu_ids)
+                return _cuda_or_rocm_target(torch, is_rocm = is_rocm, ordinal = ordinal)
             return _cpu_target(torch)
         if _studio_device_is(studio_device, DeviceType, "XPU"):
             return _xpu_target(torch)
         # MLX / CPU / else: diffusers uses MPS, so fall through to the torch probe (MPS over CPU).
 
     if torch.cuda.is_available():
-        return _cuda_or_rocm_target(torch, is_rocm = is_rocm, gpu_ids = gpu_ids)
+        return _cuda_or_rocm_target(torch, is_rocm = is_rocm, ordinal = ordinal)
 
     xpu = getattr(torch, "xpu", None)
     if xpu is not None and callable(getattr(xpu, "is_available", None)):
@@ -319,9 +336,8 @@ def _cuda_or_rocm_target(
     torch: Any,
     *,
     is_rocm: bool,
-    gpu_ids: Optional[list[int]] = None,
+    ordinal: Optional[int] = None,
 ) -> DiffusionDeviceTarget:
-    ordinal = resolve_selected_cuda_ordinal(gpu_ids)
     if is_rocm:
         # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy.
         try:

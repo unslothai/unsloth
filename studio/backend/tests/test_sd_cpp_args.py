@@ -765,3 +765,12 @@ def test_device_backend_flags_leave_the_offloaded_modules_on_the_cpu():
         "--backend",
         "diffusion=CUDA1,te=CUDA1,vae=CUDA1",
     ]
+
+
+def test_device_backend_flags_are_appended_not_folded_into_the_policy():
+    # The pin is built per binary at the point the flags are handed over, so the policy list it
+    # reads must stay unchanged: a deferred install can replace the build after this is computed.
+    policy = offload_flags(OFFLOAD_GROUP)
+    before = list(policy)
+    device_backend_flags("CUDA1", policy)
+    assert policy == before

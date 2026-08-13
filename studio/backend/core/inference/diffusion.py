@@ -780,6 +780,9 @@ class _LoadState:
     resolved: Optional[dict] = None
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
+    # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
+    # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
+    gpu_ordinal: Optional[int] = None
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids).
     # Stored rather than rebuilt so generate()'s activation re-check budgets with the SAME
     # distilled / edit multipliers the load did, and the two can never drift apart.
@@ -1096,20 +1099,18 @@ class DiffusionBackend:
         # Loaded ControlNets and their from_pipe pipelines, reusing resident modules; cleared on unload.
         self._cn_models: dict[str, Any] = {}
         self._cn_pipes: dict[tuple[str, str], Any] = {}
-        # This load's card selection; instance state because the generate, ControlNet and re-activation paths each re-resolve the target and must agree.
-        self._gpu_ids: Optional[list[int]] = None
 
     @property
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _pick_device_and_dtype(self) -> tuple[str, Any]:
+    def _pick_device_and_dtype(self, ordinal: Optional[int] = None) -> tuple[str, Any]:
         """(device, dtype) for the current host. Thin wrapper over the device
         policy module, kept as a method so tests can still monkeypatch it."""
-        if not self._gpu_ids:
+        if ordinal is None:
             target = resolve_diffusion_device_target()
             return target.device, target.dtype
-        target = resolve_diffusion_device_target(self._gpu_ids)
+        target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
 
@@ -1124,6 +1125,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         memory_mode: Optional[str] = None,
         cpu_offload: bool = False,
+        gpu_ordinal: Optional[int] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -1142,8 +1144,10 @@ class DiffusionBackend:
         te_mode = normalize_te_quant(text_encoder_quant)
         if pinned is None and te_mode is None:
             return
-        # One probe for both checks (it reads the live device).
-        target = self._resolve_device_target(fam)
+        # One probe for both checks, asked of the card THIS load will use: on a mixed box the
+        # default device can be a different generation, which would refuse a scheme the selected
+        # card supports, or pass one it does not and fail only after eviction.
+        target = self._target_for_ordinal(fam, gpu_ordinal)
         if pinned is not None and pinned != TQ_AUTO:
             reason = None
             if model_kind != "gguf":
@@ -1235,7 +1239,9 @@ class DiffusionBackend:
                 )
             )
 
-    def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
+    def _resolve_device_target(
+        self, fam: Optional[DiffusionFamily], *, ordinal: Optional[int] = None
+    ) -> DiffusionDeviceTarget:
         """The device target with the family fp16 guard applied.
 
         Routes through _pick_device_and_dtype() (so a monkeypatched override still
@@ -1243,7 +1249,12 @@ class DiffusionBackend:
         families (Z-Image), rebuilding the target so dtype + capability flags stay
         consistent with the effective dtype.
         """
-        device, dtype = self._pick_device_and_dtype()
+        # Called with no argument on the automatic path so a monkeypatched seam keeps working.
+        device, dtype = (
+            self._pick_device_and_dtype()
+            if ordinal is None
+            else self._pick_device_and_dtype(ordinal)
+        )
         effective = _resolve_diffusion_compute_dtype(fam, dtype)
         if effective is not dtype:
             logger.warning(
@@ -1254,6 +1265,24 @@ class DiffusionBackend:
         # Here, not per call site: set_device is thread-local and every path resolves its target on its own thread.
         apply_diffusion_device_ordinal(target)
         return target
+
+    def _target_for_ordinal(
+        self, fam: Optional[DiffusionFamily], ordinal: Optional[int]
+    ) -> DiffusionDeviceTarget:
+        """``_resolve_device_target`` with the ordinal only when there is one, so a monkeypatched
+        seam taking just ``fam`` keeps working on the automatic path."""
+        if ordinal is None:
+            return self._resolve_device_target(fam)
+        return self._resolve_device_target(fam, ordinal = ordinal)
+
+    def _state_device_target(self, state: _LoadState) -> DiffusionDeviceTarget:
+        """The resident pipeline's target, pinned onto the calling thread.
+
+        Every worker that touches the loaded pipeline has to go through this rather than resolving
+        bare: the weights are on ``state.gpu_ordinal`` and ``state.device`` is the un-indexed
+        string, so an unpinned thread would resolve both to its own default card.
+        """
+        return self._target_for_ordinal(state.family, state.gpu_ordinal)
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -1678,8 +1707,15 @@ class DiffusionBackend:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        # Outside the worker, so a missing index is the route's 400 rather than a load that dies mid-download.
-        resolve_selected_cuda_ordinal(gpu_ids)
+        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
+        # 400 rather than a load that dies mid-download, and only once so free VRAM cannot re-rank
+        # the choice after the weights land. Gated on the resolved backend, since XPU / MPS / CPU
+        # ignore physical ids and would otherwise 400 a selection the contract says to drop.
+        gpu_ordinal = (
+            resolve_selected_cuda_ordinal(gpu_ids)
+            if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+            else None
+        )
         # base_repo is gated at the route pre-eviction; this only cheap-fails the resolved repo/family.
         fam = self.validate_load_request(
             repo_id,
@@ -1696,6 +1732,7 @@ class DiffusionBackend:
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            gpu_ordinal = gpu_ordinal,
         )
 
         with self._lock:
@@ -1704,8 +1741,6 @@ class DiffusionBackend:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
             token = self._load_token
-            # Committed only past the validations: stored earlier, a rejected request would move the RESIDENT model's next generation onto another card.
-            self._gpu_ids = list(gpu_ids) if gpu_ids else None
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
             # drops _loading, so clearing here would un-cancel that worker. Download preemption is best-effort; the token is the
             # real commit guard.
@@ -1734,6 +1769,7 @@ class DiffusionBackend:
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
                 loras = loras,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -2888,6 +2924,8 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         # LoRA adapters to BAKE into a torchao int8/fp8 build. Ignored elsewhere (bf16/bnb take them at generate time).
         loras: Optional[list[tuple[str, float]]] = None,
+        # The torch ordinal begin_load resolved for this load, carried rather than re-derived.
+        gpu_ordinal: Optional[int] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the dense-quant
@@ -2925,7 +2963,7 @@ class DiffusionBackend:
         # the only id handed to something that downloads. One decision per load (the background
         # path took it before staging), so nothing stages one repo and assembles from the other.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
-        target = self._resolve_device_target(fam)
+        target = self._target_for_ordinal(fam, gpu_ordinal)
         device, dtype = target.device, target.dtype
 
         import diffusers
@@ -4086,6 +4124,7 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         base_repo = base,
                         device = device,
+                        gpu_ordinal = target.ordinal,
                         dtype = str(dtype).replace("torch.", ""),
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
@@ -5032,7 +5071,7 @@ class DiffusionBackend:
         from .diffusion_eager_patches import install_compile_safe_patches
         from .diffusion_arch_patches import install_arch_patches
 
-        target = self._resolve_device_target(state.family)
+        target = self._state_device_target(state)
         install_compile_safe_patches()
         install_arch_patches()
         object.__setattr__(state, "eager_patched", True)
@@ -5151,6 +5190,11 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
+                # FIRST, before any device object exists. This worker is not the thread that loaded
+                # the pipeline, so until it is pinned the un-indexed state.device below -- and the
+                # ControlNet placement further down -- resolve to its own default card while the
+                # weights sit on the selected one.
+                self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image (prompt, seed) jobs
                 # up front: N prompts, one prompt x N seeds, or one prompt deriving base..base+batch_size-1 (as the native engine does).
                 jobs, seed = resolve_batch_jobs(
@@ -5414,7 +5458,7 @@ class DiffusionBackend:
                         # variant credits the same reclaimable bytes back arithmetically instead,
                         # so a warm allocator does not read as a full card and nothing is flushed.
                         device_memory = reclaimable_snapshot_device_memory(
-                            self._resolve_device_target(state.family)
+                            self._state_device_target(state)
                         ),
                         width = guard_width,
                         height = guard_height,
@@ -5658,8 +5702,6 @@ class DiffusionBackend:
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
-            # Nothing is resident, so the next load starts from the automatic pick.
-            self._gpu_ids = None
         # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
         # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
         with self._generate_lock:

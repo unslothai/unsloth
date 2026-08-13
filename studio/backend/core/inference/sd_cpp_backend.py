@@ -853,6 +853,16 @@ class _SdState:
     sd_accelerator: Optional[str] = None
 
 
+def _offload_with_device_pin_impl(
+    offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]
+) -> list[str]:
+    """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
+    flags = list(offload)
+    if ordinal is None:
+        return flags
+    return [*flags, *device_backend_flags(sd_cpp_device_name_for_ordinal(binary, ordinal), flags)]
+
+
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     """Map the diffusers memory knobs onto an sd-cli offload policy. Only meaningful
     off-CPU (forced sd_cpp / MPS); on CPU everything is resident in RAM anyway."""
@@ -1335,16 +1345,11 @@ class SdCppDiffusionBackend:
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
-                # After the policy, so the pin can read which modules it left on the CPU, and probed on the binary this load resolved: the names come from its own --list-devices.
-                offload += tuple(
-                    device_backend_flags(
-                        sd_cpp_device_name_for_ordinal(
-                            server_binary if mode == "server" else getattr(engine, "binary", None),
-                            resolve_selected_cuda_ordinal(gpu_ids),
-                        ),
-                        list(offload),
-                    )
-                )
+            # The device pin is NOT folded in here: the binary can still change below, through the
+            # deferred accelerator install, the post-download re-resolve, or a server start that
+            # falls back to one-shot, and the ggml device names come from whichever build ends up
+            # running. It is added at each point the flags are handed to a binary instead.
+            gpu_ordinal = resolve_selected_cuda_ordinal(gpu_ids) if device == "cuda" else None
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation started during
@@ -1480,7 +1485,9 @@ class SdCppDiffusionBackend:
                         server.start(
                             files,
                             vae_format = fam.sd_cpp_vae_format,
-                            offload = list(offload),
+                            offload = _offload_with_device_pin_impl(
+                                offload, server_binary, gpu_ordinal
+                            ),
                             native_speed = native_speed,
                             # Pin to physical cores (sd.cpp's default oversubscribes; see _default_threads).
                             threads = _default_threads(),
@@ -1549,7 +1556,15 @@ class SdCppDiffusionBackend:
                     files = files,
                     vae_format = fam.sd_cpp_vae_format,
                     native_speed = native_speed,
-                    offload_flags = offload,
+                    # Pinned against the binary this load COMMITTED to, which a deferred install or
+                    # a one-shot fallback may have changed since the policy was built.
+                    offload_flags = tuple(
+                        _offload_with_device_pin_impl(
+                            offload,
+                            server_binary if mode == "server" else getattr(engine, "binary", None),
+                            gpu_ordinal,
+                        )
+                    ),
                     # One-shot sd-cli reads this per generation; pin to physical cores.
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,

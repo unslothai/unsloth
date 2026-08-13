@@ -1220,6 +1220,32 @@ def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) is None
 
 
+def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch):
+    # The pin has to be rebuilt per binary: a deferred accelerator install replaces the build
+    # after the offload policy is computed, and the ggml device names come from whichever one runs.
+    seen: list = []
+
+    def _probe(binary, *_args):
+        seen.append(binary)
+        return "CUDA0\tA\nCUDA1\tB\n" if binary == "/new/sd-cli" else "CPU\tRyzen\n"
+
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", _probe)
+    base = ["--offload-to-cpu"]
+    # The pre-upgrade CPU-only build enumerates no CUDA device, so nothing is pinned.
+    assert bk._offload_with_device_pin_impl(base, "/old/sd-cli", 1) == base
+    # The build that actually runs does, and the same call now pins it.
+    assert bk._offload_with_device_pin_impl(base, "/new/sd-cli", 1) == [
+        "--offload-to-cpu",
+        "--backend",
+        "diffusion=CUDA1,te=CUDA1,vae=CUDA1",
+    ]
+    assert seen == ["/old/sd-cli", "/new/sd-cli"]
+    # No selection never spawns the probe at all.
+    seen.clear()
+    assert bk._offload_with_device_pin_impl(base, "/new/sd-cli", None) == base
+    assert seen == []
+
+
 def test_unload_clears_state_and_signals_cancel():
     cancel = threading.Event()
     b = _loaded_backend()

@@ -22311,8 +22311,10 @@ async def load_diffusion_model(
         # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
-        # Refuse a missing index before anything is evicted or staged; begin_load re-checks, but only after the arbiter has taken the GPU.
-        if request.gpu_ids:
+        # Refuse a bad pick before anything is evicted or staged; begin_load re-checks, but only
+        # after the arbiter has taken the GPU. Only on CUDA / ROCm: physical ids have no applicator
+        # on XPU / MPS / CPU, which the request contract says to ignore rather than 400.
+        if request.gpu_ids and device == "cuda":
             await asyncio.to_thread(resolve_selected_cuda_ordinal, request.gpu_ids)
 
         def _preflight(target):
