@@ -150,6 +150,8 @@ def embed_device_preference() -> str:
     if value == "cpu":
         return "cpu"
     return "auto"
+
+
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
 EMBED_BATCH = int(os.environ.get("RAG_EMBED_BATCH", "64"))

@@ -235,7 +235,9 @@ def test_device_opt_in_on_apple_stays_on_cpu(monkeypatch):
 
 def test_unrecognized_device_setting_falls_back_without_raising(monkeypatch):
     monkeypatch.setattr(
-        embeddings, "get_device", lambda: embeddings.DeviceType.CUDA,
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
     )
     for requested in ("", "   ", "banana", "auto", None):
         monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
@@ -287,9 +289,7 @@ def test_cpu_never_loads_float16(monkeypatch, tmp_path):
         embeddings._get("Org/Embedder")
 
         assert observed["device"] == "cpu", (embed_device, hardware)
-        assert list(observed["model_kwargs"].values()) == ["float32"], (
-            embed_device, hardware,
-        )
+        assert list(observed["model_kwargs"].values()) == ["float32"], (embed_device, hardware)
     embeddings._model = None
     embeddings._name = None
 

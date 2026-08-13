@@ -581,11 +581,22 @@ def test_device_preference_is_shared_between_both_backends(monkeypatch):
     writing their own accelerator's name (xpu) got neither.
     """
     for requested, expected in (
-        ("gpu", "gpu"), ("GPU", "gpu"), ("  gpu  ", "gpu"),
-        ("cuda", "gpu"), ("rocm", "gpu"), ("hip", "gpu"),
-        ("xpu", "gpu"), ("mps", "gpu"), ("metal", "gpu"),
-        ("cpu", "cpu"), ("CPU", "cpu"), (" cpu ", "cpu"),
-        ("auto", "auto"), ("", "auto"), ("   ", "auto"), ("banana", "auto"),
+        ("gpu", "gpu"),
+        ("GPU", "gpu"),
+        ("  gpu  ", "gpu"),
+        ("cuda", "gpu"),
+        ("rocm", "gpu"),
+        ("hip", "gpu"),
+        ("xpu", "gpu"),
+        ("mps", "gpu"),
+        ("metal", "gpu"),
+        ("cpu", "cpu"),
+        ("CPU", "cpu"),
+        (" cpu ", "cpu"),
+        ("auto", "auto"),
+        ("", "auto"),
+        ("   ", "auto"),
+        ("banana", "auto"),
     ):
         monkeypatch.setattr(config, "EMBED_DEVICE", requested)
         assert config.embed_device_preference() == expected, requested
@@ -597,12 +608,16 @@ def test_use_gpu_honours_the_normalized_preference(monkeypatch):
     for requested in ("  gpu  ", "GPU", "xpu", "cuda"):
         monkeypatch.setattr(config, "EMBED_DEVICE", requested)
         monkeypatch.setattr(
-            LlamaServerBackend, "_gpu_available", staticmethod(lambda: False),
+            LlamaServerBackend,
+            "_gpu_available",
+            staticmethod(lambda: False),
         )
         assert backend._use_gpu() is True, requested
     for requested in (" cpu ", "CPU"):
         monkeypatch.setattr(config, "EMBED_DEVICE", requested)
         monkeypatch.setattr(
-            LlamaServerBackend, "_gpu_available", staticmethod(lambda: True),
+            LlamaServerBackend,
+            "_gpu_available",
+            staticmethod(lambda: True),
         )
         assert backend._use_gpu() is False, requested
