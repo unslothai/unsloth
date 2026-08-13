@@ -306,3 +306,32 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     monkeypatch.setattr(studio.os, "fdopen", lambda *a, **k: _BadHandle())
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert not Path(made["path"]).exists(), "the temp script must not be left behind"
+
+
+def test_a_powershell_help_block_is_not_mistaken_for_html():
+    """`<#` opens comment-based help. Rejecting it would kill every refresh silently."""
+    studio = _studio()
+    ps1 = (
+        b"<#\n.SYNOPSIS\nUnsloth Studio installer\n#>\n"
+        b"function Install-UnslothStudio { }\n--shortcuts-only\n" + b"# pad\n" * 200
+    )
+    assert studio._looks_like_installer(ps1, "install.ps1")
+
+
+def test_real_html_is_still_rejected():
+    studio = _studio()
+    for body in (
+        b"<!DOCTYPE html><html><body>proxy error</body></html>" + b"--shortcuts-only\n" * 200,
+        b"<html><head><title>502</title></head></html>" + b"--shortcuts-only\n" * 200,
+        b"<?xml version='1.0'?><error/>" + b"--shortcuts-only\n" * 200,
+    ):
+        assert not studio._looks_like_installer(body, "install.sh"), body[:30]
+
+
+def test_markers_do_not_pin_internal_function_names():
+    """A renamed internal helper must not disable refreshes for everyone."""
+    studio = _studio()
+    renamed = b"#!/bin/sh\nmake_studio_launchers() { :; }\n--shortcuts-only\n" + b"# pad\n" * 200
+    assert studio._looks_like_installer(renamed, "install.sh")
+    for markers in studio._INSTALLER_MARKERS.values():
+        assert markers == (b"--shortcuts-only",)

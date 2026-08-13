@@ -3406,10 +3406,14 @@ _INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 # install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
 _INSTALLER_MAX_BYTES = 8 * 1024 * 1024
-# Strings the real installers contain and an error page does not.
+# The one token the refresh actually depends on. Internal names like
+# create_studio_shortcuts or Install-UnslothStudio would be tighter, but they can be
+# renamed in a perfectly good installer, and this check failing means every wheel-based
+# refresh is skipped until new Python ships. `--shortcuts-only` is the flag this code
+# passes, so an installer without it cannot serve the request anyway.
 _INSTALLER_MARKERS = {
-    "install.sh": (b"create_studio_shortcuts", b"--shortcuts-only"),
-    "install.ps1": (b"Install-UnslothStudio", b"--shortcuts-only"),
+    "install.sh": (b"--shortcuts-only",),
+    "install.ps1": (b"--shortcuts-only",),
 }
 
 
@@ -3434,10 +3438,16 @@ def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
     Not a trust check -- the hosts above are trusted. It stops a captive-portal page or
     an HTTP error body from being piped into bash when something in between answers.
     """
-    if not body or len(body) < 1024:
+    if not body or len(body) < 512:
         return False
     head = body.lstrip()[:256].lower()
-    if head.startswith(b"<") or b"<html" in head or b"<!doctype" in head:
+    # `<#` opens PowerShell comment-based help, which is a perfectly ordinary way for
+    # install.ps1 to start, so match the actual markup rather than any leading "<".
+    if not head.startswith(b"<#") and (
+        head.startswith((b"<!doctype", b"<html", b"<head", b"<?xml", b"<body"))
+        or b"<html" in head
+        or b"<!doctype" in head
+    ):
         return False
     return all(marker in body for marker in _INSTALLER_MARKERS[installer_name])
 
