@@ -5522,11 +5522,11 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_530Dir tiktoken
+    Fast-Install --target $VenvT5_530Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_530Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_530Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
@@ -5557,11 +5557,11 @@ foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_550Dir tiktoken
+    Fast-Install --target $VenvT5_550Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_550Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_550Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
@@ -5592,11 +5592,11 @@ foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_510Dir tiktoken
+    Fast-Install --target $VenvT5_510Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_510Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_510Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {

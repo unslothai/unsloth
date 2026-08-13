@@ -40,6 +40,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from pathlib import Path
@@ -2023,6 +2024,14 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+# Version-tagged extension suffixes (.cpython-313-darwin.so, .cp313-win_amd64.pyd,
+# free-threaded .cpython-314t-*). abi3 and untagged binaries carry no version and are skipped.
+_EXT_VERSION_TAG_RE = re.compile(r"\.(?:cpython-|cp)(\d{2,}t?)\b")
+_CURRENT_EXT_TAG = "{}{}{}".format(
+    sys.version_info.major,
+    sys.version_info.minor,
+    "t" if sysconfig.get_config_var("Py_GIL_DISABLED") else "",
+)
 
 
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
@@ -2057,9 +2066,10 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
     exactly as a truncated ``transformers/`` does. Measured on three live
     sidecars that is 7729 files instead of 7432, i.e. 4% more work.
 
-    Only shrinkage and disappearance count, and only for paths a single
-    distribution claims: when two claim one path, whichever copy landed says
-    nothing about either RECORD, in either direction. A file LARGER than
+    Shrinkage, disappearance, and compiled extensions tagged for another
+    interpreter count. Sizes are trusted only for paths a single distribution
+    claims: when two claim one path, whichever copy landed says nothing about
+    either RECORD, in either direction. A file LARGER than
     recorded is a packaging collision, not damage. Sizes are therefore compared
     after the whole scan, once multiply-owned paths are known.
 
@@ -2161,6 +2171,14 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 found.append(f"{name}: {rel} is not a regular file")
             elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
                 found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
+            elif rel.endswith((".so", ".pyd")):
+                # A sidecar built by one interpreter survives a Python upgrade intact,
+                # but its compiled extensions no longer load (issue: cp313 .so under 3.14).
+                m = _EXT_VERSION_TAG_RE.search(rel)
+                if m and m.group(1) != _CURRENT_EXT_TAG:
+                    found.append(
+                        f"{name}: {rel} targets cp{m.group(1)}, interpreter is cp{_CURRENT_EXT_TAG}"
+                    )
         if len(found) >= limit:
             return found, inconclusive
     return found, inconclusive

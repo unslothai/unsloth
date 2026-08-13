@@ -60,6 +60,7 @@ from utils.transformers_version import (
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
     _venv_dir_is_valid_and_undamaged,
+    _CURRENT_EXT_TAG,
     _ensure_venv_dir,
     hf_endpoint_unreachable,
 )
@@ -1894,6 +1895,39 @@ class TestVenvDirFileIntegrity:
         venv_dir = self._make_venv(tmp_path / "venv")
         (venv_dir / "transformers" / "__init__.py").unlink()
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "ext_name",
+        [
+            "_regex.cpython-{tag}-darwin.so",
+            "_regex.cp{tag}-win_amd64.pyd",
+            "_regex.cpython-{tag}t-darwin.so",
+        ],
+    )
+    def test_extension_built_for_another_interpreter_is_detected(
+        self, tmp_path: Path, ext_name: str
+    ):
+        stale = "313" if _CURRENT_EXT_TAG != "313" else "312"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/{ext_name.format(tag = stale)}": "y" * 40,
+            },
+        )
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_extension_for_the_running_interpreter_passes(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{_CURRENT_EXT_TAG}-darwin.so": "y" * 40,
+                "hf_xet/hf_xet.abi3.so": "z" * 40,
+                "yaml/_yaml.so": "w" * 40,
+            },
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
         """The whole dir is prepended to sys.path, so a shadowing dep breaks the
