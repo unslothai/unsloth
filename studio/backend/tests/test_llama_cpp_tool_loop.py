@@ -622,8 +622,8 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
     assert first_assistant["reasoning_content"] == "I should search for the weather."
 
 
-def test_resumed_tool_call_does_not_move_new_reasoning_before_partial(monkeypatch):
-    """A reasoning field renders before content, but a resumed partial came first."""
+def test_resumed_tool_call_preserves_partial_then_reasoning_order(monkeypatch):
+    """A separate reasoning field would render before the resumed partial."""
     tool_stream = [
         _sse({"reasoning_content": "I should verify that."}),
         _sse({"content": "forecast."}),
@@ -655,7 +655,7 @@ def test_resumed_tool_call_does_not_move_new_reasoning_before_partial(monkeypatc
     first_assistant = next(
         m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
     )
-    assert first_assistant["content"] == "Let me check the forecast."
+    assert first_assistant["content"] == ("Let me check the \nI should verify that.\nforecast.")
     assert "reasoning_content" not in first_assistant
 
 
@@ -1464,6 +1464,7 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
 
 def test_disabled_tool_call_is_internal_noop(monkeypatch):
     disabled_python = [
+        _sse({"reasoning_content": "Python is needed to calculate this."}),
         _sse(
             {
                 "tool_calls": [
@@ -1506,6 +1507,19 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
         if message.get("role") == "user" and "not enabled" in message.get("content", "")
     ]
     assert len(disabled_nudges) == 1
+    reasoning_turn_index, reasoning_turn = next(
+        (index, message)
+        for index, message in enumerate(payloads[1]["messages"])
+        if message.get("role") == "assistant"
+        and message.get("content") == "Python is needed to calculate this."
+    )
+    nudge_index = next(
+        index
+        for index, message in enumerate(payloads[1]["messages"])
+        if message.get("role") == "user" and "not enabled" in message.get("content", "")
+    )
+    assert reasoning_turn_index < nudge_index
+    assert "reasoning_content" not in reasoning_turn
 
 
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):

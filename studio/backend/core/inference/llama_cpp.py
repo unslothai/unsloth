@@ -17608,11 +17608,18 @@ class LlamaCppBackend:
                     tool_calls = tool_calls[:1]
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
-                # A resumed partial precedes this iteration's new reasoning. The
-                # standard field renders before message content, which would
-                # reverse that order after the partial is merged below.
-                if reasoning_accum and not payload.get("continue_final_message"):
-                    assistant_msg["reasoning_content"] = reasoning_accum
+                if reasoning_accum:
+                    if payload.get("continue_final_message"):
+                        # The resumed partial came before this reasoning, but templates
+                        # render a separate reasoning field before message content. Keep
+                        # the generated trace in content, with neutral line boundaries,
+                        # so the merge below preserves partial, reasoning, content, then
+                        # tool-call order without inventing model-specific channel tags.
+                        assistant_msg["content"] = f"\n{reasoning_accum}"
+                        if content_text:
+                            assistant_msg["content"] += f"\n{content_text}"
+                    else:
+                        assistant_msg["reasoning_content"] = reasoning_accum
                 assistant_appended = False
                 # Collect no-op nudges and flush them after the batch, so a no-op
                 # doesn't abort it and drop the parallel calls that follow.
@@ -17642,13 +17649,6 @@ class LlamaCppBackend:
                     )
 
                     if not decision.should_execute:
-                        if content_text and not assistant_appended:
-                            append_assistant_turn(
-                                conversation,
-                                assistant_msg,
-                                continue_final_message = continue_final_message,
-                            )
-                            assistant_appended = True
                         if provisional_match:
                             # A provisional tool card is already on screen for this
                             # id; close it so it never dangles when the controller
@@ -17809,6 +17809,22 @@ class LlamaCppBackend:
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                if not assistant_appended and (content_text or reasoning_accum):
+                    # No call in this batch ran, so the assistant turn has no
+                    # tool_calls. Some templates only render structured reasoning
+                    # on tool-call turns; replay it as content before the no-op nudge.
+                    if assistant_msg.get("reasoning_content"):
+                        assistant_msg["content"] = reasoning_accum
+                        if content_text:
+                            assistant_msg["content"] += f"\n{content_text}"
+                        del assistant_msg["reasoning_content"]
+                    append_assistant_turn(
+                        conversation,
+                        assistant_msg,
+                        continue_final_message = continue_final_message,
+                    )
+                    assistant_appended = True
 
                 append_deferred_nudges(conversation, deferred_noop_msgs)
 
