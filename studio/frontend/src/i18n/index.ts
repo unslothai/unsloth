@@ -13,6 +13,7 @@ export {
   DEFAULT_LOCALE_PREFERENCE,
   LOCALE_STORAGE_KEY,
   LOCALE_INITIALIZATION_TIMEOUT_MS,
+  LOCALE_SELECTION_TIMEOUT_MS,
   getLocale,
   getLocaleCatalogFailed,
   getLocalePreference,

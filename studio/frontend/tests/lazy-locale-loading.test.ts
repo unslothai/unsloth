@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -622,5 +622,35 @@ test("a catalog that arrives after the timeout still commits", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(localeStore.getLocale(), "ar");
   assert.equal(localeStore.getLocalePreference(), "ar");
+  assert.equal(localeStore.getLocaleCatalogFailed(), false);
+});
+
+test("a pick that names no bound of its own is still bounded", async () => {
+  await localeStore.setLocale("en", { loadMessages: () => undefined });
+
+  // What the language menu issues: no timeoutMs, so the store's own bound is
+  // all that stands between a stalled catalog and a spinner that never stops.
+  // A stalled load also stays in the in-flight map, so re-picking that language
+  // is handed the same never-settling promise, and reloading the app is the
+  // only way out of it.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const selected = localeStore.setLocale("ko", {
+      loadMessages: () => new Promise<void>(() => {}),
+    });
+    assert.equal(localeStore.getPendingLocalePreference(), "ko");
+
+    mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
+
+    assert.equal(localeStore.getPendingLocalePreference(), null);
+    assert.equal(await selected, "failed");
+  } finally {
+    mock.timers.reset();
+  }
+
+  // A rejected pick, so the language that was working is still the one in
+  // effect and is still the one the menu names.
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(localeStore.getLocalePreference(), "en");
   assert.equal(localeStore.getLocaleCatalogFailed(), false);
 });

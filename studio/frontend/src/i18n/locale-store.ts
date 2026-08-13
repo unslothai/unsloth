@@ -13,6 +13,19 @@ export const DEFAULT_LOCALE: Locale = "en";
 export const AUTO_LOCALE = "auto";
 export const LOCALE_STORAGE_KEY = "unsloth_locale";
 export const LOCALE_INITIALIZATION_TIMEOUT_MS = 2_000;
+/**
+ * The bound a locale change gets when its caller names none.
+ *
+ * Startup and hydration pass their own, but the language menu, a storage event
+ * and a `languagechange` refresh do not, and a request that is accepted and
+ * then never completes rejects nothing: the pending marker would stay set for
+ * the session, leaving the menu spinning on a language it will never reach and
+ * handing every later pick of it the same dead promise, with reloading the app
+ * the only way out. Longer than startup's, because this one is a deliberate
+ * download rather than a render everything else is waiting on, and a late
+ * catalog still commits over the fallback.
+ */
+export const LOCALE_SELECTION_TIMEOUT_MS = 10_000;
 
 export type LocalePreference = Locale | typeof AUTO_LOCALE;
 
@@ -42,7 +55,9 @@ export type SetLocaleOptions = {
    * service worker) rejects nothing, so without a bound the returned promise
    * stays pending for the session and everything awaiting it waits with it.
    * `initializeLocale` bounds startup for the same reason. A late arrival still
-   * commits, so a slow catalog is upgraded to rather than lost.
+   * commits, so a slow catalog is upgraded to rather than lost. Defaults to
+   * LOCALE_SELECTION_TIMEOUT_MS: every path here is bounded, including the
+   * language menu, which names none of its own.
    */
   timeoutMs?: number;
 };
@@ -241,7 +256,7 @@ function applyPreference(
   loadMessages: LocaleCatalogLoader = loadLocaleMessages,
   signal?: AbortSignal,
   adoptOnFailure = false,
-  timeoutMs?: number,
+  timeoutMs: number = LOCALE_SELECTION_TIMEOUT_MS,
 ): LocaleChangeResult | Promise<LocaleChangeResult> {
   if (signal?.aborted) return "cancelled";
   const previousPending = pendingPreference;
@@ -287,34 +302,31 @@ function applyPreference(
       return "failed";
     },
   );
-  const bounded =
-    timeoutMs === undefined
-      ? settled
-      : new Promise<LocaleChangeResult>((resolve) => {
-          const timeout = globalThis.setTimeout(
-            () => {
-              // Settle the way a rejection would. The load itself is left alone,
-              // so if it does arrive it still commits over this.
-              if (signal?.aborted) {
-                resolve("cancelled");
-              } else if (revision !== preferenceRevision) {
-                resolve("superseded");
-              } else {
-                if (adoptOnFailure) {
-                  commitFallbackLocale(preference, revision);
-                } else {
-                  failPreference(revision, preference, locale);
-                }
-                resolve("failed");
-              }
-            },
-            Math.max(0, timeoutMs),
-          );
-          void settled.then((outcome) => {
-            globalThis.clearTimeout(timeout);
-            resolve(outcome);
-          });
-        });
+  const bounded = new Promise<LocaleChangeResult>((resolve) => {
+    const timeout = globalThis.setTimeout(
+      () => {
+        // Settle the way a rejection would. The load itself is left alone,
+        // so if it does arrive it still commits over this.
+        if (signal?.aborted) {
+          resolve("cancelled");
+        } else if (revision !== preferenceRevision) {
+          resolve("superseded");
+        } else {
+          if (adoptOnFailure) {
+            commitFallbackLocale(preference, revision);
+          } else {
+            failPreference(revision, preference, locale);
+          }
+          resolve("failed");
+        }
+      },
+      Math.max(0, timeoutMs),
+    );
+    void settled.then((outcome) => {
+      globalThis.clearTimeout(timeout);
+      resolve(outcome);
+    });
+  });
   return bounded.finally(() => signal?.removeEventListener("abort", cancel));
 }
 
