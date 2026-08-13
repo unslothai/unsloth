@@ -532,6 +532,13 @@ class WhisperWorker:
                 if not self.is_alive():
                     raise SttWorkerError(self._crash_message(phase))
                 if time.monotonic() >= deadline:
+                    if cancel_deadline is not None:
+                        # A cancel landing near the end of the command timeout is
+                        # still a cancel: the caller is owed the phase's own error
+                        # (409 for a load, 499 for a transcription), and a child
+                        # that never read the cancel will not read a shutdown.
+                        self.close(graceful_timeout = 0.0)
+                        self._raise_cancelled(phase)
                     self.close()
                     raise SttWorkerError(
                         "The dictation worker stopped responding; try recording again."

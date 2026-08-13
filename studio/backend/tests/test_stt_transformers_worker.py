@@ -541,6 +541,39 @@ def test_the_cancel_grace_is_not_followed_by_a_second_shutdown_wait(monkeypatch)
     assert handle.is_alive() is False
 
 
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [("load", SttLoadCancelledError), ("transcribe", SttTranscriptionCancelledError)],
+)
+def test_a_cancel_that_lands_near_the_command_timeout_keeps_its_cancellation(
+    monkeypatch, phase, expected
+):
+    # A cancel arriving in the last seconds of the load or transcribe timeout is
+    # still a cancellation: the caller is owed the 409 or the 499, not a 500 for
+    # a worker that "stopped responding", and not another full shutdown wait.
+    monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 30.0)
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
+
+    class _Recording(_FakeProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.joins = []
+
+        def join(self, timeout = None):
+            self.joins.append(timeout)
+
+    process = _Recording()
+    handle = _wired_worker(process)
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(expected):
+        handle._await("text" if phase == "transcribe" else "loaded", 0.0, cancel_event, phase)
+
+    assert worker_module._SHUTDOWN_TIMEOUT_SECONDS not in process.joins
+    assert handle.is_alive() is False
+
+
 def test_closing_a_handle_normally_still_asks_the_child_to_exit_first(monkeypatch):
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
