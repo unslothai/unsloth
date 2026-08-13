@@ -261,11 +261,53 @@ def test_a_migrated_x64_venv_is_kept_even_when_the_tier_is_on():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     index = source.index("$migratedTag = Get-PythonPlatformTag")
     block = source[index : source.index("migrated environment is", index)]
-    assert '$script:ArmInferenceOnly -and $migratedTag -eq "win-amd64"' in block
+    assert "$script:ArmInferenceOnly -and" in block
+    assert '$migratedTag -eq "win-amd64"' in block
     assert "$script:ArmInferenceOnly = $false" in block
     # And the handoff variable goes back with it, or setup.ps1 would still be told
     # to install the tier into the x64 environment we just decided to keep.
     assert "Remove-Item Env:UNSLOTH_NO_DATASETS" in block
+
+
+def test_an_explicitly_requested_tier_survives_a_migrated_x64_venv():
+    """The auto-withdrawal above is for a tier the installer FELL BACK into. Someone
+    who set UNSLOTH_NO_DATASETS=1 asked for inference-only on purpose -- to keep a
+    native environment, or to skip the training stack -- and finding an x64 venv is
+    not a reason to overrule them."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    index = source.index("$migratedTag = Get-PythonPlatformTag")
+    block = source[index : source.index("migrated environment is", index)]
+    assert "-not $script:ArmInferenceOnlyRequested" in block
+    # And the flag is set where the environment variable is read, not anywhere the
+    # installer's own fallback could also reach.
+    parsed = source[source.index("$script:ArmInferenceOnly = $false") :][:900]
+    assert "$script:ArmInferenceOnlyRequested = $true" in parsed
+    fallback = source[source.index("Could not install an x64 Python") - 500 :][:1700]
+    assert "$script:ArmInferenceOnlyRequested" not in fallback
+
+
+def test_the_tier_branch_honours_the_requested_package():
+    """--package unsloth-fork must not silently install released unsloth. Every
+    other branch passes $PackageName through; this one may not be the exception."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    block = source[source.index("install unsloth (arm64 inference-only)") - 700 :][:1200]
+    assert "$armCoreSpec" in block
+    assert '$PackageName -eq "unsloth"' in block
+    # The version floor still applies to the default name: that is the release which
+    # knows about this tier.
+    assert "unsloth>=2026.8.15" in block
+
+
+def test_every_arm_filtered_copy_is_cleaned_up():
+    """Get-ArmFilteredRequirements writes a temp file per call. A branch that
+    forgets the cleanup leaves it in the requirements directory of the install,
+    where the next run's digest of that directory sees a file that is not shipped."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    calls = source.count("= Get-ArmFilteredRequirements ")
+    cleanups = source.count("\n                Remove-ArmFilteredRequirements\n")
+    assert calls and calls == cleanups, (
+        f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
+    )
 
 
 def test_a_failed_install_does_not_leave_the_tier_in_the_callers_shell():

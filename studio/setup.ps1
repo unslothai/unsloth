@@ -3318,12 +3318,15 @@ if (-not $NoDatasetsMode -and (Get-HostMachineArch) -eq "arm64" -and $ReusedSetu
     if ((Get-PythonPlatformTag $ReusedSetupPython) -eq "win-arm64") {
         $NoDatasetsMode = $true
         $env:UNSLOTH_NO_DATASETS = "1"
-        Write-Host "[!] This environment runs a native ARM64 Python, which has no wheel for" -ForegroundColor Yellow
-        Write-Host "    datasets (via pyarrow). Updating it as an inference-only install: chat," -ForegroundColor Yellow
-        Write-Host "    model downloads and the Hub keep working, training does not." -ForegroundColor Yellow
-        Write-Host "    For the full product, install x64 Python from" -ForegroundColor Yellow
-        Write-Host "    https://www.python.org/downloads/windows/ (it runs emulated) and re-run" -ForegroundColor Yellow
-        Write-Host "    the Unsloth installer." -ForegroundColor Yellow
+        # Write-StudioLine, not Write-Host: the desktop app runs setup under
+        # CREATE_NO_WINDOW, where 5.1's console host writes these bytes itself and
+        # every non-ASCII character arrives as U+FFFD.
+        Write-StudioLine "[!] This environment runs a native ARM64 Python, which has no wheel for" -ForegroundColor Yellow
+        Write-StudioLine "    datasets (via pyarrow). Updating it as an inference-only install: chat," -ForegroundColor Yellow
+        Write-StudioLine "    model downloads and the Hub keep working, training does not." -ForegroundColor Yellow
+        Write-StudioLine "    For the full product, install x64 Python from" -ForegroundColor Yellow
+        Write-StudioLine "    https://www.python.org/downloads/windows/ (it runs emulated) and re-run" -ForegroundColor Yellow
+        Write-StudioLine "    the Unsloth installer." -ForegroundColor Yellow
     }
 }
 

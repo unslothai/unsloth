@@ -388,9 +388,14 @@ function Install-UnslothStudio {
     # rather than only after it fails. Declared here so every later read is defined
     # under Set-StrictMode.
     $script:ArmInferenceOnly = $false
+    # Tracked separately from the flag: a tier the CALLER asked for is a decision, a
+    # tier the installer fell back into is a workaround. Only the second may be
+    # withdrawn automatically when an x64 environment turns up.
+    $script:ArmInferenceOnlyRequested = $false
     if ($env:UNSLOTH_NO_DATASETS -and
         (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())) {
         $script:ArmInferenceOnly = $true
+        $script:ArmInferenceOnlyRequested = $true
     }
     # The ARM64 fallback below sets $env:UNSLOTH_NO_DATASETS to hand the tier to
     # `studio setup`. `irm ... | iex` runs all of this in the CALLER's PowerShell
@@ -3101,7 +3106,10 @@ exit 0
         # interpreter could be FOUND, and the migrated venv turns out to have one,
         # keep it and leave the tier -- rebuilding here would delete a working
         # training-capable environment to replace it with a reduced one.
-        if ($script:ArmInferenceOnly -and $migratedTag -eq "win-amd64") {
+        if ($script:ArmInferenceOnly -and -not $script:ArmInferenceOnlyRequested -and
+            $migratedTag -eq "win-amd64") {
+            # Only reached when the tier was a fallback. UNSLOTH_NO_DATASETS=1 asks for
+            # inference-only on purpose, including on x64, so it survives this.
             substep "migrated environment already runs x64 Python -- keeping it, full install." "Yellow"
             $script:ArmInferenceOnly = $false
             if ($script:HadPreviousNoDatasetsEnv) {
@@ -4573,7 +4581,12 @@ exit 0
             # install_python_stack.py installs, minus the packages with no win_arm64
             # wheel) is the same route no-torch already takes. Torch is NOT skipped: it
             # publishes win_arm64 CPU wheels and was installed above.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (arm64 inference-only)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
+            # --package is honoured here as it is on every other branch: a caller who
+            # asked to install a fork or a pinned spec must not silently get released
+            # unsloth back. The floor is only applied to the default name, where it is
+            # the version that knows about this tier.
+            $armCoreSpec = if ($PackageName -eq "unsloth") { "unsloth>=2026.8.15" } else { $PackageName }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (arm64 inference-only)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo -- "$armCoreSpec" "unsloth-zoo>=2026.8.10" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the no-torch branch: under --no-deps
                 # pydantic and pydantic-core drift apart and fail pydantic's own check.
@@ -4591,6 +4604,7 @@ exit 0
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install arm64 inference-only runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
+                Remove-ArmFilteredRequirements
             }
         } elseif ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }

@@ -848,13 +848,19 @@ class TestManifestVerificationHonoursTheTier:
     @staticmethod
     def _installed_without_tier_packages() -> dict:
         """Every studio.txt distribution at its pinned version except the ones the
-        tier drops, i.e. exactly what a successful tier install leaves behind."""
+        tier drops, i.e. exactly what a successful tier install leaves behind.
+
+        Pins the tier LIFTS (pymupdf and friends, whose studio.txt version has no
+        win_arm64 wheel) are recorded at the lifted version, because that is the one
+        pip_install actually put on disk.
+        """
         reqs = TestManifestVerificationHonoursTheTier.manifest.requirements_root(STUDIO_DIR)
         text = (reqs / "studio.txt").read_text(encoding = "utf-8")
         dropped = {
             TestManifestVerificationHonoursTheTier.manifest._canonical(name)
             for name in TestManifestVerificationHonoursTheTier.manifest.NO_DATASETS_OMITTED_REQUIREMENTS
         }
+        lifts = TestManifestVerificationHonoursTheTier.manifest.tier_version_lifts(reqs)
         installed = {}
         for line in text.splitlines():
             parsed = TestManifestVerificationHonoursTheTier.manifest._parse_requirement_line(line)
@@ -866,7 +872,7 @@ class TestManifestVerificationHonoursTheTier:
                 continue
             if not TestManifestVerificationHonoursTheTier.manifest._marker_applies(marker):
                 continue
-            installed[canonical] = _satisfying_version(specifier)
+            installed[canonical] = _satisfying_version(lifts.get(canonical, specifier))
         return installed
 
     def _write_manifest(self, root: Path, no_datasets: bool) -> None:
@@ -916,6 +922,9 @@ class TestManifestVerificationHonoursTheTier:
             self.manifest.requirements_root(STUDIO_DIR) / "studio.txt",
             installed = self._installed_without_tier_packages(),
             omit = self.manifest.NO_DATASETS_OMITTED_REQUIREMENTS,
+            # The same pair verify_install() derives from the marker: what the tier
+            # drops, and what it lifts.
+            lifts = self.manifest.tier_version_lifts(self.manifest.requirements_root(STUDIO_DIR)),
         )
         assert missing == []
         assert self.manifest.recorded_no_datasets(tmp_path) is True

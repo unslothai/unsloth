@@ -353,10 +353,39 @@ def _version_satisfies(version: str, specifier: str) -> bool:
         return False
 
 
+def tier_version_lifts(req_root: Optional[Path] = None) -> Dict[str, str]:
+    """{canonical name: specifier} from single-env/overrides-win-arm64.txt.
+
+    The ARM64 tier does not only OMIT requirements, it also lifts some: pip_install()
+    rewrites `pymupdf==1.27.2.3` to `pymupdf>=1.28.2` because 1.27 has no win_arm64
+    wheel. Verification reads studio.txt, so without this it compares the installed
+    1.28.x against the original exact pin, calls a correctly installed distribution
+    missing, and sends every setup into another dependency pass.
+
+    Parsed from the file rather than duplicated, the same way install_python_stack
+    does it, so one edit moves both.
+    """
+    overrides = (req_root or requirements_root()) / "single-env" / "overrides-win-arm64.txt"
+    lifts: Dict[str, str] = {}
+    try:
+        lines = overrides.read_text(encoding = "utf-8").splitlines()
+    except OSError:
+        return lifts
+    for line in lines:
+        parsed = _parse_requirement_line(line)
+        if parsed is None:
+            continue
+        name, _marker, specifier = parsed
+        if specifier:
+            lifts[_canonical(name)] = specifier
+    return lifts
+
+
 def missing_requirements(
     req_file: Optional[Path] = None,
     installed: Optional[Dict[str, str]] = None,
     omit: Optional[Tuple[str, ...]] = None,
+    lifts: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """Distribution names that are missing or outside their required versions.
 
@@ -367,7 +396,9 @@ def missing_requirements(
     than the one running this code, which importlib.metadata cannot see.
 
     `omit` names distributions this install tier never installs, so their absence
-    is the intended state rather than a broken venv.
+    is the intended state rather than a broken venv. `lifts` replaces a pin the tier
+    rewrote before installing, so the version on disk is judged against what was
+    actually requested.
     """
     from importlib.metadata import PackageNotFoundError, distribution
 
@@ -388,6 +419,11 @@ def missing_requirements(
             continue
         if not _marker_applies(marker):
             continue
+        if lifts:
+            lifted = lifts.get(_canonical(name))
+            if lifted:
+                # The tier installed this version, so it is the one to verify against.
+                specifier = lifted
         if installed is not None:
             version = installed.get(_canonical(name))
             if version is None or not _version_satisfies(version, specifier):
@@ -464,8 +500,14 @@ def verify_install(
     # invocation, and verify-install / the desktop preflight would reject it. Read the
     # tier the install actually recorded, not the platform, so an environment moved
     # between tiers is judged by the rule it was built under.
-    omit = NO_DATASETS_OMITTED_REQUIREMENTS if recorded_no_datasets(root) else None
-    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed, omit = omit)
+    tier = bool(recorded_no_datasets(root))
+    omit = NO_DATASETS_OMITTED_REQUIREMENTS if tier else None
+    # And the pins the tier LIFTED rather than dropped, or a correctly installed
+    # PyMuPDF 1.28.x reads as missing against studio.txt's ==1.27.2.3 for ever.
+    lifts = tier_version_lifts(reqs) if tier else None
+    missing = missing_requirements(
+        reqs / BOOT_REQUIREMENT_FILE, installed = installed, omit = omit, lifts = lifts,
+    )
     deps_ok = not missing
 
     manifest_ok = False

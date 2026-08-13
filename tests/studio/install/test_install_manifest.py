@@ -338,3 +338,40 @@ def test_the_tier_does_invalidate_on_a_newly_tracked_file(install_root, req_root
     )
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
+
+
+class TestTierVersionLifts:
+    """The tier does not only drop requirements, it rewrites some pins.
+
+    pip_install() lifts pymupdf==1.27.2.3 to >=1.28.2 because 1.27 has no win_arm64
+    wheel. verify_install() reads studio.txt, so unless it applies the same lift it
+    judges the 1.28.x it just installed against the original exact pin, reports a
+    correctly installed distribution as missing, and re-runs the dependency pass on
+    every single launch.
+    """
+
+    def test_lifts_are_read_from_the_overrides_file(self):
+        lifts = im.tier_version_lifts()
+        assert lifts.get("pymupdf", "").startswith(">=")
+        # Parsed rather than duplicated, so editing the overrides file moves both.
+        assert set(lifts) <= {"pymupdf", "av", "scikit-learn", "cryptography", "pandas"}
+
+    def test_a_lifted_version_is_not_reported_missing(self, tmp_path):
+        req = tmp_path / "studio.txt"
+        req.write_text("pymupdf==1.27.2.3\n", encoding = "utf-8")
+        installed = {"pymupdf": "1.28.2"}
+        assert im.missing_requirements(req, installed = installed) == ["pymupdf"]
+        assert im.missing_requirements(
+            req, installed = installed, lifts = {"pymupdf": ">=1.28.2"},
+        ) == []
+
+    def test_a_version_below_the_lift_is_still_missing(self, tmp_path):
+        """Tolerating the lift must not turn the check off."""
+        req = tmp_path / "studio.txt"
+        req.write_text("pymupdf==1.27.2.3\n", encoding = "utf-8")
+        assert im.missing_requirements(
+            req, installed = {"pymupdf": "1.26.0"}, lifts = {"pymupdf": ">=1.28.2"},
+        ) == ["pymupdf"]
+
+    def test_a_missing_overrides_file_yields_no_lifts(self, tmp_path):
+        assert im.tier_version_lifts(tmp_path) == {}
