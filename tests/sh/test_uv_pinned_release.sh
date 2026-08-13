@@ -125,6 +125,19 @@ for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
     fi
 done
 
+# The staging name must be unique per process. Two installers sharing one fixed staging path let
+# the loser keep writing through its open descriptor after the winner renamed that inode into
+# place, publishing a truncated uv. mktemp in the destination directory is what makes the rename
+# a swap of a file nobody else can still be writing.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
+    if grep -qE 'mktemp "\$_[a-z]+_dest/\.\$_[a-z]+_exe\.XXXXXX"' "$_impl" \
+       && ! grep -q 'unsloth-new' "$_impl"; then
+        ok "${_impl##*/} stages the uv copy under a per-process name"
+    else
+        bad "${_impl##*/} stages the uv copy under a per-process name"
+    fi
+done
+
 # astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
 # default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
 # configured an XDG location, where no later shell looks for it.
@@ -267,7 +280,7 @@ else
     bad "the symlink itself is replaced by the installed uv"
 fi
 # The staging file must not survive a run, or the destination collects debris on every upgrade.
-if [ -z "$(find "$WORK/home_link/.local/bin" -name '.uv*.unsloth-new' 2>/dev/null)" ]; then
+if [ -z "$(find "$WORK/home_link/.local/bin" -name '.uv.*' 2>/dev/null)" ]; then
     ok "no staging file is left behind"
 else
     bad "no staging file is left behind"

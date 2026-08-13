@@ -1588,12 +1588,17 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
             _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
             if [ -n "$_siup_src" ]; then
                 # Stage then rename, as install.sh does: cp onto a symlinked destination writes
-                # through the link and would rewrite whatever it points at, and rename replaces
-                # the link itself and is atomic.
-                cp -f "$_siup_src" "$_siup_dest/.$_siup_exe.unsloth-new" 2>/dev/null || continue
-                chmod +x "$_siup_dest/.$_siup_exe.unsloth-new" 2>/dev/null || true
-                if ! mv -f "$_siup_dest/.$_siup_exe.unsloth-new" "$_siup_dest/$_siup_exe" 2>/dev/null; then
-                    rm -f "$_siup_dest/.$_siup_exe.unsloth-new" 2>/dev/null || true
+                # through the link and would rewrite whatever it points at. The staging name is
+                # per-process, so two installers racing on one destination cannot publish each
+                # other's half-written file.
+                _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || continue
+                if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then
+                    rm -f "$_siup_stage" 2>/dev/null || true
+                    continue
+                fi
+                chmod +x "$_siup_stage" 2>/dev/null || true
+                if ! mv -f "$_siup_stage" "$_siup_dest/$_siup_exe" 2>/dev/null; then
+                    rm -f "$_siup_stage" 2>/dev/null || true
                     continue
                 fi
                 [ "$_siup_exe" = "uv" ] && _siup_rc=0

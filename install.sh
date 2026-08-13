@@ -2546,12 +2546,21 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             if [ -n "$_uip_src" ] && [ -f "$_uip_src" ]; then
                 # Stage then rename. cp onto a destination that is a symlink writes through it,
                 # so an install over `~/.local/bin/uv -> /opt/homebrew/bin/uv` would rewrite the
-                # Homebrew binary in place. rename replaces the link itself, and it is atomic, so
-                # a concurrent reader never sees a half-written uv either.
-                cp -f "$_uip_src" "$_uip_dest/.$_uip_exe.unsloth-new" 2>/dev/null || continue
-                chmod +x "$_uip_dest/.$_uip_exe.unsloth-new" 2>/dev/null || true
-                if ! mv -f "$_uip_dest/.$_uip_exe.unsloth-new" "$_uip_dest/$_uip_exe" 2>/dev/null; then
-                    rm -f "$_uip_dest/.$_uip_exe.unsloth-new" 2>/dev/null || true
+                # Homebrew binary in place; rename replaces the link itself.
+                #
+                # mktemp, not a fixed name: two installers racing on one destination would share
+                # a fixed staging path, and the loser writing through its already-open descriptor
+                # after the winner renamed it publishes a truncated uv. A unique name per process
+                # means each rename publishes a file nobody else can still be writing, which is
+                # what makes the swap atomic for a concurrent reader.
+                _uip_stage=$(mktemp "$_uip_dest/.$_uip_exe.XXXXXX" 2>/dev/null) || continue
+                if ! cp -f "$_uip_src" "$_uip_stage" 2>/dev/null; then
+                    rm -f "$_uip_stage" 2>/dev/null || true
+                    continue
+                fi
+                chmod +x "$_uip_stage" 2>/dev/null || true
+                if ! mv -f "$_uip_stage" "$_uip_dest/$_uip_exe" 2>/dev/null; then
+                    rm -f "$_uip_stage" 2>/dev/null || true
                     continue
                 fi
                 [ "$_uip_exe" = "uv" ] && _uip_placed=1
