@@ -3289,7 +3289,13 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     assert sd_cpp_backend._tree_readers == 0, "the claim must be released after the probe"
 
 
-def _load_h3_native_offload(monkeypatch, tmp_path, *, help_text, accelerator = True):
+def _load_h3_native_offload(
+    monkeypatch,
+    tmp_path,
+    *,
+    help_text,
+    accelerator = True,
+):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
     ``help_text`` is what the binary answers ``--help`` with, which is the only thing the graph-cut
@@ -3367,9 +3373,7 @@ def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_
     alone still allocates each one whole and cudaMallocs before any tensor is resident. The graph
     cut is what makes the checkpoint renderable, and auto -- not low_vram -- is the default mode
     that has to carry it."""
-    state, offload = _load_h3_native_offload(
-        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP
-    )
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
     assert state.device == "cuda"
     assert offload[-3:] == ["--max-vram", "-1", "--stream-layers"]
     # A negative budget auto-detects per device. A fixed number would misjudge the other card.
@@ -3379,9 +3383,7 @@ def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_
 def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):
     """sd-cli exits non-zero on an option it does not know, so emitting these unconditionally
     would break every generation on a build that predates the executor."""
-    _state, offload = _load_h3_native_offload(
-        monkeypatch, tmp_path, help_text = _NO_GRAPH_CUT_HELP
-    )
+    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _NO_GRAPH_CUT_HELP)
     assert "--max-vram" not in offload
     assert "--stream-layers" not in offload
 
