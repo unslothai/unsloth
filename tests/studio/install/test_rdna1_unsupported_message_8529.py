@@ -1163,9 +1163,9 @@ class TestVulkanAdvice:
             f"{paragraph!r}"
         )
         after = src.split(paragraph, 1)[1]
-        assert re.search(r"macOS[^\n]*Metal", after), (
-            "README: nothing tells a macOS reader what happens there instead"
-        )
+        assert re.search(
+            r"macOS[^\n]*Metal", after
+        ), "README: nothing tells a macOS reader what happens there instead"
 
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────

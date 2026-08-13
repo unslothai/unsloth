@@ -580,7 +580,7 @@ def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
 # ── The CPU summary must blame the card the fallback is actually about ───────
 
 
-_SUMMARY_GUARD_ANCHOR = '_covered_disp_gfx=$(_infer_linux_amd_gfx_arch'
+_SUMMARY_GUARD_ANCHOR = "_covered_disp_gfx=$(_infer_linux_amd_gfx_arch"
 
 
 def _summary_guard_snippet() -> str:
@@ -618,7 +618,7 @@ def _run_summary_guard(tmp_path, lspci_lines: "list[str]") -> str:
     script = (
         f"{funcs}\n{_summary_guard_snippet()}\n"
         'if [ -n "$_unsup_disp_gfx" ]; then echo "UNCOVERED $_unsup_disp_gfx"; '
-        'else echo GENERIC; fi\n'
+        "else echo GENERIC; fi\n"
     )
     out = subprocess.run(
         ["sh", "-c", script],
@@ -658,9 +658,9 @@ class TestInstallShCpuSummaryBlamesTheRightCard:
     def test_a_lone_uncovered_card_is_still_named(self, tmp_path, lines):
         """The positive control, and the case the whole PR exists for."""
         verdict = _run_summary_guard(tmp_path, lines)
-        assert verdict.startswith("UNCOVERED"), (
-            f"install.sh's CPU summary no longer names the uncovered card: {verdict!r}"
-        )
+        assert verdict.startswith(
+            "UNCOVERED"
+        ), f"install.sh's CPU summary no longer names the uncovered card: {verdict!r}"
 
     @pytest.mark.parametrize(
         "lines",
