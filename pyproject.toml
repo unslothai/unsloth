@@ -82,6 +82,7 @@ exclude = [
     "images*",
     "tests*",
     "studio.backend.tests*",
+    "studio.backend.*.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
