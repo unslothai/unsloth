@@ -2205,7 +2205,9 @@ def test_every_reuse_path_syncs_the_arch_coverage():
     run: pinned on _record_reused_selection, which every reuse path calls."""
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert source.count("_record_reused_selection(") == 4  # definition + 3 reuse paths
-    patch = source[source.index("def _marker_selection_patch") : source.index("def sync_marker_selection")]
+    patch = source[
+        source.index("def _marker_selection_patch") : source.index("def sync_marker_selection")
+    ]
     assert 'patch["mapped_targets"] = targets' in patch
 
 
