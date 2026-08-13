@@ -2959,17 +2959,30 @@ def _rocm_reinstall_blocked(
        is a working CUDA build. The mask picks a card; it is not consent to replace
        the wheels.
     """
-    if _cvd_hides_nvidia() and _has_physical_nvidia_gpu():
-        # A CUDA local tag is only readable from a torch that imported, so this also
-        # excludes the broken-torch case without a separate importability term.
-        if _is_cuda_family_leaf(_installed_torch_local_tag(installed_version)):
-            return (
-                f"   torch {installed_version} is a working CUDA build and this host has an "
-                "NVIDIA GPU hidden by CUDA_VISIBLE_DEVICES -- leaving it alone.\n"
-                "   Unset CUDA_VISIBLE_DEVICES, or set UNSLOTH_TORCH_INDEX_URL, to choose "
-                "the ROCm wheels deliberately."
-            )
-    return _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
+    return _rocm_cuda_wheel_preserved(installed_version) or _rocm_repair_already_attempted(
+        repair_key, installed_version, torch_importable
+    )
+
+
+def _rocm_cuda_wheel_preserved(installed_version: str) -> "str | None":
+    """Why a working CUDA wheel is kept instead of replaced, or None.
+
+    Split out for the same reason as _rocm_repair_already_attempted: the caller has to
+    tell the two suppressions apart. This one leaves a CUDA venv in place, which is not
+    a ROCm-ready one, so the AMD bitsandbytes wheel must not be paired with it.
+    """
+    if not (_cvd_hides_nvidia() and _has_physical_nvidia_gpu()):
+        return None
+    # A CUDA local tag is only readable from a torch that imported, so this also
+    # excludes the broken-torch case without a separate importability term.
+    if not _is_cuda_family_leaf(_installed_torch_local_tag(installed_version)):
+        return None
+    return (
+        f"   torch {installed_version} is a working CUDA build and this host has an "
+        "NVIDIA GPU hidden by CUDA_VISIBLE_DEVICES -- leaving it alone.\n"
+        "   Unset CUDA_VISIBLE_DEVICES, or set UNSLOTH_TORCH_INDEX_URL, to choose "
+        "the ROCm wheels deliberately."
+    )
 
 
 def _rocm_repair_already_attempted(
@@ -3112,6 +3125,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
 
     repair_key = _rocm_repair_key(desired_url, installed_version, torch_importable)
     repair_blocked = False
+    cuda_wheel_kept = False
     if reinstall and pin is None:
         blocked = _rocm_reinstall_blocked(installed_version, torch_importable, repair_key)
         if blocked is not None:
@@ -3121,6 +3135,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
                 _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
                 is not None
             )
+            cuda_wheel_kept = _rocm_cuda_wheel_preserved(installed_version) is not None
 
     if repair_blocked:
         # Suppressed, not satisfied. Reported as an explicit no-op plan so the caller
@@ -3146,8 +3161,11 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     # A matching per-arch wheel needs only the clear; coupling the two would download
     # and reinstall several gigabytes on every update whose parent shell restored the
     # stale profile export.
+    # A kept CUDA wheel is a final answer, not a ROCm-ready venv: readiness gates the
+    # AMD bitsandbytes force-reinstall, which has no business on the torch this pass
+    # just declined to replace.
     if not reinstall and clear_spoof is None:
-        return None, True, runtime_is_gfx906
+        return None, not cuda_wheel_kept, runtime_is_gfx906
     return (
         _LinuxRocmTorchPlan(
             index_url = desired_url,
@@ -3158,7 +3176,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
             clear_hsa_spoof_gfx = clear_spoof,
             repair_key = repair_key,
         ),
-        not reinstall,
+        not reinstall and not cuda_wheel_kept,
         runtime_is_gfx906,
     )
 

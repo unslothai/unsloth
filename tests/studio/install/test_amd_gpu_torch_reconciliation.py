@@ -1001,6 +1001,34 @@ def test_a_hidden_nvidia_gpu_keeps_a_working_cuda_torch(monkeypatch):
     )
 
 
+def test_a_preserved_cuda_wheel_is_not_reported_as_rocm_ready(monkeypatch):
+    """torch_ready gates the ROCm bitsandbytes force-reinstall. Reporting the CUDA wheel
+    this pass just declined to replace as ready runs the AMD bnb path against it."""
+    plan, torch_ready, _ = _plan_tuple(
+        monkeypatch,
+        version = "2.9.0+cu128",
+        cvd_hides_nvidia = True,
+        physical_nvidia = True,
+    )
+    assert plan is None
+    assert torch_ready is False
+
+
+def test_a_preserved_cuda_wheel_is_not_rocm_ready_through_a_spoof_clear(monkeypatch):
+    """The second exit reports readiness as `not reinstall` too, so a pending HSA clear
+    would smuggle the same wrong pairing past the None-plan check."""
+    strix = ("gfx1151", "gfx1151", "gfx1151", {"gfx1151"})
+    plan, torch_ready, _ = _plan_tuple(
+        monkeypatch,
+        version = "2.9.0+cu128",
+        cvd_hides_nvidia = True,
+        physical_nvidia = True,
+        selected_strix_result = strix,
+    )
+    assert plan is not None and plan.install_torch is False
+    assert torch_ready is False
+
+
 def test_a_hidden_nvidia_gpu_does_not_protect_an_unimportable_torch(monkeypatch):
     assert (
         _plan(
