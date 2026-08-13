@@ -5440,6 +5440,10 @@ _persist_fish_path_dir() {
     fi
 }
 
+# A line that SETS PATH, as opposed to one that merely names the directory. The name boundary
+# keeps PYTHONPATH and friends out; the three helpers are the common non-assignment spellings.
+_PATH_LINE_RE='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
+
 # Put a directory on the PATH of the NEXT shell, not just this process.
 #   $1 the directory  $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always
 #   has)  $3 how to name it in the line we print  $4 the grep that says it is already there
@@ -5470,11 +5474,12 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
-    # Comments stripped first, then only lines that touch a path: a commented-out old export is
-    # not an active entry, and neither is `UV_CACHE=/opt/uv`. Taking either for one leaves the
-    # next shell with no uv at all.
+    # Comments stripped first, then only lines that actually set PATH: a commented-out old export
+    # is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name
+    # boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next
+    # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
-        | grep -iF path | grep -qE "$_plp_pattern"; then
+        | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
         echo '' >> "$_SHELL_PROFILE"
         echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
         echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"

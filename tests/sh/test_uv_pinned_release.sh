@@ -772,6 +772,26 @@ if grep -qF "$WORK/setup_home/opt/bin" "$WORK/setup_home/.bashrc" 2>/dev/null; t
 else
     bad "a direct setup.sh run persists the uv destination"
 fi
+# ...and the same mention-only trap as install.sh: PYTHONPATH holds the text PATH, so only a
+# name boundary keeps it from passing for an entry.
+mkdir -p "$WORK/setup_mention" "$WORK/setup_mention/opt/bin"
+printf 'export PYTHONPATH="%s/opt/bin"\n' "$WORK/setup_mention" > "$WORK/setup_mention/.bashrc"
+(
+    set +e
+    HOME="$WORK/setup_mention"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+    _SETUP_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/setup_path.sh"
+    _setup_persist_uv_path "$HOME/opt/bin"
+) >/dev/null 2>&1 || true
+if grep -q 'export PATH=' "$WORK/setup_mention/.bashrc" 2>/dev/null; then
+    ok "setup.sh writes past a non-PATH mention of the destination"
+else
+    bad "setup.sh writes past a non-PATH mention of the destination"
+fi
+
 mkdir -p "$WORK/setup_unmanaged" "$WORK/setup_unmanaged/opt/bin"
 : > "$WORK/setup_unmanaged/.bashrc"
 (
@@ -971,7 +991,9 @@ fi
 # `UV_CACHE=$HOME/.local/bin` must not suppress the export, or the next shell finds no uv.
 _mh="$WORK/mention_home"
 mkdir -p "$_mh/.local/bin"
-printf 'UV_CACHE="$HOME/.local/bin"\n' > "$_mh/.profile"
+# PYTHONPATH is the trap for a naive "does the line mention a path" filter: it holds the text
+# PATH, so only a name boundary keeps it out.
+printf 'UV_CACHE="$HOME/.local/bin"\nexport PYTHONPATH="$HOME/.local/bin"\n' > "$_mh/.profile"
 (
     set +e
     step() { :; }

@@ -1718,6 +1718,9 @@ _setup_persist_uv_path() {
     # Comments stripped and the directory anchored as a whole entry: a commented-out old export,
     # or /opt/uv-old when we want /opt/uv, is not an active entry, and taking either for one
     # leaves the next shell unable to resolve uv.
+    # A line that SETS PATH, as opposed to one that merely names the directory. The name
+    # boundary keeps PYTHONPATH out; the helpers are the common non-assignment spellings.
+    _supp_path_line='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
     _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
@@ -1729,9 +1732,10 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
-        # Only lines that touch a path count: `UV_CACHE=/opt/uv` is not a PATH entry, and
-        # taking it for one leaves the next shell unable to resolve uv.
-        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null | grep -iF path \
+        # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
+        # are not PATH entries, and taking one for an entry leaves the next shell without uv.
+        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+            | grep -E "$_supp_path_line" \
             | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
