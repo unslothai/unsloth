@@ -376,7 +376,12 @@ def pin_relative_overrides(
     return pinned
 
 
-def _anchor(value, cwd, pathmod, abspath = None):
+def _anchor(
+    value,
+    cwd,
+    pathmod,
+    abspath = None,
+):
     """The value rewritten to name the same folder from anywhere, or None.
 
     None means it needs no rewriting: it is empty, it starts with `~` (expanduser
