@@ -6880,6 +6880,8 @@ def _resolve_gguf_load_intent(
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
+            # Carry the cached file already verified during config resolution.
+            verified_gguf = getattr(config, "gguf_verified", None),
         )
     else:
         if native_grant_backed:

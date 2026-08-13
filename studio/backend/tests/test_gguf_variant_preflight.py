@@ -117,3 +117,61 @@ def test_no_variant_still_autoselects(remote_gguf_repo):
     config = ModelConfig.from_identifier(REPO)
     assert config is not None
     assert config.gguf_variant in {"Q4_K_M", "Q8_0"}
+
+
+def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeypatch):
+    """Config carries the cached file it already verified."""
+    cached = "/cache/Llama-3.2-1B-Instruct-Q8_0.gguf"
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: cached)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+    assert config.gguf_verified == (REPO, "Q8_0", cached)
+
+
+def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
+    remote_gguf_repo, monkeypatch
+):
+    """A verified cached file proves the requested variant exists."""
+    listings = []
+
+    def counting_list_repo_files(repo_id, token = None):
+        listings.append(repo_id)
+        return list(REPO_FILES)
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", counting_list_repo_files)
+    monkeypatch.setattr(
+        llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: "/cache/old.gguf"
+    )
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
+    assert config.gguf_variant == "OLD_Q2"
+    assert listings == [], "a verified cached file still cost a repo listing"
+
+    # Nothing cached: the listing runs and still rejects a variant it does not name.
+    listings.clear()
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
+    with pytest.raises(ValueError, match = "OLD_Q2"):
+        ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
+    assert listings == [REPO]
+
+
+def test_the_auto_selected_variant_carries_its_own_verified_copy(remote_gguf_repo, monkeypatch):
+    """No explicit variant means config picks one, and that pick is what the load asks for."""
+    asked = []
+
+    def fake_cached_gguf_for_load(repo, variant, **kw):
+        asked.append((repo, variant, kw.get("verify_sizes")))
+        return f"/cache/{variant}.gguf"
+
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", fake_cached_gguf_for_load)
+
+    config = ModelConfig.from_identifier(REPO)
+    assert config.gguf_variant in {"Q4_K_M", "Q8_0"}
+    assert asked == [(REPO, config.gguf_variant, True)]
+    assert config.gguf_verified == (REPO, config.gguf_variant, f"/cache/{config.gguf_variant}.gguf")
+
+
+def test_nothing_is_carried_when_no_cached_copy_verifies(remote_gguf_repo):
+    """A first-time download has no cached path to carry."""
+    assert ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_verified is None
+    assert ModelConfig.from_identifier(REPO).gguf_verified is None
