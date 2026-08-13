@@ -664,7 +664,9 @@ def test_the_workflow_step_count_and_the_payload_default_agree():
 
     from run_t4_smoke import main  # noqa: F401  (import proves it loads)
 
-    workflow = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
+        encoding = "utf-8"
+    )
 
     def one(pattern, text, what):
         found = re.findall(pattern, text)
@@ -1705,7 +1707,9 @@ def test_the_workflow_takes_its_kernel_plan_from_the_leg_registry():
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
     """Cancelling it orphans a Kaggle kernel that then bills to its ceiling."""
     preempt = json.loads(
-        (Path(__file__).resolve().parents[2] / ".github" / "ci-preempt.json").read_text(encoding = "utf-8")
+        (Path(__file__).resolve().parents[2] / ".github" / "ci-preempt.json").read_text(
+            encoding = "utf-8"
+        )
     )
     assert WORKFLOW.name in preempt["never"]
     for machines in preempt["heavy"].values():
