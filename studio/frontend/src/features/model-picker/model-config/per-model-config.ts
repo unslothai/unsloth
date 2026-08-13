@@ -52,6 +52,27 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 export const N_PARALLEL_MIN = 1;
 export const N_PARALLEL_MAX = 64;
 
+// Mirrors vram_budget_settings.py VRAM_FRACTION_MIN/MAX/DEFAULT as whole percent
+// (the slider works in integers). Server-wide, so these are only the bounds the
+// control clamps to; the value lives in /api/settings/vram-budget.
+export const VRAM_BUDGET_PERCENT_MIN = 80;
+export const VRAM_BUDGET_PERCENT_MAX = 100;
+export const VRAM_BUDGET_PERCENT_DEFAULT = 97;
+// Tenths: a whole percent is ~245 MiB of context on a 24 GB card. Mirrors
+// VRAM_FRACTION_DECIMALS = 3 in vram_budget_settings.py.
+export const VRAM_BUDGET_PERCENT_STEP = 0.1;
+
+/** Percent for the slider; the fraction is rebuilt at the API boundary. */
+export function vramFractionToPercent(fraction: number): number {
+  return Math.round(fraction * 1000) / 10;
+}
+
+export function vramPercentToFraction(percent: number): number {
+  // Three decimals, so 0.975 cannot come back as 0.9750000000000001 and read as
+  // "changed" after a drag that ended where it began.
+  return Math.round(percent * 10) / 1000;
+}
+
 // mirrors llama_server_args.py BATCH_MIN/MAX; null = follow the llama.cpp defaults (2048 / 512)
 export const N_BATCH_MIN = 1;
 export const N_BATCH_MAX = 65536;

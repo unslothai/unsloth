@@ -1972,12 +1972,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        const cap = getExternalMaxOutputTokens(
-          provider?.providerType,
-          parsed?.modelId,
-        );
-        if (nextMaxTokens > cap) {
-          nextMaxTokens = cap;
+        // Only when the connection is known. A checkpoint restored before the
+        // provider store hydrates would otherwise read the 32,768 fallback and lower
+        // a value nothing puts back. No provider means unknown, not 32,768.
+        if (provider) {
+          const cap = getExternalMaxOutputTokens(
+            provider.providerType,
+            parsed?.modelId,
+            provider.maxOutputTokens,
+          );
+          if (nextMaxTokens > cap) {
+            nextMaxTokens = cap;
+          }
         }
       }
       const nextGgufVariant = ggufVariant ?? null;

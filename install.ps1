@@ -3158,6 +3158,9 @@ exit 0
     $ROCmGpuLabel = $null
     $ROCmVersion = $null
     $ROCmGfxArch = $null
+    # Declared with its neighbours, not inside the block below: the arms that read
+    # it are outside that gate, so an NVIDIA host would leave it undefined.
+    $ROCmUnsupportedGfxArch = $null
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
@@ -3309,7 +3312,13 @@ exit 0
                 } catch {}
             }
         }
-        if (-not $HasROCm) {
+        # Set outside the scan: only the WMI arm fills it, but the lookup further down reads
+        # it on every AMD path, including the amd-smi ones that never enter the block.
+        $wmiAmdNames = @()
+        # Keyed on the ARCH, not on $HasROCm: amd-smi can report GPUs with no gfx token and
+        # only the first market name, which sets $HasROCm and used to skip this scan, leaving
+        # the peer guard below blind. A host with an arch never reaches that lookup anyway.
+        if (-not $ROCmGfxArch) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
                 # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
@@ -3319,14 +3328,39 @@ exit 0
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                # CIM, as everywhere else here: Get-WmiObject is gone from PowerShell 7, where
+                # the catch below would swallow it and leave the peer list empty. CIM is 5.1+.
+                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
-                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
-                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+                $wmiAdapters = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })
+                $wmiGpu = $wmiAdapters[0]
+                if ($wmiGpu) {
+                    # amd-smi's label wins when it had one; this scan is here for the peers.
+                    if (-not $HasROCm) { $ROCmGpuLabel = $wmiGpu.Name }
+                    # Every adapter's name, not just the chosen one: only the peer list tells
+                    # "this host has no ROCm-capable GPU" apart from "this host's FIRST adapter
+                    # is not the ROCm-capable one". Read by the unsupported lookup below;
+                    # nothing here picks an arch, so the choice above is untouched.
+                    $wmiAmdNames = @($wmiAdapters | ForEach-Object { $_.Name })
+                }
             } catch {}
         }
+        # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
+        # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
+        # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
+        # ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never
+        # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
+        # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
+        # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
+        # 460/550/560, a different die) is left out.
+        $unsupportedNameArchTable = @(
+            @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
+            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+            @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
+            @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
+        )
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the probe can't confirm a runtime ($HasROCm false): the
         # WMI-name gfx arch drives both ROCm llama.cpp and torch. repo.amd.com
@@ -3344,7 +3378,7 @@ exit 0
             #    (gfx120X/110X/1151/1150/103X); unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
-                    @{ P = "9070|9080";                                           A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080)
+                    @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
                     @{ P = "9060";                                                A = "gfx1200" }  # RDNA 4 (Navi 44: RX 9060 XT / 9060)
                     @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                     @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
@@ -3364,6 +3398,32 @@ exit 0
                         substep "gfx arch inferred from GPU name: $ROCmGfxArch" "Cyan"
                         substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$ROCmGfxArch to skip inference next time" "Cyan"
                         break
+                    }
+                }
+                # 3. Still nothing: the card may be a generation ROCm never covered rather
+                #    than one we failed to recognise (unslothai#8529). Reporting only --
+                #    $ROCmGfxArch stays null, so CPU fallback is reached by the same path.
+                #    Gated on NO adapter being covered: $wmiGpu takes index 0, so on a host
+                #    pairing an RX 5700 with an RX 7900 the label is the 5700 and the "no
+                #    SDK or override can help" wording below would be false (masking to the
+                #    7900 and setting gfx1100 installs). Such a host keeps the arch-unknown
+                #    arm, which says exactly that. studio/setup.ps1 already scores every
+                #    adapter before it reaches its own lookup.
+                if (-not $ROCmGfxArch) {
+                    $coveredPeer = $false
+                    foreach ($peerName in $wmiAmdNames) {
+                        foreach ($row in $nameArchTable) {
+                            if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                        }
+                        if ($coveredPeer) { break }
+                    }
+                    if (-not $coveredPeer) {
+                        foreach ($row in $unsupportedNameArchTable) {
+                            if ($ROCmGpuLabel -match $row.P) {
+                                $ROCmUnsupportedGfxArch = $row.A
+                                break
+                            }
+                        }
                     }
                 }
             }
@@ -3647,13 +3707,19 @@ exit 0
         step "gpu" "Intel GPU detected" "Green"
         substep "$IntelGpuLabel"
         # The reroute below prints the index: only it knows the mirror URL and any pin.
-    } elseif ($HasROCm) {
+    } elseif ($HasROCm -and -not $ROCmUnsupportedGfxArch) {
+        # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
+        # and only a market name, setting $HasROCm without an arch. Calling that card
+        # "AMD ROCm" contradicts the wheel note this run also prints.
         step "gpu" $ROCmGpuLabel
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
-    } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
-        # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+    } elseif ($HipSdkInstalled -and $ROCmGpuLabel -and -not $ROCmUnsupportedGfxArch) {
+        # HIP SDK installed but ROCm can't see the device (driver issue, not SDK issue).
+        # Excludes cards already known to be out of scope: the #8529 reporters installed
+        # the HIP SDK BECAUSE this arm said to, so unguarded it hides the arm below from
+        # exactly the users it is for.
         $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
         step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -3667,6 +3733,38 @@ exit 0
         step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    } elseif ($ROCmUnsupportedGfxArch) {
+        # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
+        # unknown" arm below: the arch is known here, and that arm's advice cannot
+        # succeed on this GPU (unslothai#8529).
+        # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+        # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+        # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+        # VAR=value resolves as a command name here and sets nothing.
+        # Both claims below are conditional: an explicit index pin reaches the ROCm install
+        # path further down even for an arch Unsloth has no wheels for, and studio/setup.ps1
+        # THROWS on the Vulkan variable on Windows ARM64, where no bundle is published.
+        $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                       (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
+        $unsupArm64 = (Get-HostMachineArch) -eq "arm64"
+        step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        if ($unsupPinned) {
+            substep "Unsloth ships no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, but the torch index" "Yellow"
+            substep "you pinned is used as given, so torch is whatever that index publishes." "Yellow"
+        } else {
+            substep "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+            substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
+            substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
+        }
+        if ($unsupArm64) {
+            substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+        } else {
+            substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+            substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
+            substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
+            substep "no effect until you install or update again." "Yellow"
+        }
     } elseif ($ROCmGpuLabel) {
         step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -4102,6 +4200,8 @@ exit 0
             }
         } elseif ($ROCmGfxArch) {
             substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        } elseif ($ROCmUnsupportedGfxArch) {
+            substep "AMD GPU ($ROCmUnsupportedGfxArch) has no ROCm PyTorch wheels Unsloth installs -- falling back to CPU-only PyTorch" "Yellow"
         } else {
             substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
         }
@@ -4151,8 +4251,24 @@ exit 0
             substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
             substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
-            if ($HipSdkInstalled -and -not $HasROCm) {
+            if ($HipSdkInstalled -and -not $HasROCm -and -not $ROCmUnsupportedGfxArch) {
+                # Guarded like the gpu step above: an installed HIP SDK is the SYMPTOM on
+                # these cards, so it must not outrank the arm saying why it cannot help.
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
+            } elseif ($ROCmUnsupportedGfxArch) {
+                # Same words as the $ROCmGfxArch arm above, for a card whose arch we know
+                # from its name rather than from a probe (unslothai#8529).
+                substep "Installing CPU PyTorch -- Unsloth has no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch." "Yellow"
+                substep "Unsloth training and GPU inference are unavailable on CPU torch." "Yellow"
+                substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can give this GPU ROCm." "Yellow"
+                if ((Get-HostMachineArch) -eq "arm64") {
+                    # No Windows ARM64 Vulkan bundle exists, and studio/setup.ps1 throws on the
+                    # variable, so the usual advice would abort the next update instead of helping.
+                    substep "GGUF chat would need Vulkan here, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+                } else {
+                    substep 'For GPU GGUF chat through Vulkan, set $env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"' "Yellow"
+                    substep "and re-run this installer; the bundle is chosen at install time, not at launch." "Yellow"
+                }
             } elseif ($ROCmGpuLabel) {
                 substep "Installing CPU-only PyTorch (AMD GPU arch unknown -- install the HIP SDK" "Yellow"
                 substep "or set UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm)." "Yellow"

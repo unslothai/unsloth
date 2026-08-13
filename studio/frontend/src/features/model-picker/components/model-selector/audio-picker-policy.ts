@@ -234,12 +234,20 @@ export function allowedHiddenModelIdMatches(
   );
 }
 
+/** Backend tag for a diffusion GGUF the Images backend cannot assemble; both pickers hide
+ * these rows. */
+const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
+
 /** Fresh Hub rows carry their authoritative task in selection metadata, while
  * downloaded/local rows retain their inventory task as a fallback. */
 export function taskForMediaPick(
   pipelineTag: string | null | undefined,
   inventoryTask: string | null | undefined,
 ): string | null {
+  // Such a GGUF still carries an ordinary text-to-image tag on the Hub. The on-device
+  // verdict is the one the loader enforces, so it outranks the tag: trusting the tag routes
+  // the pick at a page whose picker omits the row and whose load would be refused.
+  if (inventoryTask === UNSUPPORTED_DIFFUSION_TASK) return inventoryTask;
   // Cache inventory commonly reports Audio GGUFs as generic text-generation;
   // an exact catalog task is the stronger runtime contract in that case.
   return pipelineTag && pipelineTag !== "text-generation"

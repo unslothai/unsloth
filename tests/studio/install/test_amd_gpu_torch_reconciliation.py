@@ -620,7 +620,12 @@ def test_summary_probes_torch_and_has_a_warning_arm():
     src = SETUP_SH.read_text(encoding = "utf-8")
     start = src.find("    _setup_rocm_torch_ok=unknown")
     assert start >= 0, "setup.sh lost the AMD torch runtime probe"
-    block = src[start : start + 2500]
+    # Anchored at the healthy-ROCm arm rather than a character count: the three warning
+    # arms carry their ranking rationale now, and a fixed window ends mid-comment.
+    end_anchor = '    elif [ -n "$_setup_gfx" ]; then'
+    end = src.find(end_anchor, start)
+    assert end > start, "setup.sh lost the healthy-ROCm arm that closes the warning chain"
+    block = src[start:end]
     assert (
         "torch.cuda.is_available()" in block
     ), "the AMD summary must ask torch whether it can use the GPU it just announced"

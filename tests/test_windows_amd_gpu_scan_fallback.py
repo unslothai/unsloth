@@ -39,6 +39,7 @@ requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "Power
 _RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
 _RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
 _R780M = "AMD Radeon 780M Graphics"  # Phoenix iGPU     -> gfx1103, a shadowing arch
+_R9700 = "AMD Radeon AI PRO R9700"  # RDNA 4 workstation -> gfx1201 (#7624, #7307)
 _ARC = "Intel(R) Arc(TM) A770 Graphics"
 
 HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
@@ -94,9 +95,11 @@ def _without_the_array_wraps(src: str) -> str:
 
 
 def _amd_scan_block(src: str) -> str:
-    """The `if (-not $HasROCm)` WMI fallback: the adapter list the label is read from."""
+    """The WMI fallback: the adapter list the label is read from. Gated on the ARCH,
+    not on $HasROCm, so the peer list also exists on the amd-smi market-name-only path
+    (an arch there is null while $HasROCm is true)."""
     m = re.search(
-        r"^    if \(-not \$HasROCm\) \{\n        try \{\n.*?^    \}\n",
+        r"^    if \(-not \$script:ROCmGfxArch\) \{\n        try \{\n.*?^    \}\n",
         src,
         re.DOTALL | re.MULTILINE,
     )
@@ -322,6 +325,8 @@ def test_the_adapter_name_reaches_inference_whole(tmp_path):
     [
         (_RADEON, "gfx1151"),
         (_RX9070, "gfx1201"),
+        (_R9700, "gfx1201"),
+        ("ATI Radeon 9700 PRO", None),
         ("AMD Radeon RX 9060 XT", "gfx1200"),
         ("AMD Radeon 890M Graphics", "gfx1150"),
         ("AMD Radeon 860M Graphics", "gfx1152"),
@@ -435,10 +440,12 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
 
 
 def _installer_scan_block() -> str:
-    """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds."""
+    """install.ps1's own WMI fallback plus the name table it feeds. Gated on the ARCH,
+    not on $HasROCm: amd-smi can set the latter with no arch, and the peer list this
+    block builds has to exist on that path too."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = src.index(
-        "        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode"
+        "        if (-not $ROCmGfxArch) {\n            try {\n                # ConfigManagerErrorCode"
     )
     end = src.index("        # Capture ROCm version for wheel selection", start)
     return src[start:end]
@@ -454,7 +461,10 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                # Both names: install.ps1 asks CIM, and the old name throws as it does on
+                # PowerShell 7, so a revert fails instead of answering nothing via the catch.
+                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                "function Get-WmiObject { throw 'Get-WmiObject is not available in PowerShell 7' }",
                 "function substep { param($a, $b) }",
                 "$HasROCm = $false",
                 "$ROCmGpuLabel = $null",
@@ -494,6 +504,15 @@ def test_the_installer_keeps_a_parked_adapter_when_it_is_the_only_one(tmp_path):
     peer there is nothing to prefer."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 45)])
     assert out["arch"] == "gfx1201"
+
+
+@requires_pwsh
+def test_a_lone_r9700_is_detected_by_both_scans(tmp_path):
+    """Reported on PR #8398: single R9700 on Windows 11, not detected. One healthy adapter
+    and no HIP SDK, so the name is the only evidence left, and it holds neither "9070" nor
+    "9080". Both scans must reach gfx1201 (#7624, #7307) or the install lands on CPU torch."""
+    assert _run(tmp_path, [(_R9700, 0)])["arch"] == "gfx1201"
+    assert _run_installer_scan(tmp_path, [(_R9700, 0)])["arch"] == "gfx1201"
 
 
 @requires_pwsh
