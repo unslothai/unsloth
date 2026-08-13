@@ -279,6 +279,34 @@ def sweep_slot_save_dir() -> None:
         pass
 
 
+def _as_bytes(value) -> bytes:
+    return value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
+
+
+def _carries_bearer_credentials(scope) -> bool:
+    """Whether this request carries the ``Authorization: Bearer`` its route demands.
+
+    Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request
+    without one is refused before any handler runs. Counting it anyway would still pin the
+    pipeline: the count is taken here, ahead of FastAPI parsing the body, and a client that
+    opens the POST and then withholds its body produces no response status either, so the
+    401/403 exclusion below never gets to run. One such connection, replaced as it times
+    out, would keep a multi-GB pipeline resident for good. Real clients always send the
+    header, so requiring it costs a legitimate generation nothing.
+    """
+    headers = scope.get("headers")
+    if headers is None:
+        # A real ASGI server always populates headers; a caller that does not is not a
+        # client to second-guess, so keep the protection.
+        return True
+    for name, value in headers:
+        if _as_bytes(name).lower() != b"authorization":
+            continue
+        scheme, _, token = _as_bytes(value).partition(b" ")
+        return scheme.lower() == b"bearer" and bool(token.strip())
+    return False
+
+
 class LlamaKeepWarmMiddleware:
     """Pure ASGI: count in-flight inference requests and stamp activity on completion."""
 
@@ -300,6 +328,11 @@ class LlamaKeepWarmMiddleware:
         from core.inference import media_keepwarm
 
         media_owner = media_keepwarm.owner_for_path(path)
+        if media_owner is not None and not _carries_bearer_credentials(scope):
+            # Cannot reach the backend, so it must not hold it warm (see the helper). The
+            # chat count keeps its own rule: /p/{run}/v1/chat/completions is public by
+            # design, so a missing bearer there is not proof of anything.
+            media_owner = None
         chat_tracked = _is_inference_path(path)
         if not chat_tracked and media_owner is None:
             await self.app(scope, receive, send)

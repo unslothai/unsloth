@@ -35,6 +35,8 @@ class _FakeEngine:
         self.loading: tuple[str, ...] = ()
         self.active = False
         self.unloads = 0
+        # The terminal record the video backend holds after a job (None on the image side).
+        self.terminal: dict | None = None
         # The rest of the build identity the real backends publish (H3 task, quants).
         self.build = dict(build)
 
@@ -51,7 +53,9 @@ class _FakeEngine:
         return self.loading
 
     def generate_progress(self):
-        return {"active": self.active}
+        if self.active:
+            return {"active": True}
+        return {"active": False, **(self.terminal or {})}
 
     def unload(self):
         self.unloads += 1
@@ -74,6 +78,7 @@ def media(monkeypatch):
         monkeypatch.setattr(tracker, "_last_active", time.monotonic())
         monkeypatch.setattr(tracker, "seen", None)
         monkeypatch.setattr(tracker, "was_busy", False, raising = False)
+        monkeypatch.setattr(tracker, "completed", None, raising = False)
     return engines
 
 
@@ -297,6 +302,70 @@ def test_the_ttl_starts_when_the_background_work_ends(media, monkeypatch):
     assert engine.unloads == 0
     _step(arb.VIDEO)
     assert engine.unloads == 1
+
+
+def test_a_job_that_lives_between_two_polls_still_gets_the_full_ttl(media, monkeypatch):
+    # A video job can start and finish inside one 15s poll interval, so no tick ever samples
+    # it as busy. Its POST returned near the START of the generation, and that response is
+    # the only activity it stamps, so the TTL was spent while the job was still running: a
+    # 74s TTL could free the model after about 60s of real idleness. The terminal record the
+    # backend publishes is the only proof the job ran, so the tick that first sees it starts
+    # the TTL there.
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    engine = media[arb.VIDEO]
+    _step()
+    engine.terminal = {"phase": "completed", "video": {"id": "clip-1"}}
+    _idle(arb.VIDEO)  # the POST's stamp is already older than the TTL
+    _step()
+    assert engine.unloads == 0
+    # A restart, not a one-tick reprieve.
+    _step()
+    assert engine.unloads == 0
+    # The record itself keeps nothing warm: it is still published on that last tick, and
+    # only a record this tracker has not seen before counts as work having finished.
+    _step(arb.VIDEO)
+    assert engine.unloads == 1
+
+
+def test_a_veto_applied_during_the_step_stops_the_next_teardown(media, monkeypatch):
+    # One step tears down both backends and freeing several GB takes seconds. Reading the
+    # effective TTL once for the whole step let a residency veto turned on during the
+    # diffusion unload be ignored by the video one, so Studio freed a model its own settings
+    # response already reported as pinned.
+    ttl = {"value": 60}
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: ttl["value"])
+    diffusion, video = media[arb.DIFFUSION], media[arb.VIDEO]
+    real_unload = diffusion.unload
+
+    def _slow_unload():
+        # Model Memory residency (or API-only, or a TTL of 0) applied mid-teardown.
+        ttl["value"] = 0
+        return real_unload()
+
+    diffusion.unload = _slow_unload
+    _step()
+    _step(*_BOTH)
+    assert diffusion.unloads == 1
+    assert video.unloads == 0
+
+
+def test_a_ttl_raised_during_the_step_spares_the_next_teardown(media, monkeypatch):
+    # The same window, with the setting moved rather than vetoed: a TTL the backend is no
+    # longer past must be honoured by the teardown that has not happened yet.
+    ttl = {"value": 60}
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: ttl["value"])
+    diffusion, video = media[arb.DIFFUSION], media[arb.VIDEO]
+    real_unload = diffusion.unload
+
+    def _slow_unload():
+        ttl["value"] = 7200  # further out than the hour _idle backdates by
+        return real_unload()
+
+    diffusion.unload = _slow_unload
+    _step()
+    _step(*_BOTH)
+    assert diffusion.unloads == 1
+    assert video.unloads == 0
 
 
 def test_a_different_model_restarts_the_ttl(media, monkeypatch):
@@ -605,3 +674,58 @@ def test_an_unauthenticated_probe_does_not_keep_the_pipeline_warm(media, monkeyp
     # The 401 never reached the backend, so the model is still idle and gets freed.
     _step(arb.DIFFUSION)
     assert media[arb.DIFFUSION].unloads == 1
+
+
+_BEARER = [(b"authorization", b"Bearer sk-unsloth-test")]
+
+
+def _stalled_media_request(path, headers):
+    """Open a tracked media POST that never sends a body, tick, and cancel it.
+
+    Stands in for a client that opens the connection and drips: the count is taken in the
+    middleware, ahead of the body parsing every one of these routes does before its auth
+    dependency runs, so nothing downstream ever produces a status for it."""
+
+    async def _run():
+        from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
+
+        started = asyncio.Event()
+
+        async def _app(scope, receive, send):
+            started.set()
+            await asyncio.sleep(3600)  # the body never arrives
+
+        scope = {"type": "http", "method": "POST", "path": path, "headers": headers}
+        task = asyncio.ensure_future(
+            LlamaKeepWarmMiddleware(_app)(scope, None, lambda message: _noop())
+        )
+        await started.wait()
+        _idle(arb.DIFFUSION)
+        await mk.idle_unload_step()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_run())
+
+
+def test_an_unauthenticated_stalled_request_cannot_pin_the_pipeline(media, monkeypatch):
+    # An exposed server: a client opens a POST to a tracked media route and withholds its
+    # body. It is counted before FastAPI authenticates or parses anything, and it produces
+    # no status, so the 401/403 exclusion never runs -- one held connection kept a multi-GB
+    # pipeline resident for the life of the process, which is the whole feature denied.
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    _step()
+    _stalled_media_request("/api/inference/images/generate", [])
+    assert media[arb.DIFFUSION].unloads == 1
+    assert mk._TRACKERS[arb.DIFFUSION]._inflight == 0
+    assert mk._TRACKERS[arb.DIFFUSION]._pending == 0
+
+
+def test_an_authenticated_request_is_still_counted_before_its_body(media, monkeypatch):
+    # The other direction, which matters more: a real client's generation is protected from
+    # the moment its request arrives, body or no body.
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    _step()
+    _stalled_media_request("/api/inference/images/generate", _BEARER)
+    assert media[arb.DIFFUSION].unloads == 0

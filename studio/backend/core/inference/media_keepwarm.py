@@ -50,6 +50,9 @@ class _Tracker:
         # Whether the last tick found work in flight, so the tick that sees it end can
         # start the TTL there rather than at the last busy poll.
         self.was_busy = False
+        # The terminal record of the last finished background job this tracker has seen, so
+        # a job no poll ever sampled as busy still dates the TTL from its completion.
+        self.completed: Any = None
 
     def note_pending(self) -> None:
         with self._lock:
@@ -167,12 +170,33 @@ def _video_engine() -> Any:
 _ENGINES = {DIFFUSION: _diffusion_engine, VIDEO: _video_engine}
 
 
-def _busy(backend: Any) -> bool:
-    """An in-flight load or generation, read off the state both backends publish.
+def _completed_token(progress: dict[str, Any]) -> Optional[tuple[Any, ...]]:
+    """Identity of the last FINISHED job, for a backend that publishes a terminal record.
+
+    The video backend runs its generation as a job that outlives the POST and holds the
+    terminal record until the next job starts, so a job that begins and ends between two
+    15s polls is never sampled as busy: without this the TTL would still date from the POST
+    that started it, and the model could be freed a poll interval short of the window the
+    user configured. The image backend generates inside its request (which the middleware
+    covers end to end) and publishes no terminal record, so this is None there.
+    """
+    phase = progress.get("phase")
+    if progress.get("active") or phase not in ("completed", "failed"):
+        return None
+    video = progress.get("video")
+    return (phase, (video or {}).get("id") if isinstance(video, dict) else None, progress.get("error"))
+
+
+def _probe(backend: Any) -> tuple[bool, Optional[tuple[Any, ...]]]:
+    """One off-loop read of the state both backends publish: whether a load or generation
+    is in flight, plus the terminal record of the last finished job.
 
     Both publish progress BEFORE the slow pre-generate setup and keep it active until the
-    work is done, so this covers a video job that outlives its POST as well as a denoise."""
-    return bool(backend.loading_repo_ids()) or bool(backend.generate_progress().get("active"))
+    work is done, so this covers a video job that outlives its POST as well as a denoise.
+    One read of generate_progress(), so the two answers cannot come from different jobs."""
+    loading = bool(backend.loading_repo_ids())
+    progress = backend.generate_progress() or {}
+    return loading or bool(progress.get("active")), _completed_token(progress)
 
 
 # What makes one resident build different from another. The repo id is not enough:
@@ -204,14 +228,20 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
     async with _gate(tracker):
         status = await asyncio.to_thread(backend.status)
         identity = _identity(status)
-        if await asyncio.to_thread(_busy, backend):
+        busy, completed = await asyncio.to_thread(_probe, backend)
+        # A job whose whole life fell between two polls is only ever visible as a terminal
+        # record this tracker has not seen before. The first tick to see any record spends
+        # one TTL on work that may be older, which is the direction that keeps the model.
+        finished = completed is not None and completed != tracker.completed
+        tracker.completed = completed
+        if busy:
             # A load or generation in flight is activity: the TTL restarts from the end of
             # the work, and the backend is never torn down under it.
             tracker.note_activity()
             tracker.seen = identity
             tracker.was_busy = True
             return
-        if tracker.was_busy:
+        if tracker.was_busy or finished:
             # The work ended between two ticks. A video generation outlives its POST, so the
             # only activity it stamps after that is the busy polls, and dating the TTL from
             # the last of those spends up to one poll interval of the keep-warm window the
@@ -229,6 +259,13 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             return
         if identity is None or not tracker.is_idle(ttl):
             return
+        # Re-read the effective setting immediately before the teardown. One step covers both
+        # backends and an unload frees several GB, so a residency veto applied while it runs
+        # (Model Memory, API-only, or the TTL itself moved) would otherwise be ignored by
+        # every teardown left in the step, freeing a model the settings page now calls pinned.
+        ttl = _effective_ttl()
+        if ttl <= 0 or not tracker.is_idle(ttl):
+            return
         await asyncio.to_thread(backend.unload)
         # Drop ownership only if nothing came back meanwhile, and check it under the arbiter
         # lock so a same-owner load that re-registered keeps it. Mirrors /images/unload.
@@ -241,11 +278,16 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         logger.info("Idle auto-unload: freed the %s model after %ss idle", tracker.owner, ttl)
 
 
-async def idle_unload_step() -> None:
-    """The media half of one idle_unload_loop tick. Inert when the TTL is off."""
+def _effective_ttl() -> float:
+    """The media TTL with the residency vetoes applied: 0 means nothing is unloaded."""
     from utils.openai_auto_switch_settings import get_media_auto_unload_idle_seconds
 
-    ttl = get_media_auto_unload_idle_seconds()
+    return float(get_media_auto_unload_idle_seconds())
+
+
+async def idle_unload_step() -> None:
+    """The media half of one idle_unload_loop tick. Inert when the TTL is off."""
+    ttl = _effective_ttl()
     if ttl <= 0:
         return
     for tracker in _TRACKERS.values():
