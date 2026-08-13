@@ -1132,6 +1132,7 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "LLAMA_ARG_SPEC_DRAFT_MODEL",
     "AMDGPU_ASIC_ID_TABLE_PATH",
     "VLLM_CACHE_ROOT",
+    "GGML_BACKEND_PATH",
     "CUDA_PATH",
     "HIP_PATH",
     "HIP_PATH_57",
@@ -1225,6 +1226,9 @@ fn is_cwd_independent(value: &str, windows: bool) -> bool {
         value.starts_with('/')
     }
 }
+
+/// The most a Windows environment variable holds, terminator included.
+const WINDOWS_ENV_VALUE_LIMIT: usize = 32_767;
 
 /// What separates the entries of a path list, as os.pathsep spells it.
 fn path_list_separator(windows: bool) -> char {
@@ -1463,6 +1467,13 @@ fn relative_override_pins_from(
     // Written out, so the reader that expands %VAR% and the reader that does not
     // land in the same folder. Only for the names that have both.
     let username = lookup("USERNAME");
+    // ntpath.expanduser answers USERPROFILE, and the CLI guard uses it, so the
+    // tilde has to resolve to the same folder here. dirs::home_dir() reads the
+    // known folder instead, which a portable or overridden environment moves.
+    let tilde_home = lookup("USERPROFILE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| home.map(|home| home.to_path_buf()));
+    let home = tilde_home.as_deref();
     // One pass does not settle every value. What the reader sees is one pass: if
     // that names a folder on its own the value is safe to leave alone, and if it
     // does not, the folder it names depends on where the process is standing, so
@@ -1567,7 +1578,10 @@ fn relative_override_pins_from(
         if value.is_empty() {
             continue;
         }
-        if is_fully_qualified(&value) {
+        // Windows rules on Windows, the native ones off it, exactly as the
+        // lost-directory branch reads them: /opt/vendor is no more cwd-dependent
+        // there than C:\\cache is here.
+        if is_cwd_independent(&value, windows) {
             // Already names one folder. Still worth writing back if expanding is
             // what made it name one: the reader that does not expand cannot see
             // that on its own.
@@ -1593,9 +1607,9 @@ fn relative_override_pins_from(
         if raw.trim().is_empty() {
             continue;
         }
-        // Only reached on Windows, where the separator is ';'.
+        let separator = path_list_separator(windows);
         let mut entries: Vec<String> = Vec::new();
-        for entry in raw.split(';') {
+        for entry in raw.split(separator) {
             let original = entry.trim().to_string();
             // Python never expands `~` in PYTHONPATH, so `~\plugins` is an
             // ordinary relative folder there, and expanding it would point the
@@ -1619,7 +1633,7 @@ fn relative_override_pins_from(
                 entries.push(cwd.to_string_lossy().into_owned());
                 continue;
             }
-            if entry.is_empty() || is_fully_qualified(&entry) {
+            if entry.is_empty() || is_cwd_independent(&entry, windows) {
                 entries.push(entry);
                 continue;
             }
@@ -1629,7 +1643,16 @@ fn relative_override_pins_from(
             }
             entries.push(anchor(name, &entry)?.to_string_lossy().into_owned());
         }
-        let joined = entries.join(";");
+        let joined = entries.join(&separator.to_string());
+        // 2. A value the OS will not accept is a failure to report here, not one
+        // to discover in CreateProcess: the caller turns this into the same
+        // "path setting" message as an unresolvable one, and a repair that would
+        // hit the same wall is not offered.
+        if windows && joined.len() >= WINDOWS_ENV_VALUE_LIMIT {
+            return Err(format!(
+                "{name} does not fit in an environment variable once each entry names its folder in full"
+            ));
+        }
         if joined == raw {
             continue;
         }
@@ -3313,6 +3336,87 @@ mod managed_cli_working_dir_tests {
         // STUDIO_LOCAL_REPO stays: the update is the one child that reads it.
         assert!(!skipped.contains(&"STUDIO_LOCAL_REPO"));
         assert!(child_skipped_env().contains(&"STUDIO_LOCAL_REPO"));
+    }
+
+    #[test]
+    fn a_posix_list_is_split_and_joined_with_its_own_separator() {
+        // The lost-directory branch already reads POSIX rules; the moving path
+        // has to as well, or "plugins:vendor" is one entry and both import roots
+        // leave with it.
+        let cwd = PathBuf::from("/mnt/work/session");
+        let work_dir = PathBuf::from("/home/me/.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name: &str| (name == "PYTHONPATH").then(|| "plugins:/opt/vendor".to_string()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![(
+                "PYTHONPATH",
+                PathBuf::from(format!("{}:/opt/vendor", cwd.join("plugins").display()))
+            )]
+        );
+    }
+
+    #[test]
+    fn a_list_that_would_not_fit_is_reported_rather_than_spawned() {
+        // Windows refuses the variable, and CreateProcess is too late to say
+        // which setting did it: the caller turns this into the same message as
+        // an unresolvable one, and offers no repair that would hit the same wall.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let long = std::iter::repeat("entry")
+            .take(WINDOWS_ENV_VALUE_LIMIT / 5)
+            .collect::<Vec<_>>()
+            .join(";");
+        let error = relative_override_pins_from(
+            Some(cwd),
+            &work_dir,
+            |name: &str| (name == "PYTHONPATH").then(|| long.clone()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("PYTHONPATH does not fit"), "{error}");
+    }
+
+    #[test]
+    fn the_tilde_follows_the_profile_the_cli_guard_reads() {
+        // ntpath.expanduser answers USERPROFILE, so a portable or overridden
+        // environment must not send the two layers to different folders.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd),
+            &work_dir,
+            |name: &str| match name {
+                "USERPROFILE" => Some("D:\\portable\\me".to_string()),
+                "UNSLOTH_LLAMA_CPP_PATH" => Some("~\\llama.cpp".to_string()),
+                _ => None,
+            },
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            // What dirs::home_dir() would answer, which is not where the tilde
+            // points once USERPROFILE says otherwise.
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![(
+                "UNSLOTH_LLAMA_CPP_PATH",
+                PathBuf::from("D:\\portable\\me\\llama.cpp")
+            )]
+        );
     }
 
     #[test]

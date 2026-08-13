@@ -324,6 +324,8 @@ _RELATIVE_PATH_ENV = (
     # it themselves (storage_roots.py only fills a blank one).
     "AMDGPU_ASIC_ID_TABLE_PATH",
     "VLLM_CACHE_ROOT",
+    # A custom ggml backend, preserved into the llama.cpp child (llama_cpp.py).
+    "GGML_BACKEND_PATH",
     # GPU SDK roots, joined with bin/ for DLL discovery.
     "CUDA_PATH",
     "HIP_PATH",
@@ -370,6 +372,9 @@ _RELATIVE_PATH_ENV = (
 # a stale setting nothing was going to look at would defeat the fallback this
 # guard exists for, so an unresolvable one is left behind instead.
 _BEST_EFFORT_ENV = frozenset(("STUDIO_LOCAL_REPO",))
+
+# The most a Windows environment variable holds, terminator included.
+_WINDOWS_ENV_VALUE_LIMIT = 32767
 
 # The separator is Windows', not the host's: this guard only ever runs on
 # Windows, and os.pathsep would split "D:\\shared" apart anywhere else.
@@ -424,7 +429,15 @@ def pin_relative_overrides(
             for e in entries
         ]
         if anchored_entries != entries:
-            environ[name] = _PATH_LIST_SEPARATOR.join(anchored_entries)
+            joined = _PATH_LIST_SEPARATOR.join(anchored_entries)
+            if len(joined) >= _WINDOWS_ENV_VALUE_LIMIT:
+                # A value Windows will not accept is a failure to report here,
+                # not one to discover when the next process is started.
+                raise ValueError(
+                    f"{name} does not fit in an environment variable once each "
+                    "entry names its folder in full"
+                )
+            environ[name] = joined
             pinned.append(name)
     return pinned
 
