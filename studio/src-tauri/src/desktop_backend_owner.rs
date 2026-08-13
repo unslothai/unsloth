@@ -1347,7 +1347,7 @@ mod tests {
             ("200 OK", r#"{"access_token":"test-access-token"}"#),
             (
                 "200 OK",
-                r#"{"version":"2026.8.4","native_path_leases_supported":true}"#,
+                r#"{"version":"2026.8.15","native_path_leases_supported":true}"#,
             ),
         ])
         .await;
@@ -1368,8 +1368,8 @@ mod tests {
     #[tokio::test]
     async fn authenticated_health_marks_missing_or_disabled_native_leases_stale() {
         for health in [
-            r#"{"version":"2026.8.4"}"#,
-            r#"{"version":"2026.8.4","native_path_leases_supported":false}"#,
+            r#"{"version":"2026.8.15"}"#,
+            r#"{"version":"2026.8.15","native_path_leases_supported":false}"#,
         ] {
             let (port, _, server) = http_sequence_server(vec![
                 ("200 OK", r#"{"access_token":"test-access-token"}"#),

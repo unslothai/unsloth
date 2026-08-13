@@ -12,7 +12,7 @@ pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 2;
 pub(crate) const DESKTOP_BACKEND_MANAGEABILITY_VERSION: u16 = 1;
 // Explicit backend package minimum, not the desktop app Cargo version: backend
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
-pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.8.4";
+pub(crate) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.8.15";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct ParsedVersion {
@@ -173,7 +173,7 @@ pub(crate) fn backend_version_stale_reason(version: Option<&str>) -> Option<Stri
 // The backend package this build shipped with, stamped by the release workflow
 // from the same pypi_version as the updater manifest. Local and CI builds leave
 // it unset, so the floor above stays their only gate.
-pub(super) fn expected_backend_version() -> &'static str {
+pub(crate) fn expected_backend_version() -> &'static str {
     option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
 }
 

@@ -17,7 +17,8 @@ pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBac
 #[cfg(test)]
 pub(crate) use version::DESKTOP_MANAGEABILITY_VERSION;
 pub(crate) use version::{
-    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, expected_backend_version, DESKTOP_BACKEND_MANAGEABILITY_VERSION,
+    DESKTOP_PROTOCOL_VERSION,
 };
 
 #[cfg(test)]
@@ -26,7 +27,7 @@ use backend::{backend_desktop_auth_status, backend_health};
 use managed::probe_managed_bin;
 #[cfg(test)]
 use version::{
-    backend_version_compatible, backend_version_outdated_reason, expected_backend_version,
+    backend_version_compatible, backend_version_outdated_reason,
     managed_backend_version_stale_reason, MIN_DESKTOP_BACKEND_VERSION,
 };
 
@@ -594,22 +595,23 @@ mod tests {
     fn backend_version_gate_classifies_core_cases() {
         for version in [
             MIN_DESKTOP_BACKEND_VERSION,
-            "2026.8.5",
+            "2026.8.16",
             "2027.1.0",
-            "2026.8.4.post1",
-            "2026.8.4+local",
+            "2026.8.15.post1",
+            "2026.8.15+local",
         ] {
             assert!(backend_version_compatible(Some(version)), "{version}");
         }
         for (version, reason) in [
             (None, "desktop_backend_version_missing"),
             (Some("not-a-version"), "desktop_backend_version_invalid"),
-            (Some("2026.8.4.1"), "desktop_backend_version_invalid"),
-            (Some("2026.8.4foo"), "desktop_backend_version_invalid"),
-            (Some("2026.8.4.devx"), "desktop_backend_version_invalid"),
+            (Some("2026.8.15.1"), "desktop_backend_version_invalid"),
+            (Some("2026.8.15foo"), "desktop_backend_version_invalid"),
+            (Some("2026.8.15.devx"), "desktop_backend_version_invalid"),
             (Some("2026.5.2"), "desktop_backend_version_too_old"),
-            (Some("2026.8.4rc1"), "desktop_backend_version_too_old"),
-            (Some("2026.8.4.dev1"), "desktop_backend_version_too_old"),
+            (Some("2026.8.4"), "desktop_backend_version_too_old"),
+            (Some("2026.8.15rc1"), "desktop_backend_version_too_old"),
+            (Some("2026.8.15.dev1"), "desktop_backend_version_too_old"),
         ] {
             assert_eq!(
                 backend_version_stale_reason(version).as_deref(),
@@ -627,12 +629,12 @@ mod tests {
         // Above the floor but below what this build shipped: the exact case the
         // standalone installer leaves behind in the shared venv.
         assert_eq!(
-            backend_version_outdated_reason(Some("2026.8.4"), "2026.8.5").as_deref(),
+            backend_version_outdated_reason(Some("2026.8.15"), "2026.8.16").as_deref(),
             Some("desktop_backend_version_outdated")
         );
-        for version in ["2026.8.5", "2026.8.6", "2027.1.0"] {
+        for version in ["2026.8.16", "2026.8.17", "2027.1.0"] {
             assert_eq!(
-                backend_version_outdated_reason(Some(version), "2026.8.5"),
+                backend_version_outdated_reason(Some(version), "2026.8.16"),
                 None,
                 "{version}"
             );
@@ -644,7 +646,7 @@ mod tests {
             (Some("2026.5.2"), "desktop_backend_version_too_old"),
         ] {
             assert_eq!(
-                backend_version_outdated_reason(version, "2026.8.5").as_deref(),
+                backend_version_outdated_reason(version, "2026.8.16").as_deref(),
                 Some(reason)
             );
         }
@@ -777,7 +779,7 @@ exit 1
                 r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.15"}'
   exit 0
 fi
 exit 1
@@ -789,7 +791,7 @@ exit 1
                 r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_install_ok":true,"version":"2026.8.4"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_install_ok":true,"version":"2026.8.15"}'
   exit 0
 fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
@@ -842,7 +844,7 @@ if [ "$1" = "-h" ]; then
 fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
   if [ -f "$modecap" ]; then exit 42; fi
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.15"}'
   exit 0
 fi
 exit 1
@@ -920,7 +922,7 @@ exit 1
             ""
         };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -980,7 +982,7 @@ exit 1
     async fn backend_with_auth_support_but_missing_protocol_is_old() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -1006,7 +1008,7 @@ exit 1
         // protocol-compatible backend into a conflict the user has to kill.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -1020,7 +1022,7 @@ exit 1
     async fn backend_without_any_manageability_field_is_old() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -1052,7 +1054,7 @@ exit 1
         // greys out from the same capability.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
             ),
             "401 Unauthorized",
         )
@@ -1067,7 +1069,7 @@ exit 1
         // Option<bool> makes that indistinguishable from `false` untested.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
             ),
             "401 Unauthorized",
         )
@@ -1082,7 +1084,7 @@ exit 1
         // rather than a conflict the user has to resolve by hand.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -1274,7 +1276,7 @@ exit 1
     async fn backend_capability_false_is_old_even_when_route_401() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.15","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",

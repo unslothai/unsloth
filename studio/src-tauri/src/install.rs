@@ -582,6 +582,10 @@ fn spawn_script(
     // these under --tauri. Scrub so an inherited value can't trip the guard.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    cmd.env(
+        "UNSLOTH_DESKTOP_BACKEND_VERSION",
+        crate::preflight::expected_backend_version(),
+    );
 
     // We decode this child as UTF-8 below, so its Python descendants must emit
     // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
