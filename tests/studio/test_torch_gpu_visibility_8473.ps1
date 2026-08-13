@@ -33,6 +33,10 @@ function Get-FunctionText {
 
 $visFn = Get-FunctionText $setup "Get-TorchGpuVisibility"
 $leafFn = Get-FunctionText $setup "Get-TorchIndexLeaf"
+# Defined up here, not beside its own cases below: the mask-arm block between the two runs the
+# real $_gpuCheckMasked chain, whose Intel arm calls this.
+$oneApiFn = Get-FunctionText $setup "Test-OneApiSelectorExcludesGpu"
+Invoke-Expression $oneApiFn
 # An empty or wrong extraction would make every case below pass vacuously.
 Check "extraction kept the sentinel"  ($visFn -match 'UNSLOTHTORCHGPU')
 Check "extraction kept the interpreter call" ($visFn -match 'Invoke-BoundedPythonProbe')
@@ -404,6 +408,53 @@ Check "the XPU suppression is present"    ($report -match 'SeesXpu')
 Check "it suppresses, not merely reports" ($report -match 'not \$_gpuVisibility\.SeesXpu')
 Check "it guards the mismatch arm"        ($report -match '\$_gpuVisibility\.SeesGpu -and[\s\S]{0,120}SeesXpu')
 Check "the suppression reads the probe, not the wheel label" (-not ($report -match 'Test-VenvTorchIsXpu'))
+
+
+# --- Test-OneApiSelectorExcludesGpu ------------------------------------------------------------
+# An Arc user who sets ONEAPI_DEVICE_SELECTOR=*:cpu means torch to see no GPU, but WMI still
+# announces the card, so the reconciliation accused a host doing exactly what it was told. Only
+# forms that PROVABLY admit no GPU may suppress; a numeric device spec can name a GPU. Semantics
+# from Intel's SYCL runtime reference: `;`-separated `<backend>:<devices>`, `!` discards, discards
+# outrank accepts, discards alone imply an accept-all. Driven as a real function, not a source match.
+Write-Host ""
+Write-Host "=== ONEAPI_DEVICE_SELECTOR ==="
+
+foreach ($case in @(
+    @{ V = "*:cpu";                E = $true;  W = "every backend, cpu only" },
+    @{ V = "opencl:cpu";           E = $true;  W = "one backend, cpu only" },
+    @{ V = " *:cpu ";              E = $true;  W = "padded" },
+    @{ V = "*:CPU";                E = $true;  W = "case folded" },
+    @{ V = "opencl:cpu;level_zero:cpu"; E = $true; W = "several accepts, all cpu" },
+    @{ V = "!*:gpu";               E = $true;  W = "discard every gpu" },
+    @{ V = "!*:*";                 E = $true;  W = "discard everything" },
+    @{ V = "*:*;!*:gpu";           E = $true;  W = "accept all then discard gpu" },
+    @{ V = "level_zero:*";         E = $false; W = "a backend wildcard admits the gpu" },
+    @{ V = "*:gpu";                E = $false; W = "gpu asked for explicitly" },
+    @{ V = "*:0";                  E = $false; W = "an ordinal may BE the gpu" },
+    @{ V = "*:cpu;level_zero:gpu"; E = $false; W = "one accept still admits a gpu" },
+    @{ V = "!level_zero:gpu";      E = $false; W = "one backend discarded, others remain" },
+    @{ V = "";                     E = $false; W = "unset" },
+    @{ V = "   ";                  E = $false; W = "whitespace only" },
+    @{ V = "garbage";              E = $false; W = "unparseable fails open" }
+)) {
+    Check "$($case.W): '$($case.V)'" ((Test-OneApiSelectorExcludesGpu $case.V) -eq $case.E)
+}
+Check "a null selector fails open" ((Test-OneApiSelectorExcludesGpu $null) -eq $false)
+
+# Wiring: the helper is useless unless the Intel arm of $_gpuCheckMasked calls it.
+Check "extraction kept the discard arm" ($oneApiFn -match 'StartsWith\("!"\)')
+
+$maskedText = (Get-Content -Raw $setup) -replace "`r`n", "`n"
+# Terminated on \n, like the WMI region guard: without it the pattern matches a CRLF checkout too
+# and the companion check below silently retires (see test_amd_venv_repair_loop.ps1).
+$maskedPat = '(?s)(\$_gpuCheckMasked = if \(.*?\} else \{ \$false \}\n)'
+$masked = if ($maskedText -match $maskedPat) { $Matches[1] } else { "" }
+Check "the mask chain was found"        ($masked -ne "")
+Check "CRLF is normalised, not tolerated" (-not (($maskedText -replace "`n", "`r`n") -match $maskedPat))
+Check "the Intel arm calls the helper"  ($masked -match 'Intel\*[\s\S]{0,400}Test-OneApiSelectorExcludesGpu')
+# compute-runtime's parseAffinityMask returns early on an empty value, so an empty ZE_AFFINITY_MASK
+# hides nothing; reading it would mute a genuinely dead XPU runtime.
+Check "ZE_AFFINITY_MASK is not read here" (-not ($masked -match '\$env:ZE_AFFINITY_MASK'))
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

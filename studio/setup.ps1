@@ -2178,6 +2178,34 @@ function Test-VisibleMaskHidesAll {
     return $false
 }
 
+# The Intel twin of the hide-all masks above: an Arc user who sets ONEAPI_DEVICE_SELECTOR=*:cpu
+# means torch to see no GPU, while WMI still announces the card. Grammar per Intel's SYCL runtime
+# reference: `;`-separated `<backend>:<devices>` terms, `!` marks a discard, discards outrank
+# accepts, and discards alone imply an accept-all. Only forms that PROVABLY admit no GPU count; a
+# numeric device spec can name one, so anything but an all-cpu accept set fails open to $false.
+# Safe to be generous: this only ever suppresses a report torch already decided to raise.
+function Test-OneApiSelectorExcludesGpu {
+    param([AllowNull()][string]$Selector)
+    $value = "$Selector".Trim()
+    if ($value -eq "") { return $false }
+    $accepts = @()
+    foreach ($term in ($value -split ';')) {
+        $t = $term.Trim()
+        if ($t -eq "") { continue }
+        if ($t.StartsWith("!")) {
+            # Every backend's GPUs discarded at once empties the set on its own.
+            if ($t -match '^!\s*\*\s*:\s*(gpu|\*)\s*$') { return $true }
+            continue
+        }
+        $accepts += $t
+    }
+    if ($accepts.Count -eq 0) { return $false }
+    foreach ($t in $accepts) {
+        if ($t -notmatch '^[^:!]+:\s*cpu\s*$') { return $false }
+    }
+    return $true
+}
+
 # The one mask -> index resolver for every pick site below; the sites used to inline
 # their own expressions and disagreed (hipinfo rejected " 1 ", amd-smi rejected "1,0"),
 # and a mask Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, the
@@ -5271,6 +5299,11 @@ $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
     Test-VisibleMaskHidesAll $env:CUDA_VISIBLE_DEVICES
 } elseif ($_gpuCheckAnnounced -like "AMD*") {
     Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
+} elseif ($_gpuCheckAnnounced -like "Intel*") {
+    # ZE_AFFINITY_MASK is deliberately NOT read: compute-runtime's parseAffinityMask returns
+    # early on an empty value, so an empty mask hides nothing and reading it would mute a
+    # genuinely broken XPU runtime.
+    Test-OneApiSelectorExcludesGpu $env:ONEAPI_DEVICE_SELECTOR
 } else { $false }
 # The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose
 # CUDA is below 11 to the CPU index by design, then hands the tag over. $null is "did not say"
