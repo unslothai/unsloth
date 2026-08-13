@@ -13,7 +13,7 @@ import pathlib
 
 import pytest
 
-from routes.inference import _request_is_research_workflow
+from routes.inference import _request_is_internal_workflow
 
 
 _ROUTE_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py"
@@ -46,7 +46,7 @@ def test_a_zero_tool_call_budget_is_not_rewritten_to_the_default():
 
 
 def test_a_session_request_may_use_a_saved_connection():
-    assert _request_is_research_workflow(_Request(None)) is False
+    assert _request_is_internal_workflow(_Request(None)) is False
 
 
 @pytest.mark.parametrize(
@@ -54,7 +54,7 @@ def test_a_session_request_may_use_a_saved_connection():
     ["Bearer not-an-unsloth-key", "Basic sk-unsloth-abc", "", "Bearer"],
 )
 def test_a_bearer_that_is_not_an_unsloth_key_is_never_internal(authorization):
-    assert _request_is_research_workflow(_Request(authorization)) is False
+    assert _request_is_internal_workflow(_Request(authorization)) is False
 
 
 def test_an_sk_unsloth_bearer_is_internal_only_when_storage_says_so(monkeypatch):
@@ -65,27 +65,11 @@ def test_an_sk_unsloth_bearer_is_internal_only_when_storage_says_so(monkeypatch)
     token = f"{API_KEY_PREFIX}deadbeef"
     request = _Request(f"Bearer {token}")
 
-    monkeypatch.setattr(
-        route_mod.auth_storage, "internal_api_key_workflow", lambda raw: None
-    )
-    assert _request_is_research_workflow(request) is False
+    monkeypatch.setattr(route_mod.auth_storage, "is_internal_api_key", lambda raw: False)
+    assert _request_is_internal_workflow(request) is False
 
-    # An internal key from another workflow is still not Deep Research: a
-    # data-recipe job can read provider ids and would otherwise be able to spend
-    # an unrelated saved credential.
-    monkeypatch.setattr(
-        route_mod.auth_storage,
-        "internal_api_key_workflow",
-        lambda raw: route_mod.auth_storage.DATA_RECIPE_WORKFLOW_KEY_NAME,
-    )
-    assert _request_is_research_workflow(request) is False
-
-    monkeypatch.setattr(
-        route_mod.auth_storage,
-        "internal_api_key_workflow",
-        lambda raw: route_mod.auth_storage.RESEARCH_WORKFLOW_KEY_NAME if raw == token else None,
-    )
-    assert _request_is_research_workflow(request) is True
+    monkeypatch.setattr(route_mod.auth_storage, "is_internal_api_key", lambda raw: raw == token)
+    assert _request_is_internal_workflow(request) is True
 
 
 def test_a_failing_storage_probe_withholds_saved_credentials(monkeypatch):
@@ -95,67 +79,5 @@ def test_a_failing_storage_probe_withholds_saved_credentials(monkeypatch):
     def _boom(raw):
         raise RuntimeError("db is gone")
 
-    monkeypatch.setattr(route_mod.auth_storage, "internal_api_key_workflow", _boom)
-    assert _request_is_research_workflow(_Request(f"Bearer {API_KEY_PREFIX}x")) is False
-
-
-@pytest.mark.parametrize(
-    "enabled_tools, expected",
-    [
-        (["web_search", "python", "image_generation"], ["image_generation"]),
-        (["web_search", "python"], None),
-        (["image_generation"], ["image_generation"]),
-        # The loop runs the local web and code tools; forwarding the hosted ones
-        # would bill a second provider-side search for the same turn.
-        (["web_search", "web_fetch", "code_execution"], None),
-        ([], None),
-        (None, None),
-    ],
-)
-def test_only_hosted_tools_without_a_local_equivalent_reach_the_provider(enabled_tools, expected):
-    """Images plus any Studio tool must keep the hosted image tool.
-
-    The frontend sends one enabled_tools list for both surfaces, so withholding
-    all of it left the Images toggle lit with nothing behind it.
-    """
-    from routes.inference import _hosted_only_enabled_tools
-
-    assert _hosted_only_enabled_tools(enabled_tools) == expected
-
-
-def test_the_workflow_name_on_an_internal_key_is_read_from_storage(tmp_path, monkeypatch):
-    """The scope has to come from the stored row, not from anything a caller sends."""
-    import secrets
-
-    from auth import storage
-
-    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
-    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
-    monkeypatch.setattr(storage, "_bootstrap_password", None)
-    monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
-    storage._reset_api_key_hash_cache()
-    try:
-        storage.create_initial_user(
-            username = storage.DEFAULT_ADMIN_USERNAME,
-            password = "human-password-123",
-            jwt_secret = secrets.token_urlsafe(64),
-        )
-        owner = storage.DEFAULT_ADMIN_USERNAME
-        research_key, _ = storage.create_api_key(
-            username = owner, name = storage.RESEARCH_WORKFLOW_KEY_NAME, internal = True
-        )
-        recipe_key, _ = storage.create_api_key(
-            username = owner, name = storage.DATA_RECIPE_WORKFLOW_KEY_NAME, internal = True
-        )
-        user_key, _ = storage.create_api_key(username = owner, name = "my own key")
-
-        assert storage.internal_api_key_workflow(research_key) == storage.RESEARCH_WORKFLOW_KEY_NAME
-        assert storage.internal_api_key_workflow(recipe_key) == storage.DATA_RECIPE_WORKFLOW_KEY_NAME
-        assert storage.internal_api_key_workflow(user_key) is None
-        assert storage.internal_api_key_workflow("not-an-unsloth-key") is None
-        # The memoized second read must agree with the first.
-        assert storage.internal_api_key_workflow(recipe_key) == storage.DATA_RECIPE_WORKFLOW_KEY_NAME
-        assert storage.is_internal_api_key(research_key) is True
-        assert storage.is_internal_api_key(user_key) is False
-    finally:
-        storage._reset_api_key_hash_cache()
+    monkeypatch.setattr(route_mod.auth_storage, "is_internal_api_key", _boom)
+    assert _request_is_internal_workflow(_Request(f"Bearer {API_KEY_PREFIX}x")) is False

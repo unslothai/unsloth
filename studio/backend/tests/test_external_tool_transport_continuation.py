@@ -26,11 +26,7 @@ def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def _transport(
-    monkeypatch,
-    captured: dict,
-    provider_type = "vllm",
-):
+def _transport(monkeypatch, captured: dict, provider_type = "vllm"):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(

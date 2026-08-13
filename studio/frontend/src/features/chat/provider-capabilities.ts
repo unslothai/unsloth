@@ -383,6 +383,25 @@ export function providerSupportsBuiltinCodeExecution(
 }
 
 /**
+ * Whether the provider TYPE ships a code sandbox of its own, model aside.
+ *
+ * Mirrors the `hosted_tools` entries carrying `code_execution` in the backend's
+ * PROVIDER_REGISTRY (core/inference/providers.py). Deliberately coarser than
+ * `providerSupportsBuiltinCodeExecution`: the question it answers is whether
+ * running the model's code on the USER's machine would be a relocation, and
+ * that does not depend on which model is selected. openai_codex is absent for
+ * the same reason the backend registry leaves it out -- its code tools are
+ * Studio's own, run by the Codex loop, and always have been.
+ */
+const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
+
+export function providerHostsCodeExecution(
+  providerType: string | null | undefined,
+): boolean {
+  return PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "");
+}
+
+/**
  * Whether the selected provider/model exposes OpenAI's Responses-API
  * image_generation tool. On for OpenAI cloud (`api.openai.com`) with a
  * Responses-API family id (gpt-5.x). Mirrors the backend's `is_openai_cloud`

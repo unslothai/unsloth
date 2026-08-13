@@ -2213,7 +2213,19 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
-    const nextToolsEnabled = supportsBuiltinWebSearch
+    // Studio runs Search and Code itself for any provider that advertises the
+    // capability, so a self-hosted connection has no hosted builtin to key off.
+    // Keying the pill state on the hosted flags alone discarded the user's saved
+    // preference on every reload and sent enable_tools: false, even though the
+    // composer left both pills clickable.
+    const supportsStudioToolsHere =
+      providerModelSupportsStudioTools(
+        provider?.providerType,
+        selection.modelId,
+      ) === true;
+    const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
+    const canRunCode = supportsBuiltinCodeExecution || supportsStudioToolsHere;
+    const nextToolsEnabled = canSearch
       ? isKimi
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
@@ -2233,19 +2245,13 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      supportsTools:
-        providerModelSupportsStudioTools(
-          provider?.providerType,
-          selection.modelId,
-        ) === true,
+      supportsTools: supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
-        ? (storedCodeToolsEnabled ?? false)
-        : false,
+      codeToolsEnabled: canRunCode ? (storedCodeToolsEnabled ?? false) : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
@@ -2756,7 +2762,18 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
-        const nextToolsEnabled = supportsBuiltinWebSearch
+        // Same rule as the selection handler above: a self-hosted connection has
+        // no hosted builtin, so keying the pills on those flags threw away the
+        // user's saved preference every time this ran.
+        const supportsStudioToolsHere =
+          providerModelSupportsStudioTools(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+          ) === true;
+        const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
+        const canRunCode =
+          supportsBuiltinCodeExecution || supportsStudioToolsHere;
+        const nextToolsEnabled = canSearch
           ? isKimi
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
@@ -2786,17 +2803,13 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          supportsTools:
-            providerModelSupportsStudioTools(
-              selectedProvider?.providerType,
-              selectedExternal?.modelId,
-            ) === true,
+          supportsTools: supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
+          codeToolsEnabled: canRunCode
             ? (storedCodeToolsEnabled ?? false)
             : false,
           imageToolsEnabled: supportsBuiltinImageGeneration

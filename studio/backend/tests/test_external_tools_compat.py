@@ -110,7 +110,8 @@ def test_registry_default_still_hides_self_hosted_presets():
 def test_registry_include_hidden_returns_presets_flagged():
     """``include_hidden=true`` is how a bundle that *does* know asks."""
     entries = {
-        entry["provider_type"]: entry for entry in list_available_providers(include_hidden = True)
+        entry["provider_type"]: entry
+        for entry in list_available_providers(include_hidden = True)
     }
     for preset in SELF_HOSTED_PRESETS:
         assert preset in entries, f"{preset} missing from include_hidden payload"
@@ -129,7 +130,8 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
     """Asking for hidden rows must not perturb the rows the old bundle reads."""
     default_rows = list_available_providers()
     widened = {
-        entry["provider_type"]: entry for entry in list_available_providers(include_hidden = True)
+        entry["provider_type"]: entry
+        for entry in list_available_providers(include_hidden = True)
     }
     for row in default_rows:
         assert row == widened[row["provider_type"]]
@@ -198,7 +200,9 @@ def test_unknown_provider_types_degrade_closed(provider_type):
 
 def test_capability_flag_agrees_with_the_registry_entry():
     for entry in list_available_providers(include_hidden = True):
-        assert entry["supports_studio_tools"] is provider_runs_local_tools(entry["provider_type"])
+        assert entry["supports_studio_tools"] is provider_runs_local_tools(
+            entry["provider_type"]
+        )
 
 
 # ── 1c. no DB migration ──────────────────────────────────────────────
@@ -208,9 +212,13 @@ def test_llm_providers_schema_gains_no_column():
     """Existing sqlite rows need no migration; the capability is not persisted.
 
     It is derived from the registry at read time, so an install upgrading in
-    place keeps its ``llm_providers`` rows verbatim. This test fails the moment
-    somebody adds a column, which is the point: that would need a migration
-    story this change deliberately does not have.
+    place keeps its ``llm_providers`` rows verbatim.
+
+    Asserted as "the pre-existing columns are all still there, and this change
+    added none of its own" rather than as an exact snapshot of the table. An
+    exact snapshot fails on any unrelated column main adds later (it already
+    would on ``max_output_tokens``), which says nothing about whether this
+    change needs a migration and would only train people to update the literal.
     """
     from storage import providers_db
 
@@ -221,7 +229,8 @@ def test_llm_providers_schema_gains_no_column():
     finally:
         conn.close()
 
-    assert columns == {
+    # Every column a pre-change row was written with must still be readable.
+    assert columns >= {
         "id",
         "provider_type",
         "display_name",
@@ -232,6 +241,14 @@ def test_llm_providers_schema_gains_no_column():
         "models_json",
         "available_models_json",
     }
+    # The capability must stay registry-derived. A column here would mean saved
+    # connections carry their own copy, which needs a migration story this
+    # change deliberately does not have.
+    assert not [
+        column
+        for column in columns
+        if "studio_tool" in column or "local_tool" in column or "tool_execution" in column
+    ]
 
 
 # ── 4. response_format stays opt-in ──────────────────────────────────

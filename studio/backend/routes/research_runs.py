@@ -209,7 +209,8 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         # inline key would have to be persisted, and _is_sensitive_key exists to
         # stop exactly that. Only the provider-type allowlist is widened.
         if (
-            not isinstance(provider_id, str)
+            not provider_runs_local_tools(provider_type)
+            or not isinstance(provider_id, str)
             or not provider_id.strip()
             or not isinstance(external_model, str)
             or not external_model.strip()
@@ -221,13 +222,14 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        # The saved row is the only authority on routing: _proxy_to_external_provider
-        # overwrites provider_type from the config whenever provider_id is set. The
-        # client's providerType is a UI label, and resolveUiProviderTypeFromConfig
-        # reports "custom" / "vllm" / "ollama" for a legacy connection still stored
-        # as backend type "openai", so comparing it for equality rejects connections
-        # the chat route drives happily. Check the capability on the saved type and
-        # persist that, so the durable config matches how the hop is routed.
+        # The saved row is the source of truth for routing, so validate against
+        # it rather than against the type the client sent. A self-hosted
+        # connection is stored under the backend "openai" type but surfaced to
+        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
+        # offers research for those aliases because their registry entries
+        # declare Studio tools. Comparing the two for equality therefore 400s
+        # exactly the connections this path exists to serve, while the ordinary
+        # inference route already overrides the type from the row.
         saved_provider_type = provider["provider_type"]
         if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(

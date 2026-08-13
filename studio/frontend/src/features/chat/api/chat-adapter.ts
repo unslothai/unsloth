@@ -93,12 +93,14 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "../provider-capabilities";
+import { selectCodeToolNames } from "./code-tool-placement";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -4118,6 +4120,19 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
+      // Which side of the connection the Code pill runs code on. Hosted
+      // `code_execution` and local `python` / `terminal` are two trust
+      // boundaries, not two spellings of one feature, so the stored pill keeps
+      // meaning the provider's sandbox wherever it meant that before the Studio
+      // loop reached these providers. See code-tool-placement.ts.
+      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
+        selectCodeToolNames({
+          codeToolsEnabled,
+          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+          providerHostsCodeExecution: providerHostsCodeExecution(
+            externalProvider?.providerType,
+          ),
+        });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -5031,9 +5046,14 @@ export function createOpenAIStreamAdapter(
               // Studio executes the calls for any provider that advertises the
               // capability. Providers that do not keep their provider-hosted
               // tool envelope in the branch below.
+              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
+              // resolved to the provider's own sandbox is a hosted request and
+              // belongs in the branch below. Sending this body for it would
+              // attach permission_mode to a passthrough turn, which the route
+              // answers with a 400.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
-                codeToolsEnabled ||
+                studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled)
@@ -5044,14 +5064,21 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(codeToolsEnabled ? ["python", "terminal"] : []),
-                      // Hosted-only: the Studio catalog has no image tool, so
-                      // this is not the double-up the branch below guards
-                      // against. Omitting it made the Images pill a no-op on
-                      // any turn that also enabled a Studio tool.
+                      ...studioLocalCodeTools,
+                      // Hosted tools Studio has no local stand-in for. Their
+                      // pills stay lit whether or not a Studio tool is on, so
+                      // listing only the local names here would silently drop
+                      // Images (or Fetch) the moment Search, Code, MCP or a
+                      // project's automatic RAG selected this branch. Search
+                      // deliberately does not ride along: that is the one
+                      // Studio runs itself just above. Code rides along only
+                      // when it resolved to the provider's sandbox, which is
+                      // mutually exclusive with the local names above.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                      ...hostedCodeToolsForThisTurn,
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,

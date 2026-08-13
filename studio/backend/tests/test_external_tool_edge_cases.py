@@ -34,11 +34,7 @@ from core.inference.studio_tool_loop import (
 _DONE = "data: [DONE]"
 
 
-def _sse(
-    delta = None,
-    finish = None,
-    **extra,
-) -> str:
+def _sse(delta = None, finish = None, **extra) -> str:
     choice: dict = {"index": 0, "delta": delta if delta is not None else {}}
     if finish is not None:
         choice["finish_reason"] = finish
@@ -77,14 +73,7 @@ class TooManyTurns(RuntimeError):
 class FakeTransport:
     """Replays scripted turns; records what the loop asked for each time."""
 
-    def __init__(
-        self,
-        turns,
-        *,
-        heals = True,
-        repeat_last = False,
-        max_turns = 40,
-    ):
+    def __init__(self, turns, *, heals = True, repeat_last = False, max_turns = 40):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
         self.requests: list[dict] = []
@@ -95,9 +84,7 @@ class FakeTransport:
 
     def _lines(self):
         if self.turns:
-            return (
-                self.turns[0] if (self.repeat_last and len(self.turns) == 1) else self.turns.pop(0)
-            )
+            return self.turns[0] if (self.repeat_last and len(self.turns) == 1) else self.turns.pop(0)
         return [_DONE]
 
     def stream(self, *, messages, tools, tool_choice, cancel_event):
@@ -248,19 +235,9 @@ def _visible_text(lines) -> str:
     return "".join(text)
 
 
-def _call_turn(
-    call_id = "c1",
-    name = "web_search",
-    arguments = '{"query":"q"}',
-):
+def _call_turn(call_id = "c1", name = "web_search", arguments = '{"query":"q"}'):
     return [
-        _sse(
-            {
-                "tool_calls": [
-                    {"index": 0, "id": call_id, "function": {"name": name, "arguments": arguments}}
-                ]
-            }
-        ),
+        _sse({"tool_calls": [{"index": 0, "id": call_id, "function": {"name": name, "arguments": arguments}}]}),
         _sse(finish = "tool_calls"),
         _DONE,
     ]
@@ -285,17 +262,7 @@ def test_intermediate_done_sentinel_is_not_relayed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -311,9 +278,7 @@ def test_intermediate_done_sentinel_is_not_relayed(executed):
 
 def test_non_json_data_line_is_relayed_untouched(executed):
     """Garbage on the wire is passed through, not parsed and not fatal."""
-    transport = FakeTransport(
-        [["data: {not json at all", _sse({"content": "hi"}), _sse(finish = "stop"), _DONE]]
-    )
+    transport = FakeTransport([["data: {not json at all", _sse({"content": "hi"}), _sse(finish = "stop"), _DONE]])
     lines = _run(transport)
 
     assert "data: {not json at all" in lines
@@ -346,9 +311,7 @@ def test_non_json_data_line_is_relayed_untouched(executed):
 )
 def test_hostile_chunk_shapes_do_not_crash_the_loop(executed, payload):
     """No provider chunk shape may take the loop down mid-answer."""
-    transport = FakeTransport(
-        [[_raw(payload), _sse({"content": "still here"}), _sse(finish = "stop"), _DONE]]
-    )
+    transport = FakeTransport([[_raw(payload), _sse({"content": "still here"}), _sse(finish = "stop"), _DONE]])
     lines = _run(transport)
 
     assert "still here" in _visible_text(lines)
@@ -385,17 +348,7 @@ def test_call_without_finish_reason_is_still_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"query":"x"}'}}]}),
                 _DONE,
             ],
             _answer_turn(),
@@ -415,17 +368,7 @@ def test_structured_call_with_finish_reason_stop_is_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"query":"x"}'}}]}),
                 _sse(finish = "stop"),
                 _DONE,
             ],
@@ -442,16 +385,7 @@ def test_call_without_an_id_is_still_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search", "arguments": '{"query":"x"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -467,17 +401,7 @@ def test_empty_string_id_is_still_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "",
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "", "function": {"name": "web_search", "arguments": '{"query":"x"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -498,17 +422,7 @@ def test_argument_fragments_without_an_index_continue_the_open_call(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": ""},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": ""}}]}),
                 _sse({"tool_calls": [{"function": {"arguments": '{"query":'}}]}),
                 _sse({"tool_calls": [{"function": {"arguments": '"paris"}'}}]}),
                 _sse(finish = "tool_calls"),
@@ -532,28 +446,8 @@ def test_two_distinct_calls_at_the_same_index_are_not_merged(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "a",
-                                "function": {"name": "web_search", "arguments": '{"query":"one"}'},
-                            }
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "b",
-                                "function": {"name": "web_search", "arguments": '{"query":"two"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "web_search", "arguments": '{"query":"one"}'}}]}),
+                _sse({"tool_calls": [{"index": 0, "id": "b", "function": {"name": "web_search", "arguments": '{"query":"two"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -570,28 +464,8 @@ def test_same_index_merge_never_forwards_raw_garbage(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "a",
-                                "function": {"name": "web_search", "arguments": '{"query":"one"}'},
-                            }
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "b",
-                                "function": {"name": "web_search", "arguments": '{"query":"two"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "web_search", "arguments": '{"query":"one"}'}}]}),
+                _sse({"tool_calls": [{"index": 0, "id": "b", "function": {"name": "web_search", "arguments": '{"query":"two"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -608,34 +482,8 @@ def test_negative_index_does_not_reorder_calls(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "a",
-                                "function": {
-                                    "name": "web_search",
-                                    "arguments": '{"query":"first"}',
-                                },
-                            }
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": -1,
-                                "id": "b",
-                                "function": {
-                                    "name": "web_search",
-                                    "arguments": '{"query":"second"}',
-                                },
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "web_search", "arguments": '{"query":"first"}'}}]}),
+                _sse({"tool_calls": [{"index": -1, "id": "b", "function": {"name": "web_search", "arguments": '{"query":"second"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -689,17 +537,7 @@ def test_finish_reason_length_mid_tool_call_does_not_execute(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"que'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"que'}}]}),
                 _sse(finish = "length"),
                 _DONE,
             ]
@@ -727,14 +565,16 @@ def test_a_provider_that_always_calls_a_tool_terminates(executed):
     except TooManyTurns as exc:
         pytest.fail(f"loop never terminated: {exc}")
 
-    assert (
-        len(transport.requests) <= 2 + 2
-    ), f"budget 2 produced {len(transport.requests)} provider turns"
+    assert len(transport.requests) <= 2 + 2, (
+        f"budget 2 produced {len(transport.requests)} provider turns"
+    )
 
 
 def test_a_disabled_tool_called_forever_terminates(executed):
     """Same shape without the budget: every call is outside the catalog."""
-    transport = FakeTransport([_call_turn(name = "terminal")], repeat_last = True, max_turns = 40)
+    transport = FakeTransport(
+        [_call_turn(name = "terminal")], repeat_last = True, max_turns = 40
+    )
     try:
         _run(transport, tools = [WEB])
     except TooManyTurns as exc:
@@ -764,22 +604,8 @@ def test_text_and_structured_form_of_one_call_run_once(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "content": '<tool_call>{"name": "web_search", "arguments": {"query": "dup"}}</tool_call>'
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"query":"dup"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "dup"}}</tool_call>'}),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"query":"dup"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -801,11 +627,7 @@ def test_empty_structured_tool_calls_list_does_not_disable_healing(executed):
         [
             [
                 _sse({"content": "let me check. ", "tool_calls": []}),
-                _sse(
-                    {
-                        "content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
-                    }
-                ),
+                _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'}),
                 _sse(finish = "stop"),
                 _DONE,
             ],
@@ -831,11 +653,7 @@ def test_marked_call_inside_a_code_fence_matches_the_local_loops(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "content": '```\n<tool_call>{"name": "web_search", "arguments": {"query": "demo"}}</tool_call>\n```'
-                    }
-                ),
+                _sse({"content": '```\n<tool_call>{"name": "web_search", "arguments": {"query": "demo"}}</tool_call>\n```'}),
                 _sse(finish = "stop"),
                 _DONE,
             ],
@@ -851,11 +669,7 @@ def test_nested_markers_do_not_lose_text_or_double_execute(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "content": '<tool_call><tool_call>{"name": "web_search", "arguments": {"query": "n"}}</tool_call></tool_call>'
-                    }
-                ),
+                _sse({"content": '<tool_call><tool_call>{"name": "web_search", "arguments": {"query": "n"}}</tool_call></tool_call>'}),
                 _sse(finish = "stop"),
                 _DONE,
             ],
@@ -872,11 +686,7 @@ def test_undeclared_marked_call_is_relayed_verbatim(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'
-                    }
-                ),
+                _sse({"content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'}),
                 _sse(finish = "stop"),
                 _DONE,
             ]
@@ -893,10 +703,8 @@ def test_undeclared_marked_call_is_relayed_verbatim(executed):
 
 def test_emoji_split_across_chunks_survives(executed):
     """A grapheme cluster straddling a chunk boundary must not be mangled."""
-    pieces = ["family: \U0001f468‍", "\U0001f469‍\U0001f467", " done éè"]
-    transport = FakeTransport(
-        [[_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE]]
-    )
+    pieces = ["family: \U0001F468‍", "\U0001F469‍\U0001F467", " done éè"]
+    transport = FakeTransport([[_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE]])
     lines = _run(transport)
 
     assert _visible_text(lines) == "".join(pieces)
@@ -904,10 +712,8 @@ def test_emoji_split_across_chunks_survives(executed):
 
 def test_marker_prefix_split_around_unicode_is_not_dropped(executed):
     """`<` held as a partial signal, with multi-byte text either side."""
-    pieces = ["café <", "é not a marker \U0001f600"]
-    transport = FakeTransport(
-        [[_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE]]
-    )
+    pieces = ["café <", "é not a marker \U0001F600"]
+    transport = FakeTransport([[_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE]])
     lines = _run(transport)
 
     assert _visible_text(lines) == "".join(pieces)
@@ -915,8 +721,8 @@ def test_marker_prefix_split_around_unicode_is_not_dropped(executed):
 
 def test_tool_marker_split_between_unicode_chunks_still_heals(executed):
     pieces = [
-        "\U0001f50d <tool",
-        '_call>{"name": "web_search", "arguments": {"query": "café \U0001f600"}}',
+        "\U0001F50D <tool",
+        '_call>{"name": "web_search", "arguments": {"query": "café \U0001F600"}}',
         "</tool_call>",
     ]
     transport = FakeTransport(
@@ -928,14 +734,14 @@ def test_tool_marker_split_between_unicode_chunks_still_heals(executed):
     lines = _run(transport)
 
     assert [call["name"] for call in executed] == ["web_search"]
-    assert executed[0]["arguments"] == {"query": "café \U0001f600"}
+    assert executed[0]["arguments"] == {"query": "café \U0001F600"}
     visible = _visible_text(lines)
-    assert "\U0001f50d" in visible
+    assert "\U0001F50D" in visible
     assert "<tool" not in visible
 
 
 def test_unicode_arguments_round_trip_through_the_replay(executed):
-    args = {"query": "中文 \U0001f680"}
+    args = {"query": "中文 \U0001F680"}
     transport = FakeTransport(
         [_call_turn(arguments = json.dumps(args, ensure_ascii = False)), _answer_turn()]
     )
@@ -953,18 +759,8 @@ def test_one_megabyte_argument_streams_in_fragments(executed):
     blob = "x" * (1024 * 1024)
     arguments = json.dumps({"query": blob})
     chunks = [arguments[i : i + 4096] for i in range(0, len(arguments), 4096)]
-    turn = [
-        _sse(
-            {
-                "tool_calls": [
-                    {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": ""}}
-                ]
-            }
-        )
-    ]
-    turn += [
-        _sse({"tool_calls": [{"index": 0, "function": {"arguments": chunk}}]}) for chunk in chunks
-    ]
+    turn = [_sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": ""}}]})]
+    turn += [_sse({"tool_calls": [{"index": 0, "function": {"arguments": chunk}}]}) for chunk in chunks]
     turn += [_sse(finish = "tool_calls"), _DONE]
 
     start = time.monotonic()
@@ -1037,17 +833,7 @@ def test_text_around_tool_calls_keeps_document_order(executed):
         [
             [
                 _sse({"content": "BEFORE "}),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -1061,9 +847,7 @@ def test_text_around_tool_calls_keeps_document_order(executed):
         for token in ("BEFORE", "AFTER", "tool_start", "tool_end"):
             if token in line and token not in positions:
                 positions[token] = i
-    assert (
-        positions["BEFORE"] < positions["tool_start"] < positions["tool_end"] < positions["AFTER"]
-    )
+    assert positions["BEFORE"] < positions["tool_start"] < positions["tool_end"] < positions["AFTER"]
 
 
 def test_replayed_conversation_is_valid_for_a_strict_server(executed):
@@ -1089,17 +873,10 @@ def test_disallowed_call_still_gets_a_tool_result_message(executed):
     )
     lines = _run(transport, tools = [WEB])
 
-    # Every announced call is closed out, on the wire and in the replay. The
-    # announcement is the provider's own tool_calls delta, which this loop
-    # relays, so a disabled call is closed by a terminal event of its own and
-    # not by a start it never had.
-    ends = _events(lines, "tool_end")
-    starts = _events(lines, "tool_start")
-    assert len(ends) >= len(starts)
-    assert {event["tool_call_id"] for event in starts} <= {
-        event["tool_call_id"] for event in ends
-    }
-    assert [event["tool_call_id"] for event in ends] == ["c1"]
+    # Every announced call is closed out, on the wire and in the replay. A loop
+    # that declines to announce a disabled call at all is fine; announcing one
+    # and never closing it is not.
+    assert len(_events(lines, "tool_end")) == len(_events(lines, "tool_start"))
     replays = [
         request["messages"]
         for request in transport.requests
@@ -1120,24 +897,8 @@ def test_non_string_content_reaches_the_conversation_replay(executed):
     transport = FakeTransport(
         [
             [
-                _raw(
-                    {
-                        "choices": [
-                            {"index": 0, "delta": {"content": [{"type": "text", "text": "SPOKEN"}]}}
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
+                _raw({"choices": [{"index": 0, "delta": {"content": [{"type": "text", "text": "SPOKEN"}]}}]}),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],

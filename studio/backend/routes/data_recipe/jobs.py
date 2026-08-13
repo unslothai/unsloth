@@ -326,7 +326,7 @@ def _inject_local_providers(
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
             username = "unsloth",
-            name = storage.DATA_RECIPE_WORKFLOW_KEY_NAME,
+            name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
             expect_gen = expect_gen,

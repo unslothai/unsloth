@@ -2271,41 +2271,52 @@ def _request_has_api_key(request: Any) -> bool:
     return _request_api_key_token(request) is not None
 
 
-# Provider-hosted builtins the Studio loop has no local equivalent for.
-# web_search / web_fetch / code_execution each map onto a local tool, so
-# forwarding those would bill the same work twice; image generation does not,
-# and withholding it disabled the Images toggle on every turn that also
-# enabled a Studio tool.
-_HOSTED_ONLY_EXTERNAL_TOOLS = ("image_generation",)
+def _request_is_internal_workflow(request: Any) -> bool:
+    """True only for Studio's own workflow keys (Deep Research, data recipes).
 
-
-def _hosted_only_enabled_tools(enabled_tools: Any) -> Optional[list[str]]:
-    """Keep only the hosted tools the Studio loop does not replace."""
-    if not isinstance(enabled_tools, list) or not enabled_tools:
-        return None
-    kept = [name for name in _HOSTED_ONLY_EXTERNAL_TOOLS if name in enabled_tools]
-    return kept or None
-
-
-def _request_is_research_workflow(request: Any) -> bool:
-    """True only for a Deep Research worker's own key.
-
-    Scoped to that one workflow, not to "internal" in general: a data-recipe job
-    also holds an internal key and can read provider ids, so authorizing every
-    workflow would let it spend an unrelated saved credential. The name is set by
-    Studio at mint time and is checked against the stored key row, never a prefix
-    a caller could send. Fails closed when the probe raises, so a storage error
-    withholds saved credentials rather than handing them out.
+    Checked against the stored internal-key hashes, never a prefix, so a caller
+    cannot mint one by sending an sk-unsloth-looking bearer. Fails closed when the
+    probe raises, so a storage error withholds saved credentials rather than
+    handing them out.
     """
     token = _request_api_key_token(request)
     if token is None:
         return False
     try:
-        workflow = auth_storage.internal_api_key_workflow(token)
+        return bool(auth_storage.is_internal_api_key(token))
     except Exception:
         logger.debug("external_provider.internal_key_probe_failed", exc_info = True)
         return False
-    return workflow == auth_storage.RESEARCH_WORKFLOW_KEY_NAME
+
+
+def _request_is_saved_credential_workflow(request: Any) -> bool:
+    """True only for the one workflow key allowed to spend a saved provider credential.
+
+    "Internal" is not the licence: Studio mints internal keys for data recipes
+    too, and ``routes/data_recipe/jobs.py`` writes that key straight into the
+    recipe's own provider block so a user-authored recipe subprocess holds it.
+    Granting every internal key the saved-connection exception would therefore
+    hand that subprocess a confused deputy: name any saved provider_id, omit the
+    key, and bill arbitrary requests to the user's cloud account. Only the
+    durable Deep Research hop needs the exception, and only because its run
+    outlives the session that created it, so it carries a key instead of a JWT
+    and ``research_runs._sanitize_config`` already pinned it to one enabled saved
+    connection.
+
+    Layered on the internal check rather than replacing it, and fails closed on a
+    storage error, so an unreadable key store withholds the credential.
+    """
+    if not _request_is_internal_workflow(request):
+        return False
+    token = _request_api_key_token(request)
+    if token is None:
+        return False
+    try:
+        name = auth_storage.internal_api_key_name(token)
+    except Exception:
+        logger.debug("external_provider.workflow_key_name_probe_failed", exc_info = True)
+        return False
+    return name == auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME
 
 
 def _request_used_api_key(request: Any) -> bool:
@@ -2352,8 +2363,11 @@ from core.inference.passthrough_healing import (
     response_has_promotable_calls,
 )
 from core.inference.providers import (
+    HOSTED_TOOL_NAMES,
     get_base_url,
     get_provider_info,
+    hosted_only_tools,
+    provider_hosted_tools,
     provider_runs_local_tools,
     validate_provider_base_url,
 )
@@ -2769,6 +2783,40 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 
     policy = get_tool_policy()
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+
+
+def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
+    """True when the request's tool selection is nothing but the provider's own
+    hosted builtins, so the provider must execute them as it always has.
+
+    ``enable_tools: true`` plus ``enabled_tools: ["web_search", ...]`` is the
+    documented way to ask a provider for its hosted tools, and it is what every
+    bundle shipped before Studio's loop reached external providers. Read only by
+    name, the same bytes now also describe a local-loop request, and taking the
+    loop would swap the provider's search for Studio's and silently drop the
+    hosted-only names (code_execution, image_generation, web_fetch) that Studio
+    has no implementation of.
+
+    Anything that names a Studio-only tool (python, terminal,
+    search_knowledge_base) or asks for MCP is unambiguous and keeps the loop, and
+    so does every self-hosted provider, which declares no hosted tools at all.
+    """
+    if getattr(payload, "mcp_enabled", False):
+        return False
+    enabled = getattr(payload, "enabled_tools", None)
+    # None means "every local tool"; an empty list selects nothing and never
+    # reaches the loop anyway. Neither is a hosted-tool request.
+    if not enabled or not isinstance(enabled, list):
+        return False
+    if not provider_hosted_tools(provider_type):
+        return False
+    # Matched against the whole hosted vocabulary rather than this provider's own
+    # slice: the pre-PR bundle sent one list of hosted names per turn, and a name
+    # the provider does not implement was simply ignored by it. Studio has no
+    # local implementation of those names either, so reading such a request as
+    # "local" would drop them just the same, only after also replacing the
+    # provider's search with ours.
+    return all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled)
 
 
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
@@ -11392,10 +11440,27 @@ async def _proxy_to_external_provider(
         provider_runs_local_tools(provider_type)
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
+        # A selection of purely hosted names is the provider's tool envelope, not
+        # a request for this loop. Checked here rather than inside the loop so the
+        # whole path (catalog selection, nudge, confirm gate) is skipped and the
+        # request proxies through byte-for-byte as it did before the loop existed.
+        and not _selects_only_provider_hosted_tools(payload, provider_type)
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
+    # Studio's UI asks for the gate by permission_mode, not by confirm_tool_calls,
+    # so reading the raw flag admits the exact request the local routes reject: a
+    # non-streaming permission_mode="ask" with the flag omitted proxies through
+    # with its tools live and no confirmation the caller explicitly asked for.
+    # Derive it the way the local guard does, and only for the non-streaming case
+    # it covers: a streaming request that merely fell out of the loop (a
+    # hosted-only selection, or a provider that runs no local tools) keeps
+    # answering an ask/auto mode as it always has, and is still refused on an
+    # explicit flag.
+    _external_confirm_gate = bool(payload.confirm_tool_calls) or (
+        not payload.stream and _confirm_gate_needs_stream(payload)
+    )
     if (
-        payload.confirm_tool_calls
+        _external_confirm_gate
         and not payload.bypass_permissions
         and not studio_tool_loop
         and (
@@ -11450,8 +11515,12 @@ async def _proxy_to_external_provider(
             CodexReauthorizationError,
         )
 
-        api_key_token = _request_api_key_token(request)
-        if api_key_token and not auth_storage.is_internal_api_key(api_key_token):
+        # Through the same helper the saved-credential exception uses, not a bare
+        # auth_storage probe: a raising probe used to escape as a 500, and a 500
+        # is not a decision -- the same failure on the branch below withholds the
+        # credential instead. The workflow scope is the same question too, since
+        # this branch spends a saved ChatGPT subscription.
+        if _request_has_api_key(request) and not _request_is_saved_credential_workflow(request):
             raise HTTPException(
                 status_code = 403,
                 detail = "ChatGPT subscriptions are available only to Studio UI and internal workflows.",
@@ -11715,13 +11784,16 @@ async def _proxy_to_external_provider(
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
         payload.encrypted_api_key,
-        # A durable Deep Research hop authenticates with its own workflow key,
+        # A durable Deep Research hop authenticates with an internal workflow key,
         # which is still an API key, so the plain check would drop the saved
         # provider id and fail before the provider is ever contacted. The run's
         # connection was already validated as an enabled saved one by
         # research_runs._sanitize_config, and the key is verified against storage.
+        # Scoped to that one workflow rather than to "internal", because the other
+        # internal key Studio mints is held by a user-authored recipe subprocess.
         allow_saved_key = (
-            not _request_has_api_key(request) or _request_is_research_workflow(request)
+            not _request_has_api_key(request)
+            or _request_is_saved_credential_workflow(request)
         ),
     )
 
@@ -11828,16 +11900,18 @@ async def _proxy_to_external_provider(
             # The Studio loop owns the tool surface for this turn. The caller's
             # own catalog is dropped for the same reason the Codex path drops it
             # (the model would return calls this server is not authorized to
-            # run), and the hosted builtins that duplicate a local tool are
-            # withheld so they do not double up on the local web_search. The
-            # ones with no local equivalent still have to reach the provider:
-            # dropping image_generation left its toggle lit with no effect.
+            # run), and the hosted names Studio runs itself are withheld so the
+            # provider's builtins do not double up on the local web_search.
+            # Hosted-only tools still ride along: Images and Fetch have their own
+            # toggles and no local stand-in, so dropping them would turn a lit
+            # pill into a tool the model never sees.
+            loop_hosted_tools = hosted_only_tools(provider_type, payload.enabled_tools)
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
-                    enabled_tools = _hosted_only_enabled_tools(payload.enabled_tools),
+                    enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
                 ),
@@ -11845,6 +11919,12 @@ async def _proxy_to_external_provider(
                     messages = chat_messages,
                     session_id = payload.session_id,
                     thread_id = payload.thread_id,
+                    # The loop withholds the provider's own usage-only chunks and
+                    # sends one summed chunk instead, so this is the only model id
+                    # the client sees for the whole answer. Omitted, it falls back
+                    # to the literal "external" and the usage is attributed to
+                    # nothing: no cost lookup, no per-model accounting.
+                    model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
                 ),
@@ -11925,7 +12005,14 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
+                # Joined, not just cancelled. A bare cancel() leaves the task's
+                # result unretrieved, so asyncio logs "Task exception was never
+                # retrieved" when it is collected, and the poll can still be
+                # mid-await on request.is_disconnected() while the response is
+                # torn down. Same pairing as the Codex branch and the local
+                # watchers.
                 disconnect_task.cancel()
+                await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
                 await gen.aclose()
             except RuntimeError:

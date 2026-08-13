@@ -26,6 +26,7 @@ from core.inference.openai_responses_shared import (
     responses_function_output,
     response_event_type,
 )
+from core.inference.sse_control_frames import sanitize_provider_sse_line
 
 # Local servers, not hosted APIs: each applies the model's own chat template on the way
 # in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
@@ -1386,7 +1387,14 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        yield line
+                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # the frames this server writes to paint tool cards ride
+                        # the same stream, so an endpoint that echoes them forges
+                        # a card for a tool that never ran.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                     # Stream ended without [DONE] (some upstreams just close
                     # the connection). Emit tool_end so the card doesn't stay
                     # in "running" forever.
@@ -1621,7 +1629,11 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if line.strip():
-                                yield line
+                                # Same rule as the main relay: never let the
+                                # endpoint speak Studio's control vocabulary.
+                                relayed = sanitize_provider_sse_line(line)
+                                if relayed is not None:
+                                    yield relayed
                     except GeneratorExit:
                         await response.aclose()
                         await lines_gen.aclose()
@@ -1753,7 +1765,12 @@ class ExternalProviderClient:
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
                                                     )
-                        yield line
+                        # Same rule as the main relay: never let the endpoint
+                        # speak Studio's control vocabulary.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                 except GeneratorExit:
                     await response.aclose()
                     await lines_gen.aclose()

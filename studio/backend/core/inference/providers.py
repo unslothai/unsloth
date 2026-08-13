@@ -62,6 +62,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # Server tools OpenAI runs itself on /v1/responses (cloud base URL only;
+        # `_stream_openai_responses` re-checks that). See `hosted_tools` below.
+        "hosted_tools": ("web_search", "code_execution", "image_generation"),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         # Scope the picker to the current generation. /v1/models returns many
@@ -90,6 +93,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": False,
+        # Anthropic's own server tools, appended by `_stream_anthropic`.
+        "hosted_tools": ("web_search", "web_fetch", "code_execution"),
         "auth_header": "x-api-key",
         "auth_prefix": "",
         "extra_headers": {
@@ -130,6 +135,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # googleSearch / codeExecution grounding and the Nano Banana image path,
+        # all wired natively in `_stream_gemini`.
+        "hosted_tools": ("web_search", "code_execution", "image_generation"),
         # Native API takes the bare key on `x-goog-api-key`.
         "auth_header": "x-goog-api-key",
         "auth_prefix": "",
@@ -223,6 +231,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # `$web_search` builtin_function, driven by `_stream_kimi_web_search`.
+        "hosted_tools": ("web_search",),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
@@ -381,6 +391,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # The router's universal web plugin (`plugins: [{id: "web"}]`).
+        "hosted_tools": ("web_search",),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "extra_headers": {
@@ -427,6 +439,75 @@ def provider_runs_local_tools(provider_type: str | None) -> bool:
         return False
     info = PROVIDER_REGISTRY.get(provider_type)
     return bool(info and info.get("studio_tools"))
+
+
+def provider_hosted_tools(provider_type: str | None) -> frozenset[str]:
+    """Built-in tool names this provider executes on its own side.
+
+    These are not Studio's tools: they are body flags (`tools: [{type:
+    "web_search"}]`, `plugins: [{id: "web"}]`, `codeExecution`) that the provider
+    runs and bills, and the only thing this server does with them is forward the
+    name. `provider_runs_local_tools` is orthogonal -- most providers do both,
+    and a request picks a side by which names it lists.
+
+    Empty for the self-hosted presets (llama.cpp, vLLM, Ollama, custom) and for
+    openai_codex, whose `web_search` is Studio's own tool run by the Codex loop.
+    """
+    if not isinstance(provider_type, str):
+        return frozenset()
+    info = PROVIDER_REGISTRY.get(provider_type)
+    return frozenset(info.get("hosted_tools") or ()) if info else frozenset()
+
+
+# The whole server-side builtin vocabulary, derived from the registry so a new
+# provider entry extends it by declaring its own tools. Mirrored on the frontend
+# as _SERVER_SIDE_BUILTIN_TOOL_NAMES (external_provider.py) for card labelling.
+HOSTED_TOOL_NAMES: frozenset[str] = frozenset(
+    name
+    for info in PROVIDER_REGISTRY.values()
+    for name in (info.get("hosted_tools") or ())
+)
+
+
+# Local tool names that stand in for a hosted one, per hosted name. A request
+# naming BOTH sides is asking for one tool twice, so the local side wins and the
+# hosted name is not forwarded: the alternative runs the provider's copy as well
+# and bills for it.
+#
+# Which side a request wants is the request's to say, not this server's to
+# assume. web_search is unambiguous -- the hosted name and Studio's own tool are
+# spelled the same, so naming it while the loop runs can only mean Studio's.
+# code_execution is a different name from python/terminal precisely because it
+# is a different thing: it runs in the provider's sandbox, and Studio has no
+# implementation of it at all (see ALL_TOOLS). Treating it as "already replaced"
+# therefore substitutes nothing, it just drops the tool while its pill stays lit.
+LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
+    "web_search": frozenset({"web_search"}),
+    "code_execution": frozenset({"python", "terminal"}),
+}
+
+
+def hosted_only_tools(provider_type: str | None, enabled_tools: Any) -> list[str]:
+    """The requested hosted tools Studio is not running in their place.
+
+    image_generation and web_fetch have no local implementation, and their UI
+    pills are independent of Search / Code / RAG, so a request that mixes one of
+    them with a Studio tool has to carry it through to the provider or the tool
+    silently disappears while its toggle stays on. code_execution has no local
+    implementation either, and rides along unless the same request also asked
+    for the local tools that would duplicate it.
+    """
+    if not isinstance(enabled_tools, list):
+        return []
+    hosted = provider_hosted_tools(provider_type)
+    requested = list(dict.fromkeys(n for n in enabled_tools if isinstance(n, str)))
+    requested_set = set(requested)
+    return [
+        name
+        for name in requested
+        if name in hosted
+        and not (LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & requested_set)
+    ]
 
 
 # Cloud-metadata hosts. The backend fetches the base URL on the caller's behalf,

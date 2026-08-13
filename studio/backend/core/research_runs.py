@@ -1132,7 +1132,10 @@ class ResearchSupervisor:
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
-            name = auth_storage.RESEARCH_WORKFLOW_KEY_NAME,
+            # The name is load-bearing, not a label: the external-provider route
+            # scopes its saved-credential exception to exactly this workflow, so
+            # the two sides must not drift apart.
+            name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
         )

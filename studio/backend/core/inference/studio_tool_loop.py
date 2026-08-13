@@ -35,6 +35,7 @@ from typing import Any, Protocol
 
 from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
+from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
     is_reprompt_repeat,
@@ -68,10 +69,9 @@ _TOOL_BUDGET_EXHAUSTED = (
 
 _TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
 
-# Card text for a call the controller decides not to run. The client has already
-# painted a card from the provider's own tool_calls delta by the time that is
-# known, so it needs a short result of its own; the long model-facing nudge stays
-# in the conversation.
+# Card text for a call the controller skipped. The client already painted a card
+# from the provider's own tool_calls delta, so it needs a short result; the long
+# model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
     "duplicate": "Studio did not run this call because an identical one had already completed.",
     "disabled": _TOOL_DISABLED,
@@ -110,7 +110,7 @@ _MAX_FRUITLESS_TURNS = 2
 
 
 def _sse(payload: dict[str, Any]) -> str:
-    return "data: " + json.dumps(payload, separators = (",", ":"))
+    return "data: " + json.dumps(payload, separators=(",", ":"))
 
 
 def _is_done_sentinel(line: str) -> bool:
@@ -214,7 +214,7 @@ class ToolLoopTransport(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolLoopRun:
     """Everything about the request that the loop, not the transport, needs."""
 
@@ -226,7 +226,7 @@ class ToolLoopRun:
     continue_final_message: bool = False
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolLoopPolicy:
     tools: list[dict[str, Any]]
     max_calls: int
@@ -243,12 +243,12 @@ class ToolLoopPolicy:
 class _Turn:
     """Accumulated state for one provider turn."""
 
-    by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
-    order: list[Any] = field(default_factory = list)
+    by_index: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    order: list[Any] = field(default_factory=list)
     last_index: int | None = None
     round: int = 0
-    healed: list[dict[str, Any]] = field(default_factory = list)
-    text: list[str] = field(default_factory = list)
+    healed: list[dict[str, Any]] = field(default_factory=list)
+    text: list[str] = field(default_factory=list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
 
@@ -314,7 +314,7 @@ class _Turn:
         for position, call in enumerate(
             [self.by_index[key] for key in self.order] + list(self.healed)
         ):
-            normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
+            normalized = _normalized_call(call, fallback_id=f"call_{self.round}_{position}")
             if normalized is None:
                 continue
             if normalized["id"] in seen:
@@ -339,6 +339,46 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     new_payload = {key: value for key, value in payload.items() if key != "choices"}
     new_payload["choices"] = [new_choice] + list(payload.get("choices", [])[1:])
     return _sse(new_payload)
+
+
+def _unrun_call_card(
+    *,
+    tool_name: str,
+    tool_call_id: str,
+    arguments: Any,
+    result: str,
+    provenance: dict[str, Any],
+) -> list[str]:
+    """The open/close pair for a call this loop announces but never runs.
+
+    The close on its own is not enough. A call the provider streamed as a
+    tool_calls delta already has a card, and the client reconciles both events
+    onto it by id -- but a call the healer promoted out of TEXT was never
+    streamed as a delta, so a lone tool_end names a card that does not exist and
+    the adapter drops it: the user is told nothing at all. Opening the card
+    first makes both cases end the same way, and keeps the invariant the loop is
+    tested on, that every tool_end closes a tool_start.
+    """
+    return [
+        _sse(
+            {
+                "type": "tool_start",
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "arguments": arguments if isinstance(arguments, dict) else {},
+                "provenance": provenance,
+            }
+        ),
+        _sse(
+            {
+                "type": "tool_end",
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "result": result,
+                "provenance": provenance,
+            }
+        ),
+    ]
 
 
 def _status_sse(text: str) -> str:
@@ -500,8 +540,8 @@ async def stream_with_studio_tools(
     # ledger the local loops keep, so an external model cannot spend the budget
     # repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
-        tools = tools,
-        auto_heal_tool_calls = policy.auto_heal is not False,
+        tools=tools,
+        auto_heal_tool_calls=policy.auto_heal is not False,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
@@ -512,12 +552,12 @@ async def stream_with_studio_tools(
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
-    # nudge and final-answer passes that legitimately execute nothing.
-    # The unlimited sentinel keeps the local loops' bound rather than a fixed 25:
-    # a long agentic run that kept executing distinct calls was being cut off
-    # mid-session with no final answer. A run that executes nothing is still
-    # stopped by _MAX_FRUITLESS_TURNS, so this never trades turns forever.
-    max_provider_turns = max(1, min(remaining, 9999)) + 2 * MAX_ACT_REPROMPTS + 4
+    # nudge and final-answer passes that legitimately execute nothing. The
+    # unlimited sentinel keeps its own budget rather than dropping to a smaller
+    # fixed number: both local loops run "Max" for as many turns as the model
+    # asks for, and fruitless_turns already ends a run that executes nothing, so
+    # a lower bound here only cuts a productive run short with no final answer.
+    max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
     while not cancel_event.is_set():
         if provider_turns >= max_provider_turns:
@@ -527,7 +567,7 @@ async def stream_with_studio_tools(
             # without bound when nothing ever executes.
             break
         provider_turns += 1
-        turn = _Turn(round = provider_turns)
+        turn = _Turn(round=provider_turns)
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()
@@ -545,10 +585,10 @@ async def stream_with_studio_tools(
             turn_tool_choice = "auto"
 
         generator = transport.stream(
-            messages = conversation,
-            tools = active_tools if tools_available else None,
-            tool_choice = turn_tool_choice,
-            cancel_event = cancel_event,
+            messages=conversation,
+            tools=active_tools if tools_available else None,
+            tool_choice=turn_tool_choice,
+            cancel_event=cancel_event,
         )
         try:
             async for line in generator:
@@ -557,6 +597,16 @@ async def stream_with_studio_tools(
                     # spec-compliant client the response is over, and it stops before
                     # the tool cards and the real answer. The route emits the final one.
                     continue
+                # This loop writes its tool cards, badges and the approval
+                # handshake onto the same stream the provider's chunks are
+                # relayed on, and the client tells them apart only by shape. A
+                # provider's copy of that vocabulary would therefore paint a card
+                # for a tool that never ran, so strip it before anything below
+                # can relay it.
+                sanitized = sanitize_provider_sse_line(line)
+                if sanitized is None:
+                    continue
+                line = sanitized
                 payload = _chunk_payload(line)
                 if payload is None:
                     yield line
@@ -642,7 +692,28 @@ async def stream_with_studio_tools(
                 except (RuntimeError, GeneratorExit):
                     pass
 
-        calls = turn.calls(used_call_ids) if turn.finish_reason != "length" else []
+        truncated = turn.finish_reason == "length"
+        if truncated and healer is not None and turn.healed:
+            # A call cut off at the token limit must not run: its arguments can
+            # be half-written and the model never finished saying what it wanted.
+            # But promotion is destructive -- the healer already removed the
+            # markup span from the text relayed above -- so discarding the call
+            # on its own would take the sentence that introduced it with it, and
+            # the user would be left with a stub answer, no card, and no way to
+            # tell that anything was attempted. Give the exact removed span back
+            # instead. It is the same verbatim flush the healer performs for a
+            # block that turns out not to be a declared call, and only the healer
+            # can supply it: nothing else in the loop keeps the raw bytes, and
+            # re-encoding the parsed call would print something the model never
+            # wrote. Released at the end of the turn rather than in document
+            # order because "length" is only known once the turn has ended.
+            for healed_call in turn.healed:
+                span = healer.promoted_source(healed_call.get("id", ""))
+                if not span:
+                    continue
+                turn.text.append(span)
+                yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
+        calls = [] if truncated else turn.calls(used_call_ids)
         if not calls:
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
@@ -673,26 +744,24 @@ async def stream_with_studio_tools(
             if not unlimited and remaining <= 0:
                 # Budget spent. Answer the model so it stops asking, but never
                 # execute: the cap is a safety limit, not a hint to the provider.
-                yield _sse(
-                    {
-                        "type": "tool_end",
-                        "tool_name": call["function"]["name"],
-                        # The card, so the streamed id; the replay below keeps
-                        # the de-duplicated one.
-                        "tool_call_id": call.get("stream_id") or call["id"],
-                        "result": _TOOL_BUDGET_EXHAUSTED,
-                        "provenance": {"source": "local", "round_id": round_id},
-                    }
-                )
-                # The result has to answer a tool_call in the assistant message
-                # replayed upstream. Leaving the call out put a role="tool"
-                # message with no matching id in the history: a strict
-                # OpenAI-compatible server rejects that outright, and Gemini
-                # counts it as one functionResponse more than functionCalls, so
-                # the follow-up turn never returns the final answer.
+                for card_line in _unrun_call_card(
+                    tool_name = call["function"]["name"],
+                    tool_call_id = call.get("stream_id") or call["id"],
+                    arguments = call.get("arguments"),
+                    result = _TOOL_BUDGET_EXHAUSTED,
+                    provenance = {"source": "local", "round_id": round_id},
+                ):
+                    yield card_line
+                # The result below has to be replayed with its call: only the
+                # call that spent the last slot reaches assistant_tool_calls
+                # further down, so this one would arrive as an orphan
+                # role="tool" message and OpenAI, Anthropic and Gemini all
+                # reject that history instead of answering.
                 exhausted_call: dict[str, Any] = {
                     "id": call["id"],
                     "type": "function",
+                    # Copied: the normalized call also carries a parsed
+                    # arguments dict that must not reach the provider.
                     "function": dict(call["function"]),
                 }
                 exhausted_extra = call.get("extra_content")
@@ -717,23 +786,27 @@ async def stream_with_studio_tools(
                 completion = controller.record_noop(decision)
                 noop_messages.append(completion.model_message())
                 # The provider's own tool_calls delta for this call was relayed
-                # verbatim while it streamed and the client paints a card from
+                # verbatim while it streamed and the client painted a card from
                 # it. Nothing else closes that card, so without a terminal event
-                # it spins for the rest of the answer and then settles as a tool
-                # that ran and returned nothing. Keyed on the id the provider
-                # streamed, since a repeated call is exactly the one renamed
-                # above for the replay.
-                yield _sse(
-                    {
-                        "type": "tool_end",
-                        "tool_name": decision.tool_name,
-                        "tool_call_id": call.get("stream_id") or decision.tool_call_id,
-                        "result": _TOOL_SKIPPED.get(
-                            decision.action, "Studio did not run this call."
-                        ),
-                        "provenance": decision.provenance,
-                    }
-                )
+                # it spins for the rest of the answer and then reads as a tool
+                # that ran and returned nothing. Keyed on the streamed id, since
+                # a repeated call is exactly the one this loop renames above.
+                #
+                # Only for a tool the user DID enable. A call for something
+                # outside the catalog is not a tool of Studio's that declined to
+                # run, it is a name this install never offered, and giving it a
+                # card would advertise a tool the user switched off. That one is
+                # answered in the conversation only.
+                if decision.action == "disabled":
+                    continue
+                for card_line in _unrun_call_card(
+                    tool_name = decision.tool_name,
+                    tool_call_id = call.get("stream_id") or decision.tool_call_id,
+                    arguments = decision.arguments,
+                    result = _TOOL_SKIPPED.get(decision.action, "Studio did not run this call."),
+                    provenance = decision.provenance,
+                ):
+                    yield card_line
                 continue
             assistant_call = decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
@@ -778,12 +851,12 @@ async def stream_with_studio_tools(
                         # on its own write and the Allow / Deny buttons paint before
                         # the stream blocks waiting for the answer.
                         done, _pending = await asyncio.wait(
-                            {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
+                            {waiter}, timeout=_TOOL_APPROVAL_FLUSH_DELAY_S
                         )
                         while not done:
                             yield _SSE_KEEPALIVE
                             done, _pending = await asyncio.wait(
-                                {waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S
+                                {waiter}, timeout=TOOL_HEARTBEAT_INTERVAL_S
                             )
                     finally:
                         if not waiter.done():
@@ -822,7 +895,7 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            def _invoke(output_callback: Any, call=decision) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -839,9 +912,9 @@ async def stream_with_studio_tools(
             # the card, and a heartbeat so a long call cannot idle the stream out.
             tool_stream = stream_tool_execution(
                 _invoke,
-                tool_name = name,
-                tool_call_id = call_id,
-                cancel_event = cancel_event,
+                tool_name=name,
+                tool_call_id=call_id,
+                cancel_event=cancel_event,
             )
             outcome: dict[str, Any] = {}
             step_task: Any = None
@@ -891,7 +964,7 @@ async def stream_with_studio_tools(
             "role": "assistant",
             # Markup never replays: the call is carried structurally below.
             "content": strip_tool_markup(
-                "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
+                "".join(turn.text), final=True, enabled_tool_names=allowed_tool_names
             ),
         }
         if turn.reasoning_extra:
@@ -903,7 +976,7 @@ async def stream_with_studio_tools(
             append_assistant_turn(
                 conversation,
                 assistant_message,
-                continue_final_message = run.continue_final_message,
+                continue_final_message=run.continue_final_message,
             )
         conversation.extend(tool_messages)
         # Deferred to after the results so a no-op never splits a call from them,

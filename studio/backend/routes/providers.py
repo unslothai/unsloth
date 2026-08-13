@@ -130,7 +130,8 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
 async def list_registry(
-    include_hidden: bool = False, current_subject: str = Depends(get_current_subject)
+    include_hidden: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ):
     """List all supported provider types with their default configurations.
 

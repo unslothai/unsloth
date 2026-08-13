@@ -24,7 +24,7 @@ from core.inference.external_provider import ExternalProviderClient
 
 
 # /inference/cancel and the model-load path only set a threading.Event, so an
-# asyncio consumer has to poll it. Same interval as _await_cancel_then_close.
+# asyncio consumer has to poll it. Same interval as the Codex client's watcher.
 _CANCEL_POLL_S = 0.05
 
 
@@ -96,12 +96,14 @@ class OAICompatTransport:
 
         ``stream_chat_completion`` takes no cancel_event, and /inference/cancel
         and the model-load path only set the flag: nothing else can reach the
-        provider socket. Without this race the read stays parked until the
-        provider emits again, so Stop keeps consuming billed tokens and a model
-        load waits behind a stalled upstream. Cancelling the pending read raises
-        inside the upstream generator at its own await, which runs the ``finally``
-        that closes the httpx response; calling aclose() here instead would hit
-        "generator already executing".
+        provider socket. Relying on the route closing this generator does not
+        cover them, because a closed generator is only noticed at the next yield
+        and Stop arrives while the read is parked. Without this race the read
+        stays parked until the provider emits again, so Stop keeps consuming
+        billed tokens and a model load waits behind a stalled upstream.
+        Cancelling the pending read raises inside the upstream generator at its
+        own await, which runs the ``finally`` that closes the httpx response;
+        calling aclose() here instead would hit "generator already executing".
         """
         iterator = upstream.__aiter__()
         watcher = asyncio.ensure_future(_await_cancel(cancel_event))

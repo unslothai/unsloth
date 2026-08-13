@@ -585,9 +585,8 @@ def _pbkdf2_desktop_secret(raw_secret: str) -> str:
 # enforced by the SQLite read on every call, so a cache hit only skips the KDF.
 # Only keys present in the DB are cached, so unknown-key spam can't grow it.
 _api_key_hash_cache: dict[str, str] = {}
-# Which workflow minted each memoized key ("" when it was a user's own key); set
-# once, since minting decides it.
-_api_key_internal_cache: dict[str, str] = {}
+# Whether each memoized key was minted internally; set once, since minting decides it.
+_api_key_internal_cache: dict[str, bool] = {}
 _API_KEY_HASH_CACHE_MAX = 4096
 _api_key_hash_cache_lock = threading.Lock()
 
@@ -1038,11 +1037,14 @@ def clear_desktop_secret() -> None:
 
 API_KEY_PREFIX = "sk-unsloth-"
 
-
-# Workflow names on internally minted keys. Studio sets these, never a caller,
-# so they are what request-scoped code authorizes a workflow against.
-RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
-DATA_RECIPE_WORKFLOW_KEY_NAME = "data-recipe workflow"
+# The ``name`` a workflow mints its internal key under. Studio mints internal
+# keys for more than one workflow and they do not carry the same authority, so
+# the name is the only thing that tells them apart after the fact. Deep Research
+# is durable: its hops outlive the session that started them, so they carry a key
+# instead of a JWT and still have to reach the saved connection the run was
+# created with. A data-recipe key is handed to a user-authored recipe subprocess
+# and needs nothing but this host's local /v1, so it must never gain that reach.
+DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 
 
 def create_api_key(
@@ -1164,49 +1166,72 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
-def internal_api_key_workflow(raw_key: str) -> Optional[str]:
-    """The workflow that minted *raw_key*, or ``None`` if it is a user's own key.
+def is_internal_api_key(raw_key: str) -> bool:
+    """Whether *raw_key* is a workflow-minted internal key rather than a user's own.
 
-    "Internal" alone is too coarse to authorize with: every workflow key would
-    then be interchangeable, so a data-recipe job could act as Deep Research.
-    The name is set by Studio at mint time and is never caller-supplied, so it is
-    a usable scope. Memoized because this runs on the event loop for every
-    API-key request and a key's origin is fixed when it is minted.
+    Lets request-scoped code (the API monitor) tell Studio's own background work from a
+    third party using Unsloth as an API server. The answer is memoized because this runs on
+    the event loop for every API-key request and a key's origin is fixed when it is minted.
     """
     if not raw_key.startswith(API_KEY_PREFIX):
-        return None
+        return False
     cache_id = _api_key_cache_id(raw_key)
-    cached_workflow = _api_key_internal_cache.get(cache_id)
-    if cached_workflow is not None:
-        return cached_workflow or None
+    cached_internal = _api_key_internal_cache.get(cache_id)
+    if cached_internal is not None:
+        return cached_internal
     cached_hash = _api_key_hash_cache.get(cache_id)
     key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT is_internal, name FROM api_keys WHERE key_hash = ?", (key_hash,)
+            "SELECT is_internal FROM api_keys WHERE key_hash = ?", (key_hash,)
         ).fetchone()
     finally:
         conn.close()
     if row is None:
-        return None
-    workflow = str(row["name"] or "") if row["is_internal"] else ""
+        return False
+    internal = bool(row["is_internal"])
     with _api_key_hash_cache_lock:
         if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
             _api_key_hash_cache.clear()
             _api_key_internal_cache.clear()
         _api_key_hash_cache[cache_id] = key_hash
-        _api_key_internal_cache[cache_id] = workflow
-    return workflow or None
+        _api_key_internal_cache[cache_id] = internal
+    return internal
 
 
-def is_internal_api_key(raw_key: str) -> bool:
-    """Whether *raw_key* is a workflow-minted internal key rather than a user's own.
+def internal_api_key_name(raw_key: str) -> Optional[str]:
+    """The workflow name *raw_key* was minted under, or ``None`` if it is not internal.
 
-    Lets request-scoped code (the API monitor) tell Studio's own background work from a
-    third party using Unsloth as an API server.
+    ``is_internal_api_key`` answers "is this Studio's own key", which is the right
+    question for a monitor label but far too coarse for authorization: a
+    data-recipe key runs inside a recipe the user authored, so treating it as
+    equal to the Deep Research hop would let that recipe spend any saved cloud
+    credential. The name is fixed when the key is minted and is the only durable
+    thing that separates the two.
+
+    Deliberately not memoized: this is read on the external-provider path only,
+    once per request that carries an API key, and a stale answer here would be a
+    stale authorization. The PBKDF2 derivation is taken from the shared hash
+    cache when it is warm, so the cost is one indexed lookup.
     """
-    return internal_api_key_workflow(raw_key) is not None
+    if not raw_key.startswith(API_KEY_PREFIX):
+        return None
+    cache_id = _api_key_cache_id(raw_key)
+    cached_hash = _api_key_hash_cache.get(cache_id)
+    key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT name FROM api_keys WHERE key_hash = ? AND is_internal = 1 AND is_active = 1",
+            (key_hash,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    name = row["name"]
+    return name if isinstance(name, str) else None
 
 
 def validate_api_key(raw_key: str) -> Optional[str]:
