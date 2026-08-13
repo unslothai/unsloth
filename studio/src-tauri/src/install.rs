@@ -390,13 +390,10 @@ fn spawn_script(
     install.intentional_stop = false;
     install.needed_packages.clear();
 
-    // Scripts create ~/.unsloth/studio/ themselves, but need a writable cwd.
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let work_dir = home.join(".unsloth");
-    if !work_dir.exists() {
-        std::fs::create_dir_all(&work_dir)
-            .map_err(|e| format!("Failed to create {}: {}", work_dir.display(), e))?;
-    }
+    // Scripts create ~/.unsloth/studio/ themselves but need a writable cwd, and
+    // unlike the CLI children they always want ~/.unsloth. No Windows-directory
+    // rejection: install.ps1 detects a SYSTEM profile itself and explains it.
+    let work_dir = crate::process::install_working_dir(dirs::home_dir())?;
 
     #[cfg(unix)]
     let mut cmd = Command::new("bash");

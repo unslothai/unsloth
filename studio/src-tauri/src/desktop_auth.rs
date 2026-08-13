@@ -230,6 +230,8 @@ async fn provision_desktop_auth() -> Result<(), String> {
     cmd.args(["studio", "provision-desktop-auth"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
+    crate::process::apply_managed_cli_context_tokio(&mut cmd)
+        .map_err(|error| format!("Desktop auth provisioning failed: {}", error))?;
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 

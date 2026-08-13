@@ -1886,9 +1886,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     const BID: &str = "ai.unsloth.studio";
 
-    // Only XDG_DATA_HOME is swapped, and nothing else in the crate reads it, so the
-    // tests running beside these stay clear. HOME is left alone for the same reason:
-    // `dirs::home_dir` is all over this crate.
+    // Only XDG_DATA_HOME is swapped, and it is read elsewhere now (a relocated CLI
+    // child pins it), so the swap holds the crate-wide env lock and readers take it
+    // too. HOME is left alone: `dirs::home_dir` is all over this crate.
     #[cfg(target_os = "linux")]
     fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
         // The crate-wide lock, not one of this module's own: the path policy
