@@ -693,6 +693,82 @@ def test_a_spawn_failure_on_an_accelerator_leaves_the_cpu_retry_to_the_sidecar(m
         )
 
 
+class _StillbornProcess:
+    """A child that starts but whose fresh interpreter never comes up.
+
+    A frozen POSIX build re-runs its own binary rather than an interpreter, so
+    start() returns and the child is gone before it can read a command.
+    """
+
+    def __init__(self, exitcode = 1) -> None:
+        self.pid = 4243
+        self.exitcode = None
+        self._exitcode = exitcode
+
+    def start(self):
+        self.exitcode = self._exitcode
+
+    def is_alive(self):
+        return False
+
+    def join(self, _timeout = None):
+        return None
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+class _StillbornContext:
+    def __init__(self, exitcode = 1) -> None:
+        self.exitcode = exitcode
+
+    def Queue(self):
+        return queue.Queue()
+
+    def Event(self):
+        return threading.Event()
+
+    def Process(self, **_kwargs):
+        return _StillbornProcess(self.exitcode)
+
+
+def test_a_child_that_never_bootstraps_reads_as_a_host_that_cannot_spawn(monkeypatch):
+    # start() succeeding says only that the exec worked. A child that dies before
+    # answering anything took no device and named no model, so it must reach the
+    # in-process fallback rather than the same failure on a second child.
+    from core.inference.stt_sidecar import WhisperSttSidecar
+
+    monkeypatch.setattr(worker_module, "_CTX", _StillbornContext())
+    _calls, _model, _processor = _install_fake_transformers(monkeypatch)
+
+    engine = WhisperSttSidecar(keep_alive_seconds = 0)._build_model(
+        "/cached/model", "cpu", "float32", threading.Event()
+    )
+
+    assert isinstance(engine, worker_module.InProcessWhisperEngine)
+    assert engine.device == "cpu"
+
+
+def test_a_child_killed_by_a_signal_keeps_its_crash_instead_of_falling_back(monkeypatch):
+    # A child the box killed under memory pressure bootstrapped fine, so spawn
+    # works here; loading the same model in the backend would only repeat it.
+    monkeypatch.setattr(worker_module, "_CTX", _StillbornContext(exitcode = -9))
+    monkeypatch.setattr(
+        worker_module,
+        "load_whisper",
+        lambda *_args, **_kwargs: pytest.fail("no in-process load after a real crash"),
+    )
+
+    handle = WhisperWorker()
+    with pytest.raises(SttWorkerError, match = "SIGKILL") as caught:
+        handle.start("/cached/model", "cpu", "float32")
+
+    assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
+
+
 def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeypatch):
     _calls, model, _processor = _install_fake_transformers(monkeypatch)
     model.generation_config = SimpleNamespace(is_multilingual = False)

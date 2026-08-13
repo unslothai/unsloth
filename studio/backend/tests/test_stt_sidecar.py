@@ -23,6 +23,7 @@ from core.inference.stt_sidecar import (
     SttAudioTooLongError,
     SttLanguageError,
     SttLoadCancelledError,
+    SttModelBusyError,
     SttModelCompatibilityError,
     SttModelIdError,
     SttModelNotDownloadedError,
@@ -576,6 +577,91 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
     assert workers[0].closed is True
     assert sidecar.loaded_model is None
     assert sidecar.is_loading() is False
+
+
+def _install_unkillable_worker(monkeypatch):
+    """A worker whose child outlived terminate and kill, so close() answers False."""
+    workers = []
+
+    class UnkillableWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closes = 0
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+
+        def is_alive(self):
+            return True
+
+        def close(self):
+            self.closes += 1
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", UnkillableWorker, raising = True
+    )
+    return workers
+
+
+def test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unloaded(monkeypatch):
+    # close() answers False for a child wedged in a driver call that outlives
+    # SIGKILL. It still holds its accelerator memory, so reporting the model
+    # unloaded would let training be admitted against memory that is not free.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cpu"
+
+
+def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(monkeypatch):
+    # Starting a second child over one that never exited doubles the memory the
+    # first was unloaded to release, so refuse and let the caller retry.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("base")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.is_loading() is False
+
+
+def test_an_idle_unload_retries_a_worker_that_outlived_the_kill(monkeypatch):
+    # Keeping the survivor resident must not strand it: the idle timer is rearmed
+    # so the release is tried again once the child finally goes.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    monkeypatch.setattr(stt_sidecar_module.threading, "Timer", _FakeTimer)
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 60)
+    sidecar.load("small")
+    sidecar._idle_timer.fire()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar._idle_timer.started is True
 
 
 def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch):

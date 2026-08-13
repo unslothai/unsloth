@@ -307,6 +307,9 @@ class WhisperWorker:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
+        # Whether the child ever answered, which is what separates a host that
+        # cannot bring a child up from a child that failed at something.
+        self._answered = False
         self.device: Optional[str] = None
         # Read by the sidecar the way it read the model's, so an English-only
         # checkpoint still drops the task/language kwargs it rejects.
@@ -372,8 +375,14 @@ class WhisperWorker:
                 }
             )
             response = self._await("loaded", _LOAD_TIMEOUT_SECONDS, cancel_event, "load")
-        except BaseException:
+        except BaseException as exc:
+            # Classify before close(), which reaps the child and drops the handle.
+            stillborn = self._never_bootstrapped(exc)
             self.close()
+            if stillborn:
+                raise SttWorkerSpawnError(
+                    f"The dictation worker process could not start: {exc}"
+                ) from exc
             raise
         self.device = response.get("device") or device
         self.generation_config = SimpleNamespace(is_multilingual = response.get("is_multilingual"))
@@ -402,6 +411,28 @@ class WhisperWorker:
     def is_alive(self) -> bool:
         process = self._process
         return process is not None and process.is_alive()
+
+    def _never_bootstrapped(self, exc: BaseException) -> bool:
+        """Whether the child died without its fresh interpreter ever coming up.
+
+        start() returning says only that the exec worked: a frozen POSIX build
+        re-runs its own binary instead of an interpreter, so the child is gone
+        before it can read the load command. That is a host that cannot spawn,
+        which the caller answers by loading in process, not by trying the same
+        thing again on another device.
+
+        The loop only ever exits zero once it is running, so a positive exitcode
+        with nothing said is a child that never got that far. A signal death
+        (the box under memory pressure, a driver fault) and any child that did
+        answer keep their own error.
+        """
+        if self._answered or not isinstance(exc, SttWorkerError):
+            return False
+        process = self._process
+        if process is None or process.is_alive():
+            return False
+        exitcode = getattr(process, "exitcode", None)
+        return isinstance(exitcode, int) and exitcode > 0
 
     def cancel(self) -> None:
         """Ask the child to stop the command it is running."""
@@ -510,6 +541,7 @@ class WhisperWorker:
                 raise SttWorkerError(f"Lost contact with the dictation worker: {exc}") from exc
             if not isinstance(response, dict):
                 continue
+            self._answered = True
             if response.get("type") == "error":
                 _raise_worker_error(response)
             if response.get("type") == expected:

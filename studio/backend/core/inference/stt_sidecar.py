@@ -196,7 +196,7 @@ class SttModelNotDownloadedError(RuntimeError):
 
 
 class SttModelBusyError(RuntimeError):
-    """A switch was asked for while the current model is mid-transcription."""
+    """The current model cannot make way yet, so the switch has to be retried."""
 
 
 class SttModelIdError(ValueError):
@@ -1018,20 +1018,25 @@ def _engine_is_alive(engine) -> bool:
         return False
 
 
-def _close_engine(engine) -> None:
+def _close_engine(engine) -> bool:
     """End the worker behind an engine handle, if it has one.
 
     Ending the worker is what returns its accelerator context; dropping the
     handle and emptying the cache cannot. A plain object (tests, or a future
     in-process engine) has no close and needs none.
+
+    False only when the engine says so itself, which WhisperWorker does for a
+    child that outlived terminate and kill and is therefore still holding the
+    memory this call was made to release.
     """
     close = getattr(engine, "close", None)
     if close is None:
-        return
+        return True
     try:
-        close()
+        return close() is not False
     except Exception as exc:  # noqa: BLE001 - a stuck worker must not block the unload
         logger.warning("Could not stop the STT worker: %s", exc)
+        return True
 
 
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
@@ -1231,16 +1236,31 @@ class WhisperSttSidecar:
             logger.info("Unloading idle STT model %s", self._model_id)
             self._release_engine_locked()
 
-    def _release_engine_locked(self) -> None:
+    def _release_engine_locked(self) -> bool:
+        """Release the resident engine. False if its child outlived the kill.
+
+        Such a child still holds its accelerator memory, so forgetting it here
+        would report the model unloaded and let training be admitted against
+        memory that is not free. Keep it resident instead and rearm the idle
+        timer, so the release is tried again rather than stranded.
+        """
         self._cancel_idle_unload_locked()
         engine = self._engine
         device = self._device
+        model_id = self._model_id
         self._engine = None
         self._model_id = None
         self._device = None
-        _close_engine(engine)
+        released = _close_engine(engine)
+        if not released:
+            self._engine = engine
+            self._model_id = model_id
+            self._device = device
         del engine
         _clear_device_cache(device)
+        if not released:
+            self._schedule_idle_unload_locked()
+        return released
 
     def _release_dead_engine_locked(self) -> None:
         """Drop a worker whose process is gone, so the next use loads a fresh one."""
@@ -1362,7 +1382,13 @@ class WhisperSttSidecar:
                     )
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
-                self._release_engine_locked()
+                if not self._release_engine_locked():
+                    # Starting a second child over one that never exited doubles
+                    # the memory this release was meant to give back.
+                    raise SttModelBusyError(
+                        "The previous dictation worker did not exit and still holds its "
+                        "memory. Try again shortly."
+                    )
                 resident_released = True
                 logger.info("Loading STT model %s (%s) on %s", model_id, snapshot_path, device)
 
