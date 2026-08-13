@@ -20,6 +20,9 @@ const CATALOG: LlamaFlagCatalog = {
     "--numa": "NUMA policy",
     "--ctx-size": "context size",
     "--rope-scaling": "RoPE scaling",
+    "--device": "device list",
+    "-ngl": "layers to offload",
+    "--batch-size": "logical batch size",
   },
   // The names the backend actually returns, aliases included: --n-parallel is in
   // its denylist, and leaving it out here would test a catalogue that cannot exist.
@@ -177,6 +180,54 @@ test("values are never mistaken for flags", () => {
       (d) => d.level,
     ),
     ["note"],
+  );
+});
+
+test("a device flag is called removed, not winning, when GPUs are picked", () => {
+  // The launch strips these whenever gpu_ids is set (_strip_device_extra_args), so
+  // the ordinary "passed last, yours wins" note would be a lie for them.
+  const withPick = diagnoseExtraArgs("--device CUDA0", CATALOG, true);
+  assert.equal(withPick[0].level, "warning");
+  assert.match(withPick[0].message, /--device will be removed/);
+  assert.match(withPick[0].message, /GPU selection/);
+  // With no GPU picked the flag is the user's own and nothing is stripped.
+  assert.deepEqual(diagnoseExtraArgs("--device CUDA0", CATALOG, false), []);
+});
+
+test("a flag that takes a number rejects a value that is not one", () => {
+  // parse_ctx_override and parse_gpu_layers_override raise before the load starts,
+  // so the row has to say so rather than enable a request that cannot succeed.
+  // -ngl rather than --ctx-size: this build's catalogue has --ctx-size on the
+  // managed list, and that refusal would fire first and prove nothing.
+  const bad = diagnoseExtraArgs("-ngl many", CATALOG);
+  assert.equal(bad[0].level, "error");
+  assert.match(bad[0].message, /takes a number/);
+  assert.equal(extraArgsAreLoadable(bad), false);
+  assert.equal(
+    extraArgsAreLoadable(diagnoseExtraArgs("--batch-size=abc", CATALOG)),
+    false,
+  );
+  // A real value is fine, negative included: -1 means every layer.
+  assert.equal(
+    extraArgsAreLoadable(diagnoseExtraArgs("-ngl -1", CATALOG)),
+    true,
+  );
+  assert.equal(
+    extraArgsAreLoadable(diagnoseExtraArgs("--batch-size 512", CATALOG)),
+    true,
+  );
+});
+
+test("a control character is an error, as it is at the backend", () => {
+  // The usual way one arrives is a command copied out of coloured terminal output.
+  const diagnostics = diagnoseExtraArgs("--grammar a\u001b[0mb", CATALOG);
+  assert.equal(diagnostics[0].level, "error");
+  assert.match(diagnostics[0].message, /control characters/);
+  assert.equal(extraArgsAreLoadable(diagnostics), false);
+  // Tab and newline are separators here, not control characters to refuse.
+  assert.equal(
+    extraArgsAreLoadable(diagnoseExtraArgs("--top-k\t20", CATALOG)),
+    true,
   );
 });
 

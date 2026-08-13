@@ -497,6 +497,24 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
         kwargs["max_seq_length"] = max_seq_length
+    stored_extra_args = override.get("llama_extra_args")
+    if stored_extra_args:
+        # Sanitized here because this is where stored data becomes a request: the
+        # load treats an explicit list as the caller's own and refuses a managed
+        # flag with a 400, so an override written before a name was denylisted would
+        # break every auto-switch and idle reload of that model until someone
+        # rewrote it by hand. The inheritance and settings-save paths do the same.
+        from core.inference.llama_server_args import drop_managed_flags
+
+        kept, dropped = drop_managed_flags(stored_extra_args)
+        if dropped:
+            from loggers import get_logger
+
+            get_logger(__name__).warning(
+                "model_override.dropped_managed_flags flags=%s", ", ".join(dropped)
+            )
+        override = {**override, "llama_extra_args": kept}
+
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),

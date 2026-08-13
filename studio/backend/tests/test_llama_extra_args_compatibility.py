@@ -176,3 +176,40 @@ def test_the_override_save_carries_over_without_refusing(monkeypatch):
     if kept is not None:
         assert "--slot-save-path" not in kept
         assert "--numa" in kept
+
+
+def test_the_auto_switch_path_sanitizes_a_legacy_override(monkeypatch):
+    # The third carry-over path, and the one with no user in front of it: an OpenAI
+    # auto-switch or an idle reload builds a LoadRequest from the stored override.
+    # An explicit list is refused with a 400, so a flag denied after it was saved
+    # would break that model's automatic loads until someone rewrote the entry.
+    from utils.openai_auto_switch_settings import model_override_load_kwargs
+
+    kwargs = model_override_load_kwargs(
+        {"llama_extra_args": ["--agent", "--numa", "distribute"], "n_parallel": 4},
+        is_gguf = True,
+    )
+
+    assert kwargs["llama_extra_args"] == ["--numa", "distribute"]
+    assert kwargs["n_parallel"] == 4
+
+
+def test_the_auto_switch_path_leaves_a_clean_override_alone():
+    from utils.openai_auto_switch_settings import model_override_load_kwargs
+
+    kwargs = model_override_load_kwargs(
+        {"llama_extra_args": ["--numa", "distribute"]}, is_gguf = True
+    )
+
+    assert kwargs["llama_extra_args"] == ["--numa", "distribute"]
+
+
+def test_trimming_to_the_bounds_never_leaves_a_flag_without_its_value():
+    # validate_extra_args knows the arity of only a few flags, so a dangling
+    # --grammar passes it and llama-server refuses the launch instead.
+    kept, dropped = _lsa.drop_managed_flags(["--top-k", "20", "--grammar", "a" * 40_000])
+
+    assert kept == ["--top-k", "20"]
+    assert "--grammar" in dropped
+    # And a log line does not carry the 40 KB value that broke the bound.
+    assert all(len(name) < 100 for name in dropped)

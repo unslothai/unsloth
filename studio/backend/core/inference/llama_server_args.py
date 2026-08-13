@@ -217,11 +217,19 @@ def drop_managed_flags(
     """
     tokens = [str(raw) for raw in (args or [])]
 
-    def _takes_next(index: int, token: str, flag: str) -> bool:
-        """True when the token's value is the NEXT token rather than its own."""
+    def _takes_next(index: int, token: str, flag: str, source: list = None) -> bool:
+        """True when the token's value is the NEXT token rather than its own.
+
+        ``source`` defaults to the input list; the trimming loop passes the list it
+        is shortening, where "the next token" means the one just removed.
+        """
         if "=" in token or flag != token.strip():
             return False
-        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        seq = tokens if source is None else source
+        if source is not None:
+            # Called on the last surviving token, whose value was the token just shed.
+            return True
+        following = seq[index + 1] if index + 1 < len(seq) else None
         return following is not None and _flag_name(following) is None
 
     kept: list[str] = []
@@ -258,10 +266,20 @@ def drop_managed_flags(
         try:
             return validate_extra_args(kept), dropped
         except ValueError:
-            # Only the bounds can still fail here, and they are about length, so
-            # the tail is the right thing to shed.
-            dropped.append(kept[-1])
+            # Only the bounds can still fail here, and they are about length, so the
+            # tail is the right thing to shed. A flag whose value has just gone with
+            # it goes too: `['--grammar', <33 KiB>]` trimmed to `['--grammar']` is
+            # syntactically valid to this validator, which knows the arity of only a
+            # few flags, and llama-server then refuses the launch over a flag with
+            # no value.
+            # Names, not values: this list goes into a log line, and the token that
+            # broke the bound is by definition enormous.
+            dropped.append(_flag_name(kept[-1]) or "<value>")
             kept = kept[:-1]
+            last_flag = _flag_name(kept[-1]) if kept else None
+            if last_flag is not None and _takes_next(len(kept) - 1, kept[-1], last_flag, kept):
+                dropped.append(last_flag)
+                kept = kept[:-1]
     return [], dropped
 
 

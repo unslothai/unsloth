@@ -20,6 +20,9 @@ const NEEDS_QUOTING = /[\s"'\\]/;
 const DOUBLE_QUOTE_ESCAPES = /(["\\$`])/g;
 const DIGIT = /[0-9]/;
 const UNDERSCORE = /_/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: mirroring the backend's own check
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f\u007f]/;
+const INTEGER = /^-?[0-9]+$/;
 // Hoisted for the same reason as the patterns above: this runs on every keystroke.
 const TEXT_ENCODER = new TextEncoder();
 
@@ -227,6 +230,34 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--chat-template-file": "Chat Template",
 };
 
+/**
+ * Flags the launch REMOVES when the GPU picker owns placement. Not a shadow the user
+ * wins: `_strip_device_extra_args` deletes these from the command whenever gpu_ids is
+ * set, so telling the reader theirs is taken from here would be false.
+ */
+const GPU_SELECTION_STRIPPED_FLAGS: Record<string, string> = {
+  "--device": "GPU selection",
+  "-dev": "GPU selection",
+  "--main-gpu": "GPU selection",
+  "-mg": "GPU selection",
+};
+
+/** Values the backend parses as integers, and refuses the load over. */
+const INTEGER_VALUE_FLAGS = new Set([
+  "--ctx-size",
+  "-c",
+  "--gpu-layers",
+  "--n-gpu-layers",
+  "-ngl",
+  "--n-cpu-moe",
+  "-ncmoe",
+  "--parallel",
+  "--batch-size",
+  "-b",
+  "--ubatch-size",
+  "-ub",
+]);
+
 /** Sampling belongs to the conversation, not the launch. */
 const REQUEST_SCOPED_FLAGS = new Set([
   "--temp",
@@ -245,6 +276,8 @@ const REQUEST_SCOPED_FLAGS = new Set([
 export function diagnoseExtraArgs(
   input: string,
   catalog: LlamaFlagCatalog | null,
+  /** True when the GPU picker owns placement, which removes the device flags. */
+  gpuSelectionActive = false,
 ): ExtraArgsDiagnostic[] {
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote } = parseExtraArgs(input);
@@ -272,10 +305,20 @@ export function diagnoseExtraArgs(
     });
   }
 
+  // The backend refuses any token carrying one, and a command copied out of
+  // coloured terminal output is the usual way one arrives.
+  if (tokens.some((token) => CONTROL_CHARACTERS.test(token))) {
+    out.push({
+      level: "error",
+      message: "Arguments cannot contain control characters.",
+    });
+  }
+
   const seen = new Set<string>();
   const unknown: string[] = [];
   const shadowed: string[] = [];
-  for (const token of tokens) {
+  const stripped: string[] = [];
+  for (const [index, token] of tokens.entries()) {
     const flag = extraArgFlagName(token);
     if (flag === null || seen.has(flag)) {
       continue;
@@ -291,6 +334,22 @@ export function diagnoseExtraArgs(
           : `${flag} is managed by Unsloth Studio and cannot be passed here.`,
       });
       continue;
+    }
+    if (gpuSelectionActive && GPU_SELECTION_STRIPPED_FLAGS[flag]) {
+      stripped.push(flag);
+      continue;
+    }
+    // Mirrors parse_ctx_override and friends, which raise before the load starts.
+    if (INTEGER_VALUE_FLAGS.has(flag)) {
+      const value =
+        flag === token.trim() ? tokens[index + 1] : token.split("=")[1];
+      if (value !== undefined && value !== "" && !INTEGER.test(value.trim())) {
+        out.push({
+          level: "error",
+          message: `${flag} takes a number, and "${value}" is not one.`,
+        });
+        continue;
+      }
     }
     const control = CONTROL_OWNED_FLAGS[flag];
     if (control) {
@@ -311,6 +370,12 @@ export function diagnoseExtraArgs(
     }
   }
 
+  if (stripped.length > 0) {
+    out.push({
+      level: "warning",
+      message: `${stripped.join(", ")} will be removed: the GPU selection above owns placement. Set GPU Memory to Default to pass it yourself.`,
+    });
+  }
   if (shadowed.length > 0) {
     out.push({
       level: "note",

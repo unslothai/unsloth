@@ -172,6 +172,7 @@ function withoutUnsupportedDiffusionSettings(
     !config.tensorParallel &&
     config.nBatch == null &&
     config.nUbatch == null &&
+    (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -185,6 +186,10 @@ function withoutUnsupportedDiffusionSettings(
     // the diffusion runner ignores the llama-server batch flags
     nBatch: null,
     nUbatch: null,
+    // The diffusion shim never appends llama-server flags to its command, but the
+    // load records them as though it had, so a box filled before classification
+    // flipped would leave the model running without what it says.
+    llamaExtraArgs: null,
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -1308,7 +1313,11 @@ function ExtraArgsRow({
     };
   }, [keyIdentity, config.llamaExtraArgs]);
 
-  const diagnostics = diagnoseExtraArgs(text, catalog);
+  const diagnostics = diagnoseExtraArgs(
+    text,
+    catalog,
+    config.selectedGpuIds != null,
+  );
   const tokenCount = parseExtraArgs(text).tokens.length;
 
   // The panel owns the Load button, and an error here is one validate_extra_args
