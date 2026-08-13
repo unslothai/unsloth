@@ -3393,8 +3393,9 @@ def vllm_generation_init_patch():
 
         def generate(self, *args, **kwargs):
             llm = getattr(self, "llm", None)
-            sharing = getattr(llm, "shared_weights", False) or \
-                getattr(self, "unsloth_fast_inference_lora", False)
+            sharing = getattr(llm, "shared_weights", False) or getattr(
+                self, "unsloth_fast_inference_lora", False
+            )
             if llm is None or not sharing:
                 # Server mode, or a vLLM engine TRL created itself -> upstream behaviour.
                 return original_generate(self, *args, **kwargs)
@@ -3404,7 +3405,8 @@ def vllm_generation_init_patch():
 
             def override(name, make_replacement):
                 bound = getattr(llm, name, None)
-                if bound is None: return
+                if bound is None:
+                    return
                 had_own = name in getattr(llm, "__dict__", {})
                 try:
                     setattr(llm, name, make_replacement(bound))
@@ -3419,35 +3421,42 @@ def vllm_generation_init_patch():
                     if load_lora is not None and kwargs.get("lora_request", None) is None:
                         kwargs["lora_request"] = load_lora(lora_name, load_tensors = True)
                     return bound(*args, **kwargs)
+
                 return unsloth_generation_call
 
             def wrap_collective_rpc(bound):
                 def unsloth_collective_rpc(method, *args, **kwargs):
                     # The engine already shares the live training weights, so
                     # reload_weights would pull the ORIGINAL checkpoint back off disk.
-                    if method == "reload_weights": return None
+                    if method == "reload_weights":
+                        return None
                     return bound(method, *args, **kwargs)
+
                 return unsloth_collective_rpc
 
             override("generate", wrap_generation_call)
-            override("chat",     wrap_generation_call)
+            override("chat", wrap_generation_call)
             override("collective_rpc", wrap_collective_rpc)
             try:
                 return original_generate(self, *args, **kwargs)
             finally:
                 for name, had_own, bound in reversed(saved):
                     try:
-                        if had_own: setattr(llm, name, bound)
-                        else:       delattr(llm, name)
+                        if had_own:
+                            setattr(llm, name, bound)
+                        else:
+                            delattr(llm, name)
                     except AttributeError:
                         pass
 
-        generate.__name__     = getattr(original_generate, "__name__", "generate")
-        generate.__qualname__ = getattr(original_generate, "__qualname__", "VLLMGeneration.generate")
-        generate.__doc__      = getattr(original_generate, "__doc__", None)
+        generate.__name__ = getattr(original_generate, "__name__", "generate")
+        generate.__qualname__ = getattr(
+            original_generate, "__qualname__", "VLLMGeneration.generate"
+        )
+        generate.__doc__ = getattr(original_generate, "__doc__", None)
         # inspect.getsource / inspect.signature unwrap this, so drift detectors and any
         # other source-reading patch still see TRL's own `generate`.
-        generate.__wrapped__  = original_generate
+        generate.__wrapped__ = original_generate
         setattr(generate, _UNSLOTH_GENERATE_WRAPPED, True)
         vllm_generation.VLLMGeneration.generate = generate
         return True
@@ -3457,10 +3466,7 @@ def vllm_generation_init_patch():
     # no weight sync AND no LoRA, i.e. rollouts from the base model with no error. If any
     # one of the three fails, put all three back.
     method_names = ("_init_vllm", "sync_weights", "generate")
-    originals = {
-        name: getattr(vllm_generation.VLLMGeneration, name, None)
-        for name in method_names
-    }
+    originals = {name: getattr(vllm_generation.VLLMGeneration, name, None) for name in method_names}
     try:
         init_patched = patch_vllm_generation_method(
             "_init_vllm",
