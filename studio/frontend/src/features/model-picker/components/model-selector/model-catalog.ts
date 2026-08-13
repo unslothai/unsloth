@@ -26,9 +26,6 @@ export interface ModelArtifact {
   offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
-  /** Restrict a bundled GGUF repo's variant menu to filenames for this artifact.
-   * Used when one repo publishes several independently loadable model partitions. */
-  ggufFilenamePrefix?: string;
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip.
    * Only a fallback: the Hub listing's own `expand=gguf` total wins wherever it
    * reports one. Rows the listing never returns (a repo it does not index, a
@@ -37,6 +34,8 @@ export interface ModelArtifact {
   totalParams?: number;
   /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
   gated?: boolean;
+  /** Fixed quant when a specialized runtime pins one exact GGUF file. */
+  deviceQuant?: string;
 }
 
 export interface CatalogGroup {
@@ -45,7 +44,9 @@ export interface CatalogGroup {
   displayName: string;
   /** Row meta line ("Text-to-image", "Image editing", "Text-to-video with audio"). */
   description: string;
-  scope: "image" | "video";
+  scope: "image" | "video" | "audio";
+  /** Audio-only task tag driving the Audio page's Speak/Transcribe mode interlock. */
+  task?: "tts" | "stt";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
   /** Cross-owner ids that resolve to this group. Suffix stripping never merges two owners on its own. */
@@ -82,19 +83,6 @@ const bnb4bit = (
   ...extra,
 });
 
-const fp8Single = (
-  repoId: string,
-  filename: string,
-  approxSizeGb: number,
-): ModelArtifact => ({
-  repoId,
-  format: "fp8",
-  loadKind: "single_file",
-  filename,
-  label: "FP8",
-  approxSizeGb,
-  keywords: ["fp8", "float8"],
-});
 
 const fp8Pipeline = (
   repoId: string,
@@ -365,21 +353,19 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
+      // One official bundle for both denoiser partitions. The GGUF lister labels every variant
+      // Text & frames or References plus its build, so both stay explicit under one repo id.
       gguf("unsloth/MiniMax-H3-GGUF", {
-        label: "GGUF - Text and frames",
-        keywords: ["gguf", "quantized", "fl2va", "keyframes"],
+        label: "GGUF",
+        keywords: [
+          "gguf",
+          "quantized",
+          "fl2va",
+          "ref2va",
+          "keyframes",
+          "references",
+        ],
         totalParams: 20_111_438_744,
-        ggufFilenamePrefix: "minimax_h3_fl2va",
-      }),
-      // The community bundle currently publishing the Ref2VA quants. Its repo also contains
-      // FL2VA files and Qwen companions, so the filename prefix keeps this artifact's menu on
-      // the reference partition while the backend's bundle filter keeps companions out.
-      gguf("leejet/MiniMax-H3-GGUF", {
-        label: "GGUF - References",
-        keywords: ["gguf", "quantized", "ref2va", "references"],
-        totalParams: 20_111_438_744,
-        ggufFilenamePrefix: "minimax_h3_ref2va",
       }),
     ],
   },
@@ -447,6 +433,121 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         keywords: ["bf16", "480p"],
       }),
     ],
+  },
+];
+
+// The Audio page's curated list. tts groups load into the main slot via /api/inference/load
+// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); stt groups map to
+// the dictation sidecar models in stt-model-catalog.ts, so their sizes are informational only.
+export const AUDIO_CATALOG: CatalogGroup[] = [
+  {
+    canonicalId: "unsloth/orpheus-3b-0.1-ft",
+    displayName: "Orpheus TTS 3B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("unsloth/orpheus-3b-0.1-ft", 7, { label: "Safetensors" }),
+      gguf("unsloth/orpheus-3b-0.1-ft-GGUF"),
+    ],
+  },
+  {
+    canonicalId: "unsloth/csm-1b",
+    displayName: "Sesame CSM 1B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    // No GGUF artifact: the llama.cpp TTS path has no csm decode, so CSM runs transformers-only.
+    artifacts: [bf16Pipeline("unsloth/csm-1b", 6, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/Spark-TTS-0.5B",
+    displayName: "Spark TTS 0.5B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [bf16Pipeline("unsloth/Spark-TTS-0.5B", 3, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/Llama-OuteTTS-1.0-1B",
+    displayName: "Oute TTS 1B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
+    ],
+  },
+  // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
+  // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
+  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
+  // picker. Re-add both rows together with an xcodec2 decoder.
+  {
+    canonicalId: "unslothai/Qwen3-ASR-0.6B-GGUF",
+    displayName: "Qwen3-ASR 0.6B",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-0.6B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
+  },
+  {
+    canonicalId: "unslothai/Qwen3-ASR-1.7B-GGUF",
+    displayName: "Qwen3-ASR 1.7B",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-1.7B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-large-v3-turbo",
+    displayName: "Whisper Large v3 Turbo",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      bf16Pipeline("unsloth/whisper-large-v3-turbo", 2, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-large-v3",
+    displayName: "Whisper Large v3",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      bf16Pipeline("unsloth/whisper-large-v3", 4, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-small",
+    displayName: "Whisper Small",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-small", 1, { label: "Safetensors" })],
+  },
+  // Both sidecars carry tiny/base (GGML_STT_REPOS, STT_MODEL_REPOS) and Voice
+  // settings lists them; only this picker was missing them.
+  {
+    canonicalId: "unsloth/whisper-base",
+    displayName: "Whisper Base",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-base", 1, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/whisper-tiny",
+    displayName: "Whisper Tiny",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
 ];
 
@@ -519,7 +620,7 @@ interface CatalogIndex {
   artifactById: Map<string, ModelArtifact>;
 }
 
-// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice twice (images + video).
+// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice once per catalog (images, video, audio).
 const indexCache = new WeakMap<CatalogGroup[], CatalogIndex>();
 
 function indexFor(catalog: CatalogGroup[]): CatalogIndex {
@@ -631,6 +732,7 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
         name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
+        deviceQuant: artifact.deviceQuant,
       });
     }
   }

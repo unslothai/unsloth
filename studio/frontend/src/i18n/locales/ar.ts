@@ -18,7 +18,10 @@ export const ar = {
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
     pickModelFile: "اختيار ملف نموذج من القرص",
-    ejectLoadedModel: "إخراج النموذج المحمّل",
+    modelDropped: "لم يعد متاحًا",
+    modelDroppedByProvider: "{provider} · لم يعد متاحًا",
+    modelDisabled: "غير مُفعَّل",
+    modelDisabledByProvider: "{provider} · غير مُفعَّل",
     multipleMatches:
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
@@ -83,6 +86,7 @@ export const ar = {
       recipes: "الوصفات",
       images: "الصور",
       video: "الفيديو",
+      audio: "الصوت",
       trainChecking: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
       videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",
@@ -378,6 +382,9 @@ export const ar = {
         keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
         keepKvDescription:
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+        apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
+        apiOnlyDescription:
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Studio في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -412,14 +419,14 @@ export const ar = {
         launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+
+        closeToTray: "الإغلاق إلى علبة النظام",
+        closeToTrayDescription:
+          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+        closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
-      gettingStarted: "البدء",
-      startOnboarding: "بدء الإعداد التمهيدي",
-      startOnboardingDescription:
-        "إعادة فتح معالج الإعداد دون تغيير حسابك.",
-      startOnboardingAction: "بدء الإعداد التمهيدي",
       uploads: {
         sectionTitle: "عمليات الرفع",
         maxUploadSize: "الحد الأقصى لحجم رفع مجموعة بيانات التدريب",
@@ -714,6 +721,39 @@ export const ar = {
         free: "{value} متاح",
         total: "{value} إجمالي",
       },
+      llamaBackend: {
+        title: "محرك استدلال GGUF",
+        label: "خلفية الحوسبة",
+        description: "الخلفية التي يستخدمها llama.cpp لتشغيل نماذج GGUF.",
+        runningOn: "يعمل llama.cpp حاليًا على {backend}.",
+        hint: "يثبّت إصدار llama.cpp الخاص بهذه الخلفية ويحافظ عليه عبر التحديثات. مفيد عندما ينهار الاختيار التلقائي أو لا يدعمه تعريف كرت الشاشة لديك. تظهر فقط الخلفيات التي يتوفر لها إصدار لهذا الجهاز، والتدريب لا يتأثر.",
+        autoWith: "تلقائي ({backend})",
+        apply: "تطبيق",
+        applying: "جارٍ التثبيت...",
+        applyHint: "ينزّل الإصدار الجديد ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        applyHintWithSize: "ينزّل {size} ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        switchedTo: "يعمل llama.cpp الآن على {backend}.",
+        switchFailed: "تعذّر تغيير خلفية llama.cpp.",
+        switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
+        envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
+        backends: {
+          auto: "تلقائي",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
+          localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
+          sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
+          unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
+        },
+        // لا يظهر: كلمات إضافية لبحث الإعدادات.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
+      },
       modelMemory: {
         title: "ذاكرة النموذج",
         keepResident: "إبقاء النموذج في ذاكرة كرت الرسوميات",
@@ -892,6 +932,11 @@ export const ar = {
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      thinking: {
+        collapseByDefault: "طيّ التفكير افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "طي كتل HTML",
@@ -919,12 +964,14 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
+        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
         "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
+      importingChats: "جارٍ استيراد المحادثات: {count} حتى الآن ({percent}%)...",
+      importedChatCountPartial: "تم استيراد {count} محادثة إلى الأخيرة؛ تعذّر حفظ {failed} منها.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
@@ -970,6 +1017,10 @@ export const ar = {
         "أدر سجل المحادثات والملفات المرفوعة المخزّنة على هذا الجهاز.",
       archivedChats: "المحادثات المؤرشفة",
       archivedChatsDescription: "اعرض المحادثات التي أرشفتها وأدرها.",
+      archivedImages: "الصور المؤرشفة",
+      archivedImagesDescription: "اعرض الصور التي أرشفتها وأدرها.",
+      archivedVideos: "الفيديوهات المؤرشفة",
+      archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
       manageAction: "إدارة",
       exportArchivedChats: "تصدير",
       exportingArchivedChats: "جارٍ التصدير...",
@@ -1187,24 +1238,8 @@ export const ar = {
       modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
       methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
       datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
-      hfTokenLabel: "رمز Hugging Face",
       hfTokenDescription:
         "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
-      hfTokenGet: "الحصول على رمز",
-      hfTokenChecking: "جارٍ التحقق من الرمز…",
-      modelPickerDescription:
-        "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
-      trainingMethod: "طريقة التدريب",
-      trainingMethodDescription: "اختر كيفية الضبط الدقيق لـ {model}",
-      trainingMethodTooltip:
-        "يستخدم QLoRA تكميم 4 بت لتقليل استخدام VRAM إلى الحد الأدنى. يستخدم LoRA أوزان 16 بت، بينما يحدّث الضبط الدقيق الكامل جميع الأوزان.",
-      datasetPickerDescription:
-        "ابحث في Hugging Face أو اختر مجموعة بيانات موجودة على هذا الجهاز.",
-      uploadDataset: "تحميل مجموعة بيانات",
-      uploadDatasetDescription: "يدعم CSV وJSONL وJSON وParquet.",
-      chooseFile: "اختيار ملف",
-      format: "التنسيق",
-      autoDetect: "اكتشاف تلقائي",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",
       releaseToUpload: "أفلت للتحميل",
@@ -1370,23 +1405,6 @@ export const ar = {
     loadingRuntime: "جارٍ تحميل بيئة تشغيل التدريب...",
     checkingSupport: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
     backToHistory: "العودة إلى السجل",
-    sections: {
-      model: "النموذج",
-      dataset: "مجموعة البيانات",
-      params: "المعلمات",
-      training: "التدريب",
-      charts: "الرسوم البيانية",
-      progress: "تقدم التدريب",
-    },
-    configure: {
-      title: "الإعداد",
-      description: "اختر نموذجًا ومجموعة بيانات وإعدادات التدريب.",
-      startTraining: "بدء التدريب",
-      starting: "جارٍ البدء...",
-      loadingModel: "جارٍ تحميل النموذج...",
-      checkingDataset: "جارٍ التحقق من مجموعة البيانات...",
-      trainingConfig: "تكوين التدريب",
-    },
     dataset: {
       selectors: {
         subset: "المجموعة الفرعية",
@@ -1409,7 +1427,6 @@ export const ar = {
         manualTooLong: "استخدم 128 حرفًا أو أقل.",
         manualInvalid: "تحتوي هذه القيمة على أحرف غير مدعومة.",
       },
-      source: "مصدر مجموعة البيانات",
       sourceAriaLabel: "مصدر مجموعة البيانات",
       localDataset: "مجموعة بيانات محلية",
       localDatasetRows: " / عدد الصفوف: {count}",
@@ -1426,8 +1443,6 @@ export const ar = {
       fileTooLarge: "الملف كبير جدًا",
       fileTooLargeDescription:
         "حجم {file} هو {size}. تدعم عمليات تحميل بيانات التدريب حجمًا يصل إلى {limit}.",
-      uploadLimitsHint:
-        "CSV وJSONL وJSON وParquet · بحد أقصى {limit}؛ PDF/DOCX/TXT ← Learning Recipes",
       documentRedirect: {
         title: "يجب تحويل هذا الملف أولًا",
         genericFile: "هذا الملف",
@@ -1512,7 +1527,6 @@ export const ar = {
       uploadOneFileAtATime: "ارفع ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:
         "لا يمكن رفع أكثر من ملف واحد لمجموعة بيانات التدريب.",
-      preview: "معاينة مجموعة البيانات",
       previewLoadingHuggingFace:
         "جارٍ جلب معاينة مجموعة البيانات من Hugging Face...",
       previewLoading: "جارٍ تحميل المعاينة...",
@@ -1534,8 +1548,6 @@ export const ar = {
         requiredDescription:
           "عيّن أدوارًا للأعمدة باستخدام القوائم المنسدلة في الرؤوس. يجب تعيين {required} على الأقل.",
       },
-      split: "التقسيم",
-      subset: "المجموعة الفرعية",
       s3: {
         title: "تكوين S3",
         description:
@@ -1546,20 +1558,11 @@ export const ar = {
         regionPlaceholder: "us-east-1",
         prefix: "بادئة المسار",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "مسار اختياري داخل الحاوية إلى ملفات مجموعة البيانات",
         accessKeyId: "معرّف مفتاح الوصول",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "مفتاح الوصول السري",
         secretAccessKeyPlaceholder: "مفتاح الوصول السري لـ AWS الخاص بك",
         useIamRole: "استخدام دور IAM",
-        useIamRoleTooltip:
-          "استخدم بيانات اعتماد دور IAM بدلاً من مفاتيح الوصول (موصى به لـ EC2/SageMaker)",
-        testConnection: "اختبار الاتصال",
-        connectionSuccess: "تم الاتصال بحاوية S3 بنجاح",
-        connectionFailed: "فشل الاتصال بحاوية S3",
-        comingSoon: "تكامل S3 قريبًا",
-        comingSoonDescription:
-          "يتطلب تحميل مجموعات بيانات S3 مكتبة boto3. هذه الميزة قيد التطوير.",
       },
     },
     params: {
@@ -1756,7 +1759,6 @@ export const ar = {
         "تم حذف العملية، لكن تعذّرت إزالة ملفاتها.",
       deleteArtifactsRetainedError:
         "تعذّرت إزالة ملفات المحوّل، لذلك تم الاحتفاظ بعملية التدريب في السجل.",
-      emptyTitle: "لا توجد عمليات تدريب بعد",
       emptyDescription:
         "لا توجد عمليات تدريب بعد. ابدأ أول عملية تدريب في علامة تبويب الإعداد.",
       loadError: "فشل تحميل عمليات التدريب",
@@ -1769,9 +1771,6 @@ export const ar = {
       deleteTitle: "حذف عملية التدريب؟",
       deleteDescription:
         "سيؤدي هذا إلى حذف عملية التدريب هذه وجميع مقاييسها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
-      runCount: "{count} عملية",
-      oneRun: "عملية واحدة",
-      resume: "استئناف",
       resumeTraining: "استئناف التدريب",
       resuming: "جارٍ الاستئناف...",
       deleteRun: "حذف العملية",
@@ -1904,9 +1903,6 @@ export const ar = {
       dataset: "مجموعة البيانات",
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
-    },
-    tour: {
-      guidedTour: "جولة إرشادية",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

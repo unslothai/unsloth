@@ -24,14 +24,6 @@ export function isMobileVariant(id: string): boolean {
   return MOBILE_RE.test(id);
 }
 
-/** Recommended only surfaces ready-to-run local formats (GGUF / MLX). */
-export function isRunnableRecommendedFormat(
-  id: string,
-  hintedIsGguf?: boolean,
-): boolean {
-  return isGgufId(id, hintedIsGguf) || isMlxId(id);
-}
-
 /** What Recommended is allowed to suggest: GGUF anywhere; on Mac also MLX and
  * safetensors (both now run locally there). GPU keeps GGUF-only recommendations. */
 export function isRecommendableFormat(

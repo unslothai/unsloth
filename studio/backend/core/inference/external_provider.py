@@ -19,6 +19,15 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
+
+from core.inference.openai_responses_shared import (
+    normalize_function_schema,
+    responses_function_call,
+    responses_function_output,
+    response_event_type,
+)
+from core.inference.sse_control_frames import sanitize_provider_sse_line
+
 # Local servers, not hosted APIs: each applies the model's own chat template on the way
 # in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
 # a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
@@ -45,10 +54,6 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 logger = structlog.get_logger(__name__)
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature/top_p/top_k — the API
-# 400s "<param> is deprecated for this model" on a non-default value. 3.x and
-# 4.5/4.6 still accept them, so match the 4-7 line strictly. Ref:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
@@ -70,9 +75,71 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+# Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k;
+# Mythos Preview has the same restriction. The API 400s with "<param> is
+# deprecated for this model" on a non-default value. Ref:
+#   https://platform.claude.com/docs/en/about-claude/model-deprecations
+# `[a-z]+` family (not `[a-z0-9]+`) so legacy version-first ids like
+# `claude-3-5-sonnet-...` don't parse as major=5. Minor accepts `-` or `.`, and
+# is capped at two digits so the release date in a snapshot id such as
+# `claude-opus-4-20250514` is not read as minor 20250514 (which would sort that
+# Opus 4.0 model above 4.7 and strip the caller's sampling params).
+_ANTHROPIC_MODEL_VERSION = re.compile(
+    r"^claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[-.](?P<minor>\d{1,2}))?(?:[-.]|$)",
+    re.IGNORECASE,
+)
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
-_OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+# Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
+_GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
+_GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
+
+
+def _anthropic_sampling_params_removed(model: str) -> bool:
+    """Whether Anthropic rejects non-default sampling params for ``model``."""
+    normalized = model.strip().lower()
+    if normalized == "claude-mythos-preview" or normalized.startswith("claude-mythos-preview-"):
+        return True
+
+    match = _ANTHROPIC_MODEL_VERSION.match(normalized)
+    if match is None:
+        return False
+
+    family = match.group("family")
+    version = (int(match.group("major")), int(match.group("minor") or 0))
+    return version[0] >= 5 or (family == "opus" and version >= (4, 7))
+
+
+def _openai_response_error_message(event: Any) -> str:
+    """Extract a useful message from a Responses failure event."""
+    if not isinstance(event, dict):
+        return "OpenAI response failed without error details."
+
+    response = event.get("response")
+    if not isinstance(response, dict):
+        response = {}
+    for candidate in (response.get("error"), event.get("error")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            message = candidate.get("message")
+            code = candidate.get("code") or candidate.get("type")
+            if isinstance(message, str) and message.strip():
+                return f"{message.strip()} ({code})" if code else message.strip()
+
+    message = event.get("message")
+    code = event.get("code")
+    if isinstance(message, str) and message.strip():
+        return f"{message.strip()} ({code})" if code else message.strip()
+
+    details = response.get("incomplete_details")
+    if isinstance(details, dict):
+        reason = details.get("reason") or details.get("message")
+        if isinstance(reason, str) and reason.strip():
+            return f"OpenAI response failed: {reason.strip()}"
+
+    response_id = response.get("id")
+    suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
+    return f"OpenAI response failed without error details{suffix}."
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -104,15 +171,18 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
             text = part.get("text")
             if isinstance(text, str):
                 summary_parts.append({"type": "summary_text", "text": text})
-    replay_item: dict[str, Any] = {
-        "type": "reasoning",
-        "id": item_id,
-        "summary": summary_parts,
-    }
-    status = item.get("status")
-    if isinstance(status, str) and status in _OPENAI_REASONING_STATUSES:
-        replay_item["status"] = status
-    return replay_item
+    # `id` and `summary` only: Responses rejects `status` on an input item
+    # ("Unknown parameter: 'input[1].status'"), which 400d every replayed edit.
+    replay: dict[str, Any] = {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    # A zero-data-retention org has `store=false` forced on it, and OpenAI then
+    # attaches `encrypted_content` to every reasoning item because the id alone
+    # resolves to nothing server-side on the next turn. Carry it whenever it is
+    # present: without it the replay is an id pointing at a response that was
+    # never stored.
+    encrypted = item.get("encrypted_content")
+    if isinstance(encrypted, str) and encrypted:
+        replay["encrypted_content"] = encrypted
+    return replay
 
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
@@ -244,11 +314,28 @@ class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
     efforts: tuple[str, ...]
+    # Claude 5 thinks unless told otherwise, so "Thinking: off" must send an
+    # explicit disable. Fable/Mythos 5 400 on it (thinking is always on).
+    thinking_default_on: bool = False
+    can_disable: bool = True
 
 
 _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
-        prefixes = ("claude-opus-4-7",),
+        prefixes = ("claude-fable-5", "claude-mythos-5"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+        can_disable = False,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-opus-5", "claude-sonnet-5"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-opus-4-8", "claude-opus-4-7"),
         kind = "adaptive",
         efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
@@ -278,15 +365,19 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
 # filtering and free-with-search pricing. Pick the newest combo the model
 # accepts, else the GA `_20250305`/`_20250910`/`_20250825` defaults. Ref:
 # https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference
-_ANTHROPIC_NEW_WEB_PREFIXES = (
+_ANTHROPIC_5_PREFIXES = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-opus-4-8",
+)
+_ANTHROPIC_NEW_WEB_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
 )
-_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = (
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
+_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = _ANTHROPIC_NEW_WEB_PREFIXES + (
     "claude-opus-4-5",
     "claude-sonnet-4-5",
 )
@@ -323,10 +414,11 @@ _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
 # Anthropic server-side context compaction (beta compact-2026-01-12), supported
-# on Opus 4.6/4.7, Sonnet 4.6 and Mythos Preview. Same beta header for all; the
-# dated `compact_20260112` type lives in body `context_management.edits`. Models
-# outside the prefix list are silently ignored so we don't 400 upstream.
-_ANTHROPIC_COMPACTION_PREFIXES = (
+# on Claude 5, Opus 4.6/4.7/4.8, Sonnet 4.6 and Mythos Preview. Same beta header
+# for all; the dated `compact_20260112` type lives in body
+# `context_management.edits`. Models outside the prefix list are silently
+# ignored so we don't 400 upstream.
+_ANTHROPIC_COMPACTION_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
@@ -339,13 +431,16 @@ _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
-# Anthropic fast-mode beta (Opus 4.6 / 4.7 only, per
+# Anthropic fast-mode beta (Opus 5 / Opus 4.8 only, per
 # https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Opus 4.7 400s on `speed`; Opus 4.6 accepts it but runs at standard speed and
+# reports `usage.speed: "standard"`, so exposing the toggle there promises a
+# speed-up that never happens. Sonnet 5 never had it.
 # Mutually exclusive with the Priority service tier.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
-    "claude-opus-4-7",
-    "claude-opus-4-6",
+    "claude-opus-5",
+    "claude-opus-4-8",
 )
 
 
@@ -777,7 +872,13 @@ class ExternalProviderClient:
         timeout: float = 120.0,
     ):
         self.provider_type = provider_type
-        self.base_url = base_url.rstrip("/")
+        # Single choke point for every outbound provider request (chat, models,
+        # responses, messages, containers): the URL is caller-controlled, so it
+        # is validated here even when a route already checked it. Routes turn the
+        # ValueError into a 400; reaching it here means a caller bypassed them.
+        from core.inference.providers import validate_provider_base_url
+
+        self.base_url = validate_provider_base_url(base_url)
         # Strip a legacy `/openai` suffix from Google-hosted bases so configs
         # saved before the native switch still route correctly. Custom proxy
         # paths ending in `/openai` are left untouched.
@@ -854,6 +955,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
         continue_final_message: Optional[bool] = None,
+        response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -867,7 +969,7 @@ class ExternalProviderClient:
         provider-capability map already filters these per provider, so they're
         opt-in here.
 
-        ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
+        ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.
         """
         # tool_choice="none" hard-disables hosted/builtin tools across every
@@ -896,6 +998,7 @@ class ExternalProviderClient:
                     reasoning_effort,
                     tools,
                     tool_choice,
+                    response_format,
                 ):
                     yield line
                 return
@@ -939,6 +1042,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                response_format,
             ):
                 yield line
             return
@@ -1094,6 +1198,11 @@ class ExternalProviderClient:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        # JSON mode / guided decoding. Every OpenAI-compatible server accepts
+        # this (llama.cpp, vLLM and Ollama all implement it), and dropping it
+        # silently turned a caller's structured-output request into free prose.
+        if response_format is not None:
+            body["response_format"] = response_format
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -1287,7 +1396,14 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        yield line
+                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # the frames this server writes to paint tool cards ride
+                        # the same stream, so an endpoint that echoes them forges
+                        # a card for a tool that never ran.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                     # Stream ended without [DONE] (some upstreams just close
                     # the connection). Emit tool_end so the card doesn't stay
                     # in "running" forever.
@@ -1522,7 +1638,11 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if line.strip():
-                                yield line
+                                # Same rule as the main relay: never let the
+                                # endpoint speak Studio's control vocabulary.
+                                relayed = sanitize_provider_sse_line(line)
+                                if relayed is not None:
+                                    yield relayed
                     except GeneratorExit:
                         await response.aclose()
                         await lines_gen.aclose()
@@ -1654,7 +1774,12 @@ class ExternalProviderClient:
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
                                                     )
-                        yield line
+                        # Same rule as the main relay: never let the endpoint
+                        # speak Studio's control vocabulary.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                 except GeneratorExit:
                     await response.aclose()
                     await lines_gen.aclose()
@@ -1951,10 +2076,10 @@ class ExternalProviderClient:
                     continue
                 filtered.append(msg)
 
-        # Claude 4.7 removed temperature/top_p/top_k entirely (400 "deprecated
-        # for this model"). Latch the match and reuse it wherever those are set,
-        # including the thinking-mode override below that used to force temp=1.
-        sampling_removed = bool(_ANTHROPIC_4_7_SAMPLING_REMOVED.match(model))
+        # Newer Claude models removed temperature/top_p/top_k entirely (400
+        # "deprecated for this model"). Reuse the capability wherever those
+        # fields are set, including the thinking-mode temperature override.
+        sampling_removed = _anthropic_sampling_params_removed(model)
 
         body: dict[str, Any] = {
             "model": model,
@@ -2027,8 +2152,18 @@ class ExternalProviderClient:
                 effort = "none"
             elif enable_thinking is True:
                 effort = "medium"
+        # Models that think by default need an explicit disable; omitting the
+        # field leaves thinking on. Anthropic only accepts it at effort <= high,
+        # so send it alone (server default effort is high).
+        if (
+            effort == "none"
+            and thinking_spec
+            and thinking_spec.thinking_default_on
+            and thinking_spec.can_disable
+        ):
+            body["thinking"] = {"type": "disabled"}
         # Normalize one semantic Thinking control into Anthropic's two model-era
-        # APIs: adaptive effort on Claude 4.6/4.7, manual budget_tokens on 4.5.
+        # APIs: adaptive effort on Claude 4.6+, manual budget_tokens on 4.5.
         if effort and effort != "none":
             # Anthropic rejects top_k whenever thinking is enabled.
             body.pop("top_k", None)
@@ -2150,7 +2285,7 @@ class ExternalProviderClient:
                 ]
             }
 
-        # fast_mode is Opus 4.6/4.7 only; silently drop elsewhere. Incompatible
+        # fast_mode is Opus 5 / 4.8 only; silently drop elsewhere. Incompatible
         # with the Priority service_tier (frontend gate prevents both at once;
         # backend lets Anthropic 400 if combined).
         fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)
@@ -3013,6 +3148,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -3568,23 +3704,21 @@ class ExternalProviderClient:
         # thinkingBudget (int). Gemini 3 has no full-off; minimum is
         # "minimal" on Flash, "low" on Pro.
         # https://ai.google.dev/gemini-api/docs/thinking
-        _GEMINI3_THINKING_PREFIXES = (
-            "gemini-3.5-",
-            "gemini-3.1-",
-            "gemini-3-",
+        # Match the 3.x family by pattern, not by enumerating minors: a new
+        # `gemini-3.6-*` would otherwise fall through to the 2.5 branch and get
+        # an int budget, which Gemini 3 rejects (400 on thinkingBudget=0).
+        _GEMINI3_ALIASES = (
             "gemini-pro-latest",
             "gemini-flash-latest",
             "gemini-flash-lite-latest",
         )
-        _GEMINI3_PRO_PREFIXES = (
-            "gemini-3.5-pro",
-            "gemini-3.1-pro",
-            "gemini-3-pro",
-            "gemini-pro-latest",
-        )
         _PRO_THINKING_PREFIXES = ("gemini-2.5-pro",)
-        is_gemini3_thinking = any(model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES)
-        is_gemini3_pro = any(model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES)
+        is_gemini3_thinking = bool(_GEMINI3_FAMILY.match(model_lc)) or model_lc.startswith(
+            _GEMINI3_ALIASES
+        )
+        is_gemini3_pro = bool(_GEMINI3_PRO.match(model_lc)) or model_lc.startswith(
+            "gemini-pro-latest"
+        )
         _is_pro_thinking_only = any(
             model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
@@ -3603,9 +3737,8 @@ class ExternalProviderClient:
                 level = "high"
             elif effort_lc in _G3_LEVELS:
                 # Coerce legacy 3-Pro (low/high only) inputs.
-                _is_legacy_gemini3_pro = model_lc.startswith(
-                    ("gemini-3-pro-preview", "gemini-3-pro")
-                ) and not model_lc.startswith(("gemini-3.1-pro", "gemini-3.5-pro"))
+                # Undotted `gemini-3-pro` only; any dotted minor is 3.1+.
+                _is_legacy_gemini3_pro = model_lc.startswith("gemini-3-pro")
                 if is_gemini3_pro and effort_lc == "minimal":
                     level = "low"
                 elif _is_legacy_gemini3_pro and effort_lc == "medium":
@@ -3879,6 +4012,25 @@ class ExternalProviderClient:
                 if _allowed:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
+
+        # Structured output. Gemini carries it on generationConfig as a response
+        # MIME type, not the Chat Completions `response_format` this endpoint has
+        # never seen, so JSON mode was silently dropped for every native Gemini
+        # call (deep research parses its planning hop as JSON). Only on a tool-free
+        # turn: Gemini 400s with "Function calling with a response mime type:
+        # 'application/json' is unsupported" when both are sent, and the hop that
+        # asks for JSON sends no tools.
+        # https://ai.google.dev/gemini-api/docs/structured-output
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type in ("json_object", "json_schema") and "tools" not in body:
+            _gen_cfg = body.setdefault("generationConfig", {})
+            _gen_cfg["responseMimeType"] = "application/json"
+            if _rf_type == "json_schema":
+                _rf_schema = response_format.get("json_schema")
+                if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                    # responseSchema is the same OpenAPI subset the function
+                    # declarations use, so it needs the same scrubbing.
+                    _gen_cfg["responseSchema"] = _sanitize_gemini_schema(_rf_schema["schema"])
 
         # Prompt caching. The Gemini contract is "create a CachedContent
         # resource, then pass its name on `cachedContent`". The cache is created
@@ -4570,6 +4722,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -4633,23 +4786,22 @@ class ExternalProviderClient:
                 else:
                     _output_text = content if isinstance(content, str) else ""
                 if _call_id:
-                    input_items.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": _call_id,
-                            "output": _output_text,
-                        }
-                    )
+                    input_items.append(responses_function_output(_call_id, _output_text))
                 continue
 
             # Translate assistant tool_calls into `function_call` items, skipping
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                # Collected rather than appended directly: the turn's reasoning
+                # items have to lead it, and whether any of them may be replayed
+                # at all is only known once the function_call items survive the
+                # server-builtin filter below.
+                _turn_items: list[dict[str, Any]] = []
                 # Emit assistant text before its function_call items to preserve
                 # the original response.output ordering.
                 if isinstance(content, str) and content:
-                    input_items.append({"role": "assistant", "content": content})
+                    _turn_items.append({"role": "assistant", "content": content})
                 elif isinstance(content, list):
                     _asst_parts: list[dict[str, Any]] = []
                     for _part in content:
@@ -4668,7 +4820,7 @@ class ExternalProviderClient:
                             if _u:
                                 _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
-                        input_items.append({"role": "assistant", "content": _asst_parts})
+                        _turn_items.append({"role": "assistant", "content": _asst_parts})
 
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
@@ -4700,14 +4852,37 @@ class ExternalProviderClient:
                     if _is_server_builtin:
                         skipped_server_builtin_call_ids.add(_call_id_out)
                         continue
-                    input_items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": _call_id_out,
-                            "name": _fn["name"],
-                            "arguments": _args_raw,
-                        }
+                    _turn_items.append(
+                        responses_function_call(_call_id_out, _fn["name"], _args_raw)
                     )
+                # OpenAI requires the reasoning items that came back alongside a
+                # tool call to be replayed with the function_call /
+                # function_call_output pair whenever the history is managed by
+                # hand, which is exactly what the Studio tool loop does: "any
+                # reasoning items returned in model responses with tool calls
+                # must also be passed back with tool call outputs"
+                # (https://developers.openai.com/api/docs/guides/function-calling).
+                # Dropping them loses the model's chain of thought across every
+                # local tool hop and misses the prompt cache on the turn after.
+                #
+                # They lead the turn, matching response.output order, and only
+                # when something followed them survived: a trailing reasoning
+                # item is a hard 400 ("Item 'rs_...' of type 'reasoning' was
+                # provided without its required following item"), so a turn whose
+                # calls were all dropped server-side builtins replays none.
+                if _turn_items:
+                    _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                    _reasoning_replay = (
+                        _msg_extra.get("openai_responses_reasoning")
+                        if isinstance(_msg_extra, dict)
+                        else None
+                    )
+                    if isinstance(_reasoning_replay, list):
+                        for _r_item in _reasoning_replay:
+                            _replay = _sanitize_openai_reasoning_replay_item(_r_item)
+                            if _replay:
+                                input_items.append(_replay)
+                input_items.extend(_turn_items)
                 # Assistant text already emitted above (in order) so we don't
                 # fall through to the generic content branches.
                 continue
@@ -4880,6 +5055,26 @@ class ExternalProviderClient:
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
 
+        # The Responses API carries structured output on `text.format`; the Chat
+        # Completions `response_format` is not part of its contract, so a caller's
+        # JSON mode became free prose. The json_schema shape is flattened here:
+        # name/schema/strict are siblings of `type`, not nested under json_schema.
+        # https://platform.openai.com/docs/guides/structured-outputs
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type == "json_object":
+            body["text"] = {"format": {"type": "json_object"}}
+        elif _rf_type == "json_schema":
+            _rf_schema = response_format.get("json_schema")
+            if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                body["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": str(_rf_schema.get("name") or "response"),
+                        "schema": _rf_schema["schema"],
+                        "strict": bool(_rf_schema.get("strict", True)),
+                    }
+                }
+
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
         # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
         # presets reach this path too and would 400 on the unknown field.
@@ -4930,7 +5125,7 @@ class ExternalProviderClient:
                 if _fn.get("description"):
                     _entry["description"] = _fn["description"]
                 if isinstance(_fn.get("parameters"), dict):
-                    _entry["parameters"] = _fn["parameters"]
+                    _entry["parameters"] = normalize_function_schema(_fn["parameters"])
                 responses_user_function_tools.append(_entry)
 
         # Translate tool_choice into the Responses shape.
@@ -5082,7 +5277,7 @@ class ExternalProviderClient:
                         yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
 
-                    # NOTE: same manual __anext__ loop as stream_chat_completion —
+                    # NOTE: same manual __anext__ loop as stream_chat_completion --
                     # see comment there for the GeneratorExit / aclose ordering.
                     lines_gen = response.aiter_lines().__aiter__()
                     done_emitted = False
@@ -5366,13 +5561,21 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    # The type may live only in the SSE `event:` field, not in the data object.
+                    sse_event_name = ""
                     try:
                         while True:
                             try:
                                 line = await lines_gen.__anext__()
                             except StopAsyncIteration:
                                 break
-                            if not line or line.startswith("event:"):
+                            if not line:
+                                # A name never carries past the blank line that ends its event,
+                                # or a stale `response.failed` would fail a later frame.
+                                sse_event_name = ""
+                                continue
+                            if line.startswith("event:"):
+                                sse_event_name = line[len("event:") :].strip()
                                 continue
                             if not line.startswith("data:"):
                                 continue
@@ -5411,7 +5614,26 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            event_type = event.get("type")
+                            try:
+                                event_type = response_event_type(event, sse_event_name)
+                            except ValueError:
+                                # An OpenAI-compatible endpoint behind this base URL can answer
+                                # a Responses request with Chat Completions frames, so skipping
+                                # an unrecognisable frame beats failing the whole completion.
+                                # The ChatGPT path stays strict, where the shape is guaranteed.
+                                # An error payload is the exception: the bare {"error": ...} an
+                                # OpenAI-compatible proxy emits has no type and no event name
+                                # either, so skipping it returned zero chunks and no error.
+                                if isinstance(event, dict) and isinstance(
+                                    event.get("error"), (dict, str)
+                                ):
+                                    yield _error_sse_line(
+                                        502,
+                                        _openai_response_error_message(event),
+                                        self.provider_type,
+                                    )
+                                    break
+                                continue
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
@@ -5810,13 +6032,29 @@ class ExternalProviderClient:
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True
+                                # Hand this turn's reasoning items back so the
+                                # next request can replay them beside the
+                                # function_call they belong to; the tool loop
+                                # latches delta.extra_content onto the assistant
+                                # message it rebuilds. Only on a turn that
+                                # actually called a tool: prose needs none, and
+                                # shipping them would grow every following body
+                                # for nothing. Mirrors the openai_codex client's
+                                # openai_codex_reasoning.
+                                _terminal_delta: dict[str, Any] = {}
+                                if saw_function_call and openai_reasoning_replay_items:
+                                    _terminal_delta["extra_content"] = {
+                                        "openai_responses_reasoning": list(
+                                            openai_reasoning_replay_items.values()
+                                        )
+                                    }
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
                                     "choices": [
                                         {
                                             "index": 0,
-                                            "delta": {},
+                                            "delta": _terminal_delta,
                                             "finish_reason": (
                                                 "tool_calls" if saw_function_call else "stop"
                                             ),
@@ -5920,13 +6158,9 @@ class ExternalProviderClient:
                             elif event_type in ("response.failed", "error"):
                                 # Surface the failure to the client; the outer
                                 # route emits [DONE] as part of its cleanup.
-                                error_payload = event.get("response", {}).get("error", {}) or {
-                                    "message": event.get("message", "Unknown error"),
-                                    "code": event.get("code"),
-                                }
                                 yield _error_sse_line(
                                     502,
-                                    _json.dumps(error_payload),
+                                    _openai_response_error_message(event),
                                     self.provider_type,
                                 )
                                 break
@@ -6291,13 +6525,67 @@ def _friendly_provider_error_text(
     return raw_message
 
 
+def _readable_provider_error(status_code: int, message: str, provider_type: str) -> str:
+    """Reduce an upstream error body to the sentence it carries.
+
+    OpenAI, Anthropic and Gemini all nest the text under `error`, so the raw
+    body would otherwise reach the UI as a JSON blob. Non-JSON input (already
+    friendly text) passes through unchanged.
+    """
+    import json
+
+    try:
+        payload = json.loads(message)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        payload = None
+
+    text = code = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        source = error if isinstance(error, dict) else payload
+        text = error if isinstance(error, str) else source.get("message")
+        # Gemini sends an int `code`; prefer whichever label is a string.
+        code = next(
+            (
+                c
+                for c in (source.get("code"), source.get("type"), source.get("status"))
+                if isinstance(c, str) and c
+            ),
+            None,
+        )
+        if not isinstance(text, str) or not text.strip():
+            # FastAPI-style bodies (vllm, llama.cpp, custom OpenAI-compat) carry
+            # `detail`: a string, or a validation list of `{msg, loc}` entries.
+            detail = payload.get("detail")
+            if isinstance(detail, str):
+                text = detail
+            elif isinstance(detail, list):
+                msgs = [
+                    d["msg"]
+                    for d in detail
+                    if isinstance(d, dict) and isinstance(d.get("msg"), str)
+                ]
+                text = "; ".join(msgs) or None
+
+    if not isinstance(text, str) or not text.strip():
+        # Not JSON means already-friendly text: collapse whitespace and cap so
+        # a stray HTML page can't flood the chat.
+        raw = " ".join(message.split())[:500] if isinstance(message, str) else ""
+        if isinstance(payload, dict) or not raw:
+            return f"{provider_type} returned HTTP {status_code} with no error details."
+        return raw
+
+    text = text.strip()
+    return f"{text} ({code})" if code and code not in text else text
+
+
 def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
     """Format an error as an SSE data line in OpenAI error format."""
     import json
 
     error_obj = {
         "error": {
-            "message": message,
+            "message": _readable_provider_error(status_code, message, provider_type),
             "type": "provider_error",
             "code": str(status_code),
             "provider": provider_type,
