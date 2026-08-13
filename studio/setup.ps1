@@ -4303,11 +4303,12 @@ function Get-UvHostArch {
 # Writes to the pipeline, not the console: under Invoke-SetupCommand a quiet run swallows this
 # exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
 # the call site are unchanged.
-function Test-SetupUvExecutable {
-    # Mirrors Test-UvExecutable in install.ps1: can this file run here at all? Start-Process, so
-    # the wait has a ceiling and stdin is not this console's.
+function Get-SetupUvExecutableVerdict {
+    # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
+    # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
+    # no verdict, and the digest already proved the bytes are astral's pinned release.
     param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
     try {
@@ -4315,11 +4316,20 @@ function Test-SetupUvExecutable {
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
         if (-not $proc.WaitForExit(20000)) {
             try { $proc.Kill() } catch {}
-            return $false
+            Write-Output "uv did not answer --version within 20s; installing it unprobed."
+            return "unknown"
         }
-        return ($proc.ExitCode -eq 0)
+        if ($proc.ExitCode -eq 0) { return "ok" }
+        $detail = ""
+        try {
+            $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+        } catch {}
+        if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+        Write-Output "uv --version exited $($proc.ExitCode).$detail"
+        return "failed"
     } catch {
-        return $false
+        Write-Output "could not probe uv: $($_.Exception.Message); installing it unprobed."
+        return "unknown"
     } finally {
         Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
@@ -4405,7 +4415,7 @@ function Install-UvFromPinnedRelease {
         }
         # Run it where it landed, before the destination is touched: a host can have a working
         # older uv while a policy refuses this one, and copying first leaves it with neither.
-        if (-not (Test-SetupUvExecutable -Path $stagedUv)) {
+        if ((Get-SetupUvExecutableVerdict -Path $stagedUv) -eq "failed") {
             Write-Output "the downloaded uv $UvPinnedVersion could not run on this machine."
             return $false
         }
@@ -4435,13 +4445,15 @@ function Install-UvFromPinnedRelease {
             }
             # -ErrorAction Stop inside a try: bare, the Continue preference here would keep a
             # stale companion and still report success.
+            # Recorded before the copy, not after: a copy that throws part way has already
+            # truncated $dst, and a rollback that skipped it would then delete its backup.
+            $published += $dst
             try {
                 Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
             } catch {
                 $haveUv = $false
                 break
             }
-            $published += $dst
             if ($exe -eq "uv.exe") {
                 # Invoke-SetupCommand sets ErrorActionPreference to Continue, so a locked or
                 # ACL-denied destination makes this copy non-terminating and execution still
@@ -4455,7 +4467,10 @@ function Install-UvFromPinnedRelease {
                 } catch { $copied = $false }
                 # Probe again here: a policy scoped to a path can allow the temp copy and
                 # refuse this one.
-                if (-not ($copied -and (Test-SetupUvExecutable -Path $dst))) { $haveUv = $false; break }
+                if (-not $copied -or (Get-SetupUvExecutableVerdict -Path $dst) -eq "failed") {
+                    $haveUv = $false
+                    break
+                }
             }
         }
         if (-not $haveUv) {

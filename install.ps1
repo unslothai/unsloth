@@ -2516,13 +2516,16 @@ exit 0
         }
     }
 
-    function Test-UvExecutable {
-        # Can this file run here at all, whatever version it reports? Start-Process, not the
-        # call operator, so the wait has a ceiling and stdin is not this console's: a binary
-        # stalled by endpoint protection, or one that prompts, must not hold an unattended
-        # install open.
+    function Get-UvExecutableVerdict {
+        # "ok", "failed" or "unknown". Only the binary itself answering non-zero is "failed".
+        # A launch that throws or a wait that times out is "unknown", because the probe got no
+        # verdict: Start-Process -NoNewWindow with redirected streams does not behave in a
+        # Windows container or on the arm64 image the way it does in a desktop session, and
+        # treating that as a broken binary turned three clean-machine CI legs into hard install
+        # failures. The digest already proved these bytes are astral's pinned release, so no
+        # verdict publishes, as the pre-pin code did. Every path says why.
         param([string]$Path)
-        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
         # Redirected: uv's version line is not part of this installer's output.
         $outFile = [System.IO.Path]::GetTempFileName()
         $errFile = [System.IO.Path]::GetTempFileName()
@@ -2531,11 +2534,20 @@ exit 0
                 -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
             if (-not $proc.WaitForExit(20000)) {
                 try { $proc.Kill() } catch {}
-                return $false
+                substep "uv did not answer --version within 20s; installing it unprobed." "Yellow"
+                return "unknown"
             }
-            return ($proc.ExitCode -eq 0)
+            if ($proc.ExitCode -eq 0) { return "ok" }
+            $detail = ""
+            try {
+                $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+            } catch {}
+            if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+            substep "uv --version exited $($proc.ExitCode).$detail" "Yellow"
+            return "failed"
         } catch {
-            return $false
+            substep "could not probe uv: $($_.Exception.Message); installing it unprobed." "Yellow"
+            return "unknown"
         } finally {
             Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
@@ -2638,7 +2650,7 @@ exit 0
             # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
             # copying first would leave the user with neither. A policy scoped by path is covered
             # by the second probe and the restore below.
-            if (-not (Test-UvExecutable -Path $stagedUv)) {
+            if ((Get-UvExecutableVerdict -Path $stagedUv) -eq "failed") {
                 substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
             }
@@ -2669,13 +2681,15 @@ exit 0
                 # -ErrorAction Stop inside a try: a bare call throws past the rollback under the
                 # Stop preference, and silently keeps a stale companion under Continue. A locked
                 # or ACL-denied destination has to unwind like any other failure.
+                # Recorded before the copy, not after: a copy that throws part way has already
+                # truncated $dst, and a rollback that skipped it would then delete its backup.
+                $published += $dst
                 try {
                     Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
                 } catch {
                     $ok = $false
                     break
                 }
-                $published += $dst
                 if ($exe -eq "uv.exe") {
                     # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
                     # a locked or ACL-denied destination leaves whatever was already there and
@@ -2689,7 +2703,10 @@ exit 0
                     } catch { $copied = $false }
                     # Probe again at the destination: a policy scoped to a path can allow the
                     # temp copy and refuse this one.
-                    if (-not ($copied -and (Test-UvExecutable -Path $dst))) { $ok = $false; break }
+                    if (-not $copied -or (Get-UvExecutableVerdict -Path $dst) -eq "failed") {
+                        $ok = $false
+                        break
+                    }
                 }
             }
 

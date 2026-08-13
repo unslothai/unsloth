@@ -709,6 +709,50 @@ case ":$_uvmeta_path:" in
         bad "a uv directory holding shell metacharacters survives the rc round trip" ;;
 esac
 
+# Publishing uv and then failing to publish uvx must put the incumbent uv back. The caller
+# treats a non-zero return as "fall back to astral's installer", but that installer can be
+# unreachable, and a host that had a working pair must not be left with a new uv beside its old
+# uvx. Made to fail by pointing uvx's destination at a directory, which no rename can replace.
+mkdir -p "$WORK/home_half/.local/bin"
+printf '#!/bin/sh\necho "uv 0.9.9 (incumbent)"\n' > "$WORK/home_half/.local/bin/uv"
+printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_half/.local/bin/uvx"
+chmod +x "$WORK/home_half/.local/bin/uv" "$WORK/home_half/.local/bin/uvx"
+(
+    set +e
+    tauri_log() { :; }
+    # Fail the second rename only. A directory at the destination would not do it: `mv f d`
+    # moves f INTO d and reports success, which is itself worth knowing.
+    mv() {
+        case "$*" in
+            *"/uvx") return 1 ;;
+        esac
+        command mv "$@"
+    }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
+    download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
+    HOME="$WORK/home_half"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_half" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_half"; then
+    bad "a half-published pair declines to the fallback"
+else
+    ok "a half-published pair declines to the fallback"
+fi
+if "$WORK/home_half/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
+    ok "a half-published pair restores the incumbent uv"
+else
+    bad "a half-published pair restores the incumbent uv"
+fi
+if [ -z "$(find "$WORK/home_half/.local/bin" -maxdepth 1 -name '.uv*' 2>/dev/null)" ]; then
+    ok "the half-published staging and undo files are cleaned up"
+else
+    bad "the half-published staging and undo files are cleaned up"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

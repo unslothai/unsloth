@@ -728,6 +728,9 @@ _cleanup_install_temporaries() {
     # the unpacked archive behind plus a staging file inside a directory that is on PATH.
     [ -n "${_UIP_WORK:-}" ] && rm -rf "$_UIP_WORK" 2>/dev/null || true
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
+    [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
+    [ -n "${_UIP_UNDO_UV:-}" ] && rm -f "$_UIP_UNDO_UV" 2>/dev/null || true
+    [ -n "${_UIP_UNDO_UVX:-}" ] && rm -f "$_UIP_UNDO_UVX" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -757,6 +760,9 @@ _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 _UIP_WORK=""
 _UIP_STAGE=""
+_UIP_STAGE2=""
+_UIP_UNDO_UV=""
+_UIP_UNDO_UVX=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -2573,49 +2579,65 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         _uip_placed=0
         # uv first, and either half failing aborts the placement: the two ship as a set, and a
         # pinned uvx beside the host's older uv is a pairing we never built or tested.
+        # Stage both, publish both. The rename is the only step that can destroy an incumbent,
+        # so the two renames sit next to each other with the previous binaries saved aside: a
+        # failure on the second no longer leaves a new uv beside the host's stale uvx, and the
+        # pair is what we build and test.
+        _uip_ready=1
         for _uip_exe in uv uvx; do
-            _uip_ok=0
-            # `while :` is just a block to break out of, so each failure lands on the same
-            # _uip_ok check instead of repeating the cleanup per branch.
-            while : ; do
-                _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
-                if [ -z "$_uip_src" ] || [ ! -f "$_uip_src" ]; then break; fi
-                # Stage then rename: cp onto a symlinked destination writes through it and would
-                # rewrite, say, the Homebrew binary that `~/.local/bin/uv` points at; rename
-                # replaces the link. mktemp, not a fixed name, so two installers racing here
-                # cannot publish each other's half-written file.
-                _uip_stage=$(mktemp "$_uip_dest/.$_uip_exe.XXXXXX" 2>/dev/null) || break
-                _UIP_STAGE="$_uip_stage"
-                if ! cp -f "$_uip_src" "$_uip_stage" 2>/dev/null; then
-                    rm -f "$_uip_stage" 2>/dev/null || true
-                    break
-                fi
-                # 0755, not +x: the staging file carries the umask default and +x only adds
-                # execute where read was allowed, so umask 077 would leave uv unusable for
-                # every other account. astral ships these 0755.
-                chmod 0755 "$_uip_stage" 2>/dev/null || true
-                # Validate BEFORE publishing: the rename destroys the incumbent, and a missing
-                # loader or a noexec mount would leave the host with neither. The staging file is
-                # on the destination filesystem, so this answers noexec too.
-                if [ "$_uip_exe" = "uv" ] && ! _uv_probe_exec "$_uip_stage"; then
-                    rm -f "$_uip_stage" 2>/dev/null || true
-                    break
-                fi
-                if ! mv -f "$_uip_stage" "$_uip_dest/$_uip_exe" 2>/dev/null; then
-                    rm -f "$_uip_stage" 2>/dev/null || true
-                    break
-                fi
-                _uip_ok=1
-                break
-            done
-            if [ "$_uip_ok" != "1" ]; then
-                # Either half failing fails the placement: reporting success on a mismatched
-                # pair would skip the fallback that installs both.
-                _uip_placed=0
-                break
-            fi
-            [ "$_uip_exe" = "uv" ] && _uip_placed=1
+            _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
+            if [ -z "$_uip_src" ] || [ ! -f "$_uip_src" ]; then _uip_ready=0; break; fi
+            # cp onto a symlinked destination writes through it and would rewrite, say, the
+            # Homebrew binary `~/.local/bin/uv` points at; rename replaces the link. mktemp, not
+            # a fixed name, so two installers racing here cannot publish each other's file.
+            _uip_stage=$(mktemp "$_uip_dest/.$_uip_exe.XXXXXX" 2>/dev/null) || { _uip_ready=0; break; }
+            if [ "$_uip_exe" = "uv" ]; then _UIP_STAGE="$_uip_stage"; else _UIP_STAGE2="$_uip_stage"; fi
+            if ! cp -f "$_uip_src" "$_uip_stage" 2>/dev/null; then _uip_ready=0; break; fi
+            # 0755, not +x: the staging file carries the umask default and +x only adds execute
+            # where read was allowed, so umask 077 would leave uv unusable for every other
+            # account. astral ships these 0755.
+            chmod 0755 "$_uip_stage" 2>/dev/null || true
+            # Validate BEFORE publishing: the rename destroys the incumbent, and a missing loader
+            # or a noexec mount would leave the host with neither. The staging file is on the
+            # destination filesystem, so this answers noexec too.
+            if [ "$_uip_exe" = "uv" ] && ! _uv_probe_exec "$_uip_stage"; then _uip_ready=0; break; fi
         done
+        if [ "$_uip_ready" = "1" ]; then
+            # Save the incumbents so a failure between the two renames can be undone. A hard
+            # link costs nothing and keeps the old inode reachable after the rename takes the
+            # name; cp is the fallback for a filesystem that refuses one.
+            _UIP_UNDO_UV=""
+            _UIP_UNDO_UVX=""
+            if [ -e "$_uip_dest/uv" ] && _uip_save=$(mktemp "$_uip_dest/.uv.old.XXXXXX" 2>/dev/null); then
+                if ln -f "$_uip_dest/uv" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uv" "$_uip_save" 2>/dev/null; then
+                    _UIP_UNDO_UV="$_uip_save"
+                else
+                    rm -f "$_uip_save" 2>/dev/null || true
+                fi
+            fi
+            if [ -e "$_uip_dest/uvx" ] && _uip_save=$(mktemp "$_uip_dest/.uvx.old.XXXXXX" 2>/dev/null); then
+                if ln -f "$_uip_dest/uvx" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uvx" "$_uip_save" 2>/dev/null; then
+                    _UIP_UNDO_UVX="$_uip_save"
+                else
+                    rm -f "$_uip_save" 2>/dev/null || true
+                fi
+            fi
+            if mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
+               mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
+                _uip_placed=1
+            else
+                # Half published: put back what was there. Anything that could not be saved is
+                # left alone rather than deleted, which is still the safer direction.
+                [ -n "$_UIP_UNDO_UV" ] && mv -f "$_UIP_UNDO_UV" "$_uip_dest/uv" 2>/dev/null
+                [ -n "$_UIP_UNDO_UVX" ] && mv -f "$_UIP_UNDO_UVX" "$_uip_dest/uvx" 2>/dev/null
+            fi
+            rm -f "$_UIP_UNDO_UV" "$_UIP_UNDO_UVX" 2>/dev/null || true
+            _UIP_UNDO_UV=""
+            _UIP_UNDO_UVX=""
+        fi
+        rm -f "$_UIP_STAGE" "$_UIP_STAGE2" 2>/dev/null || true
+        _UIP_STAGE=""
+        _UIP_STAGE2=""
         # The staged binary already answered --version above, before it replaced anything.
         if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ]; then
             export PATH="$_uip_dest:$PATH"
@@ -2629,6 +2651,7 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     rm -rf "$_uip_work"
     _UIP_WORK=""
     _UIP_STAGE=""
+    _UIP_STAGE2=""
     # Nothing is unwound on the failure path on purpose: the fallback installs over whatever is
     # at the destination, and deleting there would take out a working uv the host already had.
     return "$_uip_rc"
@@ -5391,9 +5414,12 @@ esac
 
 # UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME and XDG_DATA_HOME all outrank
 # ~/.local/bin, and astral's installer wrote a PATH line for whichever it picked. Replacing that
-# installer means persisting its destination too, with UV_NO_MODIFY_PATH honoured as it is there.
+# installer means persisting its destination too. Both of astral's opt-outs are honoured:
+# UV_NO_MODIFY_PATH, and UV_UNMANAGED_INSTALL, which forces no-modify-path there and in
+# Install-UvFromRelease, so a caller asking for an unmanaged install gets no profile write here.
 if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN" ] \
-   && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+   && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
+   && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
     case ":$_UNSLOTH_LOGIN_PATH:" in
         *":$_UNSLOTH_UV_BIN_DIR:"*) ;;  # already on the PATH a new shell will inherit
         *)
