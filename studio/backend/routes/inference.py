@@ -9757,9 +9757,7 @@ async def get_llama_flags(
         # reads it. An editor cannot see this number, and llama-server aborts on a
         # batch below the slots it serves, so without it a pass-through -b 2 looks
         # fine here and takes down a launch that runs four slots.
-        "default_parallel_slots": _resolve_parallel_slots(
-            _NoParallelRequest(), fastapi_request
-        ),
+        "default_parallel_slots": _resolve_parallel_slots(_NoParallelRequest(), fastapi_request),
     }
 
     if managed_only:
