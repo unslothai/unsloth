@@ -95,9 +95,11 @@ def _without_the_array_wraps(src: str) -> str:
 
 
 def _amd_scan_block(src: str) -> str:
-    """The `if (-not $HasROCm)` WMI fallback: the adapter list the label is read from."""
+    """The WMI fallback: the adapter list the label is read from. Gated on the ARCH,
+    not on $HasROCm, so the peer list also exists on the amd-smi market-name-only path
+    (an arch there is null while $HasROCm is true)."""
     m = re.search(
-        r"^    if \(-not \$HasROCm\) \{\n        try \{\n.*?^    \}\n",
+        r"^    if \(-not \$script:ROCmGfxArch\) \{\n        try \{\n.*?^    \}\n",
         src,
         re.DOTALL | re.MULTILINE,
     )

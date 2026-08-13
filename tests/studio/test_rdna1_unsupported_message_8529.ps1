@@ -335,6 +335,37 @@ Check "the peer scan is not gated on `$HasROCm" (
     $peerScanGate -and $peerScanGate.Contains('$ROCmGfxArch') -and -not $peerScanGate.Contains('$HasROCm')
 )
 
+# studio/setup.ps1 carries the same scan for its own inference, and had the same gate: on
+# the amd-smi market-name-only path $script:ROCmGpuLabels held one name, so $gpuNames was
+# one entry and the whole host was judged on it. Its inference runs under
+# `if (-not $script:ROCmGfxArch)`, so the scan that feeds it must run there too.
+$setupPath = Join-Path $root "studio/setup.ps1"
+$setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$null, [ref]$null)
+$setupPeerAssign = @($setupAst.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -eq '$script:ROCmGpuLabels' -and
+    $n.Right.Extent.Text.Contains('$wmiGpus')
+}, $true))
+Check "setup.ps1 fills its peer list from every adapter" ($setupPeerAssign.Count -eq 1)
+$setupGate = $null
+foreach ($assign in $setupPeerAssign) {
+    $node = $assign.Parent
+    while ($node) {
+        if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
+            $cond = $node.Clauses[0].Item1.Extent.Text
+            if ($cond.Contains('$script:ROCmGfxArch') -or $cond.Contains('$HasROCm')) {
+                $setupGate = $cond
+                break
+            }
+        }
+        $node = $node.Parent
+    }
+}
+Check "setup.ps1's peer scan is not gated on `$HasROCm" (
+    $setupGate -and $setupGate.Contains('$script:ROCmGfxArch') -and -not $setupGate.Contains('$HasROCm')
+)
+
 Invoke-Expression (Get-AssignmentSource $installPath '$nameArchTable')
 Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable')
 
