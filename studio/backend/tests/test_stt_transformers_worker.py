@@ -48,7 +48,12 @@ class _FakeProcessor:
         self.seen_rate = None
         self.features = _FakeTensor()
 
-    def __call__(self, audio, sampling_rate = None, return_tensors = None):
+    def __call__(
+        self,
+        audio,
+        sampling_rate = None,
+        return_tensors = None,
+    ):
         self.seen_audio = audio
         self.seen_rate = sampling_rate
         return SimpleNamespace(input_features = self.features)
@@ -82,7 +87,11 @@ class _FakeModel:
 class _FakeProcess:
     """Stands in for mp.Process; alive until something ends it."""
 
-    def __init__(self, pid = 4242, alive = True) -> None:
+    def __init__(
+        self,
+        pid = 4242,
+        alive = True,
+    ) -> None:
         self.pid = pid
         self._alive = alive
         self.exitcode = None
@@ -116,7 +125,11 @@ def _wired_worker(process = None):
     return handle
 
 
-def _install_fake_transformers(monkeypatch, model = None, processor = None):
+def _install_fake_transformers(
+    monkeypatch,
+    model = None,
+    processor = None,
+):
     fake_model = model if model is not None else _FakeModel()
     fake_processor = processor if processor is not None else _FakeProcessor()
     calls = []
@@ -249,7 +262,13 @@ def test_child_only_installs_stopping_criteria_for_a_cancellable_request(monkeyp
 # ---------------------------------------------------------------------------
 
 
-def _run_child(monkeypatch, commands, *, load = None, transcribe = None):
+def _run_child(
+    monkeypatch,
+    commands,
+    *,
+    load = None,
+    transcribe = None,
+):
     """Drive run_stt_worker over in-process queues and collect its responses."""
     cmd_queue: queue.Queue = queue.Queue()
     resp_queue: queue.Queue = queue.Queue()
@@ -285,8 +304,12 @@ def test_child_reports_the_loaded_model_then_transcribes_then_exits(monkeypatch)
     responses, _cancel = _run_child(
         monkeypatch,
         [
-            {"type": "load", "snapshot_path": "/cached/model",
-             "device": "cuda", "dtype": "float16"},
+            {
+                "type": "load",
+                "snapshot_path": "/cached/model",
+                "device": "cuda",
+                "dtype": "float16",
+            },
             {"type": "transcribe", "audio": b"", "generate_kwargs": {}, "cancellable": False},
             {"type": "shutdown"},
         ],
@@ -309,8 +332,12 @@ def test_child_exits_after_a_failed_load_so_a_half_taken_context_goes_with_it(mo
         monkeypatch,
         # The transcribe would be answered if the child stayed in its loop.
         [
-            {"type": "load", "snapshot_path": "/cached/model", "device": "cuda",
-             "dtype": "float16"},
+            {
+                "type": "load",
+                "snapshot_path": "/cached/model",
+                "device": "cuda",
+                "dtype": "float16",
+            },
             {"type": "transcribe", "audio": b"", "generate_kwargs": {}, "cancellable": False},
         ],
         load = boom,
@@ -326,8 +353,7 @@ def test_child_survives_a_failed_transcription_and_keeps_the_model(monkeypatch):
     responses, _cancel = _run_child(
         monkeypatch,
         [
-            {"type": "load", "snapshot_path": "/cached/model", "device": "cpu",
-             "dtype": "float32"},
+            {"type": "load", "snapshot_path": "/cached/model", "device": "cpu", "dtype": "float32"},
             {"type": "transcribe", "audio": b"", "generate_kwargs": {}, "cancellable": False},
             {"type": "shutdown"},
         ],
@@ -340,15 +366,20 @@ def test_child_survives_a_failed_transcription_and_keeps_the_model(monkeypatch):
 
 
 def test_child_reports_a_cancelled_generation_rather_than_partial_text(monkeypatch):
-    def stop_early(_model, _processor, _pcm, _kwargs, cancel_event = None):
+    def stop_early(
+        _model,
+        _processor,
+        _pcm,
+        _kwargs,
+        cancel_event = None,
+    ):
         cancel_event.set()  # what StoppingCriteria does to a running generate
         return "half a sen"
 
     responses, _cancel = _run_child(
         monkeypatch,
         [
-            {"type": "load", "snapshot_path": "/cached/model", "device": "cpu",
-             "dtype": "float32"},
+            {"type": "load", "snapshot_path": "/cached/model", "device": "cpu", "dtype": "float32"},
             {"type": "transcribe", "audio": b"", "generate_kwargs": {}, "cancellable": True},
             {"type": "shutdown"},
         ],
@@ -450,8 +481,11 @@ def test_handle_mirrors_a_request_cancel_into_the_child():
         # The child sees the shared event and reports the cancellation itself.
         time.sleep(0.2)
         handle._resp_queue.put(
-            {"type": "error", "kind": "SttTranscriptionCancelledError",
-             "error": "Transcription cancelled."}
+            {
+                "type": "error",
+                "kind": "SttTranscriptionCancelledError",
+                "error": "Transcription cancelled.",
+            }
         )
 
     thread = threading.Thread(target = answer_once, daemon = True)
@@ -479,9 +513,7 @@ def test_a_cancelled_load_that_never_answers_is_killed_rather_than_waited_on(mon
 
 def test_closing_the_handle_ends_the_child_and_drops_its_pid(monkeypatch):
     forgotten = []
-    monkeypatch.setattr(
-        "utils.process_lifetime.forget_pid", lambda pid: forgotten.append(pid)
-    )
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda pid: forgotten.append(pid))
     process = _FakeProcess()
     handle = _wired_worker(process)
 

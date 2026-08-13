@@ -86,12 +86,16 @@ class _CancelCriteria:
 
 def _raise_if_cancelled(cancel_event) -> None:
     from core.inference.stt_sidecar import SttLoadCancelledError
-
     if cancel_event is not None and cancel_event.is_set():
         raise SttLoadCancelledError("STT model loading was cancelled so training could start.")
 
 
-def load_whisper(snapshot_path: str, device: str, dtype_name: str, cancel_event = None) -> tuple:
+def load_whisper(
+    snapshot_path: str,
+    device: str,
+    dtype_name: str,
+    cancel_event = None,
+) -> tuple:
     """Load a Whisper model + processor from the local Hub cache. Child side.
 
     local_files_only keeps the Model Hub the only download path; a cache miss
@@ -116,7 +120,13 @@ def load_whisper(snapshot_path: str, device: str, dtype_name: str, cancel_event 
     return model, processor
 
 
-def transcribe_window(model, processor, pcm: bytes, generate_kwargs: dict, cancel_event = None):
+def transcribe_window(
+    model,
+    processor,
+    pcm: bytes,
+    generate_kwargs: dict,
+    cancel_event = None,
+):
     """Run Whisper over one window of 16 kHz mono float32 PCM. Child side.
 
     Feeds a pre-decoded array so nothing here touches the Transformers audio
@@ -129,7 +139,6 @@ def transcribe_window(model, processor, pcm: bytes, generate_kwargs: dict, cance
     kwargs = dict(generate_kwargs)
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
-
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
     from core.inference.stt_sidecar import _TARGET_SAMPLE_RATE
 
@@ -170,7 +179,13 @@ def _send(resp_queue, response: dict) -> None:
         logger.error("STT worker could not answer the backend: %s", exc)
 
 
-def run_stt_worker(*, cmd_queue, resp_queue, cancel_event, config: Optional[dict] = None) -> None:
+def run_stt_worker(
+    *,
+    cmd_queue,
+    resp_queue,
+    cancel_event,
+    config: Optional[dict] = None,
+) -> None:
     """Child entrypoint: hold one Whisper model and answer transcription commands.
 
     Returning ends the process, which is the only way to give the CUDA context
@@ -182,7 +197,6 @@ def run_stt_worker(*, cmd_queue, resp_queue, cancel_event, config: Optional[dict
     _ensure_backend_on_path()
     try:
         from loggers.config import LogConfig
-
         LogConfig.setup_logging(
             service_name = "unsloth-studio-stt-worker",
             env = os.getenv("ENVIRONMENT_TYPE", "production"),
@@ -235,15 +249,20 @@ def run_stt_worker(*, cmd_queue, resp_queue, cancel_event, config: Optional[dict
                 )
                 if cancellable and cancel_event.is_set():
                     from core.inference.stt_sidecar import SttTranscriptionCancelledError
-
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
                 _send(resp_queue, {"type": "text", "text": text})
             elif kind == "shutdown":
                 _send(resp_queue, {"type": "shutdown_ack"})
                 return
             else:
-                _send(resp_queue, {"type": "error", "kind": "SttWorkerError",
-                                   "error": f"Unknown command '{kind}'."})
+                _send(
+                    resp_queue,
+                    {
+                        "type": "error",
+                        "kind": "SttWorkerError",
+                        "error": f"Unknown command '{kind}'.",
+                    },
+                )
         except BaseException as exc:  # noqa: BLE001 - every failure is reported, then handled
             _send(resp_queue, _error_response(exc))
             if kind == "load":
@@ -323,8 +342,9 @@ class WhisperWorker:
             )
             self._process.start()
         adopt_pid(self._process.pid)  # terminate_all backstop for graceful exits
-        logger.info("STT worker started (pid=%s) for %s on %s", self._process.pid,
-                    snapshot_path, device)
+        logger.info(
+            "STT worker started (pid=%s) for %s on %s", self._process.pid, snapshot_path, device
+        )
         try:
             self._send(
                 {
@@ -339,9 +359,7 @@ class WhisperWorker:
             self.close()
             raise
         self.device = response.get("device") or device
-        self.generation_config = SimpleNamespace(
-            is_multilingual = response.get("is_multilingual")
-        )
+        self.generation_config = SimpleNamespace(is_multilingual = response.get("is_multilingual"))
 
     def transcribe_window(
         self,
@@ -360,9 +378,7 @@ class WhisperWorker:
                 "cancellable": cancel_event is not None,
             }
         )
-        response = self._await(
-            "text", _TRANSCRIBE_TIMEOUT_SECONDS, cancel_event, "transcribe"
-        )
+        response = self._await("text", _TRANSCRIBE_TIMEOUT_SECONDS, cancel_event, "transcribe")
         text = response.get("text")
         return text if isinstance(text, str) else ""
 
@@ -396,7 +412,6 @@ class WhisperWorker:
                 process.join(3)
             try:
                 from utils.process_lifetime import forget_pid
-
                 forget_pid(process.pid)
             except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail an unload
                 logger.debug("Could not forget STT worker pid %s: %s", process.pid, exc)
@@ -420,11 +435,7 @@ class WhisperWorker:
             raise SttWorkerError(f"Could not reach the dictation worker: {exc}") from exc
 
     def _await(
-        self,
-        expected: str,
-        timeout: float,
-        cancel_event: Optional[threading.Event],
-        phase: str,
+        self, expected: str, timeout: float, cancel_event: Optional[threading.Event], phase: str
     ) -> dict:
         """Wait for one response, mirroring cancellation and watching for death."""
         deadline = time.monotonic() + timeout
@@ -465,11 +476,8 @@ class WhisperWorker:
             SttLoadCancelledError,
             SttTranscriptionCancelledError,
         )
-
         if phase == "load":
-            raise SttLoadCancelledError(
-                "STT model loading was cancelled so training could start."
-            )
+            raise SttLoadCancelledError("STT model loading was cancelled so training could start.")
         raise SttTranscriptionCancelledError("Transcription cancelled.")
 
     def _crash_message(self, phase: str) -> str:

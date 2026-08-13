@@ -314,7 +314,12 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     class FakeWorker:
         generation_config = SimpleNamespace(is_multilingual = False)
 
-        def transcribe_window(self, _pcm, generate_kwargs, _cancel_event = None):
+        def transcribe_window(
+            self,
+            _pcm,
+            generate_kwargs,
+            _cancel_event = None,
+        ):
             calls.append(generate_kwargs)
             return "hello"
 
@@ -443,7 +448,13 @@ def _install_fake_worker(monkeypatch, start = None):
             self.closed = False
             self.alive = True
 
-        def start(self, snapshot_path, device, dtype_name, cancel_event = None):
+        def start(
+            self,
+            snapshot_path,
+            device,
+            dtype_name,
+            cancel_event = None,
+        ):
             started.append((snapshot_path, device, dtype_name))
             if start is not None:
                 start(snapshot_path, device, dtype_name, cancel_event)
