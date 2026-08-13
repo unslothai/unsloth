@@ -327,7 +327,10 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
-      // Keep training stores and dataset helpers out of Studio's startup path.
+      // Same deferred module as above. The training store and datasets-api it also
+      // pulls stay eager either way, since __root.tsx imports the @/features/training
+      // barrel that re-exports both; Recipe Studio is what actually leaves the
+      // startup bundle.
       const { loadFineTuneDatasetInTrainTab } = await import(
         "../components/finetune-recipe"
       );
