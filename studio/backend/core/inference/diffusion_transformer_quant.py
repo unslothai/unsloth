@@ -629,6 +629,10 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
                 daemon = True,
             )
             proc.start()
+        # Adopted like every other spawn site: the bind above is the CHILD arming PDEATHSIG,
+        # which is Linux only, and the Windows job object can fail to take when Studio already
+        # runs inside an incompatible host job. This record is what is left in that case.
+        _adopt_probe_pid(proc.pid)
     except Exception as exc:  # noqa: BLE001 — no child here: probe in-process instead
         import logging
 
@@ -666,12 +670,56 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
     return table if isinstance(table, dict) else None
 
 
-def _close_probe_child(proc: Any, queue: Any) -> None:
-    """Tear the probe child and its queue down. Best-effort at every step: this runs on the
-    failure path too, and a probe that could not answer must not also raise."""
+def _adopt_probe_pid(pid: Optional[int]) -> None:
+    """Record the probe child against this process's lifetime, so the shutdown sweep and the
+    next startup can both reach it. Best-effort: a probe must not fail over its bookkeeping."""
+    try:
+        from utils.process_lifetime import adopt_pid
+        adopt_pid(pid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _forget_probe_pid(pid: Optional[int]) -> None:
+    try:
+        from utils.process_lifetime import forget_pid
+        forget_pid(pid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _probe_child_alive(proc: Any) -> bool:
+    """Whether the child is KNOWN to be running: a missing or never-started handle raises here,
+    and that is not a survivor."""
+    try:
+        return bool(proc is not None and proc.is_alive())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _close_probe_child(proc: Any, queue: Any) -> bool:
+    """Tear the probe child and its queue down; True once the child is confirmed dead.
+
+    Terminate then kill, as the chat worker's ``_shutdown_subprocess`` does: this child exists
+    to hand a CUDA context back, so a wedged one left alive defeats the whole probe. The
+    lifetime record is dropped only on confirmed death -- a child that outlives SIGKILL in an
+    uninterruptible driver call keeps its breadcrumb, since that record is the only remaining
+    handle on the VRAM it is holding. Best-effort at every step: this runs on the failure path
+    too, and a probe that could not answer must not also raise."""
+    try:
+        pid = proc.pid if proc is not None else None
+    except Exception:  # noqa: BLE001
+        pid = None
+
+    for stop, wait in ((lambda: proc.terminate(), 5.0), (lambda: proc.kill(), 3.0)):
+        if not _probe_child_alive(proc):
+            break
+        for step in (stop, lambda: proc.join(timeout = wait)):
+            try:
+                step()
+            except Exception:  # noqa: BLE001
+                pass
     for step in (
-        lambda: proc.terminate() if proc is not None and proc.is_alive() else None,
-        lambda: proc.join(timeout = 5.0) if proc is not None else None,
         lambda: queue.close() if queue is not None else None,
         lambda: queue.join_thread() if queue is not None else None,
     ):
@@ -679,6 +727,18 @@ def _close_probe_child(proc: Any, queue: Any) -> None:
             step()
         except Exception:  # noqa: BLE001
             pass
+
+    if _probe_child_alive(proc):
+        import logging
+
+        logging.getLogger(__name__).error(
+            "diffusion.transformer_quant: probe child pid=%s survived terminate and kill; "
+            "keeping its lifetime record so the shutdown sweep can still reach it",
+            pid,
+        )
+        return False
+    _forget_probe_pid(pid)
+    return True
 
 
 def _child_probe_entry(device: str, schemes: tuple[str, ...], out: Any) -> None:

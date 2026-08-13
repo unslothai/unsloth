@@ -475,6 +475,133 @@ def test_a_spawn_failure_is_remembered_so_it_is_paid_once(monkeypatch):
     assert tq._child_probe_table("cuda") is None
 
 
+# ── the child's lifetime ────────────────────────────────────────────────────────
+
+
+class _FakeProbeChild:
+    """Stand-in for the spawned probe: alive from start() until sent the signal it obeys.
+
+    ``dies_on = None`` is the wedged child -- uninterruptible in the driver, surviving SIGKILL --
+    which is exactly the case that must not lose its lifetime record."""
+
+    def __init__(self, dies_on = "terminate"):
+        self.pid = 4321
+        self.alive = False
+        self.signals = []
+        self._dies_on = dies_on
+
+    def start(self):
+        self.alive = self._dies_on != "start"
+
+    def is_alive(self):
+        return self.alive
+
+    def join(self, timeout = None):
+        pass
+
+    def terminate(self):
+        self.signals.append("terminate")
+        if self._dies_on == "terminate":
+            self.alive = False
+
+    def kill(self):
+        self.signals.append("kill")
+        if self._dies_on == "kill":
+            self.alive = False
+
+
+class _FakeProbeQueue:
+    def __init__(self, table = None):
+        self._table = table
+        self.closed = False
+
+    def get(self, timeout = None):
+        if self._table is None:
+            raise ValueError("empty")
+        table, self._table = self._table, None
+        return table
+
+    def close(self):
+        self.closed = True
+
+    def join_thread(self):
+        pass
+
+
+class _FakeSpawnContext:
+    def __init__(self, child, queue):
+        self._child = child
+        self._queue = queue
+
+    def Queue(self):
+        return self._queue
+
+    def Process(self, target = None, args = (), daemon = None):
+        return self._child
+
+
+@pytest.fixture
+def _probe_lifetime_records(monkeypatch):
+    """Capture what the probe adopts and forgets, without touching the real record."""
+    import utils.process_lifetime as pl
+
+    records = {"adopted": [], "forgotten": []}
+    monkeypatch.setattr(pl, "adopt_pid", records["adopted"].append)
+    monkeypatch.setattr(pl, "forget_pid", records["forgotten"].append)
+    return records
+
+
+def test_the_probe_child_is_adopted_so_a_shutdown_sweep_can_reach_it(
+    monkeypatch, _probe_lifetime_records
+):
+    # The child-side PDEATHSIG bind is Linux only, and the Windows job object is documented to
+    # fail when Studio already runs inside an incompatible host job. In that configuration this
+    # record is the only thing left that can reach a probe still holding a CUDA context, both
+    # from the shutdown sweep and from the next startup.
+    import multiprocessing
+
+    monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
+    child = _FakeProbeChild(dies_on = "start")
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda name: _FakeSpawnContext(child, _FakeProbeQueue({TQ_INT8: True})),
+    )
+    assert tq._child_probe_table("cuda") == {TQ_INT8: True}
+    assert _probe_lifetime_records["adopted"] == [child.pid]
+
+
+def test_a_child_that_survives_terminate_is_killed(_probe_lifetime_records):
+    # Five seconds of terminate and then giving up leaves the VRAM this probe exists to hand
+    # back held for the whole 180 s timeout, or forever if the child is wedged.
+    child = _FakeProbeChild(dies_on = "kill")
+    child.start()
+    assert tq._close_probe_child(child, _FakeProbeQueue()) is True
+    assert child.signals == ["terminate", "kill"]
+    assert _probe_lifetime_records["forgotten"] == [child.pid]
+
+
+def test_a_child_that_survives_kill_keeps_its_breadcrumb_and_is_reported(_probe_lifetime_records):
+    # Same call the chat worker makes: a survivor keeps its handle rather than being dropped
+    # silently, so the sweep still has something to retry.
+    child = _FakeProbeChild(dies_on = None)
+    child.start()
+    assert tq._close_probe_child(child, _FakeProbeQueue()) is False
+    assert child.signals == ["terminate", "kill"]
+    assert _probe_lifetime_records["forgotten"] == []
+
+
+def test_a_clean_exit_forgets_the_pid(_probe_lifetime_records):
+    # The child that posted its table and exited is not signalled at all, and its record goes.
+    child = _FakeProbeChild(dies_on = "start")
+    child.start()
+    queue = _FakeProbeQueue()
+    assert tq._close_probe_child(child, queue) is True
+    assert child.signals == []
+    assert queue.closed is True
+    assert _probe_lifetime_records["forgotten"] == [child.pid]
+
+
 def test_the_probe_body_separates_an_oom_from_a_verdict(monkeypatch):
     # _run_smoke_probe is what BOTH the child and the in-process fallback call, so this three-way
     # answer is the single place the two can be shown not to drift.
