@@ -180,6 +180,66 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
 
     assert observed["name"] == "Org/Embedder"
     assert observed["cache_folder"] == str(tmp_path / "selected-hub")
+    # fp32, because the load lands on CPU. The dtype follows the device we actually
+    # load on rather than how we got there, so the default CPU placement and a
+    # degraded-onto-CPU load agree.
+    assert list(observed["model_kwargs"].values()) == ["float32"]
+
+
+def test_device_defaults_to_cpu_on_an_accelerator_host(monkeypatch):
+    """A GPU must not be used just because it is there.
+
+    This embedder loads in the backend process, where the first CUDA allocation pins a
+    primary context nothing can hand back, so an idle Studio that indexed one document
+    would carry it for the rest of the session.
+    """
+    monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "auto")
+    monkeypatch.setattr(
+        embeddings, "get_device", lambda: embeddings.DeviceType.CUDA,
+    )
+    assert embeddings._device() == "cpu"
+
+
+def test_device_opts_in_to_the_accelerator(monkeypatch):
+    monkeypatch.setattr(
+        embeddings, "get_device", lambda: embeddings.DeviceType.CUDA,
+    )
+    for requested in ("gpu", "GPU", " cuda "):
+        monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
+        assert embeddings._device() == "cuda"
+
+
+def test_device_opt_in_still_yields_cpu_without_an_accelerator(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "gpu")
+    monkeypatch.setattr(embeddings, "get_device", lambda: embeddings.DeviceType.CPU)
+    assert embeddings._device() == "cpu"
+
+
+def test_opted_in_accelerator_loads_float16(monkeypatch, tmp_path):
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cuda")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "selected-hub"),
+    )
+    embeddings._model = None
+    embeddings._name = None
+
+    embeddings._get("Org/Embedder")
+
+    assert observed["device"] == "cuda"
     assert list(observed["model_kwargs"].values()) == ["float16"]
 
 

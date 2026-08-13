@@ -5,6 +5,10 @@
 ``config.EMBED_BACKEND`` (``auto`` picks by hardware): ``sentence-transformers``
 (torch) or ``llama-server`` (GGUF, no torch).
 
+Either way the embedder stays off the GPU unless asked: this one runs in the backend
+process, where a CUDA context outlives every unload, and the other runs in a child.
+See ``_device``.
+
 Backends produce different vectors, so switching requires rebuilding the index. We
 degrade to llama.cpp rather than crash when ST breaks on a machine: an init-time
 probe falls back before any vector is produced (so spaces can't mix), and a
@@ -50,6 +54,28 @@ _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 
 def _device() -> str:
+    """Torch device for the in-process embedder. CPU unless asked otherwise.
+
+    Defaulting a GPU machine to CPU is deliberate. This embedder runs inside the
+    backend process, and the first CUDA allocation there creates a primary context
+    that is never returned while the process lives: measured at 712 MiB on a B200,
+    against 74 MiB for bge-small's own weights. So ingesting one document used to
+    cost most of a gigabyte of VRAM for the rest of the session, on a machine where
+    the user had loaded no model at all, and no amount of unloading gets it back --
+    ``del model; torch.cuda.empty_cache()`` returns none of it.
+
+    The trade is real but small at the sizes this runs at. bge-small is a 33M parameter
+    BERT: on the same host, one 128-token chunk takes 18.7ms on CPU against 5.2ms on
+    CUDA, which is noise next to parsing and chunking the document it came from. Bulk
+    indexing is where it shows, at batch 64: 445 chunks/s on CPU against 3174/s on CUDA.
+    ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+
+    This reads the same setting as the llama-server backend but resolves ``auto``
+    differently, which is intended: that backend offloads inside its own subprocess,
+    where the context dies with the child and costs the backend nothing.
+    """
+    if (config.EMBED_DEVICE or "auto").strip().lower() not in ("gpu", "cuda"):
+        return "cpu"
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
@@ -375,8 +401,8 @@ def _st_accepts_local_files_only(st_cls) -> bool:
 
 
 def _get(model_name: str | None = None):
-    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
-    for a ~1.5x speedup at negligible accuracy loss."""
+    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
+    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
     # Capture offline state once so the gate and the load agree (no window where the gate is
@@ -386,7 +412,6 @@ def _get(model_name: str | None = None):
         if _model is None or _name != name:
             # Probe before loading sentence-transformers on the selected device.
             device = _load_device()
-            degraded_to_cpu = device == "cpu" and _device() != "cpu"
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
@@ -396,7 +421,13 @@ def _get(model_name: str | None = None):
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                model_kwargs = dtype_kwargs("float32" if degraded_to_cpu else "float16"),
+                # Keyed on the device we actually load on, not on whether we degraded
+                # onto it. fp16 BERT on CPU is slow where it works at all, and several
+                # ops raise "not implemented for 'Half'" -- which _SentenceTransformers
+                # Backend.encode() catches and answers by swapping the whole process to
+                # llama-server, so getting this wrong fails as a silent backend change
+                # rather than as an error.
+                model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
             load_target = name
             if local_only:

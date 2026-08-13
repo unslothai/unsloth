@@ -125,6 +125,12 @@ def effective_gguf_repo() -> str:
 # tiny model) and exact vs fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
+# Read by BOTH backends, and "auto" means something different to each, because the
+# cost of a GPU is different. llama-server offloads inside its own subprocess, so
+# "auto" there means GPU when there is room. sentence-transformers loads inside the
+# backend process, where the first CUDA allocation pins a primary context for the life
+# of the process (712 MiB on a B200, against 74 MiB of weights), so "auto" there means
+# CPU. Set "gpu" to offload either one; "cpu" keeps both off the GPU.
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
