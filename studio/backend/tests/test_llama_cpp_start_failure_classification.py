@@ -818,13 +818,38 @@ class TestDiagnosticsDoNotLeak:
     def test_a_huge_unterminated_line_is_cheap(self):
         # _drain_stdout keeps an unterminated line whole; the tail must be
         # sliced before it is filtered character by character.
+        #
+        # Proven by BEHAVIOUR rather than by a stopwatch. The bound is observable: an
+        # argument error further back than the tail cannot be reported unless
+        # something read it. A wall-clock budget tests the same property by proxy and
+        # measures the runner instead, which is why this exact assertion goes red on
+        # the Windows runner for main as well as for a branch. The stopwatch stays
+        # only as a catastrophic guard, loose enough that no runner can trip it.
         import time
 
-        out = "x" * 10_000_000 + "\nggml_metal_init: error"
+        buried = (
+            "error: invalid argument: --nope\n"
+            + "x" * 10_000_000
+            + "\nggml_metal_init: error"
+        )
         start = time.perf_counter()
-        msg = _classify(out, "/models/x.gguf", "local/x", 1)
-        assert time.perf_counter() - start < 0.2
+        msg = _classify(buried, "/models/x.gguf", "local/x", 1)
+        elapsed = time.perf_counter() - start
+
+        # 10 MB back, so out of the scanned tail: reporting it would mean the whole
+        # capture was walked.
+        assert "--nope" not in msg
+        # And what IS in the tail still surfaces.
         assert "ggml_metal_init: error" in msg
+        assert elapsed < 5, f"{elapsed:.1f}s to classify one 10 MB line"
+
+    def test_an_argument_error_inside_the_tail_is_still_reported(self):
+        # The other half of the bound: near the end is where llama-server actually
+        # prints it, immediately before exiting.
+        out = "x" * 10_000_000 + "\nerror: invalid argument: --nope"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert "--nope" in msg
 
 
 class TestDyldInstallNames:
