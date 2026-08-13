@@ -94,7 +94,7 @@ export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
 // Persist only the model-agnostic intents (auto/ngram/off). The model-specific
-// drafter modes (mtp/mtp+ngram/dspark) and spec_draft_n_max stay session-only:
+// drafter modes (mtp/mtp+ngram/dspark/dflash) and spec_draft_n_max stay session-only:
 // a persisted choice would silently no-op on a model with no MTP head or no
 // DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
@@ -493,7 +493,7 @@ function saveString(key: string, value: string): void {
 }
 
 // Canonicalises any backend value onto the Speculative Decoding dropdown's
-// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// modes ("auto"/"mtp"/"dspark"/"dflash"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
 // legacy aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
   v: string | null | undefined,
@@ -505,6 +505,7 @@ export function normalizeSpeculativeType(
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
   if (s === "dspark" || s === "draft-dspark") return "dspark";
+  if (s === "dflash" || s === "draft-dflash") return "dflash";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -1071,8 +1072,8 @@ type ChatRuntimeStore = {
    */
   specFallbackReason: string | null;
   /**
-   * Which drafter the loaded model's speculative resolution was about, "mtp" or
-   * "dspark". Paired with specFallbackReason: the reason alone cannot name the
+   * Which drafter the loaded model's speculative resolution was about: "mtp",
+   * "dspark" or "dflash". Paired with specFallbackReason: the reason alone cannot name the
    * file to fix, since Auto resolves the kind server-side and the requested mode
    * still reads "auto".
    */

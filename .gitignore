@@ -208,9 +208,6 @@ tmp/
 **/node_modules/
 auth.db
 
-# Packaging snapshot of the root CHANGELOG.md (written by build.sh)
-studio/CHANGELOG.md
-
 # Tauri local build/generated output
 studio/src-tauri/target/
 studio/src-tauri/gen/

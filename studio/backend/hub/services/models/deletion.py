@@ -20,6 +20,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
+    is_qualified_gguf_variant_key,
     quant_token_with_bpw,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
@@ -133,11 +134,14 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    # A qualified variant key names its own folder; its quant token belongs to sibling
-    # checkpoints too, so it must not reach for a <quant>/ dir it does not own. Qualification
-    # has two shapes: a path (``distilled/...-Q6_K``) and a bpw modifier (``IQ4_XS-3.53bpw``,
-    # whose token-only ``IQ4_XS/`` folder, if it exists, is a different build's).
-    qualified = "/" in variant or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    # A qualified key names its own folder; its quant token belongs to sibling checkpoints too,
+    # so it must not reach for a <quant>/ dir it does not own. Qualified means a path
+    # (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier (``IQ4_XS-3.53bpw``, whose
+    # token-only ``IQ4_XS/`` folder is a different build's).
+    qualified = (
+        is_qualified_gguf_variant_key(variant)
+        or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    )
     variant_key = (
         variant.lower() if qualified else (extract_quant_token(variant) or variant).lower()
     )
@@ -229,6 +233,8 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, so it must not delete either.
     aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 

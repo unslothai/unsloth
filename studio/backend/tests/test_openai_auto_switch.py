@@ -290,9 +290,22 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
 
-    _run_hook("unsloth/B-GGUF")
+    # #8389 made a hub-style id a CONCRETE reference, so a name the refresh just proved is not
+    # here is refused rather than quietly answered by whatever is resident. This test predates
+    # that and used to assert the hook returned; what it is actually about -- one rescan, then a
+    # re-resolve that does not rescan, and the resident model left alone -- is unchanged, so the
+    # refusal is asserted alongside it instead of the test being weakened to swallow it.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
 
-    assert calls == [("unsloth/B-GGUF", {}), ("unsloth/B-GGUF", {"allow_scan": False})]
+    assert excinfo.value.status_code == 404
+    # The third call is the refusal wording asking what the RESIDENT model is; like the second it
+    # passes allow_scan = False, which is why the rescan count below is still one.
+    assert calls == [
+        ("unsloth/B-GGUF", {}),
+        ("unsloth/B-GGUF", {"allow_scan": False}),
+        ("unsloth/A-GGUF:Q4_K_M", {"allow_scan": False}),
+    ]
     assert scans == [1]
     assert rec.calls == []
     assert backend.model_identifier == "unsloth/A-GGUF"
@@ -4787,6 +4800,33 @@ def _chat_error(payload):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     return exc.value.status_code, exc.value.detail
+
+
+def test_chat_mistyped_gguf_repo_404s_before_vision_guard(monkeypatch):
+    # #8376: image request with a mistyped GGUF id must 404, not 400 on the loaded model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("unsloth/text-only-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_download_enabled", lambda: False
+    )
+    monkeypatch.setattr(
+        resolver,
+        "describe_local_miss",
+        lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ()),
+    )
+    payload = _chat_request(
+        model = "unsloth/typo-vision-GGUF",
+        image_base64 = "aGVsbG8=",
+    )
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, request, "tester"))
+    assert exc.value.status_code == 404
+    assert exc.value.detail["error"]["code"] == "model_not_found"
+    assert rec.calls == []
 
 
 def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
