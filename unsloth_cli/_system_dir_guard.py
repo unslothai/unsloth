@@ -359,9 +359,15 @@ _RELATIVE_PATH_ENV = (
 _PATH_LIST_SEPARATOR = ";"
 
 # Values holding several separated directories, anchored entry by entry.
+# PYTHONPATH is one of them: a relative entry there is resolved at import time,
+# not at interpreter start, so a move would let whatever sits in the new
+# directory shadow a managed import. PATH is deliberately absent: a search list
+# that long is mostly other people's absolute entries, and refusing the whole
+# move over one unresolvable entry in it would cost more than it protects.
 _PATH_LIST_ENV = (
     "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
     "CUDA_RUNTIME_DLL_DIR",
+    "PYTHONPATH",
 )
 
 
@@ -379,7 +385,7 @@ def pin_relative_overrides(
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
-        anchored = _anchor(value, cwd, pathmod, abspath)
+        anchored = _anchor(name, value, cwd, pathmod, abspath)
         if anchored is not None:
             environ[name] = anchored
             pinned.append(name)
@@ -391,7 +397,7 @@ def pin_relative_overrides(
         # anchored on its own; one relative entry is enough to change what the
         # whole list means.
         entries = raw.split(_PATH_LIST_SEPARATOR)
-        anchored_entries = [_anchor(e.strip(), cwd, pathmod, abspath) or e for e in entries]
+        anchored_entries = [_anchor(name, e.strip(), cwd, pathmod, abspath) or e for e in entries]
         if anchored_entries != entries:
             environ[name] = _PATH_LIST_SEPARATOR.join(anchored_entries)
             pinned.append(name)
@@ -399,34 +405,82 @@ def pin_relative_overrides(
 
 
 # Values a consumer deliberately does not read as a plain path. Anchoring one
-# does not move a folder, it changes what the value means.
+# does not move a folder, it changes what the value means. Each exemption names
+# the variables whose reader proves it, because the syntax is only special
+# there: a directory really called "[llama]" or "%data%" is legal on Windows,
+# and UNSLOTH_LLAMA_CPP_PATH would be read as exactly that.
+
+# MLX_HOSTFILE holds either a filename or the host list itself, as JSON
+# (`unsloth_cli/_inference.py`, `_json_rank_count_from_env`).
+_INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE",))
+
+# Expanded by their reader after the guard has run, so the folder is decided
+# once we are gone: huggingface_hub calls expandvars on HF_HOME (and on the
+# XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE, and Studio
+# calls it on SENTENCE_TRANSFORMERS_HOME (`studio/backend/utils/utils.py`).
+_EXPANDED_ENV = frozenset((
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGINGFACE_HUB_CACHE",
+    "HF_ASSETS_CACHE",
+    "XDG_CACHE_HOME",
+    "SENTENCE_TRANSFORMERS_HOME",
+))
+
+# A bare on/off token is skipped by the pre-quant allowlist precisely so there
+# is no "allow all" mode (`diffusion_prequant.py`, `_allowed_prequant_roots`);
+# anchoring one would turn it into a real allowlisted directory.
+_TOGGLE_ENV = frozenset(("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",))
 _TOGGLE_TOKENS = frozenset(("1", "true", "yes", "on", "0", "false", "no", "off"))
 
 
-def _names_a_path(value):
-    r"""Whether this value is a path the working directory resolves.
+def _names_a_path(name, value):
+    """Whether the working directory is what resolves this variable's value."""
+    if name in _INLINE_JSON_ENV and value.startswith(("[", "{")):
+        return False
+    if name in _EXPANDED_ENV and ("%" in value or "$" in value):
+        return False
+    if name in _TOGGLE_ENV and value.lower() in _TOGGLE_TOKENS:
+        return False
+    return True
 
-    Three kinds are not, and each has a reader in the tree that proves it:
 
-    - inline JSON. MLX_HOSTFILE holds either a filename or the host list itself
-      (`unsloth_cli/_inference.py`, `_json_rank_count_from_env`), and
-      `C:\Windows\System32\[{...}]` is neither.
-    - a value still holding %VAR% or $VAR. huggingface_hub expands HF_HOME,
-      HF_HUB_CACHE and HF_ASSETS_CACHE itself (constants.py), as does Studio for
-      SENTENCE_TRANSFORMERS_HOME, so the folder is decided after we are gone.
-    - a bare on/off token. UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH skips those exactly
-      so there is no "allow all" mode (`diffusion_prequant.py`,
-      `_allowed_prequant_roots`); anchoring one would turn it into a real
-      allowlisted directory.
+def pin_relative_sys_path(
+    cwd,
+    pathmod = _os.path,
+    syspath = None,
+    abspath = None,
+):
+    """Anchor the relative import roots this interpreter is already carrying.
+
+    sys.path holds PYTHONPATH entries as written, and an empty string means the
+    working directory itself, so both move with a chdir. The empty entry is left
+    alone on purpose: it is the script's own directory rule, and the desktop
+    commands run no script from the folder being left.
     """
-    if value.startswith(("[", "{")):
-        return False
-    if "%" in value or "$" in value:
-        return False
-    return value.lower() not in _TOGGLE_TOKENS
+    if syspath is None:
+        import sys as _sys
+
+        syspath = _sys.path
+    pinned = []
+    for index, entry in enumerate(syspath):
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        try:
+            anchored = _anchor("PYTHONPATH", entry.strip(), cwd, pathmod, abspath)
+        except Exception:
+            # Best effort, unlike the environment: an import root this process
+            # already holds is not worth refusing the move over, and refusing is
+            # how the login start broke in the first place.
+            continue
+        if anchored is not None:
+            syspath[index] = anchored
+            pinned.append(anchored)
+    return pinned
 
 
 def _anchor(
+    name,
     value,
     cwd,
     pathmod,
@@ -440,7 +494,7 @@ def _anchor(
     value = (value or "").strip()
     if not value or value.startswith("~") or _is_fully_qualified(value, pathmod):
         return None
-    if not _names_a_path(value):
+    if not _names_a_path(name, value):
         return None
     if pathmod.splitdrive(value)[0] or value.startswith(("\\", "/")):
         # "D:cache" is the current directory on drive D and "\cache" is the root
@@ -535,6 +589,7 @@ def check_working_directory(
     isdir = None,
     abspath = None,
     home_isdir = None,
+    syspath = None,
 ):
     """Decide what to do about the current working directory.
 
@@ -573,6 +628,10 @@ def check_working_directory(
             # Before moving, or a relative override the caller wrote would end up
             # naming a folder under the new directory instead of theirs.
             pin_relative_overrides(environ, cwd, pathmod, abspath)
+            # This interpreter read PYTHONPATH before the guard ran, and it keeps
+            # the entries as written: a relative one is resolved on every import,
+            # so it has to be anchored here as well as in the environment.
+            pin_relative_sys_path(cwd, pathmod, syspath, abspath)
         except Exception:
             # An environment we cannot pin is one we must not move underneath.
             target = None

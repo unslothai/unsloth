@@ -1152,9 +1152,17 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
 ];
 
 /// The same, for values holding several separated directories: one relative
-/// entry changes what the whole list allows or searches.
-pub(crate) const PATH_LIST_ENV: &[&str] =
-    &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", "CUDA_RUNTIME_DLL_DIR"];
+/// entry changes what the whole list allows or searches. PYTHONPATH is here
+/// because a relative entry in it is resolved at import time, so a moved child
+/// would let whatever sits in the new directory shadow a managed import. PATH is
+/// deliberately absent: it is mostly other people's absolute entries, and
+/// refusing a launch over one unresolvable entry there would cost more than it
+/// protects.
+pub(crate) const PATH_LIST_ENV: &[&str] = &[
+    "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
+    "CUDA_RUNTIME_DLL_DIR",
+    "PYTHONPATH",
+];
 
 /// Whether a value names one directory whatever the process does next.
 ///
@@ -1191,25 +1199,48 @@ fn needs_os_resolution(value: &str) -> bool {
     matches!(value.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())
 }
 
-/// Whether the working directory is what resolves this value.
+/// MLX_HOSTFILE holds either a filename or the host list itself, as JSON.
+const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE"];
+
+/// Expanded by their reader after this runs, so the folder is decided later:
+/// huggingface_hub calls expandvars on HF_HOME (and the XDG_CACHE_HOME it
+/// defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE, and Studio calls it on
+/// SENTENCE_TRANSFORMERS_HOME.
+const EXPANDED_ENV: &[&str] = &[
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGINGFACE_HUB_CACHE",
+    "HF_ASSETS_CACHE",
+    "XDG_CACHE_HOME",
+    "SENTENCE_TRANSFORMERS_HOME",
+];
+
+/// The pre-quant allowlist skips a bare on/off token so there is no allow-all
+/// mode; anchoring one would turn it into a real allowlisted directory.
+const TOGGLE_ENV: &[&str] = &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"];
+
+/// Whether the working directory is what resolves this variable's value.
 ///
-/// The twin of `_names_a_path` in `unsloth_cli/_system_dir_guard.py`, and for the
-/// same three readers: MLX_HOSTFILE holds either a filename or the host list
-/// itself, huggingface_hub expands %VAR% / $VAR in HF_HOME and its neighbours
-/// after we are gone, and UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH ignores a bare on/off
-/// token precisely so that there is no "allow all" mode. Anchoring any of those
-/// does not move a folder, it changes what the value means.
-fn names_a_path(value: &str) -> bool {
-    if value.starts_with('[') || value.starts_with('{') {
+/// The twin of `_names_a_path` in `unsloth_cli/_system_dir_guard.py`. Each
+/// exemption is scoped to the variables whose reader proves it, because the
+/// syntax is only special there: a directory really called "[llama]" or
+/// "%data%" is legal on Windows, and UNSLOTH_LLAMA_CPP_PATH is read as one.
+fn names_a_path(name: &str, value: &str) -> bool {
+    if INLINE_JSON_ENV.contains(&name) && (value.starts_with('[') || value.starts_with('{')) {
         return false;
     }
-    if value.contains('%') || value.contains('$') {
+    if EXPANDED_ENV.contains(&name) && (value.contains('%') || value.contains('$')) {
         return false;
     }
-    !matches!(
-        value.to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off"
-    )
+    if TOGGLE_ENV.contains(&name)
+        && matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off"
+        )
+    {
+        return false;
+    }
+    true
 }
 
 fn relative_override_pins_from(
@@ -1247,7 +1278,7 @@ fn relative_override_pins_from(
         if value.is_empty() || value.starts_with('~') {
             continue;
         }
-        if is_fully_qualified(value) || !names_a_path(value) {
+        if is_fully_qualified(value) || !names_a_path(name, value) {
             continue;
         }
         pins.push((*name, anchor(value)?));
@@ -1264,7 +1295,7 @@ fn relative_override_pins_from(
             if entry.is_empty()
                 || entry.starts_with('~')
                 || is_fully_qualified(entry)
-                || !names_a_path(entry)
+                || !names_a_path(name, entry)
             {
                 entries.push(entry.to_string());
                 continue;
@@ -1292,6 +1323,19 @@ fn relative_override_pins(
         // current directory.
         |value| std::path::absolute(value).ok(),
     )
+}
+
+/// The error a managed spawn would fail with, without spawning anything.
+///
+/// Preflight asks first: a context that cannot be built is not a broken CLI, and
+/// reporting it as one starts an automatic repair that needs the same context
+/// and fails the same way.
+pub(crate) fn managed_cli_context_error() -> Option<String> {
+    let work_dir = match managed_cli_working_dir() {
+        Ok(work_dir) => work_dir,
+        Err(error) => return Some(error),
+    };
+    relative_override_pins(&work_dir).err()
 }
 
 /// Whether the child has to be told where to run.
@@ -3034,6 +3078,33 @@ mod managed_cli_working_dir_tests {
         );
         assert!(is_fully_qualified("\\\\?\\unc\\server\\profiles\\me"));
         assert!(is_fully_qualified("\\\\?\\UNC\\server\\profiles\\me"));
+    }
+
+    #[test]
+    fn an_exemption_only_applies_to_the_variable_that_supports_it() {
+        // A directory really called "[llama]" or "%data%" is legal on Windows,
+        // and the readers of these two names take it as exactly that.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name| match name {
+                "UNSLOTH_LLAMA_CPP_PATH" => Some("[llama]".to_string()),
+                "UNSLOTH_STUDIO_HOME" => Some("%data%".to_string()),
+                _ => None,
+            },
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![
+                ("UNSLOTH_STUDIO_HOME", cwd.join("%data%")),
+                ("UNSLOTH_LLAMA_CPP_PATH", cwd.join("[llama]")),
+            ],
+            "a legal directory name was mistaken for JSON or a placeholder"
+        );
     }
 
     #[test]

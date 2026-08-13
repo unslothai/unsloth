@@ -332,6 +332,7 @@ def _guard_outcome(
     environ_out: dict[str, str] | None = None,
     drive_cwd: dict[str, str] | None = None,
     missing_homes: tuple[str, ...] = (),
+    syspath: list[str] | None = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -396,6 +397,8 @@ def _guard_outcome(
         abspath = _abspath,
         home_isdir = lambda path: ntpath.normcase(path)
         not in {ntpath.normcase(home) for home in missing_homes},
+        # The real sys.path belongs to pytest; the guard gets a copy to pin.
+        syspath = syspath if syspath is not None else [],
     )
     if environ_out is not None:
         environ_out.clear()
@@ -1093,3 +1096,47 @@ def test_cli_guard_refuses_a_root_relative_system_profile():
         userprofile = r"\Windows\System32\config\systemprofile",
     )
     assert (colour, chdir_calls) == ("red", [])
+
+
+def test_cli_guard_anchors_relative_import_roots_before_it_moves():
+    r"""PYTHONPATH entries reach sys.path as written and are resolved on every
+    import, so a move would let whatever sits in ~/.unsloth shadow them."""
+    environ_out: dict[str, str] = {}
+    syspath = [r"C:\Python\Lib", "lib", "", r".\plugins"]
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {"PYTHONPATH": r"lib;C:\shared\lib"},
+        environ_out = environ_out,
+        syspath = syspath,
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+    assert environ_out["PYTHONPATH"] == r"C:\Windows\System32\lib;C:\shared\lib"
+    assert syspath == [
+        r"C:\Python\Lib",
+        r"C:\Windows\System32\lib",
+        # The empty entry is the script's own directory rule, not a path to pin.
+        "",
+        # join, not normpath: the same spelling the environment pinning uses.
+        r"C:\Windows\System32\.\plugins",
+    ]
+
+
+def test_cli_guard_leaves_a_bracketed_directory_alone_only_where_it_is_json():
+    r"""A folder really called "[llama]" is legal, so the inline-JSON exemption is
+    scoped to the one variable whose reader accepts JSON."""
+    environ_out: dict[str, str] = {}
+    _message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {
+            "UNSLOTH_LLAMA_CPP_PATH": "[llama]",
+            "MLX_HOSTFILE": "[llama]",
+            "UNSLOTH_STUDIO_HOME": "%data%",
+        },
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out["UNSLOTH_LLAMA_CPP_PATH"] == r"C:\Windows\System32\[llama]"
+    assert environ_out["UNSLOTH_STUDIO_HOME"] == r"C:\Windows\System32\%data%"
+    assert environ_out["MLX_HOSTFILE"] == "[llama]"

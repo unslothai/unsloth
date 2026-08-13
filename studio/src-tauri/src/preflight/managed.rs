@@ -473,9 +473,12 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 /// `WORKING_DIRECTORY_UNAVAILABLE` when the directory children run from has
 /// become unreachable, so a probe failure can be attributed to it.
 fn working_directory_reason() -> Option<String> {
-    match crate::process::managed_cli_working_dir() {
-        Ok(_) => None,
-        Err(error) => {
+    // The whole context, not just the directory: an override the OS declines to
+    // resolve fails the same spawn, and a probe that merely returned false for it
+    // would be read as a broken CLI and repaired in a loop.
+    match crate::process::managed_cli_context_error() {
+        None => None,
+        Some(error) => {
             info!("Managed preflight: working directory unavailable: {error}");
             Some(WORKING_DIRECTORY_UNAVAILABLE.to_string())
         }
@@ -488,7 +491,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     // An unmounted roaming profile makes every probe below fail, which is not a
     // broken install: "cli_unusable" would start an automatic repair that needs
     // the same directory and fails the same way.
-    if let Err(error) = crate::process::managed_cli_working_dir() {
+    if let Some(error) = crate::process::managed_cli_context_error() {
         info!(
             "Managed preflight: no usable working directory for {:?}: {}",
             bin, error
