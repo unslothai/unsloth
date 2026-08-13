@@ -360,6 +360,162 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is False
 
 
+# ── out-of-process probe ────────────────────────────────────────────────────────
+#
+# The probe allocates, and a CUDA context is process-wide and never given back: measured on a
+# B200 host, one uncached probe takes the backend from 0 MiB to 806 MiB for the life of the
+# process. /images/download-plan reaches this while the user is only STAGING a download, so the
+# child is what keeps a plan from costing VRAM. Verdict parity with the in-process probe is the
+# contract; everything below pins one half of it.
+
+
+@pytest.fixture(autouse = True)
+def _reset_child_probe_state():
+    tq._SMOKE_CACHE.clear()
+    tq._CHILD_PROBE_UNAVAILABLE = False
+    yield
+    tq._SMOKE_CACHE.clear()
+    tq._CHILD_PROBE_UNAVAILABLE = False
+
+
+def test_the_child_answers_for_every_scheme_in_one_go(monkeypatch):
+    # One child, not one per ladder step: spawning costs 3.9 s on a B200 host (nearly all of it
+    # importing torch), so an auto ladder walking three schemes would otherwise pay it three times.
+    _stub_torch(monkeypatch)
+    spawns = {"n": 0}
+
+    def _table(device):
+        spawns["n"] += 1
+        return {TQ_INT8: True, TQ_FP8: True, TQ_NVFP4: False, TQ_MXFP8: False}
+
+    monkeypatch.setattr(tq, "_child_probe_table", _table)
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda *a: pytest.fail("probed in-process after the child answered")
+    )
+    assert [tq._scheme_supported(s, "cuda") for s in tq.TQ_SCHEMES] == [True, True, False, False]
+    assert spawns["n"] == 1
+    assert tq._SMOKE_CACHE == {
+        (TQ_INT8, "cuda"): True,
+        (TQ_FP8, "cuda"): True,
+        (TQ_NVFP4, "cuda"): False,
+        (TQ_MXFP8, "cuda"): False,
+    }
+
+
+def test_a_child_out_of_memory_is_not_cached_and_is_not_a_verdict(monkeypatch):
+    # Same contract the in-process probe holds: a full GPU says nothing about the scheme. Falling
+    # back in-process here would be worse than useless -- it would meet the same full GPU and pay
+    # the context on the way -- so the OOM is answered without re-probing.
+    _stub_torch(monkeypatch)
+    monkeypatch.setattr(
+        tq, "_child_probe_table", lambda device: {TQ_INT8: None, TQ_FP8: True}
+    )
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda *a: pytest.fail("re-probed in-process after a child OOM")
+    )
+    assert tq._scheme_supported(TQ_INT8, "cuda") is False
+    assert tq._scheme_supported(TQ_INT8, "cuda", unproven_ok = True) is True
+    assert (TQ_INT8, "cuda") not in tq._SMOKE_CACHE
+    # The schemes that DID answer are still cached; one scheme's OOM does not lose the table.
+    assert tq._SMOKE_CACHE == {(TQ_FP8, "cuda"): True}
+
+
+def test_no_child_falls_back_to_the_in_process_probe(monkeypatch):
+    # A frozen desktop build or a sandbox that refuses to spawn must still be able to load a
+    # model: the VRAM this saves is not worth failing a load over.
+    _stub_torch(monkeypatch)
+    monkeypatch.setattr(tq, "_child_probe_table", lambda device: None)
+    monkeypatch.setattr(tq, "_smoke_probe", lambda *a, **k: True)
+    assert tq._scheme_supported(TQ_INT8, "cuda") is True
+
+
+def test_a_host_without_cuda_never_spawns_a_child(monkeypatch):
+    # CPU-only, MPS and XPU hosts answer False above the child, so they pay nothing at all.
+    _stub_torch(monkeypatch, cuda_available = False)
+    monkeypatch.setattr(
+        tq, "_child_probe_table", lambda device: pytest.fail("spawned on a CUDA-less host")
+    )
+    assert tq._scheme_supported(TQ_INT8, "cuda") is False
+    # Same for an fp8 ask on a torch without the dtype.
+    _stub_torch(monkeypatch, with_fp8 = False)
+    assert tq._scheme_supported(TQ_FP8, "cuda") is False
+
+
+def test_a_cached_scheme_does_not_spawn_a_child(monkeypatch):
+    _stub_torch(monkeypatch)
+    tq._SMOKE_CACHE[(TQ_INT8, "cuda")] = True
+    monkeypatch.setattr(tq, "_child_probe_table", lambda device: pytest.fail("spawned on a hit"))
+    assert tq._scheme_supported(TQ_INT8, "cuda") is True
+
+
+def test_the_child_entry_posts_one_table_covering_every_scheme(monkeypatch):
+    # Child side. Every scheme is attempted even after one fails: the verdicts are independent
+    # and the whole point of the child is to pay the CUDA context once.
+    posted = []
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda scheme, device: {TQ_INT8: True, TQ_FP8: None}.get(scheme, False)
+    )
+    tq._child_probe_entry("cuda", tq.TQ_SCHEMES, types.SimpleNamespace(put = posted.append))
+    assert posted == [{TQ_INT8: True, TQ_FP8: None, TQ_NVFP4: False, TQ_MXFP8: False}]
+
+
+def test_a_spawn_failure_is_remembered_so_it_is_paid_once(monkeypatch):
+    import multiprocessing
+
+    def _no_spawn(name):
+        raise ValueError(f"no {name} start method here")
+
+    monkeypatch.setattr(multiprocessing, "get_context", _no_spawn)
+    assert tq._child_probe_table("cuda") is None
+    assert tq._CHILD_PROBE_UNAVAILABLE is True
+    # Second time round it does not even reach multiprocessing.
+    monkeypatch.setattr(
+        multiprocessing, "get_context", lambda name: pytest.fail("retried a spawn known to fail")
+    )
+    assert tq._child_probe_table("cuda") is None
+
+
+def test_the_probe_body_separates_an_oom_from_a_verdict(monkeypatch):
+    # _run_smoke_probe is what BOTH the child and the in-process fallback call, so this three-way
+    # answer is the single place the two can be shown not to drift.
+    class _OOM(RuntimeError):
+        pass
+
+    fault = [None]
+
+    class _Lin:
+        def __init__(self, *a, **k):
+            pass
+
+        def to(self, **k):
+            return self
+
+        def __call__(self, x):
+            if fault[0] is not None:
+                raise fault[0]
+            return x
+
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.randn = lambda *a, **k: _FakeTensor()
+    torch.isfinite = lambda t: _FakeBool(True)
+    torch.no_grad = lambda: __import__("contextlib").nullcontext()
+    torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8cfg"
+    tqz.Float8DynamicActivationFloat8WeightConfig = lambda: "fp8cfg"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    assert tq._run_smoke_probe(TQ_INT8, "cuda") is True
+    fault[0] = _OOM("CUDA out of memory. Tried to allocate 2.00 GiB")
+    assert tq._run_smoke_probe(TQ_INT8, "cuda") is None
+    fault[0] = RuntimeError("kernel unavailable")
+    assert tq._run_smoke_probe(TQ_INT8, "cuda") is False
+
+
 def test_an_oom_is_recognised_however_it_is_spelled():
     # torch.OutOfMemoryError subclasses RuntimeError (not MemoryError) and has moved between
     # torch.cuda and torch across releases, so neither name alone is enough.
