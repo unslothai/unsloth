@@ -69,8 +69,22 @@ test("a provider with no sandbox uses Studio's own tools", () => {
       hostedCodeExecutionForThisTurn: false,
       providerHostsCodeExecution: false,
     }),
-    { local: ["python", "terminal"], hosted: [] },
+    { local: ["python", "terminal", "edit_file"], hosted: [] },
   );
+});
+
+test("edit_file is local-only, never a stand-in for a hosted sandbox", () => {
+  // It patches a file in THIS machine's session workdir, so it must not creep
+  // into the hosted branch just because the Code pill is what turns it on.
+  for (const hosted of [true, false]) {
+    const names = selectCodeToolNames({
+      codeToolsEnabled: true,
+      hostedCodeExecutionForThisTurn: hosted,
+      providerHostsCodeExecution: true,
+    });
+    assert.ok(!names.local.includes("edit_file"));
+    assert.ok(!names.hosted.includes("edit_file"));
+  }
 });
 
 test("the pill being off asks for nothing on either side", () => {

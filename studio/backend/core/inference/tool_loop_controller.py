@@ -235,6 +235,12 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    if tool_name == "edit_file":
+        # The name, not the patch: the badge is one line and the tool card
+        # below it already shows the edit.
+        path = str(arguments.get("path") or "").strip()
+        name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
+        return f"Editing: {name}" if name else "Editing file..."
     return f"Calling: {tool_name}"
 
 
@@ -248,6 +254,8 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: Python"
     if tool_name == "terminal":
         return "Waiting for approval: command"
+    if tool_name == "edit_file":
+        return "Waiting for approval: file edit"
     return f"Waiting for approval: {tool_name}"
 
 

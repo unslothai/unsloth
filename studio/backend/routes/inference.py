@@ -3195,7 +3195,7 @@ _TOOL_CODE_TIP = (
 # "no, I am sandboxed" from training data rather than reading its own tool list,
 # so the environment is stated outright and the guess sent to a tool call.
 # Fixed order so the sentence reads the same whichever way the caller listed them.
-_LOCAL_CODE_TOOLS = ("python", "terminal")
+_LOCAL_CODE_TOOLS = ("python", "terminal", "edit_file")
 
 
 def _full_access_tip(code_tools: list[str]) -> str:
@@ -3207,7 +3207,12 @@ def _full_access_tip(code_tools: list[str]) -> str:
     if len(code_tools) == 1:
         subject = f"The {code_tools[0]} tool runs"
     else:
-        subject = "The " + " and ".join(code_tools) + " tools run"
+        # Three names now, so only the last pair takes the "and".
+        subject = (
+            "The "
+            + ", ".join(code_tools[:-1])
+            + f" and {code_tools[-1]} tools run"
+        )
     return (
         subject + " where Unsloth Studio is running, with the code sandbox and the "
         "approval prompts disabled, so you can inspect and change whatever that "

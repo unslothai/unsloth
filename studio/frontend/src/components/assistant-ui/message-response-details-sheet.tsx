@@ -103,6 +103,7 @@ const TOOL_CALL_LABELS: Record<string, string> = {
   code_execution: "Code",
   python: "Python",
   terminal: "Terminal",
+  edit_file: "Edit",
   image_generation: "Images",
   search_knowledge_base: "Docs",
   render_html: "Canvas",
@@ -119,7 +120,8 @@ function toolCategoryFromCall(toolName: string): string | null {
   if (
     normalized === "code_execution" ||
     normalized === "python" ||
-    normalized === "terminal"
+    normalized === "terminal" ||
+    normalized === "edit_file"
   ) {
     return "code";
   }

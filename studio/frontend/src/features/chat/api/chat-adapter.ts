@@ -1698,7 +1698,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -5287,7 +5287,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(codeToolsEnabled
+                      ? ["python", "terminal", "edit_file"]
+                      : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
