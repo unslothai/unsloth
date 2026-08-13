@@ -228,9 +228,9 @@ class TestExplicitIndexPinIsHonoured:
                 if _k not in env:
                     os.environ.pop(_k, None)
             _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
-        assert self._CPU_CLAIM in out, (
-            f"a blank pin ({env}) was read as a pin, dropping the CPU-only warning:\n{out}"
-        )
+        assert (
+            self._CPU_CLAIM in out
+        ), f"a blank pin ({env}) was read as a pin, dropping the CPU-only warning:\n{out}"
 
     def test_the_claim_is_there_without_a_pin(self):
         """The positive control: without it the test above passes on any wording."""

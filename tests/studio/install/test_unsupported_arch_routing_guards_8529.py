@@ -869,21 +869,46 @@ def test_setup_sh_treats_a_blank_index_pin_as_unset(url, family, pinned):
 
 _PARITY_NAMES = [
     # RDNA 1 (Navi 10 / 12 / 14), the #8529 cluster
-    "AMD Radeon RX 5700 XT", "AMD Radeon RX 5700", "AMD Radeon RX 5600 XT",
-    "AMD Radeon Pro 5600 XT", "AMD Radeon Pro 5700 XT", "AMD Radeon Pro W5700",
-    "AMD Radeon Pro V520", "AMD Radeon Pro 5600M", "AMD Radeon RX 5500 XT",
-    "AMD Radeon RX 5300", "AMD Radeon Pro W5500", "AMD Radeon Pro W5300",
+    "AMD Radeon RX 5700 XT",
+    "AMD Radeon RX 5700",
+    "AMD Radeon RX 5600 XT",
+    "AMD Radeon Pro 5600 XT",
+    "AMD Radeon Pro 5700 XT",
+    "AMD Radeon Pro W5700",
+    "AMD Radeon Pro V520",
+    "AMD Radeon Pro 5600M",
+    "AMD Radeon RX 5500 XT",
+    "AMD Radeon RX 5300",
+    "AMD Radeon Pro W5500",
+    "AMD Radeon Pro W5300",
     # Polaris 10/20/30, the #8458 cluster
-    "AMD Radeon RX 580", "AMD Radeon RX 570", "AMD Radeon RX 590",
-    "AMD Radeon RX 480", "AMD Radeon RX 470",
-    "AMD Radeon Pro WX 7100", "AMD Radeon Pro WX 5100",
+    "AMD Radeon RX 580",
+    "AMD Radeon RX 570",
+    "AMD Radeon RX 590",
+    "AMD Radeon RX 480",
+    "AMD Radeon RX 470",
+    "AMD Radeon Pro WX 7100",
+    "AMD Radeon Pro WX 5100",
     # Must map to NOTHING in every copy
-    "AMD Radeon RX 5800", "AMD Radeon RX 5900", "AMD Radeon RX 4800",
-    "AMD Radeon RX 540", "AMD Radeon RX 550", "AMD Radeon RX 560", "AMD Radeon RX 460",
-    "AMD Radeon RX 7900 XTX", "AMD Radeon RX 9070 XT", "AMD Radeon RX 6800 XT",
-    "AMD Radeon PRO W7500", "AMD Radeon 890M Graphics", "AMD Radeon 780M Graphics",
-    "AMD Instinct MI210", "AMD Radeon VII", "AMD Radeon Graphics", "Intel Arc A770",
-    "NVIDIA GeForce RTX 4090", "",
+    "AMD Radeon RX 5800",
+    "AMD Radeon RX 5900",
+    "AMD Radeon RX 4800",
+    "AMD Radeon RX 540",
+    "AMD Radeon RX 550",
+    "AMD Radeon RX 560",
+    "AMD Radeon RX 460",
+    "AMD Radeon RX 7900 XTX",
+    "AMD Radeon RX 9070 XT",
+    "AMD Radeon RX 6800 XT",
+    "AMD Radeon PRO W7500",
+    "AMD Radeon 890M Graphics",
+    "AMD Radeon 780M Graphics",
+    "AMD Instinct MI210",
+    "AMD Radeon VII",
+    "AMD Radeon Graphics",
+    "Intel Arc A770",
+    "NVIDIA GeForce RTX 4090",
+    "",
 ]
 
 
@@ -896,7 +921,10 @@ def _sh_unsupported(path: Path, func: str, names):
     script = f'{body}\nfor n in "$@"; do {func} "$n" || echo ""; done\n'
     out = subprocess.run(
         ["sh", "-c", script, "sh", *names],
-        stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, text = True, timeout = 60,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 60,
     )
     return [l.strip() for l in out.stdout.split("\n")][: len(names)]
 
@@ -917,7 +945,10 @@ def _ps_unsupported(path: Path, names):
     )
     out = subprocess.run(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, text = True, timeout = 180,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 180,
     )
     assert out.returncode == 0, f"{path.name}: the unsupported table did not evaluate"
     return [l.strip() for l in out.stdout.split("\n")][: len(names)]
@@ -935,9 +966,9 @@ def test_the_five_unsupported_tables_agree_on_every_name():
     answers = {
         "install_python_stack.py": _py_unsupported(names),
         "install.sh": _sh_unsupported(
-            _INSTALL_SH, "_infer_unsupported_amd_gfx_arch_from_gpu_name", names),
-        "setup.sh": _sh_unsupported(
-            _SETUP_SH, "_setup_unsupported_gfx_from_name", names),
+            _INSTALL_SH, "_infer_unsupported_amd_gfx_arch_from_gpu_name", names
+        ),
+        "setup.sh": _sh_unsupported(_SETUP_SH, "_setup_unsupported_gfx_from_name", names),
     }
     if shutil.which("pwsh"):
         answers["install.ps1"] = _ps_unsupported(_INSTALL_PS1, names)
@@ -951,9 +982,8 @@ def test_the_five_unsupported_tables_agree_on_every_name():
         seen = {src: got[i] for src, got in answers.items()}
         if len(set(seen.values())) > 1:
             disagreements.append((name, seen))
-    assert not disagreements, (
-        "the unsupported-arch tables have drifted apart:\n"
-        + "\n".join(f"  {n!r}: {s}" for n, s in disagreements)
+    assert not disagreements, "the unsupported-arch tables have drifted apart:\n" + "\n".join(
+        f"  {n!r}: {s}" for n, s in disagreements
     )
     # Positive control: the corpus really does exercise the tables.
     ref = answers["install.sh"]
