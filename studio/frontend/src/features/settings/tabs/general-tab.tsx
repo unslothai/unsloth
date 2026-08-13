@@ -630,7 +630,7 @@ export function GeneralTab() {
             >
               <div className="flex flex-col items-end gap-1">
                 <Switch
-                  checked={closeToTraySetting.value ?? true}
+                  checked={closeToTraySetting.value ?? false}
                   disabled={
                     closeToTraySetting.value === null || closeToTraySetting.saving
                   }

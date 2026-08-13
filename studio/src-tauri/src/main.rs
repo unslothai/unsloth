@@ -52,8 +52,8 @@ const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 struct CloseToTrayState(AtomicBool);
 
 fn new_close_to_tray_state() -> CloseToTrayState {
-    // New installs keep the desktop process and managed backend alive when the main window closes.
-    CloseToTrayState(AtomicBool::new(true))
+    // Closing keeps its historical quit behavior until the user explicitly opts in.
+    CloseToTrayState(AtomicBool::new(false))
 }
 
 /// Resolved once, at setup, where the marker is consumed, so no later caller can flip the answer.
@@ -158,16 +158,16 @@ fn read_close_to_tray_preference(config_dir: &Path) -> bool {
                     "Ignoring invalid close-to-tray preference {}: {error}",
                     path.display()
                 );
-                true
+                false
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => {
             warn!(
                 "Could not read close-to-tray preference {}: {error}",
                 path.display()
             );
-            true
+            false
         }
     }
 }
@@ -195,7 +195,7 @@ fn initialize_close_to_tray(app: &tauri::AppHandle) {
         .map(|dir| read_close_to_tray_preference(&dir))
         .unwrap_or_else(|error| {
             warn!("Could not determine app configuration directory: {error}");
-            true
+            false
         });
     app.state::<CloseToTrayState>()
         .0
@@ -1842,10 +1842,10 @@ mod tests {
     }
 
     #[test]
-    fn close_to_tray_preference_defaults_on_and_round_trips() {
+    fn close_to_tray_preference_defaults_off_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
 
-        assert!(read_close_to_tray_preference(dir.path()));
+        assert!(!read_close_to_tray_preference(dir.path()));
         write_close_to_tray_preference(dir.path(), false).unwrap();
         assert!(!read_close_to_tray_preference(dir.path()));
         write_close_to_tray_preference(dir.path(), true).unwrap();
@@ -1853,11 +1853,11 @@ mod tests {
     }
 
     #[test]
-    fn invalid_close_to_tray_preference_falls_back_to_enabled() {
+    fn invalid_close_to_tray_preference_falls_back_to_disabled() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
 
-        assert!(read_close_to_tray_preference(dir.path()));
+        assert!(!read_close_to_tray_preference(dir.path()));
     }
 
     #[test]
