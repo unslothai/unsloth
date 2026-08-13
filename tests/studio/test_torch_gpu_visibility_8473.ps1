@@ -197,7 +197,9 @@ Check "a hide-all mask is excluded"       ($report -match '-not \$_gpuCheckMaske
 # Scoped to the mask that governs what was announced: an idle HIP mask on an NVIDIA host must
 # not mute a genuine mismatch.
 Check "the NVIDIA arm reads the CUDA mask" ($report -match 'NVIDIA\*.*[\s\S]{0,80}CUDA_VISIBLE_DEVICES')
-Check "the AMD arm reads the HIP masks"   ($report -match 'HIP_VISIBLE_DEVICES.*ROCR_VISIBLE_DEVICES')
+# All three, in the order hardware.py resolves them: ROCm layers HIP/ROCR on top of the CUDA
+# mask and falls back to it when neither is set.
+Check "the AMD arm reads the HIP masks"   ($report -match 'HIP_VISIBLE_DEVICES.*ROCR_VISIBLE_DEVICES.*CUDA_VISIBLE_DEVICES')
 Check "the NVIDIA arm ignores HIP"        (-not ($report -match 'NVIDIA\*\) \{\s*\n\s*Test-VisibleMaskHidesAll \$env:HIP'))
 
 # The mask predicate itself is run: PowerShell turns an unset $env: read into "" under a
@@ -222,6 +224,8 @@ Check "a device list is not hidden"       (-not (Test-Mask "1,0"))
 # First-set-wins: an empty HIP mask shadows a ROCR mask that names a device.
 Check "the first set mask wins"           (Test-Mask @("", "0"))
 Check "and an unset one is skipped"       (-not (Test-Mask @($null, "0")))
+Check "a bare CUDA mask still hides"      (Test-Mask @($null, $null, "-1"))
+Check "a named AMD device wins over it"   (-not (Test-Mask @("0", $null, "-1")))
 # Resolved here, not read off $TorchIndexPinned / $CuTag: those live inside the dependency-pass
 # branch and are $null on the "dependencies up to date" run this check exists for.
 Check "the pin is resolved fresh"         ($report -match '\$_gpuCheckPinLeaf = Get-TorchIndexLeaf \(Get-PinnedTorchIndexUrl\)')

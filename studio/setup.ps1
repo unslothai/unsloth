@@ -5200,7 +5200,7 @@ $_gpuCheckPinLeaf = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
 $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
     Test-VisibleMaskHidesAll $env:CUDA_VISIBLE_DEVICES
 } elseif ($_gpuCheckAnnounced -like "AMD*") {
-    Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES)
+    Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
 } else { $false }
 if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
     -not $_gpuCheckMasked -and

@@ -165,7 +165,12 @@ def _run_block(
     run_env.pop("UNSLOTH_TORCH_INDEX_URL", None)
     run_env.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
     run_env.pop("UNSLOTH_TORCH_BACKEND", None)
-    for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "UNSLOTH_NO_TORCH"):
+    for _mask in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "UNSLOTH_NO_TORCH",
+    ):
         run_env.pop(_mask, None)
     run_env.update(env or {})
     run_env["PATH"] = (
@@ -470,6 +475,51 @@ def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
     there would silence every host that pins its GPU."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_a_bare_cuda_mask_hides_the_amd_card_too(block, tmp_path):
+    """ROCm layers HIP/ROCR on top of CUDA_VISIBLE_DEVICES and falls back to it when neither is
+    set (hardware.py's visible-devices resolver), so a hide-all CUDA mask on an AMD host is the
+    user hiding the card, not torch failing to open it."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block, venv, tmp_path, amd = True, gfx = "gfx1201", env = {"CUDA_VISIBLE_DEVICES": "-1"}
+    )
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+def test_a_mixed_host_steered_to_its_amd_card_is_still_reconciled(block, tmp_path):
+    """First-set-wins is what keeps the fallback narrow: hiding NVIDIA while naming an AMD
+    device is a selection, and that host still wants to hear that torch cannot open it."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"HIP_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "-1"},
+    )
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_the_mask_check_needs_no_coreutils(block, tmp_path):
+    """Trimmed with bash expansion rather than `tr`: on a minimal image without coreutils on
+    PATH the pipe would fail, leave the mask empty, and read that as hide-all, silencing every
+    host. Run on the no-timeout PATH, which carries only what the block itself uses."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        with_timeout = False,
+        env = {"CUDA_VISIBLE_DEVICES": "0"},
+    )
+    assert result["calls"].count("call") == 1
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
 
 

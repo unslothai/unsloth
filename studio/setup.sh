@@ -1954,16 +1954,25 @@ _setup_gpucheck_pin_leaf=$(printf '%s' "${_setup_gpucheck_pin##*/}" | tr '[:uppe
 # see nothing. Mirrors _setup_cvd_hides_nvidia, which already keeps a masked NVIDIA host out of
 # _setup_nvidia_usable; the AMD side has no equivalent because the KFD sysfs fallback reads the
 # kernel topology and ignores the mask, so the summary announces the card either way and only
-# this can tell a hidden GPU from a broken one. First-set-wins, like the runtime: an empty HIP
-# mask shadows ROCR rather than deferring to it.
+# this can tell a hidden GPU from a broken one. First-set-wins over the same three masks in the
+# same order as hardware.py's _pick_visible_index and setup.ps1's Resolve-VisibleGpuIndex: ROCm
+# layers HIP/ROCR on top of CUDA_VISIBLE_DEVICES and falls back to it when neither is set, so an
+# empty HIP mask shadows ROCR, and a bare CUDA mask still hides the AMD card. A mixed host that
+# hides NVIDIA but names an AMD device (HIP_VISIBLE_DEVICES=0 with CUDA_VISIBLE_DEVICES=-1) is
+# not hidden, since the first mask set selects a device.
 _setup_amd_mask_hides_all() {
     if [ "${HIP_VISIBLE_DEVICES+set}" = "set" ]; then
-        _setup_amd_mask=$(printf '%s' "$HIP_VISIBLE_DEVICES" | tr -d '[:space:]')
+        _setup_amd_mask="$HIP_VISIBLE_DEVICES"
     elif [ "${ROCR_VISIBLE_DEVICES+set}" = "set" ]; then
-        _setup_amd_mask=$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '[:space:]')
+        _setup_amd_mask="$ROCR_VISIBLE_DEVICES"
+    elif [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ]; then
+        _setup_amd_mask="$CUDA_VISIBLE_DEVICES"
     else
         return 1
     fi
+    # Bash expansion, not `tr`: a minimal image without coreutils on PATH would fail the pipe,
+    # leave the mask empty, and read that as hide-all -- silencing the very hosts this reports.
+    _setup_amd_mask="${_setup_amd_mask//[[:space:]]/}"
     [ -z "$_setup_amd_mask" ] || [ "$_setup_amd_mask" = "-1" ]
 }
 _setup_gpucheck_masked=false
