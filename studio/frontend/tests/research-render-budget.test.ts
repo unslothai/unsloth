@@ -53,11 +53,24 @@ test("Thread is memoized", () => {
 test("the report renderer is deferred and its plugins are conditional", () => {
   const preview = source("components/markdown/markdown-preview.tsx");
   assert.match(preview, /markdownPluginNeeds\(markdown\)/);
-  assert.match(preview, /scheduleIdleTask\(\(\) => setReady\(true\)/);
+  assert.match(preview, /scheduleIdleTask\(\(\) => setReadyMarkdown\(markdown\), 200\)/);
   // The old path: all three plugins, always, in one synchronous commit.
   assert.doesNotMatch(preview, /const MARKDOWN_PLUGINS = \{ code, math, mermaid \}/);
   const message = source("features/chat/components/research-message.tsx");
   assert.match(message, /markdown=\{run\.report\}[\s\S]*?defer=\{true\}/);
+});
+
+test("deferred readiness belongs to a markdown value, not to the component", () => {
+  // Blanking readiness from a passive effect lands one commit late: the render that first sees a
+  // new document still sees `ready === true`, hands it to Streamdown, and pays the parse twice.
+  // Measured on a 202KB report: a wasted 576ms parse, then a second one, ~1.11s blocked against
+  // ~0.66s once readiness is derived during render.
+  const preview = source("components/markdown/markdown-preview.tsx");
+  assert.match(preview, /const ready = !defer \|\| readyMarkdown === markdown;/);
+  assert.match(preview, /scheduleIdleTask\(\(\) => setReadyMarkdown\(markdown\), 200\)/);
+  assert.doesNotMatch(preview, /useState\(!defer\)/);
+  assert.doesNotMatch(preview, /setReady\(false\)/);
+  assert.match(preview, /\{ready \? \(\s*<Streamdown/);
 });
 
 test("plugin needs follow the document", () => {
@@ -71,6 +84,16 @@ test("plugin needs follow the document", () => {
   assert.equal(markdownPluginNeeds("\\[x\\]").math, true);
   // A lone $ is too common in prose (prices, shell prompts) to pull KaTeX in for.
   assert.equal(markdownPluginNeeds("costs $5 to run").math, false);
+  // Nor a balanced pair: the callers this gates install `@streamdown/math`'s bare export, which
+  // pins singleDollarTextMath to false, so `$x^2$` renders literally with the plugin loaded too.
+  // (`markdown-text.tsx` is the one caller that enables it, and it does not use this detector.)
+  // If that ever changes, NEEDS_MATH has to change with it - and "costs $5 and $10" is why a
+  // balanced-pair regex is not the answer.
+  assert.equal(markdownPluginNeeds("the area is $x^2$ per unit").math, false);
+  assert.match(
+    source("components/markdown/markdown-preview.tsx"),
+    /import \{ math \} from "@streamdown\/math";/,
+  );
   assert.equal(markdownPluginNeeds("```mermaid\ngraph TD;\n```").mermaid, true);
   assert.equal(markdownPluginNeeds("```python\npass\n```").mermaid, false);
   // CommonMark opens a fenced block with three-or-more backticks *or* tildes, and allows a

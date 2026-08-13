@@ -71,14 +71,18 @@ function MarkdownPreviewImpl({
     if (needs.mermaid) next.mermaid = mermaid;
     return next;
   }, [markdown]);
-  const [ready, setReady] = useState(!defer);
+  // Readiness belongs to a markdown value, not to the component. Resetting it from an effect is
+  // one commit too late: the render that first sees a new document still sees the old `ready`,
+  // so Streamdown parses the new document synchronously and the result is thrown away when the
+  // effect blanks it a moment later - the stall `defer` exists to avoid, paid twice. Deriving
+  // readiness during render keeps a changed document out of Streamdown until its own idle parse.
+  const [readyMarkdown, setReadyMarkdown] = useState<string | null>(null);
+  const ready = !defer || readyMarkdown === markdown;
   useEffect(() => {
     if (!defer) {
-      setReady(true);
       return;
     }
-    setReady(false);
-    return scheduleIdleTask(() => setReady(true), 200);
+    return scheduleIdleTask(() => setReadyMarkdown(markdown), 200);
   }, [defer, markdown]);
   const markdownClassName =
     "w-full max-w-none min-w-0 space-y-2 [overflow-wrap:anywhere] [&_*]:max-w-none [&_p]:w-full [&_ul]:w-full [&_ol]:w-full [&_li]:w-full [&_h1]:w-full [&_h2]:w-full [&_h3]:w-full [&_h4]:w-full [&_h5]:w-full [&_h6]:w-full [&_pre]:w-full [&_table]:w-full [&_p]:break-words [&_li]:break-words [&_code]:break-words [&_pre]:whitespace-pre-wrap [&_pre]:break-words";
