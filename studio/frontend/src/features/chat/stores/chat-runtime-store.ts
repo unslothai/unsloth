@@ -473,6 +473,13 @@ const MIRRORED_SETTINGS = {
   showCanvasMenuItem: {
     storageKey: CHAT_SHOW_CANVAS_MENU_ITEM_KEY,
     ...BOOLEAN_SETTING,
+    // A profile predating the visibility flag keeps Canvas shown through an
+    // explicit plus-menu pin, which loadShowCanvasMenuItem reads.
+    readForBackfill: () =>
+      readStorageValue(CHAT_SHOW_CANVAS_MENU_ITEM_KEY) !== null ||
+      readStorageValue(PLUS_MENU_PINS_STORAGE_KEY) !== null
+        ? loadShowCanvasMenuItem()
+        : undefined,
   },
   collapseHtmlArtifacts: {
     storageKey: CHAT_COLLAPSE_HTML_ARTIFACTS_KEY,
@@ -582,6 +589,20 @@ function flushPreHydrationSettings(): void {
 function persistSetting(key: string, raw: string): void {
   if (readStorageValue(key) !== raw) mirrorSettingToBackend(key, raw);
   writeStorageValue(key, raw);
+}
+
+/**
+ * Persist a value a model load applied rather than one the user picked. Before
+ * hydration such a write only reflects this browser's cache, so treating it as
+ * an edit would both block the stored preference from hydrating and replay the
+ * load's default over it. It reaches the cache and waits for the server's.
+ */
+function persistLoadDerivedSetting(key: string, raw: string): void {
+  if (!mirroredSettingsHydrated) {
+    writeStorageValue(key, raw);
+    return;
+  }
+  persistSetting(key, raw);
 }
 
 function loadBool(key: string, fallback: boolean): boolean {
@@ -732,7 +753,7 @@ export function readPersistedSpeculativeType(): string {
 // unapplied dropdown edit the user might Reset or abandon before Apply.
 export function saveSpeculativeType(value: string | null): void {
   if (value && PERSISTED_SPEC_MODES.has(value)) {
-    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
+    persistLoadDerivedSetting(CHAT_SPECULATIVE_TYPE_KEY, value);
   }
 }
 
@@ -743,7 +764,7 @@ export function readPersistedGpuMemoryMode(): "auto" | "manual" {
 }
 
 export function saveGpuMemoryMode(value: "auto" | "manual"): void {
-  saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
+  persistLoadDerivedSetting(CHAT_GPU_MEMORY_MODE_KEY, value);
 }
 
 /** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
