@@ -2114,7 +2114,14 @@ def _h3_pipeline_load_is_attemptable(fam) -> bool:
     workflow at all (torch.mps exposes no mem_get_info for the auto CPU offload), and a diffusers
     without the bundled revision has no transformer class to build. Both raise the same ValueError
     a genuine refusal does, so a caller that reads any ValueError as "this pick was rejected"
-    reports a regression on hosts where the pick was never in question."""
+    reports a regression on hosts where the pick was never in question.
+
+    No diffusers at all is the third such host, and it is a supported one: studio.txt does not
+    install diffusers (it arrives with the torch-bound ML stack), and the native sd.cpp engine
+    serves H3 without it. assert_pipeline_class_available answers only "is the installed
+    diffusers new enough", so under its default non-strict mode an unimportable one returns
+    rather than raising -- which means it cannot be the guard for this, and the probe below has
+    to carry its own."""
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_families import assert_pipeline_class_available
 
@@ -2125,9 +2132,37 @@ def _h3_pipeline_load_is_attemptable(fam) -> bool:
     except Exception:  # noqa: BLE001 -- an unavailable pipeline class is a host fact, not a verdict
         return False
     if fam.modular_workflow:
-        import diffusers
-        return hasattr(diffusers, fam.transformer_class)
+        try:
+            import diffusers
+
+            # hasattr, not the import, is what pulls in the lazy submodule, so a partially
+            # installed diffusers raises here rather than at the import statement.
+            return hasattr(diffusers, fam.transformer_class)
+        except Exception:  # noqa: BLE001 -- no importable diffusers is a host fact too
+            return False
     return True
+
+
+def test_the_h3_attemptability_probe_survives_a_host_without_diffusers(monkeypatch):
+    """The probe exists to turn host limitations into "not attemptable" instead of a red test, so
+    it must not itself raise on the most ordinary limitation of all. studio.txt installs no
+    diffusers, and assert_pipeline_class_available does NOT stand in for the check: non-strict is
+    its default and an unimportable diffusers makes it return, not raise, so control reaches the
+    modular-workflow probe below it. Unguarded, that probe raised ModuleNotFoundError straight out
+    of the helper and failed the caller before its own `except Exception` could see it."""
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    # H3 is modular, so the probe really does reach the import this guards.
+    assert fam.modular_workflow
+
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers_import)
+    assert _h3_pipeline_load_is_attemptable(fam) is False
 
 
 def test_a_quantized_reference_load_resolves_the_reference_denoiser():
