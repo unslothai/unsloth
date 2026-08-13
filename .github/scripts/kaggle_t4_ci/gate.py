@@ -9,6 +9,10 @@ kernel on every push would drain a week of it in a day and lock out every
 other consumer, so the default answer here is "no" and the job has to earn
 a "yes" through four independent checks, in this order:
 
+0. **Was this event a request at all?** A run started by APPLYING a label is
+   only a request when the label applied is the opt-in one. Every other
+   ``labeled`` event stands down before any of the checks below, since the
+   trigger fires on all labels and the budget counts none of them.
 1. **Override.** ``workflow_dispatch`` with ``force=true``, or a pull request
    carrying the opt-in label. A human asked for it; skip the dice.
 2. **Sampling.** Roughly one invocation in ten. Derived from the run id, so
@@ -403,6 +407,16 @@ def main() -> int:
     ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
     ap.add_argument("--label-name", default = "kaggle-t4-ci")
     ap.add_argument(
+        "--event-action",
+        default = "",
+        help = "the pull_request action that started this run, if any",
+    )
+    ap.add_argument(
+        "--event-label",
+        default = "",
+        help = "for a `labeled` action, the ONE label that was just applied",
+    )
+    ap.add_argument(
         "--budget-hours",
         type = float,
         required = True,
@@ -440,9 +454,43 @@ def main() -> int:
     ap.add_argument("--no-soft-fail", dest = "soft_fail", action = "store_false")
     args = ap.parse_args()
 
+    label_name = args.label_name.strip().lower()
+
+    # A LABEL EVENT IS A REQUEST ONLY IF IT IS THE OPT-IN LABEL, and this is
+    # checked before anything else because it is what keeps the budget
+    # arithmetic true.
+    #
+    # The workflow subscribes to `labeled` so the opt-in label can start a run
+    # of its own, but GitHub fires that action for EVERY label. Without this,
+    # each unrelated label -- triage, size, whatever a bot applies -- starts a
+    # fresh run and therefore a fresh sampling draw, and the estimate at the
+    # top of the workflow counts pull request opens and pushes only. Worse,
+    # once the opt-in label is on the pull request it stays in the label list
+    # below, so every LATER label of any kind arrives as an override and
+    # FORCES a session. Two bot labels on an opted-in pull request would spend
+    # two more.
+    #
+    # So a `labeled` run stands down unless the label that started it is the
+    # one that means "run this". Every other action -- opened, synchronize,
+    # reopened, a push, a dispatch -- is unaffected, and an opted-in pull
+    # request still forces on each of them.
+    action = args.event_action.strip().lower()
+    if action == "labeled":
+        applied = args.event_label.strip().lower()
+        if applied != label_name:
+            return _decide(
+                False,
+                f"this run was started by applying the label {applied or '(unnamed)'!r}, "
+                f"which is not the opt-in label {args.label_name!r}. Labelling a pull "
+                f"request is not a request to spend a Kaggle session, and every label "
+                f"would otherwise be one more draw -- or, once the opt-in label is "
+                f"present, one more forced run",
+            )
+        print(f"[gate] started by the opt-in label {args.label_name!r}", flush = True)
+
     override = args.force.strip().lower() in ("true", "1", "yes")
     labels = [l.strip().lower() for l in args.labels.replace("\n", ",").split(",") if l.strip()]
-    if args.label_name.lower() in labels:
+    if label_name in labels:
         override = True
         print(f"[gate] override: label {args.label_name!r} present", flush = True)
 

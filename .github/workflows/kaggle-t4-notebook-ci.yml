@@ -290,16 +290,35 @@ jobs:
       # whatever the sampling estimate at the top of this file got wrong.
       # Raise it to throttle CI harder. Do not raise it above roughly 45 or
       # CI will never run at all on a week with any other usage.
+      #
+      # The event ACTION and the label that was just applied go in too, and
+      # they are what stops the `labeled` trigger from multiplying runs. That
+      # trigger fires on EVERY label, not only the opt-in one, and each fresh
+      # run is a fresh sampling draw; worse, once kaggle-t4-ci is on the pull
+      # request, every later label sees it in the label list and FORCES a run.
+      # A couple of bot labels then cost more sessions than the whole sampling
+      # estimate at the top of this file budgets for. The gate stands a
+      # `labeled` run down unless the label that started it is the opt-in one.
+      #
+      # Label names and the raw label list travel through the environment
+      # rather than being interpolated into the shell, for the same reason the
+      # stale-approval warning below does: they are free text set by anyone
+      # with write access.
       - name: Decide
         id: decide
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 40 \
             --force '${{ inputs.force || 'false' }}' \
-            --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
+            --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \
+            --event-action "$EVENT_ACTION" \
+            --event-label "$EVENT_LABEL" \
             --kernels 2 \
             --budget-hours 4 \
             --reserve-hours 20
@@ -399,15 +418,61 @@ jobs:
       # base, and it is the SHA checked out above. Pinned to a SHA rather
       # than a branch name so a push landing mid-run cannot change what was
       # tested.
+      #
+      # A DISPATCHED ref is resolved to one commit here, for exactly the
+      # reason the zoo step below resolves main. Every payload pip-installs
+      # independently on the kernel, so a branch name forwarded unchanged can
+      # resolve to a different commit in each of the four legs, and the run
+      # would then compare a control against a canary that are not running the
+      # same Unsloth. The report records a distribution version rather than a
+      # commit, so that drift would not be visible afterwards either.
+      #
+      # This resolves what is INSTALLED and nothing else. The harness -- the
+      # payloads, legs.py, the committed reference -- deliberately stays on
+      # the checked-out tree, because a dispatch is how an arbitrary ref gets
+      # tested with today's harness and most of that harness does not exist on
+      # older refs at all.
+      #
+      # A ref that cannot be resolved stands the run DOWN rather than
+      # installing a moving branch, which is the same answer the zoo step
+      # gives and for the same reason.
       - name: Resolve the ref under test
         id: ref
+        env:
+          UNSLOTH_REF: ${{ inputs.unsloth_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          REF='${{ inputs.unsloth_ref }}'
-          if [ -z "$REF" ]; then
-            REF='${{ github.event.pull_request.head.sha || github.sha }}'
+          if [ -z "$UNSLOTH_REF" ]; then
+            echo "ref=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "testing unslothai/unsloth@$HEAD_SHA"
+            exit 0
           fi
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "testing unslothai/unsloth@$REF"
+          if printf '%s' "$UNSLOTH_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED="$UNSLOTH_REF"
+          else
+            RESOLVED=''
+            for attempt in 1 2 3; do
+              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              # An annotated tag lists the tag OBJECT first and the commit it
+              # points at on the `^{}` line. pip can check out the commit.
+              PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
+              if [ -n "$PEELED" ]; then
+                RESOLVED="$PEELED"
+              else
+                RESOLVED="$(printf '%s\n' "$LS" | head -n1 | cut -f1)"
+              fi
+              if [ -n "$RESOLVED" ]; then break; fi
+              echo "ls-remote attempt $attempt resolved nothing"
+              sleep 10
+            done
+          fi
+          if [ -z "$RESOLVED" ]; then
+            echo "::warning title=Could not resolve the requested unsloth ref::the dispatched ref names no branch, tag or full commit on unslothai/unsloth, so the four legs could not be pinned to one revision. Standing down rather than letting each of them install whatever it resolves. Give a branch name, a tag, or a full 40-character SHA."
+            echo "stand_down=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ref=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "testing unslothai/unsloth@$RESOLVED (dispatched as '$UNSLOTH_REF')"
 
       # unsloth-zoo is resolved ONCE, here, and every leg installs that exact
       # commit.
@@ -437,6 +502,7 @@ jobs:
       # run at all.
       - name: Pin the zoo revision and read the reference
         id: pins
+        if: steps.ref.outputs.stand_down != 'true'
         run: |
           ZOO_REF=''
           for attempt in 1 2 3; do
@@ -469,7 +535,7 @@ jobs:
       # See tests/kaggle/t4_smoke/references/README.md.
       - name: Build the kernel notebooks
         id: build
-        if: steps.pins.outputs.stand_down != 'true'
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true'
         env:
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           MAX_STEPS: ${{ inputs.max_steps || 10 }}
@@ -530,7 +596,7 @@ jobs:
       # the concurrency survey run in full.
       - name: Recheck the Kaggle account
         id: recheck
-        if: steps.pins.outputs.stand_down != 'true'
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
@@ -543,7 +609,7 @@ jobs:
       # Through the environment rather than an inline expression, so nothing
       # the Kaggle API put in that string is ever interpolated into a shell.
       - name: Report the stale approval
-        if: steps.pins.outputs.stand_down != 'true' && steps.recheck.outputs.should_run != 'true'
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.recheck.outputs.should_run != 'true'
         env:
           REASON: ${{ steps.recheck.outputs.reason }}
         run: |

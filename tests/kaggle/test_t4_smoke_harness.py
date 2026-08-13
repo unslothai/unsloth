@@ -14,6 +14,8 @@ The training payload itself is not exercised here; it needs a T4.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1737,6 +1739,182 @@ def test_applying_the_opt_in_label_can_start_a_run():
         assert default in on["pull_request"]["types"], "the defaults are lost once types is set"
 
 
+def test_only_the_opt_in_label_starts_a_run(monkeypatch, tmp_path):
+    """`labeled` fires for EVERY label, and each run is a fresh draw.
+
+    Worse than the wasted draws: once kaggle-t4-ci is on the pull request it
+    stays in the label list, so every later label of any kind arrives as an
+    override and FORCES a session. The budget at the top of the workflow
+    counts pull request opens and pushes, and no label activity at all.
+    """
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising = False)
+    code, outputs = _run_gate(
+        monkeypatch,
+        tmp_path / "unrelated",
+        "--event-action",
+        "labeled",
+        "--event-label",
+        "documentation",
+        "--labels",
+        "documentation,kaggle-t4-ci",
+    )
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    assert "not the opt-in label" in outputs["reason"]
+
+    # The label that IS the request gets through to the checks below it.
+    code, outputs = _run_gate(
+        monkeypatch,
+        tmp_path / "optin",
+        "--event-action",
+        "labeled",
+        "--event-label",
+        "kaggle-t4-ci",
+        "--labels",
+        "kaggle-t4-ci",
+    )
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    assert "fork" in outputs["reason"], "it stood down on the label rather than on the token"
+
+
+def test_a_push_or_a_synchronize_is_not_affected_by_the_label_check(monkeypatch, tmp_path):
+    """Only a `labeled` run is judged on which label arrived."""
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising = False)
+    for action in ("synchronize", "opened", ""):
+        code, outputs = _run_gate(
+            monkeypatch,
+            tmp_path / f"a{action}",
+            "--event-action",
+            action,
+            "--labels",
+            "kaggle-t4-ci",
+        )
+        assert code == 0
+        assert "not the opt-in label" not in outputs["reason"], action
+
+
+def test_the_workflow_tells_the_gate_which_label_arrived():
+    """The check above is worth nothing if the event never reaches it."""
+    steps = _workflow()["jobs"]["gate"]["steps"]
+    decide = next(s for s in steps if s.get("id") == "decide")
+    assert decide["env"]["EVENT_ACTION"] == "${{ github.event.action }}"
+    assert decide["env"]["EVENT_LABEL"] == "${{ github.event.label.name }}"
+    assert "--event-action \"$EVENT_ACTION\"" in decide["run"]
+    assert "--event-label \"$EVENT_LABEL\"" in decide["run"]
+    # Label names are free text. They travel through the environment rather
+    # than being interpolated into the shell, as does the raw label list.
+    assert "${{ github.event.label.name }}" not in decide["run"]
+    assert "${{ join(github.event.pull_request.labels" not in decide["run"]
+
+
+def test_a_dispatched_ref_is_resolved_to_one_commit():
+    """A branch name forwarded unchanged is four independent resolutions.
+
+    Every payload pip-installs on the kernel by itself, so `main` can land on
+    a different commit in each leg, and the control/canary comparison is then
+    between two different Unsloths. The report records a distribution version
+    rather than a commit, so the drift is invisible afterwards too. This is
+    the same hazard the zoo pin below removes, and it gets the same answer.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    ref = steps[names.index("Resolve the ref under test")]
+    assert ref["env"]["UNSLOTH_REF"] == "${{ inputs.unsloth_ref }}"
+    # Resolved once, here, and retried before it gives up.
+    assert "git ls-remote https://github.com/unslothai/unsloth" in ref["run"]
+    assert "for attempt in 1 2 3" in ref["run"]
+    # A full commit needs no resolving and ls-remote would not answer for one.
+    assert "^[0-9a-f]{40}$" in ref["run"]
+    # A ref that cannot be pinned stands the run down rather than installing
+    # a moving branch, exactly as an unresolvable zoo commit does.
+    assert "stand_down=true" in ref["run"]
+    for name in (
+        "Pin the zoo revision and read the reference",
+        "Build the kernel notebooks",
+        "Recheck the Kaggle account",
+    ):
+        assert "steps.ref.outputs.stand_down != 'true'" in steps[names.index(name)]["if"], name
+    # The dispatched value is never interpolated into the shell.
+    assert "${{ inputs.unsloth_ref }}" not in ref["run"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "the step is a bash script")
+def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
+    """EXECUTE the step, with git stubbed, rather than reading it.
+
+    Pattern-matching a shell script passes on one that runs and writes the
+    wrong thing, and this one has four branches: no input at all, a mutable
+    branch or tag, a commit that needs no resolving, and a ref that resolves
+    to nothing.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    script = next(s for s in steps if s.get("id") == "ref")["run"]
+
+    def drive(unsloth_ref, ls_remote, head = "headsha"):
+        work = tmp_path / f"case{abs(hash((unsloth_ref, ls_remote)))}"
+        stub = work / "bin"
+        stub.mkdir(parents = True)
+        # `git` answers with whatever ls-remote is supposed to have said, and
+        # `sleep` returns at once so the retry loop costs nothing.
+        (stub / "git").write_text('#!/bin/sh\nprintf \'%s\' "$LS_OUT"\n')
+        (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for name in ("git", "sleep"):
+            (stub / name).chmod(0o755)
+        out = work / "github_output"
+        out.write_text("", encoding = "utf-8")
+        env = dict(
+            os.environ,
+            PATH = f"{stub}:{os.environ['PATH']}",
+            GITHUB_OUTPUT = str(out),
+            UNSLOTH_REF = unsloth_ref,
+            HEAD_SHA = head,
+            LS_OUT = ls_remote,
+        )
+        done = subprocess.run(
+            ["bash", "-c", script], env = env, capture_output = True, text = True
+        )
+        assert done.returncode == 0, done.stderr
+        return dict(
+            line.split("=", 1) for line in out.read_text().splitlines() if "=" in line
+        )
+
+    # No input: the head SHA under test, which is also the tree checked out.
+    assert drive("", "") == {"ref": "headsha"}
+    # A branch resolves to the commit it points at, once, for all four legs.
+    main_sha = "dead" + "0" * 36
+    assert drive("main", f"{main_sha}\trefs/heads/main\n") == {"ref": main_sha}
+    # An annotated tag lists the tag object first; the COMMIT is what pip can
+    # check out, and it is on the ^{} line.
+    tag, commit = "aaaa" + "0" * 36, "bbbb" + "0" * 36
+    assert drive(
+        "v1.2", f"{tag}\trefs/tags/v1.2\n{commit}\trefs/tags/v1.2^{{}}\n"
+    ) == {"ref": commit}
+    # A full commit is already immutable, and ls-remote answers nothing for
+    # one, so it must not be sent there at all.
+    assert drive("f" * 40, "") == {"ref": "f" * 40}
+    # Nothing resolved: stand down rather than install a moving branch.
+    assert drive("no-such-branch", "") == {"stand_down": "true"}
+    # The value is free text from a dispatch form and reaches no shell.
+    assert drive("'; touch pwned; echo '", "") == {"stand_down": "true"}
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_the_harness_stays_on_the_checked_out_tree_when_a_ref_is_dispatched():
+    """Resolving the INSTALL is not the same as checking that ref out.
+
+    The whole of this harness arrives with this workflow, so a dispatch
+    naming an older ref has no payloads, no legs.py and no reference to run
+    from. What a dispatch varies is the package under test; what stays fixed
+    is the thing testing it.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert "inputs.unsloth_ref" not in json.dumps(checkout)
+    build = next(s for s in steps if s.get("id") == "build")
+    assert "--unsloth-ref '${{ steps.ref.outputs.ref }}'" in build["run"]
+
+
 def test_packaging_metadata_is_watched_by_both_triggers():
     """Every payload installs the commit under test as a distribution."""
     wf = _workflow()
@@ -1889,7 +2067,7 @@ def test_an_unresolvable_zoo_commit_stands_the_run_down():
     assert "for attempt in 1 2 3" in pins["run"]
     # Nothing that spends a kernel runs after a stand-down.
     for name in ("Build the kernel notebooks", "Recheck the Kaggle account"):
-        assert steps[names.index(name)]["if"] == "steps.pins.outputs.stand_down != 'true'"
+        assert "steps.pins.outputs.stand_down != 'true'" in steps[names.index(name)]["if"]
     launch_step = steps[names.index("Launch on Kaggle and collect")]
     assert launch_step["if"] == "steps.recheck.outputs.should_run == 'true'"
 
@@ -1900,7 +2078,10 @@ def test_the_harness_and_the_package_under_test_are_one_snapshot():
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     ref_step = next(s for s in steps if s.get("id") == "ref")
-    assert "github.event.pull_request.head.sha || github.sha" in ref_step["run"]
+    assert (
+        ref_step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
+    assert "ref=$HEAD_SHA" in ref_step["run"]
 
 
 def test_the_workflow_takes_its_kernel_plan_from_the_leg_registry():
