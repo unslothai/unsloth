@@ -6,6 +6,7 @@
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import numpy as np
@@ -501,3 +502,58 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     out = b._post("/v1/embeddings", {"input": ["x"]})
     assert out["data"][0]["embedding"] == [1.0, 0.0]
     assert restarts["n"] == 1  # timeout self-heals like a transport error
+
+
+class TestTheEmbeddingLoaderChangesAreMacOsOnly:
+    """The RAG server's Linux and Windows launches must be as they were.
+
+    The probe environment and the resolved library directory both started out
+    unconditional, which moved the first LD_LIBRARY_PATH entry for every Linux
+    GPU install whose llama-server is a symlink, and gave the capability probe
+    an environment it never had.
+    """
+
+    def test_the_help_probe_still_inherits_the_environment_off_mac(self, monkeypatch):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stdout = "--embedding", stderr = "")
+
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.LlamaServerBackend._help_text.cache_clear()
+        mod.LlamaServerBackend._help_text("/opt/mine/llama-server")
+        assert seen.get("env") is None
+
+    def test_the_help_probe_gets_the_loader_environment_on_mac(self, monkeypatch, tmp_path):
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"\xcf\xfa\xed\xfe")
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stdout = "--embedding", stderr = "")
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.LlamaServerBackend._help_text.cache_clear()
+        mod.LlamaServerBackend._help_text(str(binary))
+        assert seen.get("env") is not None
+
+    def test_linux_gpu_libs_still_hang_off_the_given_path(self, monkeypatch, tmp_path):
+        real = tmp_path / "build" / "bin" / "llama-server"
+        real.parent.mkdir(parents = True)
+        real.write_bytes(b"\xcf\xfa\xed\xfe")
+        wrapper = tmp_path / "llama-server"
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+        wrapper.chmod(0o755)
+        seen = {}
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            mod.LlamaServerBackend,
+            "_add_linux_cuda_libs",
+            staticmethod(lambda env, d: seen.setdefault("dir", d)),
+        )
+        mod.LlamaServerBackend()._build_env(str(wrapper), use_gpu = True)
+        assert seen["dir"] == str(wrapper.parent)

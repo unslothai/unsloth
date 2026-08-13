@@ -297,3 +297,114 @@ class TestLocalLinkInstalls:
         remedy = LlamaCppBackend._runtime_remedy(str(binary))
         assert "unsloth studio update" not in remedy
         assert "custom llama.cpp" in remedy
+
+
+class TestTheLoaderPathPrependIsAFixedPoint:
+    """Repeat application must not grow the search path.
+
+    Building the child environment twice happens on any retry (CPU fallback,
+    the mmproj text-only replay), and a value that grew each time would end up
+    with the runtime dir listed once per attempt.
+    """
+
+    def test_the_binary_dir_comes_first(self):
+        assert llama_module._prepend_loader_dir("", "/x/bin") == "/x/bin"
+        assert llama_module._prepend_loader_dir("/a", "/x/bin") == f"/x/bin{os.pathsep}/a"
+
+    def test_repeating_it_changes_nothing(self):
+        once = llama_module._prepend_loader_dir("/a", "/x/bin")
+        assert llama_module._prepend_loader_dir(once, "/x/bin") == once
+        assert llama_module._prepend_loader_dir(once, "/x/bin") == once
+
+    @pytest.mark.parametrize("spelling", ["/x/bin/", "/x/./bin", "/x/y/../bin", "/x//bin"])
+    def test_the_same_dir_spelled_differently_is_not_kept_twice(self, spelling):
+        got = llama_module._prepend_loader_dir(spelling, "/x/bin")
+        assert got == "/x/bin"
+
+    def test_an_unrelated_entry_survives_with_its_own_spelling(self):
+        got = llama_module._prepend_loader_dir(f"/opt/other/{os.pathsep}/x/bin/", "/x/bin")
+        assert got == f"/x/bin{os.pathsep}/opt/other/"
+
+    def test_empty_segments_are_dropped(self):
+        got = llama_module._prepend_loader_dir(f"{os.pathsep}{os.pathsep}/a{os.pathsep}", "/x/bin")
+        assert got == f"/x/bin{os.pathsep}/a"
+
+    def test_building_the_env_twice_gives_the_same_value(self, monkeypatch, tmp_path):
+        binary = tmp_path / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_bytes(b"\xcf\xfa\xed\xfe")
+        monkeypatch.setattr(sys, "platform", "darwin")
+        first = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        monkeypatch.setenv("DYLD_LIBRARY_PATH", first["DYLD_LIBRARY_PATH"])
+        second = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        assert second["DYLD_LIBRARY_PATH"] == first["DYLD_LIBRARY_PATH"]
+
+
+class TestAnExplicitPinOutranksInferredOwnership:
+    """A wrapper the user named in LLAMA_SERVER_PATH is theirs.
+
+    Ownership is inferred from an install marker somewhere above the file, so a
+    wrapper pinned INSIDE a managed tree read as ours and was resolved past,
+    dropping whatever it exported before its exec line.
+    """
+
+    @staticmethod
+    def _managed_tree_with_a_pinned_wrapper(tmp_path):
+        root = tmp_path / "llama.cpp"
+        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+        for marker in ("UNSLOTH_PREBUILT_INFO.json", ".unsloth_llama_install", "unsloth_install.json"):
+            (root / marker).write_text("{}")
+        wrapper = root / "my-wrapper"
+        wrapper.write_text(
+            '#!/bin/sh\nexport MY_TUNING=1\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        return wrapper
+
+    def test_the_pinned_wrapper_is_launched_not_its_target(self, monkeypatch, tmp_path):
+        wrapper = self._managed_tree_with_a_pinned_wrapper(tmp_path)
+        monkeypatch.setenv("LLAMA_SERVER_PATH", str(wrapper))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(wrapper)
+
+    def test_the_managed_entrypoint_beside_it_is_still_resolved(self, monkeypatch, tmp_path):
+        wrapper = self._managed_tree_with_a_pinned_wrapper(tmp_path)
+        entry = wrapper.parent / "llama-server"
+        entry.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+        entry.chmod(0o755)
+        monkeypatch.setenv("LLAMA_SERVER_PATH", str(wrapper))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        got = LlamaCppBackend._exec_path_for_launch(str(entry))
+        assert got == str(wrapper.parent / "build" / "bin" / "llama-server")
+
+
+class TestTheCpuFallbackGateIsUnchangedForLinkedTrees:
+    """--with-llama-cpp-dir is not something `unsloth studio update` can fix.
+
+    Teaching _is_unsloth_managed_binary that also changed the gate on the
+    Vulkan CPU fallback, which needs only to read and copy the tree, so those
+    installs lost the fallback on Linux and Windows. The two questions are
+    asked separately now.
+    """
+
+    @staticmethod
+    def _linked_tree(tmp_path, monkeypatch):
+        external = tmp_path / "my-llama-checkout"
+        (external / "build" / "bin").mkdir(parents = True)
+        (external / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+        studio_root = tmp_path / "studio"
+        studio_root.mkdir()
+        link = studio_root / "llama.cpp"
+        link.symlink_to(external)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(link))
+        return str(link / "build" / "bin" / "llama-server")
+
+    def test_the_updater_cannot_repair_it(self, monkeypatch, tmp_path):
+        binary = self._linked_tree(tmp_path, monkeypatch)
+        assert LlamaCppBackend._is_unsloth_managed_binary(binary) is False
+
+    def test_but_it_is_still_an_install_tree_we_can_stage_from(self, monkeypatch, tmp_path):
+        binary = self._linked_tree(tmp_path, monkeypatch)
+        assert LlamaCppBackend._is_llama_install_tree(binary) is True

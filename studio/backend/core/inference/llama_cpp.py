@@ -3219,6 +3219,29 @@ def _loader_path_var() -> str:
     return "LD_LIBRARY_PATH"
 
 
+def _prepend_loader_dir(existing: str, lib_dir: str) -> str:
+    """``lib_dir`` first in a loader search path, with no repeats.
+
+    Deduplicates on the normalised spelling, so an inherited "/x/bin/" or
+    "/x/./bin" does not survive alongside the "/x/bin" being prepended and the
+    result is stable however many times it is fed back in. Purely textual:
+    realpath would touch the filesystem, and a dead network mount on an
+    inherited entry must not stall a model load. Entries keep the spelling they
+    arrived with, since that is what the loader is given.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in (lib_dir, *existing.split(os.pathsep)):
+        if not entry:
+            continue
+        key = os.path.normcase(os.path.normpath(entry))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return os.pathsep.join(out)
+
+
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
 # GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
@@ -6046,8 +6069,7 @@ class LlamaCppBackend:
             # A healthy prebuilt resolves via @loader_path and does not need
             # this; one with wrong install names dies in dyld without it.
             _dyld = _loader_path_var()
-            _inherited = [p for p in env.get(_dyld, "").split(os.pathsep) if p]
-            env[_dyld] = os.pathsep.join(dict.fromkeys([binary_dir, *_inherited]))
+            env[_dyld] = _prepend_loader_dir(env.get(_dyld, ""), binary_dir)
         else:
             # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
             # CUDA runtime libs (libcudart, libcublas, etc.)
@@ -9425,6 +9447,24 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
+    def _is_llama_install_tree(binary: Optional[str]) -> bool:
+        """Does ``binary`` sit in a llama.cpp tree Studio resolved for itself?
+
+        The pre-existing half of the question above, kept separate because the
+        two are not the same: a --with-llama-cpp-dir checkout IS the active
+        install (so anything that only needs to read or copy from it still
+        applies) while not being something the updater can replace.
+        """
+        if not binary:
+            return True
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+
+            return _llama_install_root(binary) is not None
+        except Exception:
+            return True
+
+    @staticmethod
     def _is_library_path(lib: str) -> bool:
         # glibc's own discriminator is `strchr (name, '/') == NULL`
         # (elf/dl-load.c): a slash anywhere means the name is a pathname and no
@@ -9518,6 +9558,18 @@ class LlamaCppBackend:
         """
         if not binary or sys.platform != "darwin":
             return binary
+        # An exact LLAMA_SERVER_PATH pin outranks provenance. Ownership is
+        # inferred from an install marker somewhere above the file, so a
+        # wrapper the user pinned INSIDE a managed tree reads as ours and its
+        # setup would be skipped. Naming the file is unambiguous intent: launch
+        # what they named.
+        pinned = os.environ.get("LLAMA_SERVER_PATH", "")
+        if pinned:
+            try:
+                if os.path.realpath(os.path.expanduser(pinned)) == os.path.realpath(binary):
+                    return binary
+            except OSError:
+                pass
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
             return binary
         return str(_resolve_llama_binary(binary))
@@ -9554,6 +9606,25 @@ class LlamaCppBackend:
             return os.path.basename(lib)
         return lib
 
+    # Ten search paths at a long path each, with room to spare. Only ever cuts
+    # text a real dyld reason does not produce.
+    _DYLD_REASON_MAX_CHARS = 4000
+    # How far past "Library not loaded:" to look for its Reason at all. Four
+    # times the cap above, so a real reason preceded by a little noise is still
+    # found whole.
+    _DYLD_REASON_SCAN_CHARS = 16000
+    # Candidates read out of one "tried:" list. dyld searches a bounded set of
+    # paths; a list longer than this is not one it produced.
+    _DYLD_MAX_CANDIDATES = 128
+
+    # dyld announces itself at the start of a line: "dyld[1234]: ", the older
+    # "dyld: ", or a crash report's "Termination Reason: ... DYLD". Structural
+    # on purpose: "Referenced from:" and friends are words a wrapper or a GGUF
+    # metadata string can carry, and were accepted as framing before.
+    _DYLD_FRAMING_RE = re.compile(
+        r"(?im)^[ \t]*(?:dyld(?:\[\d+\])?:|termination reason:.*\bdyld\b)"
+    )
+
     @staticmethod
     def _dyld_reason_after(output: str, start: int) -> str:
         """The ``Reason:`` belonging to a dyld error, flattened to one line.
@@ -9562,12 +9633,26 @@ class LlamaCppBackend:
         after the "Library not loaded:" it explains: an unrelated earlier
         "Reason:" in llama.cpp's own output would otherwise be read as dyld's,
         and an unbounded read would swallow everything printed afterwards.
+
+        Length-capped as well. dyld lists one candidate per search path, so a
+        real reason is a couple of KB at most, but the text is whatever the
+        child printed: a pathological one drives the candidate scan below into
+        quadratic backtracking (100KB of "'a' (" measured at 6.3s, against
+        0.0s before this change), and that scan runs on the event loop.
         """
+        # Windowed, not just capped afterwards: dyld prints the reason directly
+        # under the "Library not loaded:" line, so nothing useful lives further
+        # out, and matching against the whole remaining output would materialise
+        # a group as large as whatever the child printed (a 25MB reason was
+        # measured at ~366MB peak RSS through the flatten below).
+        window = output[start : start + LlamaCppBackend._DYLD_REASON_SCAN_CHARS]
         match = re.compile(
             r"reason:[ \t]*([^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*)",
             re.IGNORECASE,
-        ).search(output, start)
-        return " ".join(match.group(1).split()) if match else ""
+        ).search(window)
+        if not match:
+            return ""
+        return " ".join(match.group(1)[: LlamaCppBackend._DYLD_REASON_MAX_CHARS].split())
 
     @staticmethod
     def _dyld_tried_verdict(reason: str, binary: Optional[str]) -> str:
@@ -9579,19 +9664,24 @@ class LlamaCppBackend:
         Homebrew copy. Prefer the candidate in the runtime's own lib dir, else
         the first one; with no list at all the reason stands as its own verdict.
         """
-        candidates = re.findall(r"'([^']+)'\s*\(([^)]*)\)", reason)
-        if not candidates:
-            return reason
+        lib_dir = ""
         if binary:
             try:
                 lib_dir = str(_llama_lib_dir(binary))
             except (OSError, ValueError):
                 lib_dir = ""
-            if lib_dir:
-                for path, verdict in candidates:
-                    if os.path.dirname(path) == lib_dir:
-                        return verdict
-        return candidates[0][1]
+        # finditer with a count, not findall: the reason is already capped, but
+        # a list built before the first useful match is work done for nothing.
+        first: Optional[str] = None
+        for index, match in enumerate(re.finditer(r"'([^']+)'\s*\(([^)]*)\)", reason)):
+            if index >= LlamaCppBackend._DYLD_MAX_CANDIDATES:
+                break
+            path, verdict = match.group(1), match.group(2)
+            if first is None:
+                first = verdict
+            if lib_dir and os.path.dirname(path) == lib_dir:
+                return verdict
+        return first if first is not None else reason
 
     @staticmethod
     def _classify_macos_loader_failure(output: str, binary: Optional[str]) -> Optional[str]:
@@ -9601,8 +9691,17 @@ class LlamaCppBackend:
         is tested) on any host, not only Darwin. Kept ahead of the returncode
         heuristics in the caller: a dyld diagnostic is a fact, while signal 9
         is a guess that would otherwise blame memory (#8566).
+
+        Nothing here fires without dyld's own framing. llama.cpp echoes GGUF
+        metadata to stderr while loading, so "Library not loaded:" or "Symbol
+        not found" can be a model's own general.name; a bare match outranked
+        the status-127 and signal-15 branches and answered a diffusion-GGUF
+        load with library advice. Every branch is now gated on the same guard
+        rather than each carrying its own.
         """
         if not output:
+            return None
+        if not LlamaCppBackend._DYLD_FRAMING_RE.search(output):
             return None
         lowered = output.lower()
 
@@ -9642,7 +9741,9 @@ class LlamaCppBackend:
                     f"signature of {lib}. The file was modified or is "
                     f"incompletely signed, so {LlamaCppBackend._runtime_remedy(binary)}."
                 )
-            if "incompatible architecture" in verdict_l:
+            # dyld4 says "mach-o file, but is an incompatible architecture";
+            # the older wording is "mach-o, but wrong architecture".
+            if "incompatible architecture" in verdict_l or "wrong architecture" in verdict_l:
                 return (
                     f"llama-server could not start: {lib} was built for a "
                     "different CPU architecture than this Mac. Its install is "
@@ -9668,7 +9769,10 @@ class LlamaCppBackend:
             marker in lowered for marker in ("dyld[", "dyld:", "referenced from:", "expected in:")
         ):
             expected = re.search(r"expected in:\s*(?:<[^>]*>\s*)?([^\r\n]+)", output, re.IGNORECASE)
-            expected_path = expected.group(1).strip() if expected else ""
+            # Newer dyld quotes the path. Unstripped, "'/System/..." fails the
+            # prefix test below and a too-new build is blamed on a mismatched
+            # install instead of on the OS.
+            expected_path = expected.group(1).strip().strip("'\"") if expected else ""
             if expected_path.startswith(("/System/", "/usr/lib/")):
                 return (
                     "llama-server could not start: it needs a symbol this "
@@ -9684,6 +9788,12 @@ class LlamaCppBackend:
                 f"{LlamaCppBackend._runtime_remedy(binary)}."
             )
         return None
+
+    # The macOS shell's message for EBADARCH, printed with the offending path
+    # and typically exit 126. Never reaches dyld, so it carries no dyld framing
+    # and has to be matched on its own; the wording is macOS-specific enough
+    # (Linux says "cannot execute binary file") to be safe anywhere.
+    _BAD_CPU_TYPE_RE = re.compile(r"(?im)^.*:[ \t]*bad cpu type in executable[ \t]*$")
 
     @staticmethod
     def _classify_llama_start_failure(
@@ -9756,6 +9866,15 @@ class LlamaCppBackend:
         macos_detail = LlamaCppBackend._classify_macos_loader_failure(output or "", binary)
         if macos_detail:
             return macos_detail
+
+        # The executable itself is for the wrong architecture, so the shell
+        # rejects it before dyld runs and there is no loader diagnostic at all.
+        if LlamaCppBackend._BAD_CPU_TYPE_RE.search(output or ""):
+            return (
+                "llama-server could not start: the executable was built for a "
+                "different CPU architecture than this Mac, so "
+                f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
         # unsupported architectures abort the load with this marker. Point the
@@ -9875,13 +9994,15 @@ class LlamaCppBackend:
             # macOS also SIGKILLs an invalid code signature before the process
             # can print, so memory is not the only reading there (#8566).
             if sys.platform == "darwin":
-                # The log is often empty here, so offer both readings rather
-                # than promise it settles which.
+                # The log is often empty here, so name the likeliest cause and
+                # the macOS-specific one without claiming the two are the only
+                # ones: signal 9 is also a supervisor, or a plain `kill -9`.
                 return LlamaCppBackend._with_startup_diagnostics(
                     "llama-server was stopped by macOS (signal 9) before it "
-                    "started. That is either out of memory -- try a smaller or "
-                    "more quantized GGUF, or lower the context length -- or "
-                    "macOS refusing the binary's code signature, in which case "
+                    "started. This is most often out of memory, so try a "
+                    "smaller or more quantized GGUF, or lower the context "
+                    "length. macOS also sends signal 9 when it refuses a "
+                    "binary's code signature, so if memory is not the problem, "
                     f"{LlamaCppBackend._runtime_remedy(binary)}.",
                     output,
                     log_path,
@@ -9929,6 +10050,11 @@ class LlamaCppBackend:
     # chatty server cannot push an unreadable wall of text into an API error.
     _STARTUP_TAIL_CHARS = 2000
 
+    # The labels _with_startup_diagnostics writes, so it can recognise its own
+    # output and stay idempotent. Kept next to the writer: a label edited on one
+    # side only would silently re-enable double appending.
+    _DIAGNOSTICS_MARKERS = ("llama-server output:", "Full log: ")
+
     # Token shapes worth redacting on sight: a name-based list cannot cover a
     # credential the child obtained elsewhere, or one held in a variable whose
     # name says nothing (GITHUB_PAT, MY_THING).
@@ -9937,7 +10063,12 @@ class LlamaCppBackend:
         re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
-        re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+"),
+        # HTTP credentials, if a wrapper or a proxy echoes a request header.
+        # token68 is [A-Za-z0-9._~+/-]* with optional "=" padding (RFC 9110
+        # 11.2), so a narrower class leaves the tail of a base64 credential
+        # readable; Basic (RFC 7617) is a base64 user:password pair and belongs
+        # here for the same reason.
+        re.compile(r"(?i)(?:bearer|basic)\s+[A-Za-z0-9._~+/\-]+=*"),
         # Our own --api-key, if a wrapper dumps its argv. token_urlsafe(32)
         # matches no shape and is in no env var, so catch it by its flag, as
         # _redacted_cmd_for_log already does for the log.
@@ -10006,7 +10137,16 @@ class LlamaCppBackend:
 
         Returns ``message`` unchanged when there is neither, so the classified
         messages and the no-output case keep their exact existing text.
+
+        Idempotent: a message that already carries a diagnostics block is
+        returned as is. Only one call site exists today, so this cannot fire
+        yet; it is here so a second caller (a retry that re-classifies an
+        already-decorated message, say) cannot silently double the tail.
         """
+        if message.startswith(LlamaCppBackend._DIAGNOSTICS_MARKERS) or any(
+            f"\n\n{marker}" in message for marker in LlamaCppBackend._DIAGNOSTICS_MARKERS
+        ):
+            return message
         parts = [message]
         # Slice before filtering: _drain_stdout keeps an unterminated line
         # whole, so a runaway progress line would otherwise be walked
@@ -10698,8 +10838,15 @@ class LlamaCppBackend:
 
         Backend loading precedes ``--device none``, so isolation prevents the
         Vulkan plugin from loading first.
+
+        Gated on the install tree, not on _is_unsloth_managed_binary: that one
+        answers "would `unsloth studio update` replace this file", which is a
+        question about repair advice, and it now answers no for a
+        --with-llama-cpp-dir tree. Staging a CPU copy needs neither the updater
+        nor write access to the source, so those installs keep the fallback
+        they had on every platform.
         """
-        if not binary or not self._is_unsloth_managed_binary(binary):
+        if not binary or not self._is_llama_install_tree(binary):
             return None
         source_binary = _resolve_llama_binary(binary)
         source_stamp = self._binary_stamp(source_binary)

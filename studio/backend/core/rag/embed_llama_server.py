@@ -71,10 +71,21 @@ def _binary_lib_dir(binary: str) -> str:
         return str(Path(binary).parent)
 
 
-def _add_dyld_path(env: dict[str, str], lib_dir: str) -> None:
-    """Prepend ``lib_dir`` to the macOS loader search path."""
-    existing = [p for p in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
-    env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([lib_dir, *existing]))
+def _with_dyld_path(env: dict[str, str], lib_dir: str) -> dict[str, str]:
+    """``env`` with ``lib_dir`` first on the macOS loader search path.
+
+    Returns a new dict rather than editing in place: the caller's environment is
+    its own, and the chat backend's equivalent is a pure function too. Shares
+    that one's prepend so both dedupe the same way.
+    """
+    out = dict(env)
+    try:
+        from core.inference.llama_cpp import _prepend_loader_dir
+        out["DYLD_LIBRARY_PATH"] = _prepend_loader_dir(out.get("DYLD_LIBRARY_PATH", ""), lib_dir)
+    except Exception:  # noqa: BLE001 - a search path is better than none
+        existing = [p for p in out.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
+        out["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([lib_dir, *existing]))
+    return out
 
 
 class LlamaServerBackend:
@@ -134,16 +145,22 @@ class LlamaServerBackend:
         """`llama-server --help`, cached. Ignore exit code (some builds exit
         non-zero on --help).
 
-        Runs under the same loader environment as the real launch. Without it,
-        a bundle that needs the search path dies in the loader here, and its
-        error text reads as help output with no ``--embedding`` in it, so the
-        caller reports a build that lacks embeddings instead of a load failure.
+        On macOS, runs under the same loader environment as the real launch.
+        Without it, a bundle that needs the search path dies in the loader
+        here, and its error text reads as help output with no ``--embedding``
+        in it, so the caller reports a build that lacks embeddings instead of a
+        load failure. Elsewhere the probe keeps inheriting this process's
+        environment exactly as it always has: the loader hole is macOS-only,
+        and a probe that answers "does this build do embeddings" has no reason
+        to run under a different environment than it did before.
         """
-        try:
-            from core.inference.llama_cpp import LlamaCppBackend
-            probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
-        except Exception:  # noqa: BLE001 - probe with the inherited env
-            probe_env = None
+        probe_env = None
+        if sys.platform == "darwin":
+            try:
+                from core.inference.llama_cpp import LlamaCppBackend
+                probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
+            except Exception:  # noqa: BLE001 - probe with the inherited env
+                probe_env = None
         try:
             proc = subprocess.run(
                 [binary, "--help"],
@@ -300,16 +317,19 @@ class LlamaServerBackend:
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
         env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
-        # _llama_lib_dir, not Path(binary).parent: the managed install puts an
-        # entrypoint in front of the real server, and the dylibs sit next to
-        # the target, not next to the wrapper.
-        lib_dir = _binary_lib_dir(binary)
         if sys.platform == "darwin":
-            # Unconditional, unlike the CUDA branch: a CPU start loads the same
-            # sibling dylibs (#8566).
-            _add_dyld_path(env, lib_dir)
+            # _llama_lib_dir, not Path(binary).parent: the managed install puts
+            # an entrypoint in front of the real server, and the dylibs sit
+            # next to the target, not next to the wrapper. Unconditional,
+            # unlike the CUDA branch below: a CPU start loads the same sibling
+            # dylibs (#8566).
+            env = _with_dyld_path(env, _binary_lib_dir(binary))
         elif use_gpu:
-            self._add_linux_cuda_libs(env, lib_dir)
+            # Path(binary).parent, unchanged. Resolving the entrypoint here too
+            # would be more correct in principle, but it moves the first
+            # LD_LIBRARY_PATH entry for every existing Linux GPU install whose
+            # llama-server is a symlink, and this change is not about them.
+            self._add_linux_cuda_libs(env, str(Path(binary).parent))
         if not use_gpu:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
