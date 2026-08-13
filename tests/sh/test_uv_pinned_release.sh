@@ -741,11 +741,6 @@ if grep -q '^rc=0$' "$WORK/out_half"; then
 else
     ok "a half-published pair declines to the fallback"
 fi
-if "$WORK/home_half/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
-    ok "a half-published pair restores the incumbent uv"
-else
-    bad "a half-published pair restores the incumbent uv"
-fi
 if [ -z "$(find "$WORK/home_half/.local/bin" -maxdepth 1 -name '.uv*' 2>/dev/null)" ]; then
     ok "the half-published staging and undo files are cleaned up"
 else
@@ -795,17 +790,6 @@ else
     ok "UV_UNMANAGED_INSTALL suppresses the setup.sh profile write"
 fi
 
-# Both installers publish the pair with one rename after the other and the incumbents saved
-# aside, so a failure on the second undoes the first.
-for _impl in "$INSTALL_SH" "$SETUP_SH"; do
-    if grep -q 'ln -f "\$_\(uip\|siup\)_dest/uv" "\$_\(uip\|siup\)_save"' "$_impl" \
-       && grep -q 'UNDO_UV" "\$_\(uip\|siup\)_dest/uv"' "$_impl"; then
-        ok "${_impl##*/} saves and restores the incumbent across the pair"
-    else
-        bad "${_impl##*/} saves and restores the incumbent across the pair"
-    fi
-done
-
 # A destination holding a glob character is a pattern inside a case arm, so `/opt/*` counted as
 # present whenever the inherited PATH held any /opt entry and the persistence was skipped.
 mkdir -p "$WORK/glob_home/.local/bin" "$WORK/glob_home/opt/star"
@@ -829,71 +813,6 @@ else
     bad "a uv directory holding a glob character is compared literally"
 fi
 
-# An incumbent that cannot be saved cannot be restored, so publishing over it would be a
-# one-way move. Made unsaveable by refusing both the link and the copy.
-mkdir -p "$WORK/home_nosave/.local/bin"
-printf '#!/bin/sh\necho "uv 0.9.9 (incumbent)"\n' > "$WORK/home_nosave/.local/bin/uv"
-printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_nosave/.local/bin/uvx"
-chmod +x "$WORK/home_nosave/.local/bin/uv" "$WORK/home_nosave/.local/bin/uvx"
-(
-    set +e
-    tauri_log() { :; }
-    ln() { return 1; }
-    cp() {
-        case "$*" in
-            -p*) return 1 ;;
-        esac
-        command cp "$@"
-    }
-    # shellcheck disable=SC1090
-    . "$WORK/uvfns.sh"
-    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
-    download() { command cp -f "$WORK/uv-fake.tar.gz" "$2"; }
-    HOME="$WORK/home_nosave"; export HOME
-    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
-    _uv_install_pinned
-    echo "rc=$?"
-) > "$WORK/out_nosave" 2>&1 || true
-if grep -q '^rc=0$' "$WORK/out_nosave"; then
-    bad "an unsaveable incumbent declines instead of publishing over it"
-else
-    ok "an unsaveable incumbent declines instead of publishing over it"
-fi
-if "$WORK/home_nosave/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
-    ok "an unsaveable incumbent is left exactly as it was"
-else
-    bad "an unsaveable incumbent is left exactly as it was"
-fi
-
-# With no uv at the destination and uvx failing to publish, there is nothing to put back, so
-# ours comes off: half a pair the host never had is worse than the empty directory it started
-# with, and the fallback installs over neither.
-mkdir -p "$WORK/home_nopred/.local/bin"
-printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_nopred/.local/bin/uvx"
-chmod +x "$WORK/home_nopred/.local/bin/uvx"
-(
-    set +e
-    tauri_log() { :; }
-    mv() {
-        case "$*" in
-            *"/uvx") return 1 ;;
-        esac
-        command mv "$@"
-    }
-    # shellcheck disable=SC1090
-    . "$WORK/uvfns.sh"
-    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
-    download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
-    HOME="$WORK/home_nopred"; export HOME
-    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
-    _uv_install_pinned
-) >/dev/null 2>&1 || true
-if [ -e "$WORK/home_nopred/.local/bin/uv" ]; then
-    bad "a rollback with no predecessor removes the uv it published"
-else
-    ok "a rollback with no predecessor removes the uv it published"
-fi
-
 # The fish escapers have to be valid sed. Run them rather than reading them: the setup.sh copy
 # reached sed as `s/\/\\/g` and would have killed setup under set -e after uv was published.
 for _impl in "$INSTALL_SH" "$SETUP_SH"; do
@@ -905,6 +824,123 @@ for _impl in "$INSTALL_SH" "$SETUP_SH"; do
         bad "${_impl##*/} escapes fish paths with a valid sed expression"
     fi
 done
+
+# A commented-out old export is not an active PATH entry, and neither is a directory that merely
+# starts with ours. Taking either for one leaves the next shell unable to resolve uv.
+for _case in comment prefix; do
+    _ch="$WORK/entry_$_case"
+    mkdir -p "$_ch/.local/bin" "$_ch/opt/uv"
+    if [ "$_case" = comment ]; then
+        printf '# export PATH="%s/opt/uv:$PATH"\n' "$_ch" > "$_ch/.bashrc"
+    else
+        printf 'export PATH="%s/opt/uv-old:$PATH"\n' "$_ch" > "$_ch/.bashrc"
+    fi
+    (
+        set +e
+        step() { :; }
+        HOME="$_ch"; export HOME
+        SHELL="/bin/bash"; export SHELL
+        unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+        _LOCAL_BIN="$HOME/.local/bin"
+        _STUDIO_HOME_REDIRECT="none"
+        _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+        _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+        # shellcheck disable=SC1090
+        . "$WORK/path_guard.sh"
+    ) >/dev/null 2>&1 || true
+    # Count only ACTIVE lines naming the uv directory exactly: the ~/.local/bin line is written
+    # too and would mask the answer.
+    # `|| _n=0`: grep -c exits non-zero on no match and set -e would take the suite down.
+    _n=$(grep -v '^[[:space:]]*#' "$_ch/.bashrc" | grep -cE "(^|[^[:alnum:]_.~/-])$_ch/opt/uv([^[:alnum:]_.~/-]|$)") || _n=0
+    if [ "$_n" = "1" ]; then
+        ok "an inactive entry ($_case) does not suppress the uv PATH write"
+    else
+        bad "an inactive entry ($_case) does not suppress the uv PATH write (active lines: $_n)"
+    fi
+done
+# ...and a genuinely active entry still suppresses it, so the write stays idempotent.
+_ch="$WORK/entry_active"
+mkdir -p "$_ch/.local/bin" "$_ch/opt/uv"
+printf 'export PATH="%s/opt/uv:$PATH"\n' "$_ch" > "$_ch/.bashrc"
+(
+    set +e
+    step() { :; }
+    HOME="$_ch"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+_n=$(grep -v '^[[:space:]]*#' "$_ch/.bashrc" | grep -cE "(^|[^[:alnum:]_.~/-])$_ch/opt/uv([^[:alnum:]_.~/-]|$)") || _n=0
+if [ "$_n" = "1" ]; then
+    ok "an active entry still suppresses the uv PATH write"
+else
+    bad "an active entry still suppresses the uv PATH write (active lines: $_n)"
+fi
+
+# Both installers put the pinned destination back in front of PATH after the ~/.local/bin
+# prepend that follows them, or a stale uv there shadows the one that was just verified.
+if grep -q 'export PATH="\$_UNSLOTH_UV_BIN_DIR:\$PATH"' "$INSTALL_SH"; then
+    ok "install.sh keeps the pinned uv destination ahead of ~/.local/bin"
+else
+    bad "install.sh keeps the pinned uv destination ahead of ~/.local/bin"
+fi
+if grep -q '\[ "\$_SETUP_UV_PINNED_OK" = true \] || export PATH="\$HOME/.local/bin:\$PATH"' "$SETUP_SH"; then
+    ok "setup.sh does not prepend ~/.local/bin over a pinned destination"
+else
+    bad "setup.sh does not prepend ~/.local/bin over a pinned destination"
+fi
+
+# The NSIS hooks run before the user can cancel and $INSTDIR can be a directory they chose, so
+# the tidy-up only applies where our own executable already is.
+_hooks="$SCRIPT_DIR/../../studio/src-tauri/windows/hooks.nsh"
+_h_gates=$(grep -c 'FileExists} "$INSTDIR\\${MAINBINARYNAME}.exe"' "$_hooks") || _h_gates=0
+_h_deletes=$(grep -c 'Delete "$INSTDIR\\install.sh"' "$_hooks") || _h_deletes=0
+if [ "$_h_gates" = "2" ] && [ "$_h_deletes" = "2" ]; then
+    ok "the NSIS hooks only tidy a directory that already holds an Unsloth install"
+else
+    bad "the NSIS hooks only tidy a directory that already holds an Unsloth install"
+fi
+
+# astral's installer wired EVERY startup file it knew: ~/.profile, each bash file that exists,
+# zsh under ZDOTDIR, and a fish drop-in. Writing only the one for the current shell would leave
+# a bash user whose .bash_profile does not source .bashrc without uv on PATH, so the replacement
+# has to cover the same set, once each.
+_ph="$WORK/parity_home"
+mkdir -p "$_ph/.local/bin" "$_ph/opt/uv"
+: > "$_ph/.bashrc"; : > "$_ph/.bash_profile"; : > "$_ph/.zshrc"
+for _pass in 1 2; do
+    (
+        set +e
+        step() { :; }
+        HOME="$_ph"; export HOME
+        SHELL="/bin/bash"; export SHELL
+        unset ZSH_VERSION ZDOTDIR UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+        _LOCAL_BIN="$HOME/.local/bin"
+        _STUDIO_HOME_REDIRECT="none"
+        _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+        _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+        # shellcheck disable=SC1090
+        . "$WORK/path_guard.sh"
+    ) >/dev/null 2>&1 || true
+done
+_missing=""
+for _f in .profile .bashrc .bash_profile .zshrc .config/fish/conf.d/unsloth.fish; do
+    _n=$(grep -c "opt/uv" "$_ph/$_f" 2>/dev/null) || _n=0
+    [ "$_n" = "1" ] || _missing="$_missing $_f=$_n"
+done
+# .bash_login and .zshenv did not exist, so they must not have been created.
+[ -f "$_ph/.bash_login" ] && _missing="$_missing .bash_login=created"
+[ -f "$_ph/.zshenv" ] && _missing="$_missing .zshenv=created"
+if [ -z "$_missing" ]; then
+    ok "the uv PATH entry reaches every startup file astral wired, once each"
+else
+    bad "the uv PATH entry reaches every startup file astral wired, once each ($_missing)"
+fi
 
 echo
 echo "passed: $PASS  failed: $FAIL"

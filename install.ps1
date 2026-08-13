@@ -3078,41 +3078,15 @@ exit 0
                 return $false
             }
 
-            # No atomic replace on Windows for a file that may be open, so the incumbent is
-            # copied aside and put back if the published copy will not run. uvw.exe is not
-            # probed: it is the windowless launcher, with no console to answer on.
-            $backups = @{}
-            $published = @()
+            # uvw.exe is the windowless launcher and has no console to answer a probe on, so
+            # the staged uv.exe above stands for the set: it came from the same verified
+            # archive. Copy-Item under Stop so a locked or ACL-denied destination fails the
+            # install rather than leaving half a set behind quietly.
             $ok = $true
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
                 $src = Join-Path $work $exe
                 if (-not (Test-Path -LiteralPath $src)) { continue }
                 $dst = Join-Path $destDir $exe
-                if (Test-Path -LiteralPath $dst) {
-                    $backup = "$dst.unsloth-old"
-                if (Test-Path -LiteralPath $backup) {
-                    # A previous run failed to restore and kept this as the only copy of a
-                    # working uv, and told the user where it is. Take a distinct name rather
-                    # than overwriting it with whatever is at the destination now.
-                    $backup = "$dst.unsloth-old." + [guid]::NewGuid().ToString('N').Substring(0, 8)
-                }
-                    try {
-                        Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
-                        $backups[$dst] = $backup
-                    } catch {
-                        # No backup, no safe replace. A companion fails the placement too:
-                        # skipping it leaves a stale uvx beside the new uv, the mismatched
-                        # set the rollback exists to prevent.
-                        $ok = $false
-                        break
-                    }
-                }
-                # -ErrorAction Stop inside a try: a bare call throws past the rollback under the
-                # Stop preference, and silently keeps a stale companion under Continue. A locked
-                # or ACL-denied destination has to unwind like any other failure.
-                # Recorded before the copy, not after: a copy that throws part way has already
-                # truncated $dst, and a rollback that skipped it would then delete its backup.
-                $published += $dst
                 try {
                     Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
                 } catch {
@@ -3120,48 +3094,16 @@ exit 0
                     break
                 }
                 if ($exe -eq "uv.exe") {
-                    # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
-                    # a locked or ACL-denied destination leaves whatever was already there and
-                    # execution still reaches this line. Compare against the archive we just
-                    # verified: a stale uv.exe must not pass for the one we meant to install.
+                    # Copy-Item is non-terminating under some callers preference, so compare
+                    # against the archive we verified: a stale uv.exe must not pass for ours.
                     $copied = $false
                     try {
                         $copied = (Test-Path -LiteralPath $dst) -and
                             (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
                             (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
                     } catch { $copied = $false }
-                    # Probe again at the destination: a policy scoped to a path can allow the
-                    # temp copy and refuse this one.
-                    if (-not $copied -or (Get-UvExecutableVerdict -Path $dst) -eq "failed") {
-                        $ok = $false
-                        break
-                    }
+                    if (-not $copied) { $ok = $false; break }
                 }
-            }
-
-            if (-not $ok) {
-                foreach ($dst in $published) {
-                    if ($backups.ContainsKey($dst)) {
-                        try {
-                            Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction Stop
-                        } catch {
-                            # The restore fails for the same two reasons the replace was risky:
-                            # an open incumbent, or a denied ACL. Every other failure here leaves
-                            # the host with what it started with, so keep the backup and name it
-                            # rather than deleting the only working copy below.
-                            $keptPath = $backups[$dst]
-                            $backups.Remove($dst)
-                            substep "could not restore $dst; the previous copy is kept at $keptPath." "Yellow"
-                        }
-                    } else {
-                        # Nothing was there before this run, so removing ours leaves the
-                        # destination exactly as it was found.
-                        Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
-                    }
-                }
-            }
-            foreach ($backup in $backups.Values) {
-                Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
             }
             if (-not $ok) {
                 substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"

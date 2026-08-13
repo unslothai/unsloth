@@ -729,17 +729,6 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_WORK:-}" ] && rm -rf "$_UIP_WORK" 2>/dev/null || true
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
-    # Restored, not deleted. A signal between the two renames leaves this copy as the only
-    # reference to the incumbent, and removing it would leave a new uv beside an old uvx.
-    # _UIP_DEST is set only while the two renames are in flight.
-    if [ -n "${_UIP_UNDO_UV:-}" ]; then
-        [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UV" "$_UIP_DEST/uv" 2>/dev/null
-        rm -f "$_UIP_UNDO_UV" 2>/dev/null || true
-    fi
-    if [ -n "${_UIP_UNDO_UVX:-}" ]; then
-        [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UVX" "$_UIP_DEST/uvx" 2>/dev/null
-        rm -f "$_UIP_UNDO_UVX" 2>/dev/null || true
-    fi
 }
 
 _on_install_exit() {
@@ -770,9 +759,6 @@ _UNSLOTH_TORCH_OVERRIDES=""
 _UIP_WORK=""
 _UIP_STAGE=""
 _UIP_STAGE2=""
-_UIP_UNDO_UV=""
-_UIP_UNDO_UVX=""
-_UIP_DEST=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -2589,10 +2575,8 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         _uip_placed=0
         # uv first, and either half failing aborts the placement: the two ship as a set, and a
         # pinned uvx beside the host's older uv is a pairing we never built or tested.
-        # Stage both, publish both. The rename is the only step that can destroy an incumbent,
-        # so the two renames sit next to each other with the previous binaries saved aside: a
-        # failure on the second no longer leaves a new uv beside the host's stale uvx, and the
-        # pair is what we build and test.
+        # Stage both, then publish both: the renames sit next to each other so the pair is
+        # replaced as one, and a failure anywhere before them leaves the destination untouched.
         _uip_ready=1
         for _uip_exe in uv uvx; do
             _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
@@ -2612,70 +2596,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             # destination filesystem, so this answers noexec too.
             if [ "$_uip_exe" = "uv" ] && ! _uv_probe_exec "$_uip_stage"; then _uip_ready=0; break; fi
         done
-        if [ "$_uip_ready" = "1" ]; then
-            # Save the incumbents so a failure between the two renames can be undone. A hard
-            # link costs nothing and keeps the old inode reachable after the rename takes the
-            # name; cp is the fallback for a filesystem that refuses one.
-            _UIP_UNDO_UV=""
-            _UIP_UNDO_UVX=""
-            if [ -e "$_uip_dest/uv" ]; then
-                # An incumbent that cannot be saved cannot be restored, so publishing over it
-                # would be a one-way move. Decline instead and let the fallback decide.
-                if _uip_save=$(mktemp "$_uip_dest/.uv.old.XXXXXX" 2>/dev/null); then
-                    if ln -f "$_uip_dest/uv" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uv" "$_uip_save" 2>/dev/null; then
-                        _UIP_UNDO_UV="$_uip_save"
-                    else
-                        rm -f "$_uip_save" 2>/dev/null || true
-                        _uip_ready=0
-                    fi
-                else
-                    _uip_ready=0
-                fi
-            fi
-            if [ -e "$_uip_dest/uvx" ]; then
-                # An incumbent that cannot be saved cannot be restored, so publishing over it
-                # would be a one-way move. Decline instead and let the fallback decide.
-                if _uip_save=$(mktemp "$_uip_dest/.uvx.old.XXXXXX" 2>/dev/null); then
-                    if ln -f "$_uip_dest/uvx" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uvx" "$_uip_save" 2>/dev/null; then
-                        _UIP_UNDO_UVX="$_uip_save"
-                    else
-                        rm -f "$_uip_save" 2>/dev/null || true
-                        _uip_ready=0
-                    fi
-                else
-                    _uip_ready=0
-                fi
-            fi
-            # Published under the trap's eye: a signal between the two renames has to be able
-            # to find the destination to put the incumbents back.
-            _UIP_DEST="$_uip_dest"
-            if [ "$_uip_ready" != "1" ]; then
-                # Nothing was published, so there is nothing to undo and the incumbents are
-                # exactly as they were found.
-                :
-            elif mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
-                 mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
-                _uip_placed=1
-            else
-                # Half published: put back what was there. Anything that could not be saved is
-                # left alone rather than deleted, which is still the safer direction.
-                # With no predecessor there is nothing to put back, so ours comes off: half a
-                # pair the host never had is worse than the empty destination it started with.
-                if [ -n "$_UIP_UNDO_UV" ]; then
-                    mv -f "$_UIP_UNDO_UV" "$_uip_dest/uv" 2>/dev/null || true
-                else
-                    rm -f "$_uip_dest/uv" 2>/dev/null || true
-                fi
-                if [ -n "$_UIP_UNDO_UVX" ]; then
-                    mv -f "$_UIP_UNDO_UVX" "$_uip_dest/uvx" 2>/dev/null || true
-                else
-                    rm -f "$_uip_dest/uvx" 2>/dev/null || true
-                fi
-            fi
-            rm -f "$_UIP_UNDO_UV" "$_UIP_UNDO_UVX" 2>/dev/null || true
-            _UIP_UNDO_UV=""
-            _UIP_UNDO_UVX=""
-            _UIP_DEST=""
+        if [ "$_uip_ready" = "1" ] &&
+           mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
+           mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
+            _uip_placed=1
         fi
         rm -f "$_UIP_STAGE" "$_UIP_STAGE2" 2>/dev/null || true
         _UIP_STAGE=""
@@ -2749,6 +2673,12 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
         . "$HOME/.local/bin/env"
     fi
     export PATH="$HOME/.local/bin:$PATH"
+    # ...and put the pinned destination back in front. UV_INSTALL_DIR and friends can put uv
+    # somewhere other than ~/.local/bin, and both the line above and astral's env file prepend
+    # ~/.local/bin, so a stale uv there would shadow the 0.12.1 we just verified.
+    if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$HOME/.local/bin" ]; then
+        export PATH="$_UNSLOTH_UV_BIN_DIR:$PATH"
+    fi
 fi
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
@@ -5414,31 +5344,44 @@ _path_has_dir() {
     return "$_phd_found"
 }
 
+# fish reads none of the POSIX rc files, so an `export` line is a no-op for a fish user: the
+# next session resolves neither uv nor the shim. conf.d is fish's own drop-in directory and
+# fish_add_path is idempotent by design. ~/.config, not XDG_CONFIG_HOME, because that is where
+# astral's installer put its own fish file.
+_persist_fish_path_dir() {
+    _pfp_dir="$1"; _pfp_label="${2:-$1}"
+    [ -n "${HOME:-}" ] || return 0
+    _pfp_dir_conf="$HOME/.config/fish/conf.d"
+    mkdir -p "$_pfp_dir_conf" 2>/dev/null || return 0
+    _pfp_file="$_pfp_dir_conf/unsloth.fish"
+    if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qF "$_pfp_dir"; then
+        # Single-quoted: an unquoted path with a space is two arguments to fish_add_path and
+        # neither exists. Inside fish single quotes only \\ and \' carry meaning.
+        _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        echo "# Added by Unsloth installer" >> "$_pfp_file"
+        echo "fish_add_path '$_pfp_quoted'" >> "$_pfp_file"
+        step "path" "added $_pfp_label to PATH in $_pfp_file"
+    fi
+}
+
 # Put a directory on the PATH of the NEXT shell, not just this process.
 #   $1 the directory  $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always
 #   has)  $3 how to name it in the line we print  $4 the grep that says it is already there
+#   $5 an explicit profile file, or empty to pick one the way this installer always has
 _persist_login_path_dir() {
-    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"
+    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"; _plp_file="${5:-}"
     [ -n "${HOME:-}" ] || return 0
     # fish reads none of the POSIX rc files, so an `export` line there is a no-op for a fish
     # user: the next session resolves neither uv nor the shim. conf.d is fish's own drop-in
     # directory and fish_add_path is idempotent by design.
-    if [ "$(basename "${SHELL:-}")" = "fish" ]; then
-        _plp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
-        mkdir -p "$_plp_fish_dir" 2>/dev/null || return 0
-        _plp_fish="$_plp_fish_dir/unsloth.fish"
-        if ! grep -qF "$_plp_dir" "$_plp_fish" 2>/dev/null; then
-            # Single-quoted: an unquoted path with a space is two arguments to fish_add_path
-            # and neither exists. Inside fish single quotes only \\ and \' carry meaning.
-            _plp_quoted=$(printf '%s' "$_plp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-            echo "# Added by Unsloth installer" >> "$_plp_fish"
-            echo "fish_add_path '$_plp_quoted'" >> "$_plp_fish"
-            step "path" "added $_plp_label to PATH in $_plp_fish"
-        fi
+    if [ -z "$_plp_file" ] && [ "$(basename "${SHELL:-}")" = "fish" ]; then
+        _persist_fish_path_dir "$_plp_dir" "$_plp_label"
         return 0
     fi
-    _SHELL_PROFILE=""
-    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+    _SHELL_PROFILE="$_plp_file"
+    if [ -n "$_SHELL_PROFILE" ]; then
+        :
+    elif [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
         _SHELL_PROFILE="${ZDOTDIR:-$HOME}/.zshrc"
     elif [ -f "$HOME/.bashrc" ]; then
         _SHELL_PROFILE="$HOME/.bashrc"
@@ -5451,7 +5394,9 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
-    if ! grep -q "$_plp_pattern" "$_SHELL_PROFILE" 2>/dev/null; then
+    # Comments stripped first: a commented-out old export is not an active entry, and taking it
+    # for one leaves the next shell with no uv at all.
+    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null | grep -qE "$_plp_pattern"; then
         echo '' >> "$_SHELL_PROFILE"
         echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
         echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
@@ -5482,8 +5427,25 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN
         # terminated by the shell that reads it. The ~/.local/bin literal is exempt: its
         # $HOME is meant to stay unexpanded.
         _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
-        _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
-            "$_UNSLOTH_UV_BIN_DIR" "$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')"
+        # Anchored on both sides, so /opt/uv is not satisfied by /opt/uv-old and the match has
+        # to be a whole PATH entry rather than any occurrence of the text.
+        _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')
+        _uv_pattern="(^|[^[:alnum:]_.~/-])$_uv_grep_esc([^[:alnum:]_.~/-]|\$)"
+        # Every startup file astral's installer wired, because it is the installer we replaced:
+        # ~/.profile always, each of the bash files that exists, zsh under ZDOTDIR, and the fish
+        # drop-in regardless of the current shell. Writing only the one file for the shell that
+        # happens to be running would leave a bash user whose .bash_profile does not source
+        # .bashrc, or anyone who later switches shells, without uv on PATH.
+        for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                        "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            # ~/.profile is created when absent, as astral does; the rest are only touched when
+            # the user already has them.
+            if [ "$_uv_prof" = "$HOME/.profile" ] || [ -f "$_uv_prof" ]; then
+                _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
+                    "$_UNSLOTH_UV_BIN_DIR" "$_uv_pattern" "$_uv_prof"
+            fi
+        done
+        _persist_fish_path_dir "$_UNSLOTH_UV_BIN_DIR"
     fi
 fi
 # end of the PATH persistence block

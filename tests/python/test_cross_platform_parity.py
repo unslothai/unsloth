@@ -724,39 +724,19 @@ class TestPinnedIndexClearsUvEnvParity:
             assert (
                 'return "failed"' in body and 'return "ok"' in body
             ), f"{path.name}'s probe must report a real answer as well"
-            for call in (f"({probe} -Path $stagedUv)", f"({probe} -Path $dst)"):
-                assert (
-                    f'{call} -eq "failed"' in text
-                ), f"{path.name} must gate only on a failed verdict at {call}"
+            assert (
+                f'({probe} -Path $stagedUv) -eq "failed"' in text
+            ), f"{path.name} must gate only on a failed verdict"
             copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
             assert probe_at < copy_at, (
                 f"{path.name} must probe the extracted uv.exe before copying over the "
                 "destination"
             )
-            assert (
-                "$dst.unsloth-old" in text
-            ), f"{path.name} must copy the incumbent aside before replacing it"
-            # The publish itself is a transaction: a locked or ACL-denied companion must
-            # unwind like any other failure rather than throwing past the rollback (Stop
-            # preference) or being silently skipped (Continue preference).
+            # The publish is not a transaction: a locked or ACL-denied destination fails the
+            # install rather than being skipped, which is what the caller's fallback is for.
             assert (
                 "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
             ), f"{path.name} must copy each executable under -ErrorAction Stop"
-            # And a restore that fails must keep its backup: that failure has the same two
-            # causes as the risky replace, so deleting it is the one path that can leave the
-            # host with less than it started with.
-            restore = text.split("foreach ($dst in $published)", 1)[1]
-            restore = restore.split("foreach ($backup in $backups.Values)", 1)[0]
-            assert (
-                "$backups.Remove($dst)" in restore
-            ), f"{path.name} must keep a backup whose restore failed"
-            # A companion that cannot be backed up fails the placement too: skipping it
-            # would leave a stale uvx beside the new uv.
-            backup_catch = text.split("$dst.unsloth-old", 1)[1]
-            backup_catch = backup_catch.split("Copy-Item -LiteralPath $src", 1)[0]
-            assert (
-                "continue" not in backup_catch
-            ), f"{path.name} must not skip a companion it could not back up"
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
