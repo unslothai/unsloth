@@ -350,7 +350,11 @@ def _get_generation_preset_settings(kind, schema):
         response, _ = _validated_without_invalid_fields(
             schema, {**state, "customPresets": readable}
         )
-    response.saved = bool(stored)
+    # Saved means the store owns the CURRENT recipe, not merely that something is stored. A blob
+    # holding named presets but no recipe -- a preset write that landed while the state write did
+    # not -- would otherwise hand back schema defaults dressed as the user's own choice, and the
+    # client suppresses the resident model's defaults for exactly as long as it believes that.
+    response.saved = isinstance(stored.get("currentParams"), dict)
     return response
 
 

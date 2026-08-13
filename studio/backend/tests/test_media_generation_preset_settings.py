@@ -317,6 +317,26 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
     assert body["currentParams"]["steps"] == 24
 
 
+def test_a_store_holding_only_presets_is_not_a_saved_recipe(monkeypatch):
+    # A named-preset write can land while the debounced state write does not. Reporting that as
+    # saved hands the client schema defaults as if the user had chosen them, and the client stops
+    # seeding the resident model's own defaults for as long as it believes that.
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "customPresets": [{"name": "Landscape", "params": {"steps": 24}}],
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    assert body["saved"] is False
+    # The library is still the user's; only the recipe falls back to the model's defaults.
+    assert [preset["name"] for preset in body["customPresets"]] == ["Landscape"]
+
+
 def test_a_preset_collection_that_is_not_a_list_reads_as_empty(monkeypatch):
     # Recovery exists so a store this build cannot represent still reads. Iterating a scalar here
     # would answer 500 and take the whole preset UI down with it.

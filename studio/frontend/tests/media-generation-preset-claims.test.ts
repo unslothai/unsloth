@@ -43,6 +43,36 @@ for (const [page, source] of [
     assert.match(body, /quantRevert\.current = null;/);
   });
 
+  test(`${page}: every pick baselines supersession on itself`, () => {
+    // A second pick reuses the first one's rollback object, so the claim block is skipped. Reading
+    // the counter outside it is what stops the second pick from inheriting the first's answer.
+    const apply = source.slice(
+      source.indexOf("ModelDefaults = useCallback("),
+      source.indexOf("const recommended = defaultsFor(repoId);"),
+    );
+    assert.match(apply, /const claimedAt = \w+FormClaimId\(\);/);
+    assert.match(
+      apply,
+      /pickRecipeSuperseded\.current = \(\) => \w+FormClaimId\(\) !== claimedAt;/,
+    );
+    const claimBlock = apply.slice(
+      apply.indexOf("if (revert && !revert.releaseRecipeClaim) {"),
+      apply.indexOf("const claimedAt"),
+    );
+    assert.doesNotMatch(claimBlock, /claimedAt/, "the baseline must survive a reused rollback");
+  });
+
+  test(`${page}: a superseded pick does not roll the recipe back`, () => {
+    const revert = source.slice(
+      source.indexOf("const revertPick = useCallback("),
+      source.indexOf("r.releaseRecipeClaim?.();"),
+    );
+    const guard = revert.indexOf("if (!pickRecipeSuperseded.current?.()) {");
+    assert.ok(guard > 0, "the value restore must sit behind the supersession guard");
+    assert.ok(guard < revert.indexOf("cur === r.appliedSteps"));
+    assert.ok(guard < revert.indexOf("cur === r.appliedGuidance"));
+  });
+
   test(`${page}: a preset's negative prompt is revealed, not applied behind a closed field`, () => {
     const apply = source.slice(source.indexOf("PresetParams = useCallback("));
     const setter = apply.indexOf("setNegativePrompt(params.negativePrompt);");
@@ -54,12 +84,34 @@ for (const [page, source] of [
   });
 }
 
-test("a claim can report that a newer form action took the recipe", () => {
-  const claim = HOOK.slice(
-    HOOK.indexOf("const claimRecipe = useCallback("),
-    HOOK.indexOf("const settings = useMemo"),
+test("the form claim counter is readable, so a pick can tell it was superseded", () => {
+  assert.match(HOOK, /const formClaimId = useCallback\(\(\) => formClaim\.current, \[\]\);/);
+  assert.match(HOOK, /^\s+formClaimId,$/m, "and returned from the hook");
+});
+
+test("a preset write that failed gives its form claim back", () => {
+  // Otherwise a rejected save reads as "something newer owns the form" for the rest of the
+  // session, and a pending pick's model defaults are skipped over a change that never happened.
+  for (const name of ["const savePreset = useCallback(", "const deletePreset = useCallback("]) {
+    const body = HOOK.slice(HOOK.indexOf(name));
+    const failure = body.slice(body.indexOf("} catch (error) {"));
+    assert.match(
+      failure.slice(0, failure.indexOf("toast.error")),
+      /if \(formClaim\.current === claim\) formClaim\.current = previousClaim;/,
+      `${name} must restore the claim before reporting the failure`,
+    );
+  }
+});
+
+test("a store with presets but no recipe still hydrates the library", () => {
+  // saved:false means the recipe falls back to the model's defaults, not that the user's named
+  // presets are gone; dropping them would hide a library the response is carrying.
+  assert.match(
+    HOOK,
+    /hydrateLocalSettings\("fresh", settings\.customPresets \?\? \[\]\)/,
   );
-  assert.match(claim, /superseded: \(\) => formClaim\.current !== claim,/);
+  const hydrate = HOOK.slice(HOOK.indexOf("const hydrateLocalSettings = useCallback("));
+  assert.match(hydrate.slice(0, hydrate.indexOf("setActivePreset")), /setCustomPresets\(custom\);/);
 });
 
 test("video defers both status seeds to a preset picked during the load", () => {

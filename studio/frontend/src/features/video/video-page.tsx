@@ -817,15 +817,19 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const modelSeeded = useRef(false);
   const familySeeded = useRef(false);
   // Whether the user has taken the recipe since the pick that is still waiting for its status.
-  // The seeding effects below ask before applying that pick's model defaults, or a preset selected
-  // while the model downloaded would be replaced the moment the load lands.
+  // Both the seeding effects and the rollback below ask: a preset selected while the model
+  // downloaded is newer than that pick, so neither its defaults nor its rollback may land on top.
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
-    setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
-    setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
+    // preset selected after the pick owns these fields even where it matches what the pick applied.
+    if (!pickRecipeSuperseded.current?.()) {
+      setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
+      setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    }
     if (r.modelSeeded != null) modelSeeded.current = r.modelSeeded;
     if (r.familySeeded != null) familySeeded.current = r.familySeeded;
     pickRecipeSuperseded.current = null;
@@ -1217,6 +1221,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     normalizeParams: normalizeVideoPresetParams,
   });
   const claimVideoRecipe = videoPresets.claimRecipe;
+  const videoFormClaimId = videoPresets.formClaimId;
   const applyVideoModelDefaults = useCallback(
     (repoId: string) => {
       const revert = quantRevert.current;
@@ -1224,8 +1229,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const claim = claimVideoRecipe();
         revert.commitRecipeClaim = claim.commit;
         revert.releaseRecipeClaim = claim.release;
-        pickRecipeSuperseded.current = claim.superseded;
       }
+      // Baselined per pick, including a pick that inherits an earlier one's rollback: the question
+      // is whether the user takes the form after THIS pick, not after the one it replaced.
+      const claimedAt = videoFormClaimId();
+      pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
       const recommended = defaultsFor(repoId);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
@@ -1241,7 +1249,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       modelSeeded.current = true;
       familySeeded.current = true;
     },
-    [claimVideoRecipe],
+    [claimVideoRecipe, videoFormClaimId],
   );
 
   useEffect(() => {

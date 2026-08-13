@@ -1181,12 +1181,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  // Whether the user has taken the recipe since the pick that is still waiting for its status: a
+  // preset selected while the model downloaded is newer than that pick, so its rollback is not the
+  // one to restore.
+  const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
-    setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
-    setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
+    // preset selected after the pick owns these fields even where it matches what the pick applied.
+    if (!pickRecipeSuperseded.current?.()) {
+      setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
+      setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    }
+    pickRecipeSuperseded.current = null;
     r.releaseRecipeClaim?.();
     r.releaseRecipeClaim = undefined;
   }, []);
@@ -1391,6 +1400,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     applyParams: applyImagePresetParams,
   });
   const claimImageRecipe = imagePresets.claimRecipe;
+  const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
     (repoId: string) => {
       const revert = quantRevert.current;
@@ -1399,6 +1409,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         revert.commitRecipeClaim = claim.commit;
         revert.releaseRecipeClaim = claim.release;
       }
+      // Baselined per pick, including a pick that inherits an earlier one's rollback: the question
+      // is whether the user takes the form after THIS pick, not after the one it replaced.
+      const claimedAt = imageFormClaimId();
+      pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(repoId);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
@@ -1408,7 +1422,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         revert.appliedGuidance = recommended.guidance;
       }
     },
-    [claimImageRecipe],
+    [claimImageRecipe, imageFormClaimId],
   );
 
   const dismissLoadToast = useCallback(() => {

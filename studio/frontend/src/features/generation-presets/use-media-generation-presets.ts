@@ -114,20 +114,28 @@ export function useMediaGenerationPresets<Params extends object>({
     [customPresets, defaultParams],
   );
 
-  const hydrateLocalSettings = useCallback((source: "fresh" | "unreadable") => {
-    deferredSavedSettingsRef.current = null;
-    deferredFreshSettingsRef.current = false;
-    baselineParamsRef.current = defaultParamsRef.current;
-    setCustomPresets([]);
-    setActivePreset(DEFAULT_PRESET_NAME);
-    if (source === "fresh" && formClaim.current !== 0) {
-      const committed = committedRecipeClaim.current === formClaim.current;
-      deferredFreshSettingsRef.current = !committed;
-      setHydrationSource(committed ? "claimed" : "claiming");
-      return;
-    }
-    setHydrationSource(source);
-  }, []);
+  // `custom` for a store that holds named presets but no recipe of its own: the library is still
+  // the user's, and only the recipe falls back to the model's defaults.
+  const hydrateLocalSettings = useCallback(
+    (
+      source: "fresh" | "unreadable",
+      custom: MediaGenerationPreset<Params>[] = [],
+    ) => {
+      deferredSavedSettingsRef.current = null;
+      deferredFreshSettingsRef.current = false;
+      baselineParamsRef.current = defaultParamsRef.current;
+      setCustomPresets(custom);
+      setActivePreset(DEFAULT_PRESET_NAME);
+      if (source === "fresh" && formClaim.current !== 0) {
+        const committed = committedRecipeClaim.current === formClaim.current;
+        deferredFreshSettingsRef.current = !committed;
+        setHydrationSource(committed ? "claimed" : "claiming");
+        return;
+      }
+      setHydrationSource(source);
+    },
+    [],
+  );
 
   const hydrateSavedSettings = useCallback(
     (settings: MediaGenerationPresetSettings<Params>) => {
@@ -176,7 +184,7 @@ export function useMediaGenerationPresets<Params extends object>({
           return;
         }
         if (!settings.saved) {
-          hydrateLocalSettings("fresh");
+          hydrateLocalSettings("fresh", settings.customPresets ?? []);
           return;
         }
         hydrateSavedSettings(settings);
@@ -205,10 +213,6 @@ export function useMediaGenerationPresets<Params extends object>({
     let settled = false;
     const ownsClaim = () => !settled && formClaim.current === claim;
     return {
-      // Whether a newer form action took the recipe after this pick claimed it. A pick's model
-      // defaults arrive with the status that confirms it, long after the user could have selected
-      // a preset, and that selection is the newer choice.
-      superseded: () => formClaim.current !== claim,
       commit: () => {
         if (!ownsClaim()) {
           return;
@@ -249,6 +253,12 @@ export function useMediaGenerationPresets<Params extends object>({
       },
     };
   }, [hydrateSavedSettings]);
+
+  // How many actions have taken the form so far. A page records it when a pick claims the recipe
+  // and compares later: a different value means something newer than that pick owns the form now,
+  // so the pick's model defaults must not land on top of it and its rollback is not the one to
+  // restore. Read when a pick is made, not once per hook, so each pick baselines on itself.
+  const formClaimId = useCallback(() => formClaim.current, []);
 
   const settings = useMemo<MediaGenerationPresetState<Params>>(
     () => ({
@@ -338,10 +348,14 @@ export function useMediaGenerationPresets<Params extends object>({
         name,
         params: currentParamsRef.current,
       };
+      const previousClaim = formClaim.current;
       const claim = claimForm(formClaim);
       try {
         await upsertMediaGenerationPreset(kind, preset);
       } catch (error) {
+        // A refused write took nothing over, so it must not keep the claim it made: a pending
+        // model pick would go on reading the form as claimed by something newer than itself.
+        if (formClaim.current === claim) formClaim.current = previousClaim;
         toast.error(refusalMessage(error, `Could not save ${kind} preset`));
         return null;
       }
@@ -383,10 +397,13 @@ export function useMediaGenerationPresets<Params extends object>({
     }
     const deletedName = activePreset;
     const paramsBeforeDelete = currentParamsRef.current;
+    const previousClaim = formClaim.current;
     const claim = claimForm(formClaim);
     try {
       await deleteMediaGenerationPreset(kind, deletedName);
     } catch (error) {
+      // Same as a refused save: a delete that did not happen has not taken the form.
+      if (formClaim.current === claim) formClaim.current = previousClaim;
       toast.error(refusalMessage(error, `Could not delete ${kind} preset`));
       return false;
     }
@@ -420,6 +437,7 @@ export function useMediaGenerationPresets<Params extends object>({
     storedRecipe,
     presetsReady,
     claimRecipe,
+    formClaimId,
     hasUnsavedChanges,
     selectPreset,
     savePreset,
