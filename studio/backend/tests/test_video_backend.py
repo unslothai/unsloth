@@ -2107,6 +2107,64 @@ def test_base_download_files_skips_the_partition_the_prequant_checkpoint_replace
     )
 
 
+def _h3_pipeline_load_is_attemptable(fam) -> bool:
+    """Whether validate_load_request can even reach a pick's own checks for an H3 pipeline here.
+
+    Two of its refusals are about the machine, not the request: Metal cannot place the modular
+    workflow at all (torch.mps exposes no mem_get_info for the auto CPU offload), and a diffusers
+    without the bundled revision has no transformer class to build. Both raise the same ValueError
+    a genuine refusal does, so a caller that reads any ValueError as "this pick was rejected"
+    reports a regression on hosts where the pick was never in question.
+
+    No diffusers at all is the third such host, and it is a supported one: studio.txt does not
+    install diffusers (it arrives with the torch-bound ML stack), and the native sd.cpp engine
+    serves H3 without it. assert_pipeline_class_available answers only "is the installed
+    diffusers new enough", so under its default non-strict mode an unimportable one returns
+    rather than raising -- which means it cannot be the guard for this, and the probe below has
+    to carry its own."""
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    if resolve_diffusion_device_target().device == "mps":
+        return False
+    try:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+    except Exception:  # noqa: BLE001 -- an unavailable pipeline class is a host fact, not a verdict
+        return False
+    if fam.modular_workflow:
+        try:
+            import diffusers
+
+            # hasattr, not the import, is what pulls in the lazy submodule, so a partially
+            # installed diffusers raises here rather than at the import statement.
+            return hasattr(diffusers, fam.transformer_class)
+        except Exception:  # noqa: BLE001 -- no importable diffusers is a host fact too
+            return False
+    return True
+
+
+def test_the_h3_attemptability_probe_survives_a_host_without_diffusers(monkeypatch):
+    """The probe exists to turn host limitations into "not attemptable" instead of a red test, so
+    it must not itself raise on the most ordinary limitation of all. studio.txt installs no
+    diffusers, and assert_pipeline_class_available does NOT stand in for the check: non-strict is
+    its default and an unimportable diffusers makes it return, not raise, so control reaches the
+    modular-workflow probe below it. Unguarded, that probe raised ModuleNotFoundError straight out
+    of the helper and failed the caller before its own `except Exception` could see it."""
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    # H3 is modular, so the probe really does reach the import this guards.
+    assert fam.modular_workflow
+
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers_import)
+    assert _h3_pipeline_load_is_attemptable(fam) is False
+
+
 def test_a_quantized_reference_load_resolves_the_reference_denoiser():
     # This pairing used to be refused outright: the only hosted checkpoints were fl2va denoisers,
     # and one seeded into the reference workflow would have installed cleanly, passed every
@@ -2117,23 +2175,27 @@ def test_a_quantized_reference_load_resolves_the_reference_denoiser():
 
     backend = VideoBackend()
     fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    # The resolution below is a registry lookup and holds on every host; only the refusal check
+    # needs a host that can attempt the load at all.
+    check_refusal = _h3_pipeline_load_is_attemptable(fam)
     for scheme, expected in (
         ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
         ("fp8", "MiniMax-H3-Ref2VA-FP8.pt"),
     ):
-        try:
-            backend.validate_load_request(
-                "MiniMaxAI/MiniMax-H3",
-                family_override = "minimax-h3",
-                model_kind = "pipeline",
-                transformer_quant = scheme,
-                h3_task = "ref2va",
-            )
-        except ValueError as exc:  # pragma: no cover - only on a regression
-            pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
-        except Exception:
-            # Anything past the quant check (the diffusers probe) is not this test's business.
-            pass
+        if check_refusal:
+            try:
+                backend.validate_load_request(
+                    "MiniMaxAI/MiniMax-H3",
+                    family_override = "minimax-h3",
+                    model_kind = "pipeline",
+                    transformer_quant = scheme,
+                    h3_task = "ref2va",
+                )
+            except ValueError as exc:  # pragma: no cover - only on a regression
+                pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
+            except Exception:
+                # Anything past the quant check (the diffusers probe) is not this test's business.
+                pass
         source = resolve_prequant_source(fam, scheme, task = "ref2va")
         assert source.filename == expected
 
@@ -3017,6 +3079,124 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["fam"].name == "minimax-h3"
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
+
+
+def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypatch, tmp_path):
+    # asset_repos stops the delete-cached guard dropping the H3 companion repos mid-load, and the
+    # preflight can spend minutes installing the sd-cli prebuilt. A delete admitted in that window
+    # is not revoked by claiming the repos later.
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+
+    seen: list[tuple[str, ...]] = []
+
+    def _ensure(**_kwargs):
+        # What the delete-cached guard would see while the install runs.
+        seen.append(backend._loading.asset_repos)
+        return "/existing/sd-cli"
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", _ensure)
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_binary_vets_for_h3", lambda _b: True)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("unsloth/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = "unsloth/MiniMax-H3-GGUF", base_repo = fam.base_repo
+    )
+    backend._load_token = 11
+
+    backend._run_load_h3_native(
+        fam = fam,
+        token = 11,
+        cancel_event = threading.Event(),
+        repo_id = "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO)]
+
+
+def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
+    fake_runtime, monkeypatch
+):
+    # begin_load returns as soon as the worker thread is scheduled, so a claim made in the worker
+    # leaves a window where the guard sees only repo_id and base_repo and admits a delete of a
+    # companion repo. Admitting it is the irreversible part, so the claim has to be published in
+    # the same locked section as _loading.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    # Never started: the window under test is before the load thread is scheduled.
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    backend.begin_load(
+        "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+
+    claimed = backend.loading_repo_ids()
+    assert H3_GGUF_REPO in claimed
+    assert H3_COMPONENT_REPO in claimed
+
+
+def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
+    # H3-native only: naming the companions on a pipeline load would block deletes of repos it
+    # never reads.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    backend.begin_load("Wan-AI/Wan2.2-TI2V-5B-Diffusers", family_override = "wan2.2-ti2v-5b")
+
+    claimed = backend.loading_repo_ids()
+    assert H3_GGUF_REPO not in claimed
+    assert H3_COMPONENT_REPO not in claimed
 
 
 def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch, tmp_path):

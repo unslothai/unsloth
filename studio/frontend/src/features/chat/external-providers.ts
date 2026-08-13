@@ -18,6 +18,14 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /**
+   * The provider type as the BACKEND stores it, which is not always `providerType`
+   * above: `resolveUiProviderTypeFromConfig` shows a row saved as `openai` with a
+   * custom name or base URL as "custom". Absent means unknown, not custom.
+   */
+  backendProviderType?: string;
+  /** Optional maximum Max Tokens cap for a generic Custom connection. */
+  maxOutputTokens?: number;
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
@@ -169,6 +177,33 @@ export function setProviderModelCapabilities(
   persistProviderModelCapabilities();
 }
 
+/** Drop persisted capabilities for provider types the registry no longer lists.
+ *
+ * This map outlives the backend that wrote it: it is localStorage, so a browser
+ * carries it across a downgrade, and a per-entry write can only ever correct the
+ * entries the registry still returns. A provider that has been hidden or that a
+ * rolled-back backend does not know about is simply absent from the response, so
+ * without this its last-known `studio_tools: true` latches forever and the
+ * composer keeps offering a loop that backend cannot run.
+ *
+ * Convergence is the point: the registry response is the whole truth about which
+ * provider types exist, so an empty one legitimately means "none", and clearing
+ * is the safe direction anyway (an unknown capability reads as null, which every
+ * caller treats as "not capable").
+ */
+export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<string>): void {
+  hydrateProviderModelCapabilities();
+  const known = new Set(knownProviderTypes);
+  let removed = false;
+  for (const providerType of [...REGISTRY_MODEL_CAPABILITIES.keys()]) {
+    if (!known.has(providerType)) {
+      REGISTRY_MODEL_CAPABILITIES.delete(providerType);
+      removed = true;
+    }
+  }
+  if (removed) persistProviderModelCapabilities();
+}
+
 
 export function providerModelSupportsVision(
   providerType: string | null | undefined,
@@ -184,19 +219,85 @@ export function providerModelSupportsVision(
 }
 
 
+/** Provider-level capability key. Self-hosted model ids are user-supplied, so
+ * there is no per-model entry to look up: the registry declares the capability
+ * once for the whole provider type and it applies to every model on it. */
+export const PROVIDER_CAPABILITY_WILDCARD = "*";
+
 export function providerModelSupportsStudioTools(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean | null {
-  if (!providerType || !modelId) return null;
+  if (!providerType) return null;
   hydrateProviderModelCapabilities();
-  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.studio_tools;
-  return typeof value === "boolean" ? value : null;
+  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  if (modelId) {
+    const value = capabilities?.[modelId]?.studio_tools;
+    if (typeof value === "boolean") return value;
+  }
+  const providerDefault = capabilities?.[PROVIDER_CAPABILITY_WILDCARD]?.studio_tools;
+  return typeof providerDefault === "boolean" ? providerDefault : null;
+}
+
+/** Whether the connection behind an ``external::`` model id runs Studio tools.
+ *
+ * Resolves the provider type from the saved connection, so callers that only
+ * have a checkpoint id (the runtime store) can ask the capability question
+ * without reaching for the providers store and risking an import cycle.
+ */
+export function externalModelSupportsStudioTools(
+  checkpoint: string | null | undefined,
+): boolean {
+  const selection = parseExternalModelId(checkpoint);
+  if (!selection) return false;
+  const provider = loadExternalProviders().find(
+    (candidate) => candidate.id === selection.providerId,
+  );
+  if (!provider) return false;
+  return (
+    providerModelSupportsStudioTools(provider.providerType, selection.modelId) === true
+  );
 }
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
+export const CUSTOM_MAX_OUTPUT_TOKENS_MIN = 64;
+
+export function normalizeCustomMaxOutputTokens(
+  providerType: string | null | undefined,
+  value: unknown,
+): number | undefined {
+  if (
+    providerType !== LEGACY_CUSTOM_PROVIDER_TYPE ||
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < CUSTOM_MAX_OUTPUT_TOKENS_MIN
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Whether a connection may carry a per-connection Max Tokens limit.
+ *
+ * Both types have to agree: the UI type decides what the dialog draws, the stored type
+ * decides what the server accepts, and they differ for a row saved as `openai` with a
+ * custom name or base URL. An unknown stored type (synced before this field, or a
+ * connection with no server row yet) falls back to what the create call will send.
+ */
+export function supportsCustomMaxOutputTokens(
+  uiProviderType: string | null | undefined,
+  backendProviderType: string | null | undefined,
+): boolean {
+  if (uiProviderType !== LEGACY_CUSTOM_PROVIDER_TYPE) return false;
+  const effective =
+    typeof backendProviderType === "string" && backendProviderType.length > 0
+      ? backendProviderType
+      : toExternalBackendProviderType(uiProviderType);
+  return effective === LEGACY_CUSTOM_PROVIDER_TYPE;
+}
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
@@ -414,6 +515,16 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    // Junk from a hand-edited entry becomes undefined, i.e. unknown.
+    backendProviderType:
+      typeof raw.backendProviderType === "string" &&
+      raw.backendProviderType.trim().length > 0
+        ? raw.backendProviderType.trim()
+        : undefined,
+    maxOutputTokens: normalizeCustomMaxOutputTokens(
+      providerType,
+      raw.maxOutputTokens,
+    ),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

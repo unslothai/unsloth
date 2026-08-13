@@ -161,6 +161,26 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
     assert fr.read_install_marker(str(bin_path)) is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    ["[]", '["cpu"]', '"cuda"', "123", "true", "null"],
+    ids = ["empty-list", "list", "string", "int", "bool", "null"],
+)
+def test_read_install_marker_rejects_non_object_json(tmp_path, payload):
+    """JSON that parses but is not an object must read as "no marker".
+
+    Every caller treats a non-None return as a mapping -- the update planner, the
+    backend picker and crash recovery all reach straight for ``.get`` -- so a marker
+    holding ``["cpu"]`` used to raise AttributeError out of a plain status read
+    instead of degrading to the source-build path a corrupt file deserves.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(payload)
+    bin_path = _fake_binary(install_dir, layout = "root")
+    assert fr.read_install_marker(str(bin_path)) is None
+
+
 def test_read_install_marker_handles_none_path():
     assert fr.read_install_marker(None) is None
 
