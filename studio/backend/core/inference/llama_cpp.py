@@ -10224,7 +10224,6 @@ class LlamaCppBackend:
                 longest = max(longest, len(literal))
         try:
             from utils.prebuilt.child_env import URL_USERINFO_RE, is_secret_env_name
-
             for name, value in os.environ.items():
                 if not value or len(value) <= longest:
                     continue
