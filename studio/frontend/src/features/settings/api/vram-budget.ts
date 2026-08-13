@@ -177,10 +177,9 @@ export function updateVramBudgetSettings(
         ? publishVramBudget(settings)
         : settings,
     (error: unknown) => {
-      // Put a failed edit back so the next flush, or the next Run, carries it.
-      // Only when it is still the newest intent: a later edit may already have
-      // been staged, or already sent past this one on the chain, and resending
-      // this fraction would undo it while the control shows the newer value.
+      // Put a failed edit back for the next flush or Run, but only while it is
+      // still the newest intent: a later edit may already be staged, or already
+      // sent past this one, and resending would undo it.
       if (
         generation === vramBudgetWriteGeneration &&
         stagedVramBudgetFraction === null

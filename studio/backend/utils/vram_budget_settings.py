@@ -37,9 +37,8 @@ VRAM_FRACTION_MIN = 0.80
 VRAM_FRACTION_MAX = 1.00
 VRAM_FRACTION_DEFAULT = 0.97
 
-# The slider steps in tenths of a percent, so 0.975 is a legal budget. Values are
-# quantised to that grid, which keeps a stored fraction exactly representable as
-# the percent the UI shows and stops float noise accumulating over a round trip.
+# The slider steps in tenths, so 0.975 is legal. Quantising to that grid keeps a
+# stored fraction exactly representable as the percent shown.
 VRAM_FRACTION_DECIMALS = 3
 
 # Read on the load path, so memo briefly to spare SQLite, as model_memory_settings.

@@ -417,9 +417,8 @@ class TestPreLaunchWindow:
         return "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
 
     def test_the_pending_value_is_armed_before_the_duplicate_check(self):
-        # On an inactive backend, a save landing between the capture and the arming
-        # saw no pending value and no live process, so it was told no reload was
-        # needed while the load went on to launch against the captured fraction.
+        # On an inactive backend a save landing in that gap saw no pending value and
+        # no live process, so it was told no reload was needed.
         compact = self._compact()
         armed = compact.index("self._vram_fraction_pending=_vram_frac")
         dedupe = compact.index("ifself.adopt_load_intent_if_matched(intent,")
@@ -503,10 +502,9 @@ class TestFloorReserve:
 
     @pytest.mark.parametrize("total", [4_096, 8_192, 16_384, 24_576, 81_920])
     def test_raising_the_budget_never_hands_back_less(self, total):
-        # A flat 512 MiB floor made the budget non-monotonic under about 17 GiB,
-        # where 3% is already less than that: an 8 GiB card offered 7946 MiB at
-        # 0.97 and only 7680 at 0.971, so nudging the slider up cost context while
-        # the control promised the opposite.
+        # A flat floor was non-monotonic under ~17 GiB, where 3% is already less
+        # than 512 MiB: an 8 GiB card offered 7946 MiB at 0.97 and 7680 at 0.971,
+        # so nudging the slider up cost context.
         usable = [self._usable(total, total, frac) for frac in (0.80, 0.90, 0.97, 0.971, 0.99, 1.0)]
         assert usable == sorted(usable), usable
 
@@ -518,9 +516,8 @@ class TestFloorReserve:
             assert floor <= lc._VRAM_FLOOR_RESERVE_MIB
 
     def test_a_card_with_no_reported_total_still_keeps_a_margin(self):
-        # MIG/vGPU and the two-column probe report free with no total. The free
-        # reading is the only scale there, and it agrees with the known-total form
-        # at the default.
+        # MIG/vGPU and the two-column probe report free with no total, so the free
+        # reading is the only scale; it agrees with the known-total form at 0.97.
         import core.inference.llama_cpp as lc
         assert self._usable(24_576, 0, 1.0) == pytest.approx(24_576 - lc._VRAM_FLOOR_RESERVE_MIB)
         assert self._usable(24_576, 0, lc._CTX_FIT_VRAM_FRACTION) == pytest.approx(
@@ -534,9 +531,8 @@ class TestFloorReserve:
         assert self._usable(24_576, 24_576, 1.0) == pytest.approx(
             24_576 - lc._VRAM_FLOOR_RESERVE_MIB
         )
-        # A card too small for the full floor keeps the default's own reserve
-        # instead, the most that can be left without taking context away from
-        # someone who raised the slider.
+        # A card too small for the full floor keeps the default's own reserve, the
+        # most that can be left without costing context to someone raising it.
         assert self._usable(8_192, 8_192, 1.0) == pytest.approx(8_192 * lc._CTX_FIT_VRAM_FRACTION)
 
     @pytest.mark.parametrize("total", [4_096, 8_192, 16_384, 24_576, 81_920])
@@ -582,10 +578,9 @@ class TestFloorReserve:
 
 class TestRetriesAndDedup:
     def test_a_nonterminal_retry_keeps_the_pending_value(self):
-        # The flash-attn-off and drafterless retries spawn a replacement child
-        # after the first attempt fails. Releasing the pending value at the first
-        # spawn left that window answered from the previous child's marker; the
-        # load scope releases it on every exit, so nothing has to here.
+        # The flash-attn-off and drafterless retries spawn a replacement child, so
+        # releasing at the first spawn left that window answered from the previous
+        # child's marker. The load scope releases it on every exit.
         import inspect
 
         import core.inference.llama_cpp as lc

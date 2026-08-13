@@ -26,8 +26,8 @@ const {
 );
 
 test("percent and fraction round-trip exactly across the whole range", () => {
-  // Every stop the slider can land on, tenths included: a value that does not
-  // survive the trip reads as "changed" and re-saves itself on every remount.
+  // Every stop the slider can land on: a value that does not survive the trip
+  // reads as "changed" and re-saves itself on every remount.
   const steps = Math.round(
     (VRAM_BUDGET_PERCENT_MAX - VRAM_BUDGET_PERCENT_MIN) /
       VRAM_BUDGET_PERCENT_STEP,
@@ -257,8 +257,8 @@ test("a read waits behind an open write", () => {
 
 test("the budget reads as a percentage and steps in tenths", () => {
   const row = vramBudgetRowSource();
-  // Without the suffix the row is a bare number next to controls measured in
-  // layers and tokens, and 97 reads as neither.
+  // Without the suffix, 97 sits between controls measured in layers and tokens
+  // and reads as neither.
   assert.match(row, /displayValue=\{`\$\{percent\}%`\}/);
   assert.match(row, /step=\{VRAM_BUDGET_PERCENT_STEP\}/);
   // The shared slider defaults to whole steps, so the other callers are untouched.
@@ -276,9 +276,8 @@ test("a failed save is re-staged, but never over a newer edit", () => {
     "utf8",
   );
   // The flush clears the staged value as it sends, so without putting it back the
-  // control shows a fraction the server never took and the next Run has nothing to
-  // retry. It goes back only when it is still the newest intent: a later edit may
-  // already be staged, or already sent past this one on the chain.
+  // control shows a fraction the server never took. It goes back only while it is
+  // still the newest intent.
   const update = client.slice(
     client.indexOf("export function updateVramBudgetSettings"),
   );

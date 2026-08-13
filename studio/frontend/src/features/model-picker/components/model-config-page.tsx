@@ -435,8 +435,8 @@ function VramBudgetRow() {
       flushVramBudgetSave()
         ?.then(setSettings)
         .catch((error: unknown) => {
-          // The client re-stages the failed fraction itself, where the write
-          // generation says whether it is still the newest intent.
+          // The client re-stages it, where the write generation can say whether
+          // it is still the newest intent.
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
           );

@@ -58,8 +58,7 @@ export const N_PARALLEL_MAX = 64;
 export const VRAM_BUDGET_PERCENT_MIN = 80;
 export const VRAM_BUDGET_PERCENT_MAX = 100;
 export const VRAM_BUDGET_PERCENT_DEFAULT = 97;
-// Tenths of a percent: on a 24 GB card one whole percent is about 245 MiB of
-// context, a coarser grid than the setting is worth. Mirrors
+// Tenths: a whole percent is ~245 MiB of context on a 24 GB card. Mirrors
 // VRAM_FRACTION_DECIMALS = 3 in vram_budget_settings.py.
 export const VRAM_BUDGET_PERCENT_STEP = 0.1;
 

@@ -10271,12 +10271,11 @@ class LlamaCppBackend:
                     return None
                 return _vram_frac
 
-            # Armed here, ahead of the duplicate check, and not merely cleared: on an
-            # inactive backend a save landing between the capture and the arming saw
-            # no pending value and no live process, and was told no reload was
-            # needed, while this load went on to launch a child against the fraction
-            # captured above. The load scope hands it back on every exit, including
-            # the fast path just below.
+            # Armed before the duplicate check, not merely cleared: on an inactive
+            # backend a save landing in that gap saw no pending value and no live
+            # process, so it was told no reload was needed while this load went on to
+            # launch against the captured fraction. The load scope hands it back on
+            # every exit, the fast path below included.
             self._vram_fraction_pending = _vram_frac
             # _vram_fraction_launched is committed at the launch site instead: the
             # duplicate-load fast path, a cancellation and every failed preflight
@@ -10304,10 +10303,9 @@ class LlamaCppBackend:
                     return False
                 return True
 
-            # Still armed from the capture above, and stays that way through the
-            # download and planning, which can take minutes. Placement is undecided
-            # until the spawn site narrows it: a needless reload prompt beats sizing
-            # a child against a budget the user has already replaced.
+            # Stays armed through the download and planning, which can take minutes.
+            # Placement is undecided until the spawn site narrows it: a needless
+            # reload prompt beats sizing a child against a replaced budget.
             self._cancel_event.clear()
             if _load_cancelled():
                 logger.info("Load cancelled before GGUF resolution")
@@ -10977,9 +10975,8 @@ class LlamaCppBackend:
                     _detected_gpus = list(gpus)
 
                     def _gpu_usable(g, frac = _vram_frac):
-                        # Per-GPU usable budget for ranking. Callers pass the ACTIVE
-                        # fraction so the ranking matches the budget the fit then
-                        # tests (else mixed totals mis-order).
+                        # Callers pass the ACTIVE fraction so the ranking matches the
+                        # budget the fit then tests, else mixed totals mis-order.
                         idx, free = g
                         return _vram_usable_mib(free, total_by_idx.get(idx, 0), frac)
 
