@@ -4304,10 +4304,8 @@ function Get-UvHostArch {
 # exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
 # the call site are unchanged.
 function Test-SetupUvExecutable {
-    # Can this specific file run here at all, regardless of the version it reports? Start-Process
-    # rather than the call operator so the wait has a ceiling and stdin is not this console's: a
-    # binary stalled by endpoint protection must not hold an unattended setup open. Mirrors
-    # Test-UvExecutable in install.ps1.
+    # Mirrors Test-UvExecutable in install.ps1: can this file run here at all? Start-Process, so
+    # the wait has a ceiling and stdin is not this console's.
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
     $outFile = [System.IO.Path]::GetTempFileName()
@@ -4374,9 +4372,8 @@ function Install-UvFromPinnedRelease {
     $zip  = Join-Path $work $asset
     try {
         [System.IO.Directory]::CreateDirectory($work) | Out-Null
-        # The digest is checked per mirror, as install.ps1 does. A proxy answering 200 with its
-        # own body is a successful download by every measure Invoke-WebRequest has, and checking
-        # afterwards would spend the one attempt on it and never reach the second mirror.
+        # Digest per mirror, as install.ps1 does: a proxy answering 200 with its own body is a
+        # successful download by every measure Invoke-WebRequest has.
         $downloaded = $false
         foreach ($base in $uvBase) {
             Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
@@ -4406,18 +4403,16 @@ function Install-UvFromPinnedRelease {
             Write-Output "uv.exe was not present in $asset."
             return $false
         }
-        # Run it where it landed, before anything at the destination is touched. A host can have
-        # a working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
-        # copying first would destroy the incumbent and leave the user with neither.
+        # Run it where it landed, before the destination is touched: a host can have a working
+        # older uv while a policy refuses this one, and copying first leaves it with neither.
         if (-not (Test-SetupUvExecutable -Path $stagedUv)) {
             Write-Output "the downloaded uv $UvPinnedVersion could not run on this machine."
             return $false
         }
 
-        # Windows has no atomic replace for a file that may be open, so the incumbent is copied
-        # aside and restored if the published copy turns out not to run. uvw.exe is not probed:
-        # it is the windowless launcher with no console to answer on, and it comes from the same
-        # verified archive as the uv.exe that just did.
+        # No atomic replace on Windows for a file that may be open, so the incumbent is copied
+        # aside and restored if the published copy will not run. uvw.exe is the windowless
+        # launcher, with no console to answer a probe on.
         $backups = @{}
         $published = @()
         $haveUv = $true
@@ -4435,11 +4430,8 @@ function Install-UvFromPinnedRelease {
                     continue
                 }
             }
-            # -ErrorAction Stop inside a try, not a bare call: under Install-UnslothStudio's
-            # Stop preference this throws past the rollback below and leaves a mismatched
-            # set plus the .unsloth-old copies, and under setup.ps1's Continue preference it
-            # silently keeps a stale companion. A locked or ACL-denied destination is the
-            # case that reaches here, and it has to unwind like any other failure.
+            # -ErrorAction Stop inside a try: bare, the Continue preference here would keep a
+            # stale companion and still report success.
             try {
                 Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
             } catch {
@@ -4469,11 +4461,9 @@ function Install-UvFromPinnedRelease {
                     try {
                         Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction Stop
                     } catch {
-                        # The restore failed for the same two reasons the replace was risky:
-                        # the incumbent is open, or the ACL denies the write. Every other
-                        # failure in this block leaves the host with what it started with, and
-                        # deleting this backup below would make it the one that does not. Keep
-                        # it and say where it is.
+                        # The restore fails for the same two reasons the replace was risky:
+                        # an open incumbent, or a denied ACL. Keep the backup and name it rather
+                        # than deleting the only working copy below.
                         $keptPath = $backups[$dst]
                         $backups.Remove($dst)
                         Write-Output "could not restore $dst; the previous copy is kept at $keptPath."

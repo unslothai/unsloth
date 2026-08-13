@@ -1550,8 +1550,8 @@ _setup_uv_sha256() {
     fi
 }
 
-# Bounded liveness probe for a freshly downloaded binary. No stdin, so a build that decides
-# to prompt reads EOF, and a hard ceiling where `timeout` exists (stock macOS has none).
+# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
+# `timeout` exists (stock macOS has none).
 _setup_uv_probe_exec() {
     if command -v timeout >/dev/null 2>&1; then
         timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
@@ -1560,11 +1560,10 @@ _setup_uv_probe_exec() {
     fi
 }
 
-# An interrupted setup must not leave the pinned path's temporaries behind: the work directory
-# holds an unpacked ~40 MB archive and the staging file sits inside a directory that is on PATH.
-# The function's own cleanup only runs when it returns normally, and no trap is active in this
-# part of the script (the gitignore EXIT trap is cleared well above), so the pinned install owns
-# these four for its duration and hands them back on the way out.
+# The function's own cleanup only runs when it returns, so an interrupt left the unpacked
+# archive behind plus a staging file inside a directory on PATH. No trap is active here (the
+# gitignore EXIT trap is cleared well above), so the pinned install owns these four for its
+# duration and hands them back on the way out.
 _setup_uv_cleanup_temporaries() {
     [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
     [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
@@ -1625,17 +1624,15 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
         tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
         mkdir -p "$_siup_dest" 2>/dev/null || break
-        # uv first, and its failure aborts the placement: the two binaries ship as a set, and
-        # a pinned uvx published next to the host's older uv is a pair we never tested.
+        # uv first, and either half failing aborts the placement: the two ship as a set.
         for _siup_exe in uv uvx; do
             _siup_ok=0
             while : ; do
                 _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
                 if [ -z "$_siup_src" ]; then break; fi
-                # Stage then rename, as install.sh does: cp onto a symlinked destination writes
-                # through the link and would rewrite whatever it points at. The staging name is
-                # per-process, so two installers racing on one destination cannot publish each
-                # other's half-written file.
+                # Stage then rename, as install.sh does: cp writes through a symlinked
+                # destination, and a per-process staging name keeps two racing installers from
+                # publishing each other's half-written file.
                 _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || break
                 _SIUP_STAGE="$_siup_stage"
                 if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then
@@ -1647,9 +1644,8 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                 # these 0755, and a umask of 077 would otherwise leave uv unusable
                 # for every other account on a shared machine.
                 chmod 0755 "$_siup_stage" 2>/dev/null || true
-                # Validate before publishing, as install.sh does: the rename destroys whatever is
-                # at the destination, so a binary that cannot run here must never replace one that
-                # could. No stdin and a ceiling where `timeout` exists, so the probe cannot hang.
+                # Validate before publishing: the rename destroys the incumbent, so a binary
+                # that cannot run here must never replace one that could.
                 if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then
                     rm -f "$_siup_stage" 2>/dev/null || true
                     break
@@ -1662,9 +1658,8 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                 break
             done
             if [ "$_siup_ok" != "1" ]; then
-                # Either half failing fails the placement, as install.sh does: a uv published
-                # next to a stale or missing uvx is a pair we never built, and reporting
-                # success would skip the fallback that installs both.
+                # Either half failing fails the placement: reporting success on a mismatched
+                # pair would skip the fallback that installs both.
                 _siup_rc=1
                 break
             fi

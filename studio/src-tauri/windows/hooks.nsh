@@ -1,12 +1,9 @@
 ; Unsloth NSIS installer hooks
 
 !macro NSIS_HOOK_PREINSTALL
-  ; Windows bundles used to carry both installers; they now carry only install.ps1.
-  ; The install section writes the current resource manifest and deletes nothing, and
-  ; the uninstaller deletes only what is in that manifest, so an in-place upgrade from
-  ; a pre-split release would leave install.sh behind forever: a Windows machine
-  ; keeping a Linux shell script it can never run, and a non-recursive RMDir "$INSTDIR"
-  ; that then fails at uninstall. Delete it here, where every upgrade passes.
+  ; Windows bundles carry only install.ps1 now. NSIS writes the current resource manifest
+  ; and deletes nothing, so an in-place upgrade from a release that shipped both would keep
+  ; install.sh forever and make the non-recursive RMDir "$INSTDIR" fail at uninstall.
   Delete "$INSTDIR\install.sh"
 !macroend
 

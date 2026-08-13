@@ -2517,15 +2517,13 @@ exit 0
     }
 
     function Test-UvExecutable {
-        # Can this specific file run here at all, regardless of which version it reports?
-        # Start-Process rather than the call operator so the wait has a ceiling and stdin is
-        # not this console's: a binary that endpoint protection stalls, or one that decides to
-        # prompt, must not hold an unattended install open. `uv --version` answers in
-        # milliseconds, so only a binary we would refuse anyway ever reaches the timeout.
+        # Can this file run here at all, whatever version it reports? Start-Process, not the
+        # call operator, so the wait has a ceiling and stdin is not this console's: a binary
+        # stalled by endpoint protection, or one that prompts, must not hold an unattended
+        # install open.
         param([string]$Path)
         if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
-        # Redirected, not swallowed by the console: uv's version line is not part of this
-        # installer's output, and the files are removed either way.
+        # Redirected: uv's version line is not part of this installer's output.
         $outFile = [System.IO.Path]::GetTempFileName()
         $errFile = [System.IO.Path]::GetTempFileName()
         try {
@@ -2603,10 +2601,9 @@ exit 0
         $zip  = Join-Path $work $asset
         try {
             [System.IO.Directory]::CreateDirectory($work) | Out-Null
-            # The digest is checked per mirror, not once after the loop. A captive portal or a
-            # proxy answering 200 with its own body is a successful download by every measure
-            # Invoke-WebRequest has, and checking afterwards would spend the one attempt on it
-            # and never reach the second mirror that would have served the real archive.
+            # Digest per mirror, not once after the loop: a proxy answering 200 with its own
+            # body is a successful download by every measure Invoke-WebRequest has, and checking
+            # afterwards spends the only attempt on it.
             $downloaded = $false
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
@@ -2637,21 +2634,18 @@ exit 0
                 substep "uv.exe was not present in $asset." "Yellow"
                 return $false
             }
-            # Run it where it landed, before anything at the destination is touched. A host can
-            # have a working older uv while AppLocker, WDAC or endpoint protection refuses this
-            # one, and copying first would destroy the incumbent and leave the user with neither.
-            # Staging under the destination instead would answer a policy that is scoped by path,
-            # but it also means writing into a directory that is on PATH, so the probe stays here
-            # and the incumbent is preserved and restored below for the path-scoped case.
+            # Run it where it landed, before the destination is touched. A host can have a
+            # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
+            # copying first would leave the user with neither. A policy scoped by path is covered
+            # by the second probe and the restore below.
             if (-not (Test-UvExecutable -Path $stagedUv)) {
                 substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
             }
 
-            # Windows has no atomic replace for a file that may be open, so the incumbent is
-            # copied aside and put back if the published copy turns out not to run. uvw.exe is
-            # not probed: it is the windowless launcher, it has no console to answer on, and it
-            # ships from the same verified archive as the uv.exe that just did.
+            # No atomic replace on Windows for a file that may be open, so the incumbent is
+            # copied aside and put back if the published copy will not run. uvw.exe is not
+            # probed: it is the windowless launcher, with no console to answer on.
             $backups = @{}
             $published = @()
             $ok = $true
@@ -2665,17 +2659,14 @@ exit 0
                         Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
                         $backups[$dst] = $backup
                     } catch {
-                        # No backup means no safe replace: leave the incumbent alone rather than
-                        # overwrite something we could not first put a copy of somewhere.
+                        # No backup, no safe replace: leave the incumbent alone.
                         if ($exe -eq "uv.exe") { $ok = $false; break }
                         continue
                     }
                 }
-                # -ErrorAction Stop inside a try, not a bare call: under Install-UnslothStudio's
-                # Stop preference this throws past the rollback below and leaves a mismatched
-                # set plus the .unsloth-old copies, and under setup.ps1's Continue preference it
-                # silently keeps a stale companion. A locked or ACL-denied destination is the
-                # case that reaches here, and it has to unwind like any other failure.
+                # -ErrorAction Stop inside a try: a bare call throws past the rollback under the
+                # Stop preference, and silently keeps a stale companion under Continue. A locked
+                # or ACL-denied destination has to unwind like any other failure.
                 try {
                     Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
                 } catch {
@@ -2706,11 +2697,10 @@ exit 0
                         try {
                             Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction Stop
                         } catch {
-                            # The restore failed for the same two reasons the replace was risky:
-                            # the incumbent is open, or the ACL denies the write. Every other
-                            # failure in this block leaves the host with what it started with, and
-                            # deleting this backup below would make it the one that does not. Keep
-                            # it and say where it is.
+                            # The restore fails for the same two reasons the replace was risky:
+                            # an open incumbent, or a denied ACL. Every other failure here leaves
+                            # the host with what it started with, so keep the backup and name it
+                            # rather than deleting the only working copy below.
                             $keptPath = $backups[$dst]
                             $backups.Remove($dst)
                             substep "could not restore $dst; the previous copy is kept at $keptPath." "Yellow"
