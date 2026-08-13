@@ -16,6 +16,7 @@ import ts from "typescript";
 
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 import {
+  IMAGE_CATALOG,
   VIDEO_CATALOG,
   curatedCapabilitiesFor,
   curatedTotalParamsFor,
@@ -91,11 +92,33 @@ test("a curated audio family reports audio the repo name never mentions", () => 
   assert.equal(curatedCapabilitiesFor(LTX_GGUF, VIDEO_CATALOG)?.audio, true);
 });
 
-test("curated capabilities claim nothing they were not given", () => {
+test("curated capabilities claim nothing they were not given, beyond the scope", () => {
   const caps = curatedCapabilitiesFor(H3_GGUF, VIDEO_CATALOG);
-  assert.deepEqual(caps, { vision: false, reasoning: false, audio: true });
-  // A group that declares none returns undefined, so the row falls back to name detection.
-  assert.equal(curatedCapabilitiesFor(WAN_BF16, VIDEO_CATALOG), undefined);
+  // vision and reasoning stay false: nothing declared them, and nothing may infer them.
+  assert.deepEqual(caps, {
+    vision: false,
+    reasoning: false,
+    audio: true,
+    imageGen: false,
+    // Not a declaration but not a guess either: the group sits in the video catalog.
+    videoGen: true,
+  });
+  // A group declaring no capabilities still answers, because its scope alone says what it makes.
+  // Undefined is reserved for an id the catalog does not know.
+  assert.deepEqual(curatedCapabilitiesFor(WAN_BF16, VIDEO_CATALOG), {
+    vision: false,
+    reasoning: false,
+    audio: false,
+    imageGen: false,
+    videoGen: true,
+  });
+  assert.equal(curatedCapabilitiesFor("someone/not-curated", VIDEO_CATALOG), undefined);
+});
+
+test("an image group reports image generation, not video", () => {
+  const caps = curatedCapabilitiesFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG);
+  assert.equal(caps?.imageGen, true);
+  assert.equal(caps?.videoGen, false);
 });
 
 test("every video group whose description says audio declares the capability", () => {
@@ -192,6 +215,102 @@ test("row meta falls back to the curated seeds", () => {
   );
   // Listing first, and the first entry per id wins.
   assert.match(text, /if\s*\(map\.has\(r\.id\)\)\s*continue;/);
+});
+
+test("a family name is not read out of a longer word", () => {
+  // The fallbacks match model FAMILIES, and a stem runs into its own version digits, so what
+  // must not follow is more word. Every one of these is a real repo naming shape.
+  for (const id of [
+    "org/fluxion-7b",
+    "org/pixartful-7b",
+    "org/ltxtra-2b",
+    "org/mochimo-7b",
+    "nunchaku/SVDQuant-int4",
+  ]) {
+    const caps = detectCapabilities({ id });
+    assert.equal(caps.imageGen, false, `${id} read as an image generator`);
+    assert.equal(caps.videoGen, false, `${id} read as a video generator`);
+  }
+  // ...while the versions themselves still resolve, including the family whose name ends in a
+  // letter of its own.
+  assert.equal(detectCapabilities({ id: "org/flux1-dev-fp8" }).imageGen, true);
+  assert.equal(detectCapabilities({ id: "stabilityai/sd3.5-large" }).imageGen, true);
+  assert.equal(detectCapabilities({ id: "THUDM/CogVideoX-5b" }).videoGen, true);
+  assert.equal(detectCapabilities({ id: "stabilityai/svd-xt" }).videoGen, true);
+});
+
+test("every pipeline tag the Video picker lists reads as video generation", () => {
+  // Same contract as the Images one below, and the reason image-text-to-video had to reach
+  // VIDEO_GEN_TASKS: a row the glyph calls video must route to the Video page, not to a chat load.
+  const tags = declarationText("VIDEO_GEN_TASKS").match(/"([^"]+)"/g) ?? [];
+  assert.ok(tags.length > 0, "no tags parsed out of VIDEO_GEN_TASKS");
+  for (const quoted of tags) {
+    const tag = quoted.slice(1, -1);
+    assert.equal(
+      detectCapabilities({ id: "someone/unfamiliar-name", pipelineTag: tag }).videoGen,
+      true,
+      `${tag} is listed by the Video picker but does not read as video generation`,
+    );
+  }
+});
+
+test("every pipeline tag the Images picker lists reads as image generation", () => {
+  // A row the picker lists has to draw the glyph whatever its repo is called, so the tags
+  // detectCapabilities knows cannot be a subset of the ones the picker filters on.
+  const tags = declarationText("IMAGE_GEN_TASKS").match(/"([^"]+)"/g) ?? [];
+  assert.ok(tags.length > 0, "no tags parsed out of IMAGE_GEN_TASKS");
+  for (const quoted of tags) {
+    const tag = quoted.slice(1, -1);
+    assert.equal(
+      detectCapabilities({ id: "someone/unfamiliar-name", pipelineTag: tag }).imageGen,
+      true,
+      `${tag} is listed by the Images picker but does not read as image generation`,
+    );
+  }
+});
+
+// Both lists that badge a Recommended row: the unfiltered one and the searched one. A model
+// must not change what it says about the device just because it was searched for.
+for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
+  test(`${declaration} asks the catalog about a curated pipeline`, () => {
+    const text = declarationText(declaration);
+    // The catalog knows the resident size and any measured offload tier. estimateLoadingVram
+    // assumes a language model it can 4-bit quantize, and reads the 30 GB Wan 2.2 TI2V
+    // pipeline as 5.9 GB, so it must not be what answers for these rows.
+    const curatedAt = text.indexOf("catalogFit(");
+    const estimatorAt = text.indexOf("estimateLoadingVram");
+    assert.ok(curatedAt >= 0, `${declaration} ignores the curated fit`);
+    assert.ok(estimatorAt >= 0, `${declaration} no longer estimates VRAM at all`);
+    assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs first");
+    // A task load puts the whole pipeline on one device, and torch is not the GGUF backend's
+    // inventory, so the budget is the load-scoped one the list's own fit filter uses.
+    assert.match(text, /artifactBudget\(loadScopedGpu\(gpu, Boolean\(task\)\)\)/);
+  });
+}
+
+test("every list that judges a row against the device asks the same helper", () => {
+  // One verdict, four readers: the unfiltered Recommended list, its device filter, the two
+  // search lists, and the badge. Splitting them is how a row ends up kept by a filter that
+  // calls it a fit and painted with the OOM badge at the same time.
+  assert.match(
+    declarationText("catalogFit"),
+    /curatedArtifactFitsDevice\(id, catalog, budget\)/,
+  );
+  for (const declaration of ["recommendedRows", "searchRowFits"]) {
+    assert.match(
+      declarationText(declaration),
+      /catalogFit\(/,
+      `${declaration} judges rows without the catalog's verdict`,
+    );
+  }
+});
+
+test("GGUF rows keep the inference backend's budget", () => {
+  // They load through llama.cpp, so its inventory is the right one for them.
+  assert.match(
+    declarationText("recommendedMeta"),
+    /exceedsSize\(sizeBytes, inferenceGpu\)/,
+  );
 });
 
 test("capabilities fall back to the curated catalog", () => {
