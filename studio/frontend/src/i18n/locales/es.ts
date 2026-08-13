@@ -475,8 +475,6 @@ export const es = {
         runtimeFailed:"El acceso remoto se detuvo inesperadamente. Vuelve a intentarlo o revisa los registros del servidor.",
         startAction:"Iniciar",
         stopAction:"Detener",
-        actionStarting:"Iniciando",
-        actionStopping:"Deteniendo",
         autoStartLabel:"Iniciar automáticamente",
         autoStartTemporary:"Crea una URL temporal nueva al iniciar Unsloth. Desconectar ahora no desactiva esta opción.",
         autoStartCustom:"Conecta este nombre personalizado al iniciar Unsloth. Desconectar ahora no desactiva esta opción.",

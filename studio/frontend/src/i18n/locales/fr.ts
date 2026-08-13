@@ -477,8 +477,6 @@ export const fr = {
         runtimeFailed:"L’accès à distance s’est arrêté de façon inattendue. Réessayez ou consultez les journaux du serveur.",
         startAction:"Démarrer",
         stopAction:"Arrêter",
-        actionStarting:"Démarrage",
-        actionStopping:"Arrêt",
         autoStartLabel:"Démarrer automatiquement",
         autoStartTemporary:"Crée une nouvelle URL temporaire au démarrage d'Unsloth. La déconnexion ne désactive pas ce réglage.",
         autoStartCustom:"Connecte ce nom d'hôte personnalisé au démarrage d'Unsloth. La déconnexion ne désactive pas ce réglage.",

@@ -35,16 +35,14 @@ import {
   updateRemoteAccessMethod,
 } from "@/features/settings/api/remote-access";
 import {
-  type RemoteAccessBlockMessageId,
+  type RemoteAccessRequestMessageId,
   type RemoteAccessOperation,
   type RemoteAccessProgressStepId,
   type RemoteAccessRequestAxis,
   type RemoteAccessStatus,
-  openRemoteAccessLoginWindow,
   remoteAccessAuthorizationAction,
   remoteAccessAuthorizationShouldOpen,
   remoteAccessAuthorizationView,
-  remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
   remoteAccessCustomActionsDisabled,
@@ -80,8 +78,8 @@ import {
   QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SegmentedControl } from "@/components/segmented-control";
 import { Loader2Icon } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
@@ -94,7 +92,10 @@ const CLOUDFLARE_TUNNELS_URL =
 const CLOUDFLARE_DNS_URL =
   "https://dash.cloudflare.com/?to=/:account/:zone/dns/records";
 
-const BLOCK_MESSAGE_KEYS: Record<RemoteAccessBlockMessageId, TranslationKey> = {
+const MESSAGE_KEYS: Record<RemoteAccessRequestMessageId, TranslationKey> = {
+  invalidHostname: "settings.general.remoteAccess.errorInvalidHostname",
+  busy: "settings.general.remoteAccess.errorBusy",
+  requestFailed: "settings.general.remoteAccess.requestFailed",
   serverStarting: "settings.general.remoteAccess.blockServerStarting",
   passwordDesktop: "settings.general.remoteAccess.blockPasswordDesktop",
   passwordWeb: "settings.general.remoteAccess.blockPasswordWeb",
@@ -111,8 +112,38 @@ function localizedBlockMessage(
   t: Translate,
 ): string | null {
   const messageId = remoteAccessBlockMessageId(reason, isDesktop);
-  return messageId ? t(BLOCK_MESSAGE_KEYS[messageId]) : null;
+  return messageId ? t(MESSAGE_KEYS[messageId]) : null;
 }
+
+// Codes whose message is a plain lookup. The three that interpolate a value,
+// and the teardown pre-check, stay in the function below.
+const CUSTOM_ERROR_KEYS: Record<string, TranslationKey> = {
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  certificate_state_busy: "settings.general.remoteAccess.errorBusy",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  connector_in_use: "settings.general.remoteAccess.errorBusy",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  identity_exists: "settings.general.remoteAccess.errorIdentityExists",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  cloudflared_unreachable: "settings.general.remoteAccess.errorUnavailable",
+  cancelled: "settings.general.remoteAccess.errorCancelled",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  login_timed_out: "settings.general.remoteAccess.errorLoginTimeout",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  login_failed: "settings.general.remoteAccess.errorLoginFailed",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  invalid_hostname: "settings.general.remoteAccess.errorInvalidHostname",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  setup_record_unreadable: "settings.general.remoteAccess.errorSetupFailed",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  tunnel_create_failed: "settings.general.remoteAccess.errorSetupFailed",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  route_failed: "settings.general.remoteAccess.errorSetupFailed",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  connector_stop_failed: "settings.general.remoteAccess.errorTeardownFailed",
+  // biome-ignore lint/style/useNamingConvention: backend error codes
+  teardown_failed: "settings.general.remoteAccess.errorTeardownFailed",
+};
 
 function localizedCustomError(
   status: RemoteAccessStatus,
@@ -125,49 +156,29 @@ function localizedCustomError(
   if (teardownMessageId === "teardownFailed") {
     return t("settings.general.remoteAccess.errorTeardownFailed");
   }
-  switch (status.customError) {
-    case null:
-      return null;
-    case "dns_conflict": {
-      const hostname = remoteAccessDnsConflictHostname(status);
-      return hostname
-        ? t("settings.general.remoteAccess.dnsConflict", { hostname })
-        : t("settings.general.remoteAccess.dnsConflictUnknown");
-    }
-    case "invalid_hostname":
-      return t("settings.general.remoteAccess.errorInvalidHostname");
-    case "hostname_not_authorized":
-      return t("settings.general.remoteAccess.errorWrongDomain", {
-        hostname: status.customErrorDetail ?? status.customHostname ?? "",
-      });
-    case "certificate_exists": {
-      return t("settings.general.remoteAccess.errorCertificateExists", {
-        path: status.customErrorDetail ?? "~/.cloudflared/cert.pem",
-      });
-    }
-    case "certificate_state_busy":
-    case "connector_in_use":
-      return t("settings.general.remoteAccess.errorBusy");
-    case "identity_exists":
-      return t("settings.general.remoteAccess.errorIdentityExists");
-    case "cloudflared_unreachable":
-      return t("settings.general.remoteAccess.errorUnavailable");
-    case "cancelled":
-      return t("settings.general.remoteAccess.errorCancelled");
-    case "login_timed_out":
-      return t("settings.general.remoteAccess.errorLoginTimeout");
-    case "login_failed":
-      return t("settings.general.remoteAccess.errorLoginFailed");
-    case "setup_record_unreadable":
-    case "tunnel_create_failed":
-    case "route_failed":
-      return t("settings.general.remoteAccess.errorSetupFailed");
-    case "connector_stop_failed":
-    case "teardown_failed":
-      return t("settings.general.remoteAccess.errorTeardownFailed");
-    default:
-      return t("settings.general.remoteAccess.errorUnknown");
+  const code = status.customError;
+  if (code === null) {
+    return null;
   }
+  if (code === "dns_conflict") {
+    const hostname = remoteAccessDnsConflictHostname(status);
+    return hostname
+      ? t("settings.general.remoteAccess.dnsConflict", { hostname })
+      : t("settings.general.remoteAccess.dnsConflictUnknown");
+  }
+  if (code === "hostname_not_authorized") {
+    return t("settings.general.remoteAccess.errorWrongDomain", {
+      hostname: status.customErrorDetail ?? status.customHostname ?? "",
+    });
+  }
+  if (code === "certificate_exists") {
+    return t("settings.general.remoteAccess.errorCertificateExists", {
+      path: status.customErrorDetail ?? "~/.cloudflared/cert.pem",
+    });
+  }
+  return t(
+    CUSTOM_ERROR_KEYS[code] ?? "settings.general.remoteAccess.errorUnknown",
+  );
 }
 
 function localizedRuntimeError(
@@ -187,18 +198,7 @@ function localizedRuntimeError(
 
 function localizedRequestError(error: unknown, t: Translate): string {
   const code = error instanceof Error ? error.message : null;
-  const messageId = remoteAccessRequestMessageId(code, isTauri);
-  if (messageId in BLOCK_MESSAGE_KEYS) {
-    return t(BLOCK_MESSAGE_KEYS[messageId as RemoteAccessBlockMessageId]);
-  }
-  switch (messageId) {
-    case "invalidHostname":
-      return t("settings.general.remoteAccess.errorInvalidHostname");
-    case "busy":
-      return t("settings.general.remoteAccess.errorBusy");
-    default:
-      return t("settings.general.remoteAccess.requestFailed");
-  }
+  return t(MESSAGE_KEYS[remoteAccessRequestMessageId(code, isTauri)]);
 }
 
 const PROGRESS_MESSAGE_KEYS: Record<
@@ -502,51 +502,26 @@ function RemoteAccessMethodControl({
   onChange: (method: RemoteAccessStatus["method"]) => void;
 }) {
   const t = useT();
-  const reduced = useReducedMotion();
-  const options = [
-    {
-      value: "temporary" as const,
-      label: t("settings.general.remoteAccess.temporaryMethod"),
-    },
-    {
-      value: "custom" as const,
-      label: t("settings.general.remoteAccess.customMethod"),
-    },
-  ];
   return (
-    <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
-      {options.map((option) => {
-        const active = option.value === method;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange(option.value)}
-            aria-pressed={active}
-            disabled={disabled}
-            className={cn(
-              "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:opacity-50",
-              active
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {active ? (
-              <motion.span
-                layoutId="remote-access-method-pill"
-                className="hub-tab-toggle-pill absolute inset-0 rounded-full"
-                transition={
-                  reduced
-                    ? { duration: 0 }
-                    : { type: "spring", stiffness: 500, damping: 35, mass: 0.5 }
-                }
-              />
-            ) : null}
-            <span className="relative z-10">{option.label}</span>
-          </button>
-        );
-      })}
-    </div>
+    <SegmentedControl
+      value={method}
+      options={[
+        {
+          value: "temporary" as const,
+          label: t("settings.general.remoteAccess.temporaryMethod"),
+          disabled,
+        },
+        {
+          value: "custom" as const,
+          label: t("settings.general.remoteAccess.customMethod"),
+          disabled,
+        },
+      ]}
+      onValueChange={onChange}
+      ariaLabel={t("settings.general.remoteAccess.methodLabel")}
+      size="compact"
+      className="w-auto"
+    />
   );
 }
 
@@ -700,7 +675,7 @@ function CustomTunnelSetup({
       openAuthorizedTauriUrl(loginUrl);
       return;
     }
-    openRemoteAccessLoginWindow(loginUrl, window.open.bind(window));
+    openLink(loginUrl);
     openedLoginUrl.current = loginUrl;
   }, [authorizationGrant, confirmOpen, openAuthorizedTauriUrl, status]);
 
@@ -736,7 +711,7 @@ function CustomTunnelSetup({
       openAuthorizedTauriUrl(loginUrl);
       return;
     }
-    openRemoteAccessLoginWindow(loginUrl, window.open.bind(window));
+    openLink(loginUrl);
     openedLoginUrl.current = loginUrl;
   };
   const authorizationView = remoteAccessAuthorizationView(
@@ -1000,22 +975,6 @@ function CustomTunnelIdentity({
   );
 }
 
-function CustomTunnelMessages({ status }: { status: RemoteAccessStatus }) {
-  const t = useT();
-  return (
-    <>
-      {status.customError ? (
-        <div
-          className="mt-3 text-xs leading-snug text-destructive"
-          role="alert"
-        >
-          <p>{localizedCustomError(status, t)}</p>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
 function CustomTunnelPanel({
   status,
   hostname,
@@ -1073,7 +1032,11 @@ function CustomTunnelPanel({
           onTeardown={onTeardown}
         />
       ) : null}
-      {provisioning ? null : <CustomTunnelMessages status={status} />}
+      {provisioning || !status.customError ? null : (
+        <div className="mt-3 text-xs leading-snug text-destructive" role="alert">
+          <p>{localizedCustomError(status, t)}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1355,7 +1318,7 @@ export function RemoteAccessSection() {
         <SettingsRow
           label={t("settings.general.remoteAccess.autoStartLabel")}
           description={
-            remoteAccessAutoStartKind(status) === "custom"
+            remoteAccessPreferredKind(status) === "custom"
               ? t("settings.general.remoteAccess.autoStartCustom")
               : t("settings.general.remoteAccess.autoStartTemporary")
           }

@@ -449,8 +449,6 @@ export const it = {
         runtimeFailed:"L’accesso remoto si è interrotto in modo imprevisto. Riprova o controlla i log del server.",
         startAction:"Avvia",
         stopAction:"Interrompi",
-        actionStarting:"Avvio",
-        actionStopping:"Arresto",
         autoStartLabel:"Avvia automaticamente",
         autoStartTemporary:"Crea un nuovo URL temporaneo all'avvio di Unsloth. Disconnettersi ora non disattiva l'opzione.",
         autoStartCustom:"Connette questo nome host personalizzato all'avvio di Unsloth. Disconnettersi ora non disattiva l'opzione.",

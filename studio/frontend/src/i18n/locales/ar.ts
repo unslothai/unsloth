@@ -462,8 +462,6 @@ export const ar = {
         runtimeFailed:"توقف الوصول عن بُعد بشكل غير متوقع. أعد المحاولة أو راجع سجلات الخادم.",
         startAction:"بدء",
         stopAction:"إيقاف",
-        actionStarting:"جارٍ البدء",
-        actionStopping:"جارٍ الإيقاف",
         autoStartLabel:"البدء تلقائيًا",
         autoStartTemporary:"إنشاء رابط مؤقت جديد عند بدء Unsloth. قطع الاتصال الآن لا يعطل هذا الإعداد.",
         autoStartCustom:"الاتصال باسم المضيف المخصص عند بدء Unsloth. قطع الاتصال الآن لا يعطل هذا الإعداد.",

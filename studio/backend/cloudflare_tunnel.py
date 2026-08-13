@@ -278,7 +278,6 @@ def ensure_cloudflared() -> Optional[str]:
 
 
 def _wait_for_dns(host: str, deadline: float) -> Optional[bool]:
-    import json
     import urllib.request
 
     now = time.monotonic()
@@ -342,7 +341,6 @@ def _probe_edge(
 ) -> Optional[bool]:
     """Ask the edge for the marker as ``host``. None when the edge is unreachable."""
     import http.client
-    import json
     import socket
     import ssl
 
@@ -369,12 +367,10 @@ def _probe_edge(
 
 
 def _hostname_of(url: str) -> Optional[str]:
-    from urllib.parse import urlsplit
     return urlsplit(url).hostname
 
 
 def _connector_reports_ready(address: str, timeout: float) -> bool:
-    import json
     import urllib.request
 
     # Never proxy cloudflared's loopback readiness endpoint.
@@ -417,9 +413,7 @@ def _verify_through_edge(host: str, deadline: float) -> bool:
 
 
 def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
-    import json
     import urllib.request
-    from urllib.parse import urlsplit
 
     deadline = time.monotonic() + timeout
     host = urlsplit(url).hostname
@@ -871,6 +865,7 @@ def set_studio_tunnel_url_callback(callback: Optional[Callable[[Optional[str]], 
 
 def get_studio_tunnel_status() -> dict:
     with _active_lock:
+        dns = _tunnel_dns[1] if _tunnel_dns[0] == _tunnel_generation else "unknown"
         return {
             "state": _tunnel_state,
             "managed_by": _tunnel_owner,
@@ -883,7 +878,11 @@ def get_studio_tunnel_status() -> dict:
                 _active_tunnel and getattr(_active_tunnel, "ready", False)
             ),
             "tunnel_serving": _tunnel_state == "online",
-            "dns": _tunnel_dns[1] if _tunnel_dns[0] == _tunnel_generation else "unknown",
+            "dns": dns,
+            # Whether the URL can be handed to anyone yet. A custom hostname
+            # serves only once its record resolves, and every caller that
+            # offers the link was deciding that for itself.
+            "url_usable": _tunnel_kind != "custom" or dns == "resolved",
         }
 
 
@@ -1357,15 +1356,15 @@ def _unlink(path: Path, *, required: bool = False) -> None:
             path.unlink(missing_ok = True)
 
 
-def _load(path: Path) -> Optional[object]:
+def _read(name: str) -> Optional[object]:
     try:
-        return json.loads(path.read_text(encoding = "utf-8"))
+        return json.loads((_state_dir() / name).read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def _store(path: Path, payload: object) -> None:
-    _writable_dir(path.parent)
+def _write(name: str, payload: object) -> None:
+    path = _writable_dir(_state_dir()) / name
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(payload), encoding = "utf-8")
@@ -1375,27 +1374,8 @@ def _store(path: Path, payload: object) -> None:
         _unlink(tmp)
 
 
-def _read(name: str) -> Optional[object]:
-    return _load(_state_dir() / name)
-
-
-def _write(name: str, payload: object) -> None:
-    _store(_state_dir() / name, payload)
-
-
 def _discard(name: str, *, required: bool = False) -> None:
     _unlink(_state_dir() / name, required = required)
-
-
-def _digest(path: Path, *, required: bool = False) -> Optional[str]:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        if required:
-            raise
-        return None
 
 
 def _string_list(name: str) -> list:
@@ -1733,10 +1713,11 @@ def _spawn_login(binary: str, token: str):
 
 
 def _capture_certificate(record: dict) -> None:
-    digest = _digest(origin_cert_path())
-    if digest is not None:
-        record["cert_digest"] = digest
-        _write(_RECORD, record)
+    try:
+        record["cert_digest"] = hashlib.sha256(origin_cert_path().read_bytes()).hexdigest()
+    except OSError:
+        return
+    _write(_RECORD, record)
 
 
 def _run_login(
@@ -1762,9 +1743,7 @@ def _run_login(
     try:
         token = _new_token()
         proc = _spawn_login(binary, token)
-        with suppress(Exception):
-            from utils.process_lifetime import adopt_pid
-            adopt_pid(proc.pid)
+        _adopt_pid(proc.pid)
         record["login_pid"] = proc.pid
         record["login_token"] = token
         _write(_RECORD, record)
@@ -1782,9 +1761,7 @@ def _run_login(
         if proc is not None:
             if proc.poll() is None:
                 _terminate(proc)
-            with suppress(Exception):
-                from utils.process_lifetime import forget_pid
-                forget_pid(proc.pid)
+            _forget_pid(proc.pid)
             # Delete cert.pem only when its final digest proves this run created it.
             _capture_certificate(record)
             if reader is not None:

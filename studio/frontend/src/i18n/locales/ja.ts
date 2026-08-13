@@ -454,8 +454,6 @@ export const ja = {
         runtimeFailed:"リモートアクセスが予期せず停止しました。再試行するか、サーバーログを確認してください。",
         startAction:"開始",
         stopAction:"停止",
-        actionStarting:"起動中",
-        actionStopping:"停止中",
         autoStartLabel:"自動的に開始",
         autoStartTemporary:"Unsloth の起動時に新しい一時 URL を作成します。今切断してもこの設定はオフになりません。",
         autoStartCustom:"Unsloth の起動時にこのカスタムホスト名へ接続します。今切断してもこの設定はオフになりません。",

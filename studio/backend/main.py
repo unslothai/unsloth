@@ -1618,7 +1618,7 @@ def _offered_cloudflare_url(app_state):
         return None
     if tunnel.get("url") != url:
         return None
-    if tunnel.get("kind") == "custom" and tunnel.get("dns") != "resolved":
+    if not tunnel.get("url_usable", True):
         return None
     return url
 

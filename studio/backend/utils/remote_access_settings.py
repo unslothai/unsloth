@@ -133,10 +133,6 @@ def _drain_and_close_remote_access_stop_responses() -> None:
             _stop_response_condition.wait(min(quiet_deadline - now, deadline - now))
 
 
-def get_remote_access_auto_start() -> bool:
-    return get_remote_access_auto_start_kind() is not None
-
-
 def _auto_start_kind(stored: object) -> str | None:
     if stored is True:
         return "temporary"
@@ -347,7 +343,7 @@ def _custom_status() -> dict:
             else None
         ),
         "custom_tunnel_name": identity.get("tunnel_name") if identity else None,
-        "custom_runnable": identity_is_runnable(identity),
+        "custom_runnable": bool(identity) and identity_is_runnable(identity),
         "login_url": login_url if running else None,
         "custom_error": failure[0] if failure else None,
         "custom_error_detail": failure[1] if failure else None,
@@ -380,11 +376,7 @@ def remote_access_status(app_state) -> dict:
     # withheld until the hostname resolves, and online is what a caller reads as
     # "there is a URL". Reporting online with nothing to offer left the wait for
     # DNS with no state of its own; it is the last step of starting.
-    elif (
-        status["state"] == "online"
-        and status.get("kind") == "custom"
-        and status.get("dns") != "resolved"
-    ):
+    elif status["state"] == "online" and not status.get("url_usable", True):
         status.update(state = "starting")
 
     intent = getattr(app_state, "remote_access_intent", "disabled")
@@ -680,10 +672,52 @@ def _custom_operation_allowed(app_state) -> None:
             raise RuntimeError("custom_operation_in_progress")
 
 
-def provision_custom_remote_access(app_state, hostname: str) -> dict:
+def _start_custom_worker(
+    operation: str,
+    body,
+    *,
+    hostname: str | None = None,
+    cancel: threading.Event | None = None,
+    phase: str,
+    generic: tuple[str, str],
+    settled = lambda: False,
+) -> None:
     global _custom_worker, _custom_cancel, _custom_operation, _custom_operation_revision
-    global _custom_hostname
-    global _custom_login_url, _custom_error
+    global _custom_hostname, _custom_login_url, _custom_error
+    from cloudflare_tunnel import ProvisioningError
+
+    def _run() -> None:
+        try:
+            body()
+        except ProvisioningError as exc:
+            _set_custom_operation(
+                "error",
+                error = (exc.code, exc.detail),
+                error_phase = phase,
+                error_settled = settled(),
+            )
+        except Exception:
+            logger.warning("Custom Cloudflare %s failed.", phase, exc_info = True)
+            _set_custom_operation(
+                "error", error = generic, error_phase = phase, error_settled = settled()
+            )
+        else:
+            _set_custom_operation("idle")
+
+    with _worker_lock:
+        if _worker_alive(_custom_worker):
+            raise RuntimeError("custom_operation_in_progress")
+        _custom_operation_revision += 1
+        _custom_operation = operation
+        _custom_hostname = hostname
+        _custom_login_url = None
+        _custom_error = None
+        _custom_cancel = cancel
+        _custom_worker = threading.Thread(target = _run, daemon = True)
+        _custom_worker.start()
+
+
+def provision_custom_remote_access(app_state, hostname: str) -> dict:
     from cloudflare_tunnel import canonical_hostname
 
     host = canonical_hostname(hostname)
@@ -695,39 +729,24 @@ def provision_custom_remote_access(app_state, hostname: str) -> dict:
         from cloudflare_tunnel import ProvisioningError, provision_custom_tunnel
 
         worker = threading.current_thread()
-        try:
-            binary = ensure_cloudflared()
-            if not binary:
-                raise ProvisioningError("cloudflared_unreachable", "cloudflared is unavailable.")
-            provision_custom_tunnel(
-                host,
-                binary = binary,
-                on_login_url = lambda url: _custom_login_callback(worker, url),
-                cancelled = cancel.is_set,
-            )
-        except ProvisioningError as exc:
-            _set_custom_operation("error", error = (exc.code, exc.detail), error_phase = "provision")
-        except Exception:
-            logger.warning("Custom Cloudflare setup failed.", exc_info = True)
-            _set_custom_operation(
-                "error",
-                error = ("setup_failed", "Cloudflare setup failed."),
-                error_phase = "provision",
-            )
-        else:
-            _set_custom_operation("idle")
+        binary = ensure_cloudflared()
+        if not binary:
+            raise ProvisioningError("cloudflared_unreachable", "cloudflared is unavailable.")
+        provision_custom_tunnel(
+            host,
+            binary = binary,
+            on_login_url = lambda url: _custom_login_callback(worker, url),
+            cancelled = cancel.is_set,
+        )
 
-    with _worker_lock:
-        if _worker_alive(_custom_worker):
-            raise RuntimeError("custom_operation_in_progress")
-        _custom_operation_revision += 1
-        _custom_operation = "provisioning"
-        _custom_hostname = host
-        _custom_login_url = None
-        _custom_error = None
-        _custom_cancel = cancel
-        _custom_worker = threading.Thread(target = _provision, daemon = True)
-        _custom_worker.start()
+    _start_custom_worker(
+        "provisioning",
+        _provision,
+        hostname = host,
+        cancel = cancel,
+        phase = "provision",
+        generic = ("setup_failed", "Cloudflare setup failed."),
+    )
     return remote_access_status(app_state)
 
 
@@ -741,9 +760,6 @@ def cancel_custom_remote_access(app_state, expected_revision: int) -> dict:
 
 
 def teardown_custom_remote_access(app_state) -> dict:
-    global _custom_worker, _custom_cancel, _custom_operation, _custom_operation_revision
-    global _custom_hostname
-    global _custom_login_url, _custom_error
     from cloudflare_tunnel import read_identity
 
     if read_identity() is None:
@@ -753,54 +769,34 @@ def teardown_custom_remote_access(app_state) -> dict:
     def _teardown() -> None:
         from cloudflare_tunnel import get_studio_tunnel_status
         from cloudflare_tunnel import ProvisioningError, teardown_custom_tunnel
-        try:
-            clear_custom_remote_access_auto_start()
+
+        clear_custom_remote_access_auto_start()
+        tunnel = get_studio_tunnel_status()
+        if tunnel.get("kind") == "custom" and (
+            tunnel["state"] != "off" or tunnel.get("managed_by") is not None
+        ):
+            stop_remote_access(app_state, kind = "custom")
+            with _worker_lock:
+                worker = _stop_worker
+            if worker is not None:
+                worker.join(_STOP_OWNERSHIP_WAIT + 50.0)
             tunnel = get_studio_tunnel_status()
             if tunnel.get("kind") == "custom" and (
-                tunnel["state"] != "off" or tunnel.get("managed_by") is not None
+                tunnel["state"] != "off" or tunnel.get("stop_pending")
             ):
-                stop_remote_access(app_state, kind = "custom")
-                with _worker_lock:
-                    worker = _stop_worker
-                if worker is not None:
-                    worker.join(_STOP_OWNERSHIP_WAIT + 50.0)
-                tunnel = get_studio_tunnel_status()
-                if tunnel.get("kind") == "custom" and (
-                    tunnel["state"] != "off" or tunnel.get("stop_pending")
-                ):
-                    raise ProvisioningError(
-                        "connector_stop_failed", "The Cloudflare connector could not be stopped."
-                    )
-            teardown_custom_tunnel(
-                clear_auto_start = clear_custom_remote_access_auto_start,
-            )
-        except ProvisioningError as exc:
-            _set_custom_operation(
-                "error",
-                error = (exc.code, exc.detail),
-                error_phase = "teardown",
-                error_settled = read_identity() is None,
-            )
-        except Exception:
-            logger.warning("Custom Cloudflare teardown failed.", exc_info = True)
-            _set_custom_operation(
-                "error",
-                error = ("teardown_failed", "Cloudflare teardown failed."),
-                error_phase = "teardown",
-                error_settled = read_identity() is None,
-            )
-        else:
-            _set_custom_operation("idle")
+                raise ProvisioningError(
+                    "connector_stop_failed", "The Cloudflare connector could not be stopped."
+                )
+        teardown_custom_tunnel(
+            clear_auto_start = clear_custom_remote_access_auto_start,
+        )
 
-    with _worker_lock:
-        if _worker_alive(_custom_worker):
-            raise RuntimeError("custom_operation_in_progress")
-        _custom_operation_revision += 1
-        _custom_operation = "tearing_down"
-        _custom_hostname = None
-        _custom_login_url = None
-        _custom_error = None
-        _custom_cancel = None
-        _custom_worker = threading.Thread(target = _teardown, daemon = True)
-        _custom_worker.start()
+    _start_custom_worker(
+        "tearing_down",
+        _teardown,
+        phase = "teardown",
+        generic = ("teardown_failed", "Cloudflare teardown failed."),
+        # Nothing is left to retry once the identity is gone, whatever failed.
+        settled = lambda: read_identity() is None,
+    )
     return remote_access_status(app_state)

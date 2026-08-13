@@ -73,25 +73,6 @@ export const remoteAccessCancelRequest = (
 export const remoteAccessTeardownRequest = (): RemoteAccessRequest =>
   post("/custom/teardown");
 
-export function createRemoteAccessOperations<Result>(
-  dispatch: (request?: RemoteAccessRequest) => Result,
-) {
-  return {
-    load: () => dispatch(),
-    start: () => dispatch(remoteAccessStartRequest()),
-    stop: () => dispatch(remoteAccessStopRequest()),
-    updateAutoStart: (enabled: boolean) =>
-      dispatch(remoteAccessAutoStartRequest(enabled)),
-    updateMethod: (method: RemoteAccessStatus["method"]) =>
-      dispatch(remoteAccessMethodRequest(method)),
-    provision: (hostname: string) =>
-      dispatch(remoteAccessProvisionRequest(hostname)),
-    cancel: (expectedRevision: number) =>
-      dispatch(remoteAccessCancelRequest(expectedRevision)),
-    teardown: () => dispatch(remoteAccessTeardownRequest()),
-  };
-}
-
 async function requestRemoteAccess(
   request: RemoteAccessRequest = { path: "" },
 ): Promise<RemoteAccessStatus> {
@@ -107,15 +88,19 @@ async function requestRemoteAccess(
   return normalizeRemoteAccessStatus(await response.json());
 }
 
-const remoteAccessOperations =
-  createRemoteAccessOperations(requestRemoteAccess);
-
-export const loadRemoteAccess = remoteAccessOperations.load;
-export const startRemoteAccess = remoteAccessOperations.start;
-export const stopRemoteAccess = remoteAccessOperations.stop;
-export const updateRemoteAccessAutoStart =
-  remoteAccessOperations.updateAutoStart;
-export const updateRemoteAccessMethod = remoteAccessOperations.updateMethod;
-export const provisionCustomRemoteAccess = remoteAccessOperations.provision;
-export const cancelCustomRemoteAccess = remoteAccessOperations.cancel;
-export const teardownCustomRemoteAccess = remoteAccessOperations.teardown;
+export const loadRemoteAccess = () => requestRemoteAccess();
+export const startRemoteAccess = () =>
+  requestRemoteAccess(remoteAccessStartRequest());
+export const stopRemoteAccess = () =>
+  requestRemoteAccess(remoteAccessStopRequest());
+export const updateRemoteAccessAutoStart = (enabled: boolean) =>
+  requestRemoteAccess(remoteAccessAutoStartRequest(enabled));
+export const updateRemoteAccessMethod = (
+  method: RemoteAccessStatus["method"],
+) => requestRemoteAccess(remoteAccessMethodRequest(method));
+export const provisionCustomRemoteAccess = (hostname: string) =>
+  requestRemoteAccess(remoteAccessProvisionRequest(hostname));
+export const cancelCustomRemoteAccess = (expectedRevision: number) =>
+  requestRemoteAccess(remoteAccessCancelRequest(expectedRevision));
+export const teardownCustomRemoteAccess = () =>
+  requestRemoteAccess(remoteAccessTeardownRequest());

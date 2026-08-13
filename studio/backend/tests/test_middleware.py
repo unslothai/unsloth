@@ -1036,7 +1036,12 @@ class TestHealthAuthGate:
             monkeypatch.setattr(
                 cloudflare_tunnel,
                 "get_studio_tunnel_status",
-                lambda dns = dns: {"kind": "custom", "url": url, "dns": dns},
+                lambda dns = dns: {
+                    "kind": "custom",
+                    "url": url,
+                    "dns": dns,
+                    "url_usable": dns == "resolved",
+                },
             )
             response = client.get("/api/health", headers = headers)
             assert response.status_code == 200

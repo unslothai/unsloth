@@ -446,8 +446,6 @@ export const zhCN = {
         runtimeFailed:"远程访问意外停止。请重试，或查看服务器日志。",
         startAction:"启动",
         stopAction:"停止",
-        actionStarting:"正在启动",
-        actionStopping:"正在停止",
         autoStartLabel:"自动启动",
         autoStartTemporary:"Unsloth 启动时创建新的临时 URL。现在断开连接不会关闭此设置。",
         autoStartCustom:"Unsloth 启动时连接此自定义主机名。现在断开连接不会关闭此设置。",

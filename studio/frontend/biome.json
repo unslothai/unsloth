@@ -87,6 +87,17 @@
       }
     },
     {
+      "include": [
+        "src/features/settings/api/remote-access-state.ts",
+        "tests/remote-access-state.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
       "include": ["src/components/layout/index.ts"],
       "linter": {
         "rules": {

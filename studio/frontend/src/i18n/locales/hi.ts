@@ -465,8 +465,6 @@ export const hi = {
         runtimeFailed:"रिमोट एक्सेस अचानक बंद हो गया। फिर कोशिश करें या सर्वर लॉग देखें।",
         startAction:"शुरू करें",
         stopAction:"रोकें",
-        actionStarting:"शुरू हो रहा है",
-        actionStopping:"रुक रहा है",
         autoStartLabel:"अपने आप शुरू करें",
         autoStartTemporary:"Unsloth शुरू होने पर नया अस्थायी URL बनाएँ। अभी डिस्कनेक्ट करने से यह सेटिंग बंद नहीं होगी।",
         autoStartCustom:"Unsloth शुरू होने पर इस कस्टम होस्टनाम से कनेक्ट करें। अभी डिस्कनेक्ट करने से यह सेटिंग बंद नहीं होगी।",

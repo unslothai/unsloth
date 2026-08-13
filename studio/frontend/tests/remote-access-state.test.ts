@@ -12,16 +12,13 @@ register("./helpers/settings-api-resolver.mjs", import.meta.url);
 import {
   type ApiRemoteAccessStatus,
   normalizeRemoteAccessStatus,
-  openRemoteAccessLoginWindow,
   remoteAccessAuthorizationShouldOpen,
   remoteAccessAuthorizationAction,
   remoteAccessAuthorizationView,
-  remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
   remoteAccessHeaderActionDisabled,
   remoteAccessHeaderStatus,
-  remoteAccessIsReady,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
@@ -41,16 +38,11 @@ function apiStatus(
 ): ApiRemoteAccessStatus {
   return {
     state: "off",
-    // biome-ignore lint/style/useNamingConvention: API schema
     auto_start: false,
-    // biome-ignore lint/style/useNamingConvention: API schema
     default_auto_start: false,
     available: true,
-    // biome-ignore lint/style/useNamingConvention: API schema
     can_start: true,
-    // biome-ignore lint/style/useNamingConvention: API schema
     can_stop: false,
-    // biome-ignore lint/style/useNamingConvention: API schema
     streaming_supported: true,
     ...over,
   };
@@ -64,53 +56,31 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       state: "online",
       url: TUNNEL,
       error: null,
-      // biome-ignore lint/style/useNamingConvention: API schema
       auto_start: true,
       method: "custom",
-      // biome-ignore lint/style/useNamingConvention: API schema
       default_auto_start: true,
       available: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       managed_by: "settings",
-      // biome-ignore lint/style/useNamingConvention: API schema
       can_start: false,
-      // biome-ignore lint/style/useNamingConvention: API schema
       can_stop: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       block_reason: null,
-      // biome-ignore lint/style/useNamingConvention: API schema
       password_pending: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       streaming_supported: true,
       kind: "custom",
-      // biome-ignore lint/style/useNamingConvention: API schema
       connector_registered: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       tunnel_serving: true,
       dns: "pending",
-      // biome-ignore lint/style/useNamingConvention: API schema
       auto_start_kind: "custom",
-      // biome-ignore lint/style/useNamingConvention: API schema
       auto_start_block_reason: "launch_managed",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_state: "configured",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_operation_revision: 7,
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_hostname: "studio.example.com",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_tunnel_name: "unsloth-AB12CD",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_runnable: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       login_url: "https://dash.cloudflare.com/login",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_error: "dns_conflict",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_error_detail: "record exists",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_error_phase: "provision",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_error_settled: true,
     }),
   );
@@ -180,7 +150,6 @@ test("normalize defaults the optional fields an older backend may omit", () => {
 test("passwordPending is strict: only a real true counts", () => {
   for (const raw of [undefined, null, 0, "", "true", 1]) {
     const s = normalizeRemoteAccessStatus(
-      // biome-ignore lint/style/useNamingConvention: API schema
       apiStatus({ password_pending: raw as never }),
     );
     assert.equal(
@@ -190,7 +159,6 @@ test("passwordPending is strict: only a real true counts", () => {
     );
   }
   assert.equal(
-    // biome-ignore lint/style/useNamingConvention: API schema
     normalizeRemoteAccessStatus(apiStatus({ password_pending: true }))
       .passwordPending,
     true,
@@ -216,7 +184,6 @@ test("poll delay is fast while a lifecycle or custom transition is in flight", (
   for (const customState of ["provisioning", "tearing_down"] as const) {
     assert.equal(
       remoteAccessPollDelay(
-        // biome-ignore lint/style/useNamingConvention: API schema
         normalizeRemoteAccessStatus(apiStatus({ custom_state: customState })),
       ),
       1000,
@@ -229,9 +196,7 @@ test("connection progress reports only the current step", () => {
     apiStatus({
       state: "starting",
       kind: "temporary",
-      // biome-ignore lint/style/useNamingConvention: API schema
       connector_registered: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       tunnel_serving: false,
     }),
   );
@@ -240,7 +205,6 @@ test("connection progress reports only the current step", () => {
     remoteAccessProgressStep({ ...temporary, connectorRegistered: false }),
     "connecting",
   );
-  assert.equal(remoteAccessIsReady(temporary), false);
 
   // Still starting: the connector serves, but the hostname has not resolved, so
   // the backend withholds online until there is a link to offer.
@@ -248,9 +212,7 @@ test("connection progress reports only the current step", () => {
     apiStatus({
       state: "starting",
       kind: "custom",
-      // biome-ignore lint/style/useNamingConvention: API schema
       connector_registered: true,
-      // biome-ignore lint/style/useNamingConvention: API schema
       tunnel_serving: false,
       // The hostname is not watched until the tunnel serves, so nothing is
       // known about it yet while the link is still opening.
@@ -258,7 +220,6 @@ test("connection progress reports only the current step", () => {
     }),
   );
   assert.equal(remoteAccessProgressStep(custom), "openingLink");
-  assert.equal(remoteAccessIsReady(custom), false);
 
   const ready = {
     ...custom,
@@ -268,7 +229,6 @@ test("connection progress reports only the current step", () => {
     url: "https://studio.example.com",
   };
   assert.equal(remoteAccessProgressStep(ready), null);
-  assert.equal(remoteAccessIsReady(ready), true);
   assert.equal(
     remoteAccessProgressStep({ ...ready, state: "stopping" }),
     "disconnecting",
@@ -291,7 +251,6 @@ test("the header preserves lifecycle status and details only Starting", () => {
   const starting = normalizeRemoteAccessStatus(
     apiStatus({
       state: "starting",
-      // biome-ignore lint/style/useNamingConvention: API schema
       managed_by: "settings",
     }),
   );
@@ -352,17 +311,15 @@ test("the authorization action waits for the URL before offering a link", () => 
 
 test("the saved method is authoritative even when Custom is configured", () => {
   const temporary = normalizeRemoteAccessStatus(
-    // biome-ignore lint/style/useNamingConvention: API schema
     apiStatus({ method: "temporary", custom_runnable: true }),
   );
   const custom = normalizeRemoteAccessStatus(
-    // biome-ignore lint/style/useNamingConvention: API schema
     apiStatus({ method: "custom", custom_runnable: false, can_start: false }),
   );
   assert.equal(remoteAccessPreferredKind(temporary), "temporary");
-  assert.equal(remoteAccessAutoStartKind(temporary), "temporary");
+  assert.equal(remoteAccessPreferredKind(temporary), "temporary");
   assert.equal(remoteAccessPreferredKind(custom), "custom");
-  assert.equal(remoteAccessAutoStartKind(custom), "custom");
+  assert.equal(remoteAccessPreferredKind(custom), "custom");
   assert.equal(remoteAccessHeaderActionDisabled(custom, false), true);
 });
 
@@ -370,7 +327,6 @@ test("an active Custom operation stays visible after a concurrent method change"
   const provisioning = normalizeRemoteAccessStatus(
     apiStatus({
       method: "temporary",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_state: "provisioning",
     }),
   );
@@ -394,11 +350,8 @@ test("an active Custom operation stays visible after a concurrent method change"
 test("setup dialog and authorization follow the current provisioning revision", () => {
   const provisioning = normalizeRemoteAccessStatus(
     apiStatus({
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_state: "provisioning",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_hostname: "studio.example.com",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_operation_revision: 4,
     }),
   );
@@ -493,32 +446,10 @@ test("setup dialog and authorization follow the current provisioning revision", 
   );
 });
 
-test("web confirmation opens the real Cloudflare login URL", () => {
-  const calls: [string, string][] = [];
-  const page = { opener: "parent" as unknown };
-  openRemoteAccessLoginWindow(
-    "https://dash.cloudflare.com/login",
-    (url, target) => {
-      calls.push([url, target]);
-      return page;
-    },
-  );
-  assert.deepEqual(calls, [["https://dash.cloudflare.com/login", "_blank"]]);
-  assert.equal(page.opener, null);
-  assert.doesNotThrow(() =>
-    openRemoteAccessLoginWindow(
-      "https://dash.cloudflare.com/login",
-      () => null,
-    ),
-  );
-});
-
 test("custom request errors belong to one backend operation revision", () => {
   const provisioning = normalizeRemoteAccessStatus(
     apiStatus({
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_state: "provisioning",
-      // biome-ignore lint/style/useNamingConvention: API schema
       custom_operation_revision: 4,
     }),
   );
@@ -586,21 +517,18 @@ test("auto-start is read-only with no status, or under Colab ownership", () => {
   assert.equal(remoteAccessAutoStartReadOnly(null), true);
   assert.equal(
     remoteAccessAutoStartReadOnly(
-      // biome-ignore lint/style/useNamingConvention: API schema
       normalizeRemoteAccessStatus(apiStatus({ managed_by: "colab" })),
     ),
     true,
   );
   assert.equal(
     remoteAccessAutoStartReadOnly(
-      // biome-ignore lint/style/useNamingConvention: API schema
       normalizeRemoteAccessStatus(apiStatus({ block_reason: "colab" })),
     ),
     true,
   );
   assert.equal(
     remoteAccessAutoStartReadOnly(
-      // biome-ignore lint/style/useNamingConvention: API schema
       normalizeRemoteAccessStatus(apiStatus({ managed_by: "launch" })),
     ),
     false,
@@ -702,16 +630,13 @@ test("an unknown or absent reason yields no message", () => {
 const TERMINAL_OFF = normalizeRemoteAccessStatus(
   apiStatus({
     state: "off",
-    // biome-ignore lint/style/useNamingConvention: API schema
     can_start: false,
   }),
 );
 const DRAINING = normalizeRemoteAccessStatus(
   apiStatus({
     state: "stopping",
-    // biome-ignore lint/style/useNamingConvention: API schema
     managed_by: "settings",
-    // biome-ignore lint/style/useNamingConvention: API schema
     can_start: false,
   }),
 );
@@ -727,11 +652,8 @@ test("a stop that left the connector running takes the card back over", () => {
     apiStatus({
       state: "online",
       url: TUNNEL,
-      // biome-ignore lint/style/useNamingConvention: API schema
       managed_by: "settings",
-      // biome-ignore lint/style/useNamingConvention: API schema
       can_start: false,
-      // biome-ignore lint/style/useNamingConvention: API schema
       can_stop: true,
     }),
   );

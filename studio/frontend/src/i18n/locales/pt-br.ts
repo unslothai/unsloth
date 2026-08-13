@@ -466,8 +466,6 @@ export const ptBR = {
         runtimeFailed:"O acesso remoto parou inesperadamente. Tente novamente ou consulte os logs do servidor.",
         startAction:"Iniciar",
         stopAction:"Parar",
-        actionStarting:"Iniciando",
-        actionStopping:"Parando",
         autoStartLabel:"Iniciar automaticamente",
         autoStartTemporary:"Cria uma nova URL temporária ao iniciar o Unsloth. Desconectar agora não desativa esta opção.",
         autoStartCustom:"Conecta este nome personalizado ao iniciar o Unsloth. Desconectar agora não desativa esta opção.",

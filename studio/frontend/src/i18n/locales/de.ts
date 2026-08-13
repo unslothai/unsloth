@@ -479,8 +479,6 @@ export const de = {
         runtimeFailed:"Der Fernzugriff wurde unerwartet beendet. Versuche es erneut oder prüfe die Serverprotokolle.",
         startAction:"Starten",
         stopAction:"Stopp",
-        actionStarting:"Wird gestartet",
-        actionStopping:"Wird beendet",
         autoStartLabel:"Automatisch starten",
         autoStartTemporary:"Beim Start von Unsloth eine neue temporäre URL erstellen. Das Trennen ändert diese Einstellung nicht.",
         autoStartCustom:"Beim Start von Unsloth diesen benutzerdefinierten Hostnamen verbinden. Das Trennen ändert diese Einstellung nicht.",

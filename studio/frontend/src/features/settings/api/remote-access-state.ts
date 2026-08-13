@@ -88,53 +88,31 @@ export type ApiRemoteAccessStatus = {
   state: RemoteAccessState;
   url?: string | null;
   error?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   auto_start: boolean;
   method?: RemoteAccessKind;
-  // biome-ignore lint/style/useNamingConvention: API schema
   default_auto_start: boolean;
   available: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
   managed_by?: RemoteAccessOwner;
-  // biome-ignore lint/style/useNamingConvention: API schema
   can_start: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
   can_stop: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
   block_reason?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   password_pending?: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
   streaming_supported: boolean;
   kind?: RemoteAccessKind | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   connector_registered?: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
   tunnel_serving?: boolean;
   dns?: RemoteAccessDns;
-  // biome-ignore lint/style/useNamingConvention: API schema
   auto_start_kind?: RemoteAccessKind | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   auto_start_block_reason?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_state?: CustomTunnelState;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_operation_revision?: number;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_hostname?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_tunnel_name?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_runnable?: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
   login_url?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_error?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_error_detail?: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_error_phase?: CustomTunnelErrorPhase | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
   custom_error_settled?: boolean;
 };
 
@@ -284,18 +262,6 @@ export function remoteAccessAuthorizationView(
   };
 }
 
-type RemoteAccessLoginWindow = { opener: unknown };
-
-export function openRemoteAccessLoginWindow(
-  loginUrl: string,
-  openWindow: (url: string, target: string) => RemoteAccessLoginWindow | null,
-): void {
-  const cloudflareWindow = openWindow(loginUrl, "_blank");
-  if (cloudflareWindow) {
-    cloudflareWindow.opener = null;
-  }
-}
-
 export function remoteAccessPreferredKind(
   status: RemoteAccessStatus | null,
 ): RemoteAccessKind {
@@ -309,20 +275,6 @@ export function remoteAccessUsableUrl(
     return null;
   }
   return status?.url ?? null;
-}
-
-export function remoteAccessIsReady(
-  status: RemoteAccessStatus | null,
-): boolean {
-  if (status?.state !== "online") {
-    return false;
-  }
-  return (
-    status.kind !== "custom" ||
-    (status.connectorRegistered &&
-      status.tunnelServing &&
-      status.dns === "resolved")
-  );
 }
 
 export function remoteAccessProgressStep(
@@ -456,12 +408,6 @@ export function remoteAccessCustomActionsDisabled(
   busy: boolean,
 ): boolean {
   return busy || !status.available || status.passwordPending;
-}
-
-export function remoteAccessAutoStartKind(
-  status: RemoteAccessStatus | null,
-): RemoteAccessKind {
-  return status?.method ?? "temporary";
 }
 
 export function remoteApiOrigin(

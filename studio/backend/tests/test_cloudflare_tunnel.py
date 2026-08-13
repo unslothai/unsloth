@@ -19,7 +19,6 @@ import tarfile
 import threading
 import time
 import types
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -1609,53 +1608,6 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "local network only" not in out
 
 
-class _Reservation:
-    def __init__(self):
-        self.token = "a-connector-token"
-        self.recorded = []
-        self.released = 0
-
-    def record_connector(self, pid):
-        self.recorded.append(pid)
-
-    def release(self):
-        self.released += 1
-
-
-class _Proc:
-    stdout = None
-    pid = 4242
-
-    def __init__(
-        self,
-        alive = True,
-        dies = True,
-        killable = True,
-    ):
-        self.alive, self.dies, self.killable = alive, dies, killable
-        self.terminated = self.killed = False
-        self.waited, self.kills = [], 0
-
-    def poll(self):
-        return None if self.alive else 0
-
-    def terminate(self):
-        self.terminated = True
-        if self.dies:
-            self.alive = False
-
-    def kill(self):
-        self.killed, self.kills = True, self.kills + 1
-        if self.killable:
-            self.alive = False
-
-    def wait(self, timeout = None):
-        self.waited.append(timeout)
-        if self.alive:
-            raise ct.subprocess.TimeoutExpired("cloudflared", timeout)
-        return 0
-
-
 class _WatchStopped(Exception):
     pass
 
@@ -1666,6 +1618,28 @@ def _one_watch_pass(monkeypatch, url, generation):
         ct._watch_hostname_resolution(url, generation)
     except _WatchStopped:
         pass
+
+
+@pytest.mark.parametrize(
+    "kind,dns,usable",
+    [
+        ("custom", "unknown", False),
+        ("custom", "pending", False),
+        ("custom", "resolved", True),
+        # A temporary hostname is Cloudflare's own and resolves before the URL
+        # is ever reported, so there is nothing to wait for.
+        ("temporary", "unknown", True),
+    ],
+)
+def test_the_status_says_whether_the_url_can_be_offered_yet(monkeypatch, kind, dns, usable):
+    # Everyone offering the link was deciding this for itself; the tunnel is the
+    # one place that knows.
+    monkeypatch.setattr(ct, "_tunnel_kind", kind)
+    monkeypatch.setattr(ct, "_tunnel_generation", 21)
+    monkeypatch.setattr(ct, "_tunnel_dns", (21, dns))
+    status = ct.get_studio_tunnel_status()
+    assert status["dns"] == dns
+    assert status["url_usable"] is usable
 
 
 def test_a_slower_watcher_does_not_erase_a_newer_tunnels_answer(monkeypatch):
@@ -2141,15 +2115,3 @@ def test_every_command_is_pinned_to_the_certificate_we_proved(monkeypatch):
     assert argv[argv.index("--origincert") + 1] == str(ct.origin_cert_path())
     assert not {"--overwrite-dns", "-f"} & set(argv)
     assert not any(key.startswith("TUNNEL_") for key in sent["env"])
-
-
-class _AlwaysFree:
-    def acquire(self, blocking = True):
-        return True
-
-    def release(self):
-        pass
-
-
-_TOKEN = "3f8c1d" * 5 + "ab"
-_OTHER_TOKEN = "c4" + "3f8c1d" * 5

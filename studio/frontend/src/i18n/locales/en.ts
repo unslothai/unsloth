@@ -456,8 +456,6 @@ export const en = {
         runtimeFailed:"Remote access stopped unexpectedly. Try again, or check the server logs.",
         startAction:"Start",
         stopAction:"Stop",
-        actionStarting:"Starting",
-        actionStopping:"Stopping",
         autoStartLabel:"Start automatically",
         autoStartTemporary:"Create a new temporary URL when Unsloth starts. Disconnecting now won't turn this off.",
         autoStartCustom:"Connect this custom hostname when Unsloth starts. Disconnecting now won't turn this off.",

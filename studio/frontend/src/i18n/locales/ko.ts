@@ -459,8 +459,6 @@ export const ko = {
         runtimeFailed:"원격 액세스가 예기치 않게 중지되었습니다. 다시 시도하거나 서버 로그를 확인하세요.",
         startAction:"시작",
         stopAction:"정지",
-        actionStarting:"시작 중",
-        actionStopping:"중지 중",
         autoStartLabel:"자동 시작",
         autoStartTemporary:"Unsloth 시작 시 새 임시 URL을 만듭니다. 지금 연결을 끊어도 이 설정은 꺼지지 않습니다.",
         autoStartCustom:"Unsloth 시작 시 이 사용자 지정 호스트 이름에 연결합니다. 지금 연결을 끊어도 이 설정은 꺼지지 않습니다.",
