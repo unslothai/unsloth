@@ -759,6 +759,18 @@ def _install_fake_mlx(monkeypatch, working_set_bytes):
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
 
 
+def _install_fake_psutil(monkeypatch, *, total, available = None):
+    """psutil stub. The budget reads both, so a test must pin both to be
+    machine-independent: with only `total` stubbed, `available` came from the
+    host running the suite."""
+    fake = _types.ModuleType("psutil")
+    vm = _types.SimpleNamespace(total = total)
+    if available is not None:
+        vm.available = available
+    fake.virtual_memory = lambda: vm
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+
 class TestAppleUnifiedMemoryBudget:
     def test_zero_off_apple_silicon(self, monkeypatch):
         import platform as _platform
@@ -771,6 +783,8 @@ class TestAppleUnifiedMemoryBudget:
         _force_apple(monkeypatch)
         ws = 27 * GIB  # ~recommended working set on a 36 GB Mac
         _install_fake_mlx(monkeypatch, ws)
+        # Idle machine: the device ceiling is the binding constraint.
+        _install_fake_psutil(monkeypatch, total = 36 * GIB, available = 34 * GIB)
         assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
             ws * _APPLE_UNIFIED_MEMORY_FRACTION
         )
@@ -778,11 +792,49 @@ class TestAppleUnifiedMemoryBudget:
     def test_falls_back_to_total_ram_without_mlx(self, monkeypatch):
         _force_apple(monkeypatch)
         monkeypatch.setitem(sys.modules, "mlx", None)  # import mlx.core -> ImportError
-        fake_psutil = _types.ModuleType("psutil")
-        fake_psutil.virtual_memory = lambda: _types.SimpleNamespace(total = 36 * GIB)
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+        _install_fake_psutil(monkeypatch, total = 36 * GIB, available = 36 * GIB)
         assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
             36 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_a_busy_machine_budgets_from_what_is_free(self, monkeypatch):
+        """The reporter's shape: 16 GB Mac already holding several GB.
+
+        The working set is a static device property, so before this it answered
+        the same on an idle and a loaded machine, and the fit sized a context
+        against headroom that was not there.
+        """
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 10 * GIB)  # ~working set on a 16 GB Mac
+        _install_fake_psutil(monkeypatch, total = 16 * GIB, available = 6 * GIB)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            6 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_available_never_raises_the_budget(self, monkeypatch):
+        """Only ever lowers it: the device ceiling still bounds a free machine."""
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 10 * GIB)
+        _install_fake_psutil(monkeypatch, total = 64 * GIB, available = 60 * GIB)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            10 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_a_psutil_without_available_keeps_the_old_answer(self, monkeypatch):
+        """Nothing to cap with, so behave exactly as before rather than zero."""
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 10 * GIB)
+        _install_fake_psutil(monkeypatch, total = 16 * GIB)  # no `available`
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            10 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_the_working_set_still_applies_without_psutil(self, monkeypatch):
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 10 * GIB)
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            10 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
         )
 
     def test_zero_when_no_budget_resolvable(self, monkeypatch):
