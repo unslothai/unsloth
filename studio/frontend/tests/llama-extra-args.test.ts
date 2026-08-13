@@ -98,7 +98,42 @@ test("double quotes escape only what a shell escapes", () => {
 });
 
 test("a trailing backslash-newline continues the line", () => {
+  // POSIX 2.2.1: an unquoted backslash before a newline is a line continuation and
+  // both characters go. This is the one place the split deliberately differs from
+  // Python's shlex, which is a lexer with no continuation rule and leaves a literal
+  // newline inside the token. The box is multi-line and people paste wrapped
+  // commands into it, so the shell reading is the one that matches the intent.
   assert.deepEqual(parseExtraArgs("--top-k \\\n20").tokens, ["--top-k", "20"]);
+  // Inside single quotes it is literal, as in a shell.
+  assert.deepEqual(parseExtraArgs("--x 'a\\\nb'").tokens, ["--x", "a\\\nb"]);
+});
+
+test("a trailing lone backslash is kept, not treated as an error", () => {
+  // The other deliberate difference from shlex, which raises here. A text field is
+  // half-typed most of the time, so refusing the whole box mid-keystroke is worse
+  // than carrying the character.
+  assert.deepEqual(parseExtraArgs("--x \\").tokens, ["--x", "\\"]);
+  assert.equal(parseExtraArgs("--x \\").unterminatedQuote, null);
+});
+
+test("an unquoted Windows path loses its separators, as in a shell", () => {
+  // Not a bug to fix in the splitter: an unquoted backslash escapes the next
+  // character in every POSIX shell, and changing that would break every escape the
+  // hint tells people to use. It IS a trap on Windows, which is why the row's hint
+  // names backslashes and not just spaces.
+  assert.deepEqual(parseExtraArgs("--chat-template-file C:\\a\\b.jinja").tokens, [
+    "--chat-template-file",
+    "C:ab.jinja",
+  ]);
+  // Quoted, it survives whole, and that is what the hint asks for.
+  assert.deepEqual(parseExtraArgs('--chat-template-file "C:\\a\\b.jinja"').tokens, [
+    "--chat-template-file",
+    "C:\\a\\b.jinja",
+  ]);
+  assert.deepEqual(parseExtraArgs("--chat-template-file 'C:\\a\\b.jinja'").tokens, [
+    "--chat-template-file",
+    "C:\\a\\b.jinja",
+  ]);
 });
 
 test("shell metacharacters are literal, because nothing here runs a shell", () => {

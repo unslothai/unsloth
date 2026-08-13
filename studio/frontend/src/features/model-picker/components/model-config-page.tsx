@@ -1327,9 +1327,10 @@ function ExtraArgsRow({
               above, so anything set in both is taken from here.
             </div>
             <div>
-              Quote a value containing spaces. Nothing runs a shell, so $HOME, ;
-              and | are ordinary characters. Flags Unsloth owns, like the model,
-              the port and the API key, are refused.
+              Quote a value containing spaces or backslashes, including a
+              Windows path. Nothing runs a shell, so $HOME, ; and | are ordinary
+              characters. Flags Unsloth owns, like the model, the port and the
+              API key, are refused.
             </div>
           </div>
         </InfoHint>

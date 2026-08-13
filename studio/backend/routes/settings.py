@@ -1173,7 +1173,7 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import drop_managed_flags, validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -1220,7 +1220,22 @@ def update_openai_auto_switch_override(
                         if requested_extra_args is not None:
                             break
         # Not validated on an explicit remove: a 400 would only leave the override in place.
-        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
+        if payload.remove is True:
+            extra_args = []
+        elif payload.llama_extra_args is None:
+            # Carried over, not sent: the caller is saving some other field and this
+            # value predates the request. A flag denylisted since it was written is
+            # dropped rather than refused, or an unrelated save fails naming a flag
+            # the user may not remember writing (and cannot fix from this payload).
+            extra_args, dropped_flags = drop_managed_flags(requested_extra_args)
+            if dropped_flags:
+                logger.warning(
+                    "model_override.dropped_managed_flags model_id=%s flags=%s",
+                    payload.model_id,
+                    ", ".join(dropped_flags),
+                )
+        else:
+            extra_args = validate_extra_args(requested_extra_args)
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:

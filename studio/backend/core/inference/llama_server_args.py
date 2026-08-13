@@ -154,6 +154,11 @@ def _flag_name(token: str) -> Optional[str]:
     return name
 
 
+def _has_control_characters(token: str) -> bool:
+    """A NUL, or any C0 control other than tab and newline."""
+    return any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token)
+
+
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     """Validate user-supplied llama-server args. Returns a flat list ready to
     extend the llama-server command; raises ``ValueError`` naming the
@@ -177,7 +182,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             )
         # execve rejects a NUL outright; the rest would reach the child's parser as
         # invisible characters and be blamed on the flag they are attached to.
-        if any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token):
+        if _has_control_characters(token):
             raise ValueError("extra llama-server args cannot contain control characters")
         flag = _flag_name(token)
         if flag is not None and flag in _DENYLIST:
@@ -191,6 +196,73 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
     return out
+
+
+def drop_managed_flags(
+    args: Optional[Iterable[str]],
+) -> tuple[list[str], list[str]]:
+    """Split stored args into what still loads and the flag names removed.
+
+    For the paths that CARRY OVER an existing value rather than receive a new one.
+    The denylist grows (``--agent`` and the MCP flags were added once a text box
+    made them one paste away), so an override saved by an older build can hold a
+    name that is refused today. Refusing there punishes a user for a decision made
+    later: the load, or the save of an unrelated setting, fails naming a flag they
+    may not remember writing. Dropping is the same judgement applied quietly.
+
+    A flag takes its value with it, or ``--log-file /var/log/x`` would leave a bare
+    ``/var/log/x`` behind, which llama.cpp reads as a positional model path. The
+    bounds and the control-character rule are enforced by re-validating what is
+    left, so the result is always something ``validate_extra_args`` accepts.
+    """
+    tokens = [str(raw) for raw in (args or [])]
+
+    def _takes_next(index: int, token: str, flag: str) -> bool:
+        """True when the token's value is the NEXT token rather than its own."""
+        if "=" in token or flag != token.strip():
+            return False
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        return following is not None and _flag_name(following) is None
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    skip_next = False
+    for index, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        flag = _flag_name(token)
+        if flag is not None and flag in _DENYLIST:
+            dropped.append(flag)
+            skip_next = _takes_next(index, token, flag)
+            continue
+        # A control character never reached the child as anything but noise, and a
+        # NUL never reached it at all (execve refuses). A poisoned VALUE takes its
+        # flag with it for the same reason a denied flag takes its value: a flag
+        # left expecting one would eat the next token and change what that means.
+        if _has_control_characters(token):
+            dropped.append(flag or token)
+            if flag is None and kept and _flag_name(kept[-1]) is not None:
+                dropped.append(_flag_name(kept[-1]) or kept[-1])
+                kept.pop()
+            continue
+        if (
+            flag is not None
+            and _takes_next(index, token, flag)
+            and _has_control_characters(tokens[index + 1])
+        ):
+            continue
+        kept.append(token)
+
+    while kept:
+        try:
+            return validate_extra_args(kept), dropped
+        except ValueError:
+            # Only the bounds can still fail here, and they are about length, so
+            # the tail is the right thing to shed.
+            dropped.append(kept[-1])
+            kept = kept[:-1]
+    return [], dropped
 
 
 def sorted_managed_flags() -> list[str]:

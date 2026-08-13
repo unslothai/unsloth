@@ -1275,6 +1275,7 @@ try:
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
+        drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
         parse_split_mode_override,
@@ -1328,6 +1329,7 @@ except ImportError:
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
+        drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
         parse_split_mode_override,
@@ -7160,16 +7162,15 @@ def _resolve_inherited_extra_args(
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
         )
-        try:
-            extra_llama_args = validate_extra_args(stripped)
-        except ValueError:
-            # Shouldn't happen on already-validated args; degrade to
-            # no-extras rather than 400 if managed flags changed.
+        # Inherited, not sent: a flag denylisted since it was stored loses only
+        # itself. The previous behaviour dropped the whole list, so one name added
+        # to the denylist silently took every other flag with it.
+        extra_llama_args, _dropped = drop_managed_flags(stripped)
+        if _dropped:
             logger.warning(
-                "Stored llama_extra_args failed revalidation; loading without them: %s",
-                stripped,
+                "Stored llama_extra_args are no longer allowed; dropped %s",
+                ", ".join(_dropped),
             )
-            extra_llama_args = []
         else:
             if extra_llama_args:
                 logger.info(
@@ -9697,7 +9698,11 @@ async def get_llama_flags(current_subject: str = Depends(get_current_subject)):
 
     try:
         backend = get_llama_cpp_backend()
-        capabilities = type(backend).probe_server_capabilities()
+        # Off the event loop: on a cold cache this runs `llama-server --help` with a
+        # 10s timeout, and the startup probes were moved to a thread for exactly that
+        # reason (test_startup_llama_probe_non_blocking). Awaiting it inline would
+        # stall every other request on the first open of the panel after an update.
+        capabilities = await asyncio.to_thread(type(backend).probe_server_capabilities)
         flags = capabilities.get("flags") or {}
         # found=False means no binary at all, which is not the same as a binary whose
         # help would not parse; both leave the editor unable to verify.
