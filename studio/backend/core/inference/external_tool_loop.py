@@ -671,6 +671,15 @@ async def stream_chat_completion_with_local_tools(
         None if tool_call_timeout is not None and tool_call_timeout >= 9999 else tool_call_timeout
     )
     remaining_iterations = max(0, max_tool_iterations)
+    # every turn counts here, not just the ones that ran a tool: a denied or no-op turn
+    # leaves the budget alone, so without this an all-denied exchange never terminates.
+    # Mirrors the peers' bounded iteration range (safetensors_agentic.py:601).
+    max_total_turns = (
+        remaining_iterations + MAX_ACT_REPROMPTS + MAX_POST_TOOL_REPROMPTS + 1
+        if remaining_iterations > 0
+        else 1
+    )
+    turns_taken = 0
     executed_calls = 0
     # budgeted apart from each other so a pre-tool nudge cannot spend the post-tool one.
     reprompt_count = 0
@@ -687,6 +696,15 @@ async def stream_chat_completion_with_local_tools(
         while True:
             # Stop arrives as a POST that sets this event, so every boundary honours it.
             if cancel_event.is_set():
+                break
+            turns_taken += 1
+            if turns_taken > max_total_turns:
+                logger.warning(
+                    "External local tool loop hit its %d-turn ceiling without a final "
+                    "answer (executed_tool_calls=%d)",
+                    max_total_turns,
+                    executed_calls,
+                )
                 break
             # past the budget the catalog is dropped, so the last pass has to answer.
             tools_allowed = remaining_iterations > 0 and not controller.force_final_answer

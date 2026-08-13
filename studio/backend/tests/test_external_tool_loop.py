@@ -21,7 +21,7 @@ from core.inference.external_tool_loop import (
     stream_chat_completion_with_local_tools,
 )
 from core.inference.providers import PROVIDER_REGISTRY
-from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
+from core.inference.tool_call_parser import MAX_ACT_REPROMPTS, NUDGE_TOOL_CALLS_STATUS
 
 
 def _chunk(**delta) -> str:
@@ -2070,3 +2070,43 @@ def test_dropped_parallel_call_opens_no_provisional_card():
     events = _events(lines)
     assert {e["tool_call_id"] for e in events if e["type"] == "tool_start"} == {"c0"}
     assert not [e for e in events if e["type"] == "tool_args" and e["tool_call_id"] == "c1"]
+
+
+def test_repeated_denials_cannot_loop_forever():
+    """A denied turn runs no tool, so only the turn ceiling bounds the exchange."""
+    denied_call = [{"index": 0, "id": "c0", "function": {"name": "python", "arguments": "{}"}}]
+    # far more turns than the ceiling allows, so an unbounded loop would exhaust them.
+    turns = [
+        [_chunk(tool_calls = denied_call), _finish("tool_calls"), "data: [DONE]"] for _ in range(40)
+    ]
+    client = _FakeClient(turns)
+    calls = {"n": 0}
+
+    def _deny(*a, **k):
+        calls["n"] += 1
+        return "deny"
+
+    with_monkey = pytest.MonkeyPatch()
+    with_monkey.setattr("core.inference.external_tool_loop.wait_tool_decision", _deny)
+    try:
+        asyncio.run(
+            _collect(
+                stream_chat_completion_with_local_tools(
+                    client,
+                    messages = [{"role": "user", "content": "go"}],
+                    model = "qwen3-14b",
+                    tools = [PYTHON_TOOL],
+                    max_tool_iterations = 3,
+                    confirm_tool_calls = True,
+                    permission_mode = "ask",
+                    execute_tool = lambda *a, **k: pytest.fail("denied tool must not run"),
+                )
+            )
+        )
+    finally:
+        with_monkey.undo()
+    from core.inference.external_tool_loop import MAX_POST_TOOL_REPROMPTS
+
+    ceiling = 3 + MAX_ACT_REPROMPTS + MAX_POST_TOOL_REPROMPTS + 1
+    assert len(client.calls) == ceiling
+    assert len(client.calls) < len(turns)

@@ -799,8 +799,10 @@ export function SharedComposer({
           ))) ||
     imageModeDisablesCode;
   // opted-out connection: the pill is live but toggling it would send nothing.
+  // Compare resolves a model per pane while this hook only sees the global
+  // checkpoint, so gating there would block both panes over the wrong connection.
   const localToolsOptInMissing =
-    externalLocalTools.supported && !externalLocalTools.enabled;
+    !isCompareMode && externalLocalTools.supported && !externalLocalTools.enabled;
   // Images pill lights only on OpenAI cloud Responses-API models and the
   // Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
