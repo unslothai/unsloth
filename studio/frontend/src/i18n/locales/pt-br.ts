@@ -412,6 +412,8 @@ export const ptBR = {
       remoteAccess: {
         methodLabel: "Método de acesso remoto",
         methodDescription: "Escolha se o endereço remoto muda a cada conexão.",
+        methodCustomRequirement:
+          "Personalizado precisa de um domínio que você já adicionou ao Cloudflare.",
         temporaryMethod: "Temporário",
         customMethod: "Personalizado",
         sectionTitle: "Acesso remoto",

@@ -411,6 +411,8 @@ export const hi = {
       remoteAccess: {
         methodLabel: "रिमोट एक्सेस का तरीका",
         methodDescription: "चुनें कि हर कनेक्शन पर रिमोट पता बदले या नहीं।",
+        methodCustomRequirement:
+          "कस्टम के लिए ऐसा डोमेन चाहिए जिसे आपने पहले ही Cloudflare में जोड़ा हो।",
         temporaryMethod: "अस्थायी",
         customMethod: "कस्टम",
         sectionTitle: "रिमोट ऐक्सेस",

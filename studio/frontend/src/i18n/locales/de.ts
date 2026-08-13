@@ -426,6 +426,8 @@ export const de = {
         methodLabel: "Methode für Fernzugriff",
         methodDescription:
           "Wähle, ob sich die Remote-Adresse bei jeder Verbindung ändert.",
+        methodCustomRequirement:
+          "Benutzerdefiniert benötigt eine Domain, die Sie bereits zu Cloudflare hinzugefügt haben.",
         temporaryMethod: "Temporär",
         customMethod: "Benutzerdefiniert",
         sectionTitle: "Remotezugriff",

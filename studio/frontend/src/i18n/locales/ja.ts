@@ -401,6 +401,8 @@ export const ja = {
         methodLabel: "リモートアクセス方法",
         methodDescription:
           "接続するたびにリモートアドレスを変更するか選びます。",
+        methodCustomRequirement:
+          "カスタムには、Cloudflare にすでに追加したドメインが必要です。",
         temporaryMethod: "一時",
         customMethod: "カスタム",
         sectionTitle: "リモートアクセス",

@@ -424,6 +424,8 @@ export const fr = {
         methodLabel: "Méthode d’accès à distance",
         methodDescription:
           "Choisissez si l’adresse distante change à chaque connexion.",
+        methodCustomRequirement:
+          "Personnalisé nécessite un domaine que vous avez déjà ajouté à Cloudflare.",
         temporaryMethod: "Temporaire",
         customMethod: "Personnalisé",
         sectionTitle: "Accès distant",

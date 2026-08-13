@@ -268,6 +268,33 @@ export function remoteAccessPreferredKind(
   return status?.method ?? "temporary";
 }
 
+function remoteAccessOwnedElsewhere(
+  status: RemoteAccessStatus | null,
+): boolean {
+  return status?.managedBy != null && status.managedBy !== "settings";
+}
+
+export function remoteAccessMethodReadOnly(
+  status: RemoteAccessStatus | null,
+): boolean {
+  return (
+    remoteAccessAutoStartReadOnly(status) ||
+    status?.blockReason === "launch_managed" ||
+    remoteAccessOwnedElsewhere(status)
+  );
+}
+
+export function remoteAccessDisplayedMethod(
+  status: RemoteAccessStatus | null,
+): RemoteAccessKind {
+  // A tunnel this UI does not own is the method actually in effect, whatever
+  // is stored: reporting the stored one names a tunnel that is not running.
+  if (remoteAccessOwnedElsewhere(status) && status?.kind) {
+    return status.kind;
+  }
+  return remoteAccessPreferredKind(status);
+}
+
 export function remoteAccessUsableUrl(
   status: RemoteAccessStatus | null,
 ): string | null {

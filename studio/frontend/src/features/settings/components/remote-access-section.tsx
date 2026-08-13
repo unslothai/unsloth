@@ -48,9 +48,11 @@ import {
   remoteAccessCustomActionsDisabled,
   remoteAccessCustomOperationInFlight,
   remoteAccessCustomTeardownMessageId,
+  remoteAccessDisplayedMethod,
   remoteAccessDnsConflictHostname,
   remoteAccessHeaderActionDisabled,
   remoteAccessHeaderStatus,
+  remoteAccessMethodReadOnly,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
@@ -78,7 +80,7 @@ import {
   QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { SegmentedControl } from "@/components/segmented-control";
+import { PillSegmented } from "@/components/pill-segmented";
 import { Loader2Icon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
@@ -457,14 +459,16 @@ function RemoteUrlPanel({ status }: { status: RemoteAccessStatus | null }) {
       <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
         {url}
       </code>
-      <span className="text-xs text-muted-foreground leading-snug">
-        {t("settings.general.remoteAccess.urlHint")}
-      </span>
-      <span className="text-xs text-muted-foreground leading-snug">
-        {status?.streamingSupported
-          ? t("settings.general.remoteAccess.streamingSupported")
-          : t("settings.general.remoteAccess.streamingBuffered")}
-      </span>
+      <div className="text-xs text-muted-foreground leading-snug">
+        <span className="block">
+          {t("settings.general.remoteAccess.urlHint")}
+        </span>
+        <span className="block">
+          {status?.streamingSupported
+            ? t("settings.general.remoteAccess.streamingSupported")
+            : t("settings.general.remoteAccess.streamingBuffered")}
+        </span>
+      </div>
     </div>
   );
 }
@@ -503,24 +507,21 @@ function RemoteAccessMethodControl({
 }) {
   const t = useT();
   return (
-    <SegmentedControl
+    <PillSegmented
       value={method}
       options={[
         {
           value: "temporary" as const,
           label: t("settings.general.remoteAccess.temporaryMethod"),
-          disabled,
         },
         {
           value: "custom" as const,
           label: t("settings.general.remoteAccess.customMethod"),
-          disabled,
         },
       ]}
-      onValueChange={onChange}
+      onChange={onChange}
       ariaLabel={t("settings.general.remoteAccess.methodLabel")}
-      size="compact"
-      className="w-auto"
+      disabled={disabled}
     />
   );
 }
@@ -879,7 +880,7 @@ function CustomTunnelIdentity({
   );
   return (
     <div
-      className="mt-3 flex flex-col gap-3"
+      className="mt-3 flex flex-col gap-1.5"
       aria-live="polite"
       aria-atomic="true"
     >
@@ -1002,7 +1003,7 @@ function CustomTunnelPanel({
 
   return (
     <div className="border-t border-border/60 p-4">
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-0.5">
         <h3 className="text-sm font-medium text-foreground">
           {t("settings.general.remoteAccess.customHostnameTitle")}
         </h3>
@@ -1222,10 +1223,23 @@ export function RemoteAccessSection() {
     isTauri,
     t,
   );
+  // Both blocks resolve to one sentence when the whole section is blocked for
+  // the reason the toggle is, and the section has already said it above.
+  const autoStartRepeatsBlock =
+    remoteAccessBlockMessageId(
+      status?.autoStartBlockReason ?? null,
+      isTauri,
+    ) === remoteAccessBlockMessageId(status?.blockReason ?? null, isTauri);
   const autoStartMessage =
     status?.autoStartBlockReason === "custom_tunnel_not_configured"
       ? t("settings.general.remoteAccess.autoStartCustomMissing")
-      : localizedBlockMessage(status?.autoStartBlockReason ?? null, isTauri, t);
+      : autoStartRepeatsBlock
+        ? null
+        : localizedBlockMessage(
+            status?.autoStartBlockReason ?? null,
+            isTauri,
+            t,
+          );
   const stopAction = remoteAccessUsesStopAction(status);
   const actionDisabled = remoteAccessHeaderActionDisabled(
     status,
@@ -1288,13 +1302,22 @@ export function RemoteAccessSection() {
       <div className="border-t border-border/60 px-4 py-1">
         <SettingsRow
           label={t("settings.general.remoteAccess.methodLabel")}
-          description={t("settings.general.remoteAccess.methodDescription")}
+          description={
+            <>
+              <span className="block">
+                {t("settings.general.remoteAccess.methodDescription")}
+              </span>
+              <span className="block">
+                {t("settings.general.remoteAccess.methodCustomRequirement")}
+              </span>
+            </>
+          }
         >
           <RemoteAccessMethodControl
-            method={status?.method ?? "temporary"}
+            method={remoteAccessDisplayedMethod(status)}
             disabled={
               busy !== null ||
-              remoteAccessAutoStartReadOnly(status) ||
+              remoteAccessMethodReadOnly(status) ||
               remoteAccessCustomOperationInFlight(status)
             }
             onChange={setMethod}
@@ -1337,8 +1360,10 @@ export function RemoteAccessSection() {
             aria-label={t("settings.general.remoteAccess.autoStartLabel")}
           />
         </SettingsRow>
-        <StatusMessage message={autoStartMessage} />
       </div>
+      {/* Outside the padded block: it brings its own edge-to-edge rule and
+          inset, like the one under the header. */}
+      <StatusMessage message={autoStartMessage} />
     </section>
   );
 }

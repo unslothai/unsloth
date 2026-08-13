@@ -411,6 +411,8 @@ export const ru = {
         methodLabel: "Способ удалённого доступа",
         methodDescription:
           "Выберите, должен ли удалённый адрес меняться при каждом подключении.",
+        methodCustomRequirement:
+          "Для варианта «Свой» нужен домен, уже добавленный в Cloudflare.",
         temporaryMethod: "Временный",
         customMethod: "Свой",
         sectionTitle: "Удалённый доступ",

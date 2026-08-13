@@ -408,6 +408,8 @@ export const ar = {
       remoteAccess: {
         methodLabel: "طريقة الوصول عن بُعد",
         methodDescription: "اختر ما إذا كان عنوان الوصول يتغير مع كل اتصال.",
+        methodCustomRequirement:
+          "يتطلب الوضع المخصص نطاقًا أضفته إلى Cloudflare بالفعل.",
         temporaryMethod: "مؤقت",
         customMethod: "مخصص",
         sectionTitle: "الوصول عن بُعد",

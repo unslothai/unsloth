@@ -406,6 +406,8 @@ export const en = {
         methodLabel: "Remote access method",
         methodDescription:
           "Choose whether your remote address changes each time.",
+        methodCustomRequirement:
+          "Custom needs a domain you have already added to Cloudflare.",
         temporaryMethod: "Temporary",
         customMethod: "Custom",
         progressConnecting: "Connecting",

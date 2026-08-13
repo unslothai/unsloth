@@ -17,8 +17,10 @@ import {
   remoteAccessAuthorizationView,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
+  remoteAccessDisplayedMethod,
   remoteAccessHeaderActionDisabled,
   remoteAccessHeaderStatus,
+  remoteAccessMethodReadOnly,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
@@ -321,6 +323,33 @@ test("the saved method is authoritative even when Custom is configured", () => {
   assert.equal(remoteAccessPreferredKind(custom), "custom");
   assert.equal(remoteAccessPreferredKind(custom), "custom");
   assert.equal(remoteAccessHeaderActionDisabled(custom, false), true);
+});
+
+test("a tunnel owned elsewhere reports the kind it runs, not the saved method", () => {
+  const launched = normalizeRemoteAccessStatus(
+    apiStatus({ method: "custom", kind: "temporary", managed_by: "launch" }),
+  );
+  assert.equal(remoteAccessDisplayedMethod(launched), "temporary");
+  assert.equal(remoteAccessMethodReadOnly(launched), true);
+
+  const ours = normalizeRemoteAccessStatus(
+    apiStatus({ method: "custom", kind: "custom", managed_by: "settings" }),
+  );
+  assert.equal(remoteAccessDisplayedMethod(ours), "custom");
+  assert.equal(remoteAccessMethodReadOnly(ours), false);
+
+  // Nothing is running, so the saved method is all there is to show.
+  const idle = normalizeRemoteAccessStatus(
+    apiStatus({ method: "custom", kind: null, managed_by: null }),
+  );
+  assert.equal(remoteAccessDisplayedMethod(idle), "custom");
+  assert.equal(remoteAccessMethodReadOnly(idle), false);
+
+  // Launch owns the feature even before it has started a tunnel.
+  const launchOwned = normalizeRemoteAccessStatus(
+    apiStatus({ method: "custom", block_reason: "launch_managed" }),
+  );
+  assert.equal(remoteAccessMethodReadOnly(launchOwned), true);
 });
 
 test("an active Custom operation stays visible after a concurrent method change", () => {

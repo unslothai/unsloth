@@ -392,6 +392,7 @@ export const zhCN = {
       remoteAccess: {
         methodLabel: "远程访问方式",
         methodDescription: "选择每次连接时远程地址是否变化。",
+        methodCustomRequirement: "自定义需要一个已添加到 Cloudflare 的域名。",
         temporaryMethod: "临时",
         customMethod: "自定义",
         sectionTitle: "远程访问",

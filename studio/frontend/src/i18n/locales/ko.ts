@@ -405,6 +405,8 @@ export const ko = {
       remoteAccess: {
         methodLabel: "원격 액세스 방식",
         methodDescription: "연결할 때마다 원격 주소를 변경할지 선택하세요.",
+        methodCustomRequirement:
+          "사용자 지정은 Cloudflare에 이미 추가한 도메인이 필요합니다.",
         temporaryMethod: "임시",
         customMethod: "사용자 지정",
         sectionTitle: "원격 액세스",

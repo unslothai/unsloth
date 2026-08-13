@@ -396,6 +396,8 @@ export const it = {
         methodLabel: "Metodo di accesso remoto",
         methodDescription:
           "Scegli se l’indirizzo remoto cambia a ogni connessione.",
+        methodCustomRequirement:
+          "Personalizzato richiede un dominio che hai già aggiunto a Cloudflare.",
         temporaryMethod: "Temporaneo",
         customMethod: "Personalizzato",
         sectionTitle: "Accesso remoto",
