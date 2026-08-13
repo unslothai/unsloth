@@ -148,10 +148,23 @@ pub async fn check_install_status() -> bool {
         return false;
     };
 
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.arg("-h")
-        .stdout(std::process::Stdio::null())
+    let mut cmd = match process::build_managed_cli_command_tokio(&bin, &["-h"]) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            warn!(
+                "Install check: cannot run the managed CLI for {:?}: {}",
+                bin, e
+            );
+            return false;
+        }
+    };
+    cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+
+    if let Err(error) = process::apply_managed_cli_context_tokio(&mut cmd) {
+        warn!("Install check: no usable working directory: {}", error);
+        return false;
+    }
 
     #[cfg(windows)]
     {

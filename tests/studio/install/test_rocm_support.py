@@ -2050,22 +2050,126 @@ class TestInstallShStructure:
         """An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY CPU pin is a request, not
         a detection failure: the */cpu wheel note must report the pin instead of
         claiming ROCm/HIP is unusable, the WSL setup guidance must be skipped,
-        and the gpu summary must not label a pinned AMD host "no usable ROCm"."""
+        and the gpu summary must not label a pinned AMD host "no usable ROCm".
+
+        The property is ORDER: the pin arm opens the chain the message sits in, so
+        a pinned host never reaches the message. This used to be approximated by a
+        character window before the message, which is a different claim -- it is a
+        budget on how much source may sit between the two, and every arm added to
+        the chain eats into it. #8529 added an unsupported-arch arm and pushed the
+        real distance to ~1121, so the window had to grow 400 -> 1400 for reasons
+        that had nothing to do with what the test is for. Walk the enclosing
+        if/elif chains instead: no distance, nothing to re-tune.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        note = source.find('substep "AMD GPU detected, but no usable ROCm/HIP install')
-        assert note != -1
-        assert (
-            '[ "$_torch_index_pinned" = true ]' in source[note - 400 : note]
-        ), "the */cpu note must check the explicit pin before diagnosing ROCm"
+        self._assert_guarded_by_pin_arm(
+            source,
+            'substep "AMD GPU detected, but no usable ROCm/HIP install',
+            'substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."',
+            "elif _has_amd_rocm_gpu; then",
+            "the */cpu note must check the explicit pin before diagnosing ROCm",
+        )
         assert (
             '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source
         ), "ROCm-on-WSL guidance is detection advice; skip it for pinned installs"
-        summary = source.find('step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"')
-        assert summary != -1
-        assert (
-            '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
-        ), "the gpu summary must not claim no usable ROCm for a pinned index"
+        self._assert_guarded_by_pin_arm(
+            source,
+            'step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"',
+            'step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)"',
+            "else",
+            "the gpu summary must not claim no usable ROCm for a pinned index",
+        )
+
+    _PIN_ARM = 'if [ "$_torch_index_pinned" = true ]'
+
+    # `fi` as a command of its own: at the start of the line, or after a `;`. install.sh
+    # closes chains inline too (`else :; fi`), and such a closure is invisible to a
+    # startswith("fi") test, leaving a closed chain looking open across the message.
+    _CLOSER = re.compile(r"(?:^|;)\s*fi\b")
+
+    # install.sh indents in 4-space steps, so a closure less than one step deeper than the
+    # arm closes the arm's own chain (or an enclosing one) rather than something nested in
+    # it. Comparing against the step, not the exact indent, keeps a `fi` re-indented by a
+    # space or two counting as the closure it is.
+    _INDENT_STEP = 4
+
+    @staticmethod
+    def _indent(line):
+        return len(line) - len(line.lstrip())
+
+    @classmethod
+    def _assert_guarded_by_pin_arm(cls, source, needle, pinned_note, arm, message):
+        """Assert ``needle`` sits in the ``arm`` arm of a still-open chain whose
+        first arm is the pin check and whose pin arm says ``pinned_note``.
+
+        Deliberately local rather than a whole-file walk of if/elif/fi. install.sh
+        embeds awk programs and PowerShell in quoted blocks, all of which contain
+        their own `if (...)`, and it closes some chains with a trailing `; fi`; a
+        global keyword walk mis-nests on both and can end up satisfying this guard
+        from an unrelated chain. Indentation is the structure install.sh is written
+        in and needs no parse: find the pin arm above the message, then require the
+        chain it opens to still be open (nothing closes it before the message) and
+        to have moved on to another arm (an `elif`/`else` at its indent).
+
+        The pin arm has to be the exact whole line and the arm the message sits in
+        has to be the exact expected one, or "a chain opened by something that
+        mentions the pin" is enough to pass: a never-firing `&& [ ... ]` extension
+        of the condition, or a decoy chain left open across the message with the
+        real guard deleted, both read as guards otherwise. And a guard that routes
+        pinned hosts to an empty arm still suppresses the message, so the pin arm
+        must be checked to carry its own note.
+        """
+        lines = source.splitlines()
+        # Skip comments: a commented-out `substep` is not a message users ever see.
+        hits = [
+            i
+            for i, line in enumerate(lines)
+            if needle in line and not line.lstrip().startswith("#")
+        ]
+        assert len(hits) == 1, f"expected exactly one {needle!r} in install.sh, found {len(hits)}"
+        message_line = hits[0]
+
+        opens = [i for i in range(message_line) if lines[i].strip() == cls._PIN_ARM + "; then"]
+        assert opens, f"{message}\nno pin check appears anywhere above the message"
+        pin_line = opens[-1]
+        indent = cls._indent(lines[pin_line])
+        between = range(pin_line + 1, message_line)
+
+        closed = [
+            i + 1
+            for i in between
+            if cls._CLOSER.search(lines[i].strip())
+            and cls._indent(lines[i]) < indent + cls._INDENT_STEP
+        ]
+        assert not closed, (
+            f"{message}\ninstall.sh:{pin_line + 1} opens on the pin check but the chain "
+            f"closes at install.sh:{closed[0]}, before the message at "
+            f"install.sh:{message_line + 1}, so the two are unrelated"
+        )
+        later_arms = [
+            i
+            for i in between
+            if re.match(r"^(elif|else)\b", lines[i].strip()) and cls._indent(lines[i]) == indent
+        ]
+        assert later_arms, (
+            f"{message}\nthe message at install.sh:{message_line + 1} is inside the pin "
+            f"arm opened at install.sh:{pin_line + 1}, so a pinned host still reaches it"
+        )
+        # The last arm before the message is the one the message is actually in.
+        enclosing_arm = lines[later_arms[-1]].strip()
+        assert enclosing_arm == arm, (
+            f"{message}\nthe message at install.sh:{message_line + 1} sits in "
+            f"`{enclosing_arm}` at install.sh:{later_arms[-1] + 1}, not in the expected "
+            f"`{arm}`, so the chain guarding it is not the one this test describes"
+        )
+        pin_body = lines[pin_line + 1 : later_arms[0]]
+        assert any(
+            pinned_note in line and not line.lstrip().startswith("#") for line in pin_body
+        ), (
+            f"{message}\nthe pin arm at install.sh:{pin_line + 1} no longer says "
+            f"{pinned_note!r}, so a pinned host is told nothing at all"
+        )
 
     _ROCM_VERSION_SOURCES = (
         "_rocm_tag_from_amd_smi",
@@ -2659,11 +2763,10 @@ class TestInstallShStructure:
         assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
-            # /opt/rocm/.info/version directly (no tool to shim), which resolves
-            # a tag on a real ROCm box and skips the no-version endpoint under
-            # test. Same path-substitution technique as the KFD topology tests.
-            # The read moved into _rocm_tag_from_version_file, so the rewrite has to
-            # land on the helper text; applying it to fn alone is a no-op.
+            # /opt/rocm/.info/version directly (no tool to shim), which resolves a tag on
+            # a real ROCm box and skips the no-version endpoint under test. The read lives
+            # in _rocm_tag_from_version_file, so the rewrite has to land on the helper
+            # text; applying it to fn alone is a no-op.
             version_fns = [
                 body.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
                 for body in version_fns

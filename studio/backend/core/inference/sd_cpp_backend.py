@@ -35,7 +35,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
-from core.inference.diffusion_device import resolve_diffusion_device_target
+from core.inference.diffusion_device import (
+    resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
+)
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -62,8 +65,10 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     build_img_gen_request,
+    device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
+    without_device_backend_flags,
 )
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
@@ -352,6 +357,42 @@ def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
     if not names:
         return None
     return any(name.upper() != "CPU" for name in names)
+
+
+# ggml device-name prefixes indexed by CUDA physical ordinal (ggml names its HIP backend either way); Vulkan is excluded, its ordinals are another namespace.
+_PHYSICAL_INDEX_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM")
+
+
+def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]) -> Optional[str]:
+    """The ``--list-devices`` name for CUDA/ROCm physical index ``ordinal``, or None.
+
+    None whenever the answer is not certain -- no selection, an unreadable probe, a build whose
+    devices are in another namespace, an index it does not list -- since the fallback is sd.cpp's
+    own device choice, i.e. today's behaviour.
+    """
+    if not binary or ordinal is None:
+        return None
+    text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is not None:
+        for line in text.splitlines():
+            name = line.split("\t", 1)[0].strip()
+            head = name.rstrip("0123456789")
+            if head.upper() not in _PHYSICAL_INDEX_DEVICE_PREFIXES:
+                continue
+            if name[len(head) :] == str(ordinal):
+                return name
+    # Said out loud rather than dropped in silence: the load still runs, on whichever device this
+    # build picks for itself, which is what happens today for every native load. Refusing instead
+    # would take the GPU selection from "not honoured here" to "cannot load at all" on any build
+    # older than the one that added --list-devices, including a user's own SD_CLI_PATH copy, since
+    # sd.cpp treats an unknown argument as fatal.
+    logger.warning(
+        "sd_cpp.device_pin_unresolved: this build does not report a CUDA/ROCm device %s "
+        "(--list-devices %s), so the graph runs on its own default device",
+        ordinal,
+        "was unreadable" if text is None else "does not list it",
+    )
+    return None
 
 
 def _h3_replacement_hint(binary: str) -> str:
@@ -823,6 +864,16 @@ class _SdState:
     sd_accelerator: Optional[str] = None
 
 
+def _offload_with_device_pin_impl(
+    offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]
+) -> list[str]:
+    """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
+    flags = list(offload)
+    if ordinal is None:
+        return flags
+    return [*flags, *device_backend_flags(sd_cpp_device_name_for_ordinal(binary, ordinal), flags)]
+
+
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     """Map the diffusers memory knobs onto an sd-cli offload policy. Only meaningful
     off-CPU (forced sd_cpp / MPS); on CPU everything is resident in RAM anyway."""
@@ -1096,10 +1147,24 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         # Parity with the diffusers load-time LoRA bake; native applies LoRA per generation, so a load-time selection is ignored.
         loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        # Same fallback the diffusers and video backends take: the route ranks the selection and
+        # passes the winner, but a direct caller (an MCP client, a test, a plugin) hands over
+        # gpu_ids alone, and without this the native engine is the one engine that would drop the
+        # pick silently. Re-ranked only when nobody has, so a route-resolved winner is never
+        # second-guessed against free VRAM that has moved since.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
@@ -1178,6 +1243,7 @@ class SdCppDiffusionBackend:
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1196,6 +1262,7 @@ class SdCppDiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
+        gpu_ordinal: Optional[int] = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -1302,6 +1369,11 @@ class SdCppDiffusionBackend:
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
+            # The device pin is NOT folded in here: the binary can still change below, through the
+            # deferred accelerator install, the post-download re-resolve, or a server start that
+            # falls back to one-shot, and the ggml device names come from whichever build ends up
+            # running. It is added at each point the flags are handed to a binary instead.
+            gpu_ordinal = gpu_ordinal if device == "cuda" else None
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation started during
@@ -1437,7 +1509,9 @@ class SdCppDiffusionBackend:
                         server.start(
                             files,
                             vae_format = fam.sd_cpp_vae_format,
-                            offload = list(offload),
+                            offload = _offload_with_device_pin_impl(
+                                offload, server_binary, gpu_ordinal
+                            ),
                             native_speed = native_speed,
                             # Pin to physical cores (sd.cpp's default oversubscribes; see _default_threads).
                             threads = _default_threads(),
@@ -1506,7 +1580,15 @@ class SdCppDiffusionBackend:
                     files = files,
                     vae_format = fam.sd_cpp_vae_format,
                     native_speed = native_speed,
-                    offload_flags = offload,
+                    # Pinned against the binary this load COMMITTED to, which a deferred install or
+                    # a one-shot fallback may have changed since the policy was built.
+                    offload_flags = tuple(
+                        _offload_with_device_pin_impl(
+                            offload,
+                            server_binary if mode == "server" else getattr(engine, "binary", None),
+                            gpu_ordinal,
+                        )
+                    ),
                     # One-shot sd-cli reads this per generation; pin to physical cores.
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
@@ -2075,7 +2157,11 @@ class SdCppDiffusionBackend:
                     "transformer_quant": None,
                     "text_encoder_quant": None,
                     "memory_mode": None,
-                    "offload_policy": "active" if state.offload_flags else "none",
+                    # The POLICY flags only: a --backend pin says which card ran the graph, not
+                    # that anything was offloaded, and a `fast` load carries no policy flags at all.
+                    "offload_policy": (
+                        "active" if without_device_backend_flags(state.offload_flags) else "none"
+                    ),
                 }
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -2246,7 +2332,11 @@ class SdCppDiffusionBackend:
             server.start(
                 state.files,
                 vae_format = state.vae_format,
-                offload = list(state.offload_flags),
+                # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec
+                # instead of replacing, and an explicit diffusion=CUDA0 outranks the bare `cpu`
+                # default, so leaving the pin on would restart the server onto the very backend
+                # that just aborted.
+                offload = without_device_backend_flags(state.offload_flags),
                 native_speed = state.native_speed,
                 threads = state.threads,
                 extra_args = list(CPU_BACKEND_FLAGS),
@@ -2499,9 +2589,12 @@ class SdCppDiffusionBackend:
             "gguf_variant": extract_quant_token(state.gguf_filename)
             if state.gguf_filename
             else None,
-            # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none").
-            "cpu_offload": bool(state.offload_flags),
-            "offload_policy": "active" if state.offload_flags else "none",
+            # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none"), minus
+            # the --backend device pin, which is a card choice rather than an offload decision.
+            "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
+            "offload_policy": (
+                "active" if without_device_backend_flags(state.offload_flags) else "none"
+            ),
             "vae_tiling": False,
             "memory_mode": None,
             "speed_mode": state.native_speed,

@@ -447,15 +447,21 @@ def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -
     assert "[Console]::SetError(" in source
 
 
-def test_update_command_uses_the_utf8_switch_not_just_env() -> None:
-    """-I implies -E, so the isolated update child ignores every PYTHON* var.
+def test_managed_cli_command_uses_the_utf8_switch_not_just_env() -> None:
+    """The managed CLI children must force UTF-8 on the command line.
 
-    https://docs.python.org/3/using/cmdline.html#cmdoption-I
+    Every Windows spawn of the CLI now goes through build_managed_cli_command in
+    process.rs, so that is where the switch has to be; update.rs only calls it.
+    The env vars alone are not enough: a caller that already exports
+    PYTHONIOENCODING wins over the ones set beside the spawn, and the Rust
+    readers decode as UTF-8 regardless. -X utf8 is not overridable that way.
+
+    https://docs.python.org/3/using/cmdline.html#cmdoption-X
     """
-    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs").read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding = "utf-8")
     assert re.search(
         r'"-X"\s*,\s*"utf8"', source
-    ), "isolated Python child needs -X utf8, env vars are ignored"
+    ), "the managed CLI child needs -X utf8, not just the env vars"
 
 
 @pytest.mark.parametrize(

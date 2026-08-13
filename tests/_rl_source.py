@@ -11,6 +11,7 @@ while still tracking the shipped code.
 from __future__ import annotations
 
 import ast
+import collections
 import inspect
 import logging
 import os
@@ -28,6 +29,8 @@ WRAPPER_NAMES = (
     "_warn_grpo_hidden_states_fallback_once",
     "_note_grpo_hidden_states_success",
     "_replace_outputs_logits",
+    "_minimise_logits_kwarg",
+    "_drop_spare_hidden_states",
     "_install_grpo_hidden_states_forward_wrapper",
 )
 
@@ -66,6 +69,7 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
 
     namespace: dict = {
         "os": os,
+        "collections": collections,
         "inspect": inspect,
         "logger": logging.getLogger("unsloth-repro"),
     }
