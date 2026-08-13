@@ -801,16 +801,13 @@ def clear_gpu_cache():
     if device == DeviceType.CUDA:
         import torch
 
-        # Nothing reserved on any visible device means this process never built an
-        # allocator, so there is no work in flight to wait on. Skip only the
-        # synchronize: it would attach a primary context (~612 MiB, never returned
-        # while the process lives) just to idle on an empty stream.
-        # memory_reserved(i) needs no context of its own, and is_initialized() is no
-        # guard here since reading device properties already flips it. Summed over
-        # devices rather than the current one so a process that allocated only on a
-        # non-current device still gets drained. Deliberately NOT wrapped in
-        # try/except: the diffusion and video unload paths document that a sticky
-        # CUDA fault has to propagate out of here.
+        # Nothing reserved anywhere means no allocator was ever built, so there is
+        # nothing to wait on. Skip only the synchronize: it attaches a primary
+        # context (~612 MiB, never returned) to idle on an empty stream.
+        # memory_reserved needs no context; is_initialized() is useless here, since
+        # reading device properties already flips it. Summed over devices so one
+        # that allocated off the current device still drains. Deliberately NOT
+        # wrapped: the unload paths need a sticky CUDA fault to propagate.
         if torch.cuda.is_available() and any(
             torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())
         ):
@@ -2446,13 +2443,12 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             torch_indices = list(range(visible_count))
             index_kind = "relative"
 
-        # Linux ROCm: sysfs first. The overlay below would replace torch's
-        # process-local figures with these same sysfs numbers anyway, so asking
-        # torch for occupancy first buys a permanent driver context and then throws
-        # the answer away. Totals come from device properties, which cost nothing
-        # and are what the overlay's 1:1 check compares against. Only taken when
-        # sysfs covers EVERY visible device; otherwise fall through to torch
-        # unchanged, so a device the overlay declines still gets a real number.
+        # Linux ROCm: sysfs first. The overlay below replaces torch's process-local
+        # figures with these same numbers anyway, so asking torch first buys a
+        # permanent context and throws the answer away. Totals come from device
+        # properties, which cost nothing and are what the overlay's check compares
+        # against. Only when sysfs covers EVERY visible device; otherwise fall
+        # through to torch, so a device the overlay declines still gets a number.
         if IS_ROCM and index_kind == "physical" and platform.system() == "Linux":
             inventory = _torch_get_device_inventory(torch_indices)
             probe = [{"index": inv["index"], "vram_total_gb": inv["total_gb"]} for inv in inventory]
