@@ -59,7 +59,13 @@ def shoot(page, name):
         pass
 
 
-def api(page, path, method = "GET", body = None, token = None):
+def api(
+    page,
+    path,
+    method = "GET",
+    body = None,
+    token = None,
+):
     """Call the backend from the page so the request carries the session cookie."""
     result = page.evaluate(
         """async ([url, method, body, token]) => {
@@ -207,9 +213,7 @@ def pill(page, label):
 
 
 def permission_pill(page):
-    return page.locator(
-        'button[aria-label="Permission level for tool calls"]:visible'
-    ).first
+    return page.locator('button[aria-label="Permission level for tool calls"]:visible').first
 
 
 def choose_permission(page, label):
@@ -229,8 +233,7 @@ def expect_pills(page, where, search, code, permission):
         "data-pill-label", permission, timeout = TIMEOUT_MS
     )
     print(
-        f"[thread-settings]   {where}: Search={search} Code={code} "
-        f"permission={permission!r}",
+        f"[thread-settings]   {where}: Search={search} Code={code} " f"permission={permission!r}",
         flush = True,
     )
 
@@ -244,9 +247,7 @@ def read_globals(page):
 
 def main():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            args = ["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
