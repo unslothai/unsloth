@@ -142,6 +142,15 @@ check "healthy gfx1100: no unsupported claim" \
     "$(has "$_out" 'no ROCm PyTorch wheels Unsloth installs')" 0
 check "healthy gfx1100: no group advice" "$(has "$_out" 'render and video groups')" 0
 
+# A working torch with no gfx token from the tools: amd-smi reports the market name only.
+# Kept as its own case because it is the one healthy shape the unsupported arm can reach --
+# with $_setup_gfx set the arm above wins first, so that case cannot see this arm over-fire.
+_out=$(run_case "$_LSPCI_NAVI31" 0 "" "AMD Radeon RX 7900 XTX" false healthy_nogfx)
+check "healthy, no gfx token: plain ROCm report" \
+    "$(printf '%s\n' "$_out" | grep -cx 'STEP: AMD ROCm')" 1
+check "healthy, no gfx token: no unsupported claim" \
+    "$(has "$_out" 'no ROCm PyTorch wheels Unsloth installs')" 0
+
 echo "the explicit-backend and hidden-mask arms are outranked too"
 # Neither a different backend pin nor a changed visibility mask can reach a wheel that is
 # not published, so both would send the user after a fix that cannot land.
