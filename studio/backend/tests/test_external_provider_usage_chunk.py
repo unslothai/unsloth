@@ -492,9 +492,9 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
         # chunk made this test depend on that reader ignoring the shape it was handed.
         if request.url.path.endswith("/responses"):
             content = (
-                b'event: response.output_text.delta\n'
+                b"event: response.output_text.delta\n"
                 b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
-                b'event: response.completed\n'
+                b"event: response.completed\n"
                 b'data: {"type":"response.completed"}\n\n'
             )
         else:

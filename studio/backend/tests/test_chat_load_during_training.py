@@ -1967,10 +1967,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             tensor_parallel = False,
         )
         expected = (
-            self.route._ASSUMED_MAX_VOCAB
-            * 512
-            * 4
-            * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+            self.route._ASSUMED_MAX_VOCAB * 512 * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
         ) / (1024**3)
         self.assertAlmostEqual(one, expected, places = 9)
         self.assertGreater(one, 0.0)
