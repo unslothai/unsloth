@@ -266,6 +266,8 @@ export interface LoadModelResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** Pass-through llama-server arguments the running load was invoked with. */
+  requested_llama_extra_args?: string[] | null;
 }
 
 export interface UnloadModelRequest {
@@ -353,6 +355,8 @@ export interface InferenceStatusResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** Pass-through llama-server arguments the running load was invoked with. */
+  requested_llama_extra_args?: string[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

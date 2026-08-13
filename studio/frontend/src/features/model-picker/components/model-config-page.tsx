@@ -1270,6 +1270,7 @@ function ExtraArgsRow({
     text,
     catalog,
     config.selectedGpuIds != null,
+    config.gpuMemoryMode === "manual",
   );
   const tokenCount = parseExtraArgs(text).tokens.length;
 
@@ -1597,6 +1598,52 @@ export function ModelConfigPage({
   // would read as "none", and the first edit would then submit a list that silently
   // dropped them. Fetched, not guessed.
   //
+  // The row judges what is typed while it is mounted, and deliberately leaves its
+  // verdict standing when Advanced settings collapse, because the tokens still go
+  // out with the load. But a verdict reached before the catalogue arrived was
+  // reached without knowing which flags this build documents, and collapsing the
+  // section freezes it: a bare --threads typed during a cold probe would keep Load
+  // enabled and fail at llama-server startup. So while the row is unmounted, the
+  // panel re-judges what the config holds once the catalogue lands.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the arguments and the section are the inputs
+  useEffect(() => {
+    if (showAdvanced || !target.isGguf || resolvedIsDiffusion) {
+      return;
+    }
+    const args = configState.llamaExtraArgs;
+    if (args == null || args.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    loadLlamaFlagCatalog().then((catalog) => {
+      if (cancelled || !catalog) {
+        // Null is "cannot verify": leaving the standing verdict alone is the same
+        // benefit of the doubt the row gives an unprobed build.
+        return;
+      }
+      setExtraArgsLoadable(
+        extraArgsAreLoadable(
+          diagnoseExtraArgs(
+            formatExtraArgs(args),
+            catalog,
+            configState.selectedGpuIds != null,
+            configState.gpuMemoryMode === "manual",
+          ),
+        ),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showAdvanced,
+    configState.llamaExtraArgs,
+    configState.selectedGpuIds,
+    configState.gpuMemoryMode,
+    target.isGguf,
+    resolvedIsDiffusion,
+  ]);
+
   // Here rather than in the row that displays it: that row is inside Advanced
   // settings, which is not rendered while the section is collapsed, so a panel
   // opened closed would never fetch and a cold load would launch without the stored
@@ -1637,6 +1684,11 @@ export function ModelConfigPage({
       return;
     }
     let cancelled = false;
+    // What the config held BEFORE the request went out. Anything else at the end of
+    // it was typed by the user while it was in flight, and sanitizing that would
+    // rewrite live input: typing --agent during the window cleared the box instead
+    // of showing the error, and a long paste could be trimmed behind the cursor.
+    const localAtStart = configRef.current.llamaExtraArgs;
     // The denylist, not the catalogue: sanitizing a stored list needs only the flags
     // Unsloth refuses, and that route answers without running `llama-server --help`.
     // Waiting on the probe instead would hold Load shut for as long as a cold --help
@@ -1684,7 +1736,7 @@ export function ModelConfigPage({
         // is the same treatment for the one already in hand, which nothing else
         // would catch while Advanced stays collapsed.
         const local = configRef.current.llamaExtraArgs;
-        if (local != null && local.length > 0) {
+        if (local != null && local.length > 0 && local === localAtStart) {
           const cleaned = sanitizeStoredExtraArgs(
             local,
             managed?.managed ?? new Set<string>(),

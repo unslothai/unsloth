@@ -169,3 +169,33 @@ def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route
     backend = _StatusBackend("org/A-GGUF")
     backend.chat_template_override = "bundled-template"
     assert status_route(backend).chat_template_override is None
+
+
+def test_status_publishes_the_running_pass_through_arguments(status_route):
+    # A tab opened while a model is already running never saw the load, so the only
+    # place it can learn what the server was invoked with is here. Without it, a
+    # rollback after a failed switch restores the previous model without them, and
+    # the omitted field cannot inherit either: the failed target is left resident,
+    # and the route refuses to carry arguments across models.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.requested_extra_args = ["--numa", "distribute"]
+    status = status_route(backend)
+    assert status.requested_llama_extra_args == ["--numa", "distribute"]
+
+
+def test_a_load_that_passed_none_reports_none(status_route):
+    # Empty and never-set read alike: a client only ever resends a non-empty list.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.requested_extra_args = []
+    assert status_route(backend).requested_llama_extra_args is None
+    backend.requested_extra_args = None
+    assert status_route(backend).requested_llama_extra_args is None
+
+
+def test_the_diffusion_runner_reports_none(status_route):
+    # It appends none of them, so publishing a list would describe a command that
+    # does not exist.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.is_diffusion = True
+    backend.requested_extra_args = ["--numa", "distribute"]
+    assert status_route(backend).requested_llama_extra_args is None

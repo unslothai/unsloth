@@ -917,4 +917,52 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
     diagnoseExtraArgs("--control-vector-layer-range 1 10", unverified),
     [],
   );
+  // An attached value is one of the two, not the whole option. llama.cpp b10360
+  // refuses "--flag=value" outright anyway, but a build that took it would still
+  // be one layer short here.
+  assert.equal(
+    levels("--control-vector-layer-range=1", unverified)[0],
+    "error",
+  );
+  assert.deepEqual(
+    diagnoseExtraArgs("--control-vector-layer-range=1 10", unverified),
+    [],
+  );
+});
+
+test("Manual GPU memory reports the offload flags it removes", () => {
+  // /load calls strip_shadowing_flags(strip_offload=True) in Manual mode. The layer
+  // count survives that, because the route translates it into the first-class field
+  // first; nothing does the same for the MoE count or the fitter, so saying they win
+  // was false and the model quietly ran the control's value instead.
+  const manual = (input: string) =>
+    diagnoseExtraArgs(input, CATALOG, false, true).map((d) => d.message);
+  assert.ok(
+    manual("--n-cpu-moe 10")[0].includes("will be removed"),
+    manual("--n-cpu-moe 10")[0],
+  );
+  assert.ok(manual("-ncmoe 10")[0].includes("-ncmoe will be removed"));
+  assert.ok(manual("--fit on")[0].includes("will be removed"));
+  // Nothing is refused: the load still runs, just without them.
+  assert.ok(!manual("--n-cpu-moe 10").includes("error"));
+  assert.equal(
+    diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, false, true).every(
+      (d) => d.level !== "error",
+    ),
+    true,
+  );
+  // In Default mode they are passed, and the note about who wins is the true one.
+  assert.ok(
+    diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, false, false)
+      .map((d) => d.message)
+      .join(" ")
+      .includes("wins"),
+  );
+  // The layer count is translated, not dropped, so it still reads as winning.
+  assert.ok(
+    diagnoseExtraArgs("-ngl 20", CATALOG, false, true)
+      .map((d) => d.message)
+      .join(" ")
+      .includes("wins"),
+  );
 });

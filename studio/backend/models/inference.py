@@ -778,6 +778,17 @@ class _InferenceRuntimeFields(BaseModel):
             "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
+    requested_llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server arguments the running load was INVOKED "
+            "with, or None for a non-GGUF load and for a load that passed none. "
+            "Published so a client that attached to an already-running server "
+            "(a fresh tab, or another browser) knows what it is running: without "
+            "it, a rollback after a failed switch restores the previous model "
+            "without the arguments it had."
+        ),
+    )
 
 
 class LoadResponse(_InferenceRuntimeFields):

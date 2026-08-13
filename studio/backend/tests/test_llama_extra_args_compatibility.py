@@ -324,6 +324,20 @@ def test_a_two_value_flag_is_kept_whole():
             _lsa.validate_extra_args(bad)
 
 
+def test_an_attached_value_is_one_of_the_two():
+    # llama.cpp b10360 refuses "--flag=value" outright ("error: invalid argument"),
+    # and a build that did take it would still be one layer short here, so the
+    # attached form counts as START rather than as the whole option.
+    with pytest.raises(ValueError, match = "takes two values"):
+        _lsa.validate_extra_args(["--control-vector-layer-range=1"])
+    with pytest.raises(ValueError, match = "takes two values"):
+        _lsa.validate_extra_args(["--control-vector-layer-range=1", "--numa", "distribute"])
+    assert _lsa.validate_extra_args(["--control-vector-layer-range=1", "10"])
+    # An ordinary flag's attached value is still the whole of it.
+    assert _lsa.validate_extra_args(["--top-k=20"])
+    assert _lsa.validate_extra_args(["--top-k=20", "--numa", "distribute"])
+
+
 def test_trimming_sheds_a_two_value_flag_whole():
     # A list stored by an older build can exceed today's bound, and the trim walks in
     # from the tail. Shedding END alone leaves START looking like an ordinary value,

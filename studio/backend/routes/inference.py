@@ -4257,6 +4257,15 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         parallel_slots = (
             None if llama_backend.is_diffusion else llama_backend.effective_parallel_slots
         ),
+        # What the load was INVOKED with, not the rewritten launch list: that is the
+        # list a client would have to resend to reproduce this server, and the one
+        # the rollback path needs. Empty reports as None, so "passed none" and
+        # "never set" read alike to a client that only ever resends a non-empty list.
+        requested_llama_extra_args = (
+            None
+            if llama_backend.is_diffusion
+            else (list(llama_backend.requested_extra_args or []) or None)
+        ),
     )
     unresolved = (
         set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}

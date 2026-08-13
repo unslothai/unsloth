@@ -478,6 +478,24 @@ const GPU_SELECTION_STRIPPED_FLAGS: Record<string, string> = {
 };
 
 /**
+ * Flags Manual GPU memory REMOVES without translating, unlike the layer count.
+ *
+ * `/load` calls strip_shadowing_flags(strip_offload=True) whenever gpu_memory_mode
+ * is manual. An -ngl in the extras survives that, because the route reads it with
+ * parse_gpu_layers_override and writes it into the first-class field first; nothing
+ * does the same for the MoE count or the fitter, so those are dropped and the
+ * controls' own values are what runs. Telling the reader theirs wins would be false.
+ */
+const MANUAL_OFFLOAD_STRIPPED_FLAGS: Record<string, string> = {
+  "--n-cpu-moe": "MoE Layers on CPU",
+  "-ncmoe": "MoE Layers on CPU",
+  "--cpu-moe": "MoE Layers on CPU",
+  "-cmoe": "MoE Layers on CPU",
+  "--fit": "GPU Memory",
+  "-fit": "GPU Memory",
+};
+
+/**
  * Smallest value the backend's own parser accepts, per flag.
  *
  * parse_ctx_override refuses a negative context; parse_gpu_layers_override accepts
@@ -542,6 +560,8 @@ export function diagnoseExtraArgs(
   catalog: LlamaFlagCatalog | null,
   /** True when the GPU picker owns placement, which removes the device flags. */
   gpuSelectionActive = false,
+  /** True when GPU Memory is Manual, which removes the offload flags it owns. */
+  manualGpuMemory = false,
 ): ExtraArgsDiagnostic[] {
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote } = parseExtraArgs(input);
@@ -624,17 +644,20 @@ export function diagnoseExtraArgs(
       }
       continue;
     }
-    pendingValues =
-      token.includes("=") || flag !== token.trim()
+    const attached = token.includes("=") || flag !== token.trim();
+    pendingValues = TWO_VALUE_FLAGS.has(flag)
+      ? // An attached value is ONE of the two, so the option still owes its END.
+        attached
+        ? 1
+        : 2
+      : attached
         ? 0
         : // A flag THIS build documents as taking no value claims none, so the next
           // bare token has no owner. Only when the catalogue actually knows the
           // flag: an unverified one keeps the benefit of the doubt.
           catalog?.switches.has(flag)
           ? 0
-          : TWO_VALUE_FLAGS.has(flag)
-            ? 2
-            : 1;
+          : 1;
     pendingOwner = pendingValues > 0 ? flag : null;
   }
 
@@ -642,6 +665,7 @@ export function diagnoseExtraArgs(
   const unknown: string[] = [];
   const shadowed: string[] = [];
   const stripped: string[] = [];
+  const manualStripped: string[] = [];
   const reportedValues = new Set<string>();
   for (const [index, token] of tokens.entries()) {
     const flag = extraArgFlagName(token);
@@ -702,6 +726,10 @@ export function diagnoseExtraArgs(
       stripped.push(flag);
       continue;
     }
+    if (manualGpuMemory && MANUAL_OFFLOAD_STRIPPED_FLAGS[flag]) {
+      manualStripped.push(flag);
+      continue;
+    }
     const control = CONTROL_OWNED_FLAGS[flag];
     if (control) {
       shadowed.push(`${flag} (${control})`);
@@ -735,7 +763,7 @@ export function diagnoseExtraArgs(
         !catalog.switches.has(pendingOwner)))
   ) {
     const message = TWO_VALUE_FLAGS.has(pendingOwner)
-      ? `${pendingOwner} needs two values after it.`
+      ? `${pendingOwner} needs two values, a start and an end layer.`
       : INTEGER_VALUE_FLAGS.has(pendingOwner)
         ? `${pendingOwner} needs a number after it.`
         : `${pendingOwner} needs a value after it.`;
@@ -749,6 +777,12 @@ export function diagnoseExtraArgs(
     out.push({
       level: "warning",
       message: `${stripped.join(", ")} will be removed: the GPU selection above owns placement. Set GPU Memory to Default to pass it yourself.`,
+    });
+  }
+  if (manualStripped.length > 0) {
+    out.push({
+      level: "warning",
+      message: `${manualStripped.join(", ")} will be removed: GPU Memory is Manual, and its controls own offload. Set GPU Memory to Default to pass it yourself.`,
     });
   }
   if (shadowed.length > 0) {

@@ -269,8 +269,15 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             attached = "=" in token or flag != token.strip()
             if pending_two_value > 0:
                 raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
-            pending_values = 0 if attached else 2 if flag in _TWO_VALUE_FLAGS else 1
-            pending_two_value = 2 if not attached and flag in _TWO_VALUE_FLAGS else 0
+            # An attached value is ONE of the two, not the whole option:
+            # "--control-vector-layer-range=1" still owes its END, and
+            # llama-server exits on the incomplete option.
+            if flag in _TWO_VALUE_FLAGS:
+                pending_values = 1 if attached else 2
+                pending_two_value = pending_values
+            else:
+                pending_values = 0 if attached else 1
+                pending_two_value = 0
             two_value_flag = flag
         out.append(token)
     if pending_two_value > 0:

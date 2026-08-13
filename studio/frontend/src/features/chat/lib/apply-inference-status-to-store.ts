@@ -456,6 +456,22 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
+    // What the running server was actually invoked with. Without this a tab opened
+    // while a model was already loaded knows nothing about its pass-through
+    // arguments (the switch path is where they were recorded), and a rollback after
+    // a failed switch restores that model without them: the failed target is left
+    // resident, so an omitted field cannot inherit across models either.
+    //
+    // Adopted only when nothing is recorded yet or the model underneath changed, and
+    // never on a backend that does not publish the field, so a list this tab knows
+    // first-hand is not replaced by an echo that lags a load in flight.
+    ...(status.requested_llama_extra_args !== undefined &&
+      (status.is_gguf ?? true) &&
+      (prevState.loadedLlamaExtraArgs === null ||
+        hydratingExistingModel ||
+        slotsModelChanged) && {
+        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
+      }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
