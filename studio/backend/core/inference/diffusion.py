@@ -62,6 +62,8 @@ from .diffusion_device import (
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
     diffusion_device_target_from_torch_device,
+    pin_cuda_ordinal,
+    placed_cuda_ordinal,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -784,6 +786,11 @@ class _LoadState:
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
     # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
     gpu_ordinal: Optional[int] = None
+    # The card the weights are ACTUALLY on, including the automatic case, where it is whichever
+    # device the load thread was pointing at. Only for re-pinning a pooled generate worker that a
+    # previous pinned load left on another card; the target and the reported build read
+    # gpu_ordinal, so the automatic path still resolves a bare device.
+    placed_ordinal: Optional[int] = None
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids).
     # Stored rather than rebuilt so generate()'s activation re-check budgets with the SAME
     # distilled / edit multipliers the load did, and the two can never drift apart.
@@ -1312,6 +1319,11 @@ class DiffusionBackend:
         """
         target = self._target_for_ordinal(state.family, state.gpu_ordinal)
         apply_diffusion_device_ordinal(target)
+        # And put an AUTOMATIC load back on its own card. generate() runs on a pooled
+        # asyncio.to_thread worker, so a previous pinned model leaves that thread set to its GPU
+        # for good; with no ordinal to pin, the bare "cuda" Generators below would then target that
+        # card while these weights sit on the default one.
+        pin_cuda_ordinal(state.placed_ordinal)
         return target
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
@@ -4209,6 +4221,7 @@ class DiffusionBackend:
                         base_repo = base,
                         device = device,
                         gpu_ordinal = target.ordinal,
+                        placed_ordinal = placed_cuda_ordinal(target),
                         dtype = str(dtype).replace("torch.", ""),
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,

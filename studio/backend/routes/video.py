@@ -47,10 +47,10 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _selected_gpu_ordinal(gpu_ids):
+def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True):
     """The images route's resolver, shared so both media routes apply one rule."""
     from routes.inference import _selected_gpu_ordinal as _resolve
-    return _resolve(gpu_ids)
+    return _resolve(gpu_ids, allow_ranking = allow_ranking)
 
 
 def _training_is_active() -> bool:
@@ -139,10 +139,17 @@ async def video_download_plan(
         # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
         # plan runs before the load's training guard can refuse. Staging needs no GPU.
         # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
-        # so it waits until training is known idle. ONE ranking, reused by preflight and plan.
+        # so the RANKING waits until training is known idle. Validating and translating the ids
+        # does not, so that happens either way: a plan that skipped it accepted a GPU the load
+        # would refuse and sized its file set for the wrong card. ONE resolution, reused by
+        # preflight and plan.
         gpu_ordinal = None
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
-            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
+        training = fam is not None and await asyncio.to_thread(_training_is_active)
+        if fam is not None:
+            gpu_ordinal = await _selected_gpu_ordinal(
+                request.gpu_ids, allow_ranking = not training
+            )
+        if fam is not None and not training:
             await asyncio.to_thread(
                 assert_video_precision_available,
                 fam,

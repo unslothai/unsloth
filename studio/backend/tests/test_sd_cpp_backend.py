@@ -2381,3 +2381,18 @@ def test_the_native_engine_resolves_a_bare_gpu_selection_itself(monkeypatch):
     )
     assert seen["ids"] == [3]
     assert captured["gpu_ordinal"] == 1
+
+
+def test_an_unresolvable_device_pin_says_so_and_still_loads(tmp_path, capsys):
+    # Refusing the load here would take an unhonoured selection to an unloadable model on any
+    # build older than the one that added --list-devices, including a user's own SD_CLI_PATH copy,
+    # since sd.cpp treats an unknown argument as fatal. It runs on the build's own device, as it
+    # does today for every native load, and says so rather than dropping the pick in silence.
+    binary = tmp_path / "sd-cli-old"
+    binary.write_text("#!/usr/bin/env bash\nexit 1\n")
+    binary.chmod(0o755)
+    assert bk.sd_cpp_device_name_for_ordinal(str(binary), 1) is None
+    assert "device_pin_unresolved" in capsys.readouterr().out
+    # No selection is not an unresolved one, so it says nothing.
+    assert bk.sd_cpp_device_name_for_ordinal(str(binary), None) is None
+    assert "device_pin_unresolved" not in capsys.readouterr().out

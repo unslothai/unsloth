@@ -2339,3 +2339,54 @@ def test_download_plan_ignores_a_gpu_selection_off_cuda(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert seen["gpu_ordinal"] is None
+
+
+def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(client, monkeypatch):
+    # The training guard is about not opening a CUDA context, which only the free-VRAM ranking
+    # does. Skipping the whole resolution let the plan answer 200 for a GPU the load then refuses,
+    # and size its file set for the default card, after tens of gigabytes had been staged.
+    import types as _types
+
+    from core.inference import diffusion_device as devmod
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+    from routes import inference as routes_inference
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(routes_inference, "_training_is_active", lambda: True)
+    seen: dict = {}
+
+    def _resolve(ids, *, allow_ranking = True):
+        seen["ids"], seen["allow_ranking"] = list(ids), allow_ranking
+        if ids == [7]:
+            raise ValueError("Requested GPU [7] but none of them are visible to this process")
+        return ids[0]
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _resolve)
+    backend = diffusion_module.get_diffusion_backend()
+    planned: dict = {}
+    monkeypatch.setattr(
+        backend, "download_plan",
+        lambda model_path, **kwargs: (planned.update(kwargs), {"entries": [], "total_bytes": 0})[1],
+        raising = False,
+    )
+    body = {
+        "model_path": "unsloth/FLUX.1-dev-GGUF",
+        "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+        "model_kind": "gguf",
+    }
+    # A card that exists: honoured, and the plan is sized for it, without a ranking probe.
+    resp = client.post("/api/inference/images/download-plan", json = {**body, "gpu_ids": [1]})
+    assert resp.status_code == 200
+    assert seen == {"ids": [1], "allow_ranking": False}
+    assert planned["gpu_ordinal"] == 1
+    # The precision preflight is still skipped while training runs; only the selection is judged.
+    assert getattr(backend, "last_precision_kwargs", None) is None
+
+    # And one that does not: refused here rather than after the download.
+    resp = client.post("/api/inference/images/download-plan", json = {**body, "gpu_ids": [7]})
+    assert resp.status_code == 400
+    assert "visible to this process" in resp.json()["detail"]

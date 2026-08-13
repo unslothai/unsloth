@@ -64,6 +64,8 @@ from .diffusion_device import (
     diffusion_device_scope,
     force_float32_rope,
     install_decoder_sync,
+    pin_cuda_ordinal,
+    placed_cuda_ordinal,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -505,6 +507,10 @@ class _VideoLoadState:
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
     # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
     gpu_ordinal: Optional[int] = None
+    # The card the weights are ACTUALLY on, automatic loads included. Only for re-pinning a worker
+    # that a previous pinned load may have left on another card; everything reported reads
+    # gpu_ordinal, so an automatic load still resolves a bare device. Mirrors the image backend.
+    placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
@@ -1036,7 +1042,12 @@ class VideoBackend:
         """The resident pipeline's target, pinned onto the calling thread. Every worker that
         touches the loaded pipeline goes through this: the weights are on ``state.gpu_ordinal``
         and ``state.device`` is un-indexed, so an unpinned thread resolves to its own card."""
-        return self._device_target(state.gpu_ordinal)
+        target = self._device_target(state.gpu_ordinal)
+        # And an automatic load back onto its own card, in case this thread is a shared one a
+        # previous pinned load left elsewhere. The image path reaches this through a pooled
+        # executor; here it costs one no-op call to keep the two engines identical.
+        pin_cuda_ordinal(state.placed_ordinal)
+        return target
 
     # ── validation ───────────────────────────────────────────────────────────
 
@@ -1871,6 +1882,9 @@ class VideoBackend:
                         base_repo = fam.base_repo,
                         device = native_device,
                         gpu_ordinal = native_ordinal,
+                        # The native runtime is sd.cpp, not torch, so there is no thread-local
+                        # device to put back: the pin it honours is the --backend one.
+                        placed_ordinal = native_ordinal,
                         dtype = Path(filename).stem.split("-")[-1],
                         kind = "gguf",
                         engine = "sd_cpp",
@@ -3802,6 +3816,7 @@ class VideoBackend:
                     base_repo = base,
                     device = device,
                     gpu_ordinal = target.ordinal,
+                    placed_ordinal = placed_cuda_ordinal(target),
                     dtype = str(dtype).replace("torch.", ""),
                     kind = kind,
                     gguf_filename = gguf_filename,
@@ -4535,6 +4550,7 @@ class VideoBackend:
                 base_repo = base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
+                placed_ordinal = placed_cuda_ordinal(umem_target),
                 dtype = str(dtype).replace("torch.", ""),
                 kind = kind,
                 engine = "diffusers",

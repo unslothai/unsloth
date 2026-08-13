@@ -1676,3 +1676,43 @@ def test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have(client,
     )
     assert resp.status_code == 400
     assert "visible to this process" in resp.json()["detail"]
+
+
+def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(
+    client, monkeypatch
+):
+    # Same rule as the image twin: the training guard bars the free-VRAM ranking, not the
+    # validation, which reads the environment mask and nvidia-smi and opens no CUDA context.
+    import types
+
+    import core.inference.diffusion_device as devmod
+    from routes import video as routes_video
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(routes_video, "_training_is_active", lambda: True)
+    seen: dict = {}
+
+    def _resolve(ids, *, allow_ranking = True):
+        seen["ids"], seen["allow_ranking"] = list(ids), allow_ranking
+        raise ValueError("Requested GPU [7] but none of them are visible to this process")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _resolve)
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend, "download_plan",
+        lambda *a, **k: pytest.fail("a refused GPU pick must not reach the planner"),
+        raising = False,
+    )
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "gpu_ids": [7],
+        },
+    )
+    assert resp.status_code == 400
+    assert seen == {"ids": [7], "allow_ranking": False}

@@ -896,3 +896,70 @@ def test_the_device_scope_still_runs_the_body_on_an_unusable_index(monkeypatch):
     with dd.diffusion_device_scope(9):
         ran.append(True)
     assert ran == [True]
+
+
+def test_the_placed_ordinal_records_the_card_an_automatic_load_used(monkeypatch):
+    # /images/generate runs on a pooled asyncio.to_thread worker, so a pinned load leaves that
+    # thread on its card for good. An automatic load after it has no ordinal to re-pin with, so
+    # the card it actually landed on is recorded separately and used to put the worker back.
+    current = [3]
+    torch = _make_torch(cuda_available = True, device_count = 4)
+    torch.cuda.current_device = lambda: current[0]
+    torch.cuda.set_device = lambda index: current.__setitem__(0, index)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _install(monkeypatch, torch, studio_device = "cuda")
+
+    automatic = dd.resolve_diffusion_device_target()
+    assert automatic.ordinal is None                 # the target itself stays un-indexed
+    assert dd.placed_cuda_ordinal(automatic) == 3    # but the card is known
+
+    selected = dd.resolve_diffusion_device_target(ordinal = 1)
+    assert dd.placed_cuda_ordinal(selected) == 1     # a selection needs no observation
+
+    # Nothing to record off CUDA: there is no thread-local device to put back.
+    cpu_torch = _make_torch(cuda_available = False)
+    monkeypatch.setitem(sys.modules, "torch", cpu_torch)
+    _install(monkeypatch, cpu_torch, studio_device = "cpu")
+    assert dd.placed_cuda_ordinal(dd.resolve_diffusion_device_target()) is None
+
+
+def test_pinning_an_automatic_load_puts_a_shared_worker_back(monkeypatch):
+    current = [0]
+    torch = _make_torch(cuda_available = True, device_count = 4)
+    torch.cuda.current_device = lambda: current[0]
+    torch.cuda.set_device = lambda index: current.__setitem__(0, index)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _install(monkeypatch, torch, studio_device = "cuda")
+
+    # A pinned load runs here first and leaves the thread on its card.
+    dd.apply_diffusion_device_ordinal(dd.resolve_diffusion_device_target(ordinal = 2))
+    assert current == [2]
+    # The next model loaded automatically; its weights are on 0, so the worker goes back to 0.
+    dd.pin_cuda_ordinal(0)
+    assert current == [0]
+    # And a None never moves anything.
+    dd.pin_cuda_ordinal(None)
+    assert current == [0]
+
+
+def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
+    # The download-plan routes must not open a CUDA context while a trainer holds the cards, but
+    # validating and translating the ids costs none, so that still happens: a bad pick is refused
+    # at the plan, and the single-card selection the UI sends still resolves.
+    torch = _make_torch(cuda_available = True, device_count = 4,
+                        free_vram_by_index = {0: 1, 1: 2})
+    probed: list = []
+    torch.cuda.mem_get_info = lambda index = None: (probed.append(index), (1, 2))[1]
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _install(monkeypatch, torch, studio_device = "cuda")
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1, 2, 3])
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 4)
+
+    assert dd.resolve_selected_cuda_ordinal([2], allow_ranking = False) == 2
+    assert probed == []                                  # no free-VRAM probe, so no CUDA context
+    assert dd.resolve_selected_cuda_ordinal([0, 1], allow_ranking = False) is None
+    assert probed == []
+    with pytest.raises(ValueError):
+        dd.resolve_selected_cuda_ordinal([9], allow_ranking = False)

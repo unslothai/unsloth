@@ -152,7 +152,9 @@ def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
     return member is not None and studio_device == member
 
 
-def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]:
+def resolve_selected_cuda_ordinal(
+    gpu_ids: Optional[list[int]], *, allow_ranking: bool = True
+) -> Optional[int]:
     """The torch ordinal one diffusion load should run on, or None for automatic.
 
     ``gpu_ids`` carries PHYSICAL GPU ids, the same namespace the chat and training paths take and
@@ -173,6 +175,12 @@ def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]
 
     Raises ValueError for a selection this host cannot honour, so the load is refused with a
     reason rather than quietly running somewhere the user did not choose.
+
+    ``allow_ranking = False`` keeps the free-VRAM comparison out, for a caller that must not open a
+    CUDA context (the download-plan routes while a trainer holds the cards). Validation and the
+    mask translation still run, because neither touches CUDA: they read the environment mask and
+    nvidia-smi. A single card therefore still resolves -- which is the only shape the UI sends --
+    and only a multi-card selection, whose winner genuinely needs the probe, comes back None.
     """
     wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
     if not wanted:
@@ -197,6 +205,8 @@ def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]
         )
     if len(ordinals) == 1:
         return ordinals[0]
+    if not allow_ranking:
+        return None
 
     def _free_vram(ordinal: int) -> int:
         try:
@@ -248,13 +258,42 @@ def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
     ``torch.cuda.mem_get_info()`` with no argument, i.e. the CURRENT device: setting it steers the
     weights and the budget they are sized against to the same card. A no-op for an automatic pick.
     """
-    if target.ordinal is None or not target.is_cuda_torch_device:
+    if not target.is_cuda_torch_device:
+        return
+    pin_cuda_ordinal(target.ordinal)
+
+
+def pin_cuda_ordinal(ordinal: Optional[int]) -> None:
+    """``torch.cuda.set_device``, thread-local, never fatal. A no-op for None."""
+    if ordinal is None:
         return
     try:
         import torch
-        torch.cuda.set_device(target.ordinal)
+        torch.cuda.set_device(ordinal)
     except Exception:  # noqa: BLE001 -- placement still works off torch_device; never fail a load here
         pass
+
+
+def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
+    """The card the weights are actually on: the selection when there was one, else the card the
+    loading thread was pointing at.
+
+    Recorded WITH the pipeline because ``/images/generate`` runs on a pooled ``asyncio.to_thread``
+    worker. A pinned load leaves that worker set to its card permanently, and an automatic load
+    after it has no ordinal to re-pin with, so without this the next generation resolves its bare
+    "cuda" Generators and allocations against the previous model's GPU while the weights sit on the
+    default one. Kept apart from ``ordinal`` so the automatic path still reports a bare device and
+    an un-indexed target, exactly as it did before any of this existed.
+    """
+    if not target.is_cuda_torch_device:
+        return None
+    if target.ordinal is not None:
+        return target.ordinal
+    try:
+        import torch
+        return int(torch.cuda.current_device())
+    except Exception:  # noqa: BLE001 -- an unreadable device simply leaves the worker alone
+        return None
 
 
 def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:

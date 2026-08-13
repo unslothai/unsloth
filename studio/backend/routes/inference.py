@@ -22157,12 +22157,17 @@ def _guard_diffusion_load_against_training() -> None:
     )
 
 
-async def _selected_gpu_ordinal(gpu_ids) -> Optional[int]:
+async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optional[int]:
     """The torch ordinal for a request's ``gpu_ids``, or None when there is nothing to honour.
 
     Physical ids have no applicator off CUDA / ROCm, which the request contract says to ignore
     rather than refuse, so the resolver only runs once the target reports a CUDA device. Raises
     ValueError for a bad pick, which every caller maps to a 400.
+
+    ``allow_ranking = False`` drops only the free-VRAM comparison, for the plan routes while a
+    trainer holds the cards: the ids are still validated and translated (environment mask plus
+    nvidia-smi, no CUDA context), so a bad pick is refused at the plan instead of being discovered
+    tens of gigabytes later, and the single-card selection the UI sends still resolves.
     """
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
@@ -22174,7 +22179,13 @@ async def _selected_gpu_ordinal(gpu_ids) -> Optional[int]:
     device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
     if device != "cuda":
         return None
-    return await asyncio.to_thread(resolve_selected_cuda_ordinal, gpu_ids)
+    # The keyword only when it is not the default, so the ordinary path calls the resolver with
+    # the same one-argument shape it always had (a monkeypatched seam still fits it).
+    if allow_ranking:
+        return await asyncio.to_thread(resolve_selected_cuda_ordinal, gpu_ids)
+    return await asyncio.to_thread(
+        lambda: resolve_selected_cuda_ordinal(gpu_ids, allow_ranking = False)
+    )
 
 
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
@@ -22229,11 +22240,17 @@ async def diffusion_download_plan(
         # files during training is legitimate and needs no GPU, so the plan is answered without
         # the precision check; /images/load still refuses the same pick afterwards.
         # Ranking reads free VRAM per candidate, which opens a CUDA context on each: exactly what
-        # the training guard below exists to prevent, so it is resolved only once training is
-        # known idle. ONE ranking for the whole request, reused by the preflight and the plan.
+        # the training guard below exists to prevent, so the RANKING waits until training is known
+        # idle. The ids are validated and translated either way -- that costs no CUDA context, and
+        # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
+        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
         gpu_ordinal = None
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
-            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
+        training = fam is not None and await asyncio.to_thread(_training_is_active)
+        if fam is not None:
+            gpu_ordinal = await _selected_gpu_ordinal(
+                request.gpu_ids, allow_ranking = not training
+            )
+        if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
                     backend.assert_precision_available,

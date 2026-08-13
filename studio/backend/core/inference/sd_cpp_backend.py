@@ -373,15 +373,25 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     if not binary or ordinal is None:
         return None
     text = _sd_cpp_probe_output(binary, "--list-devices")
-    if text is None:
-        return None
-    for line in text.splitlines():
-        name = line.split("\t", 1)[0].strip()
-        head = name.rstrip("0123456789")
-        if head.upper() not in _PHYSICAL_INDEX_DEVICE_PREFIXES:
-            continue
-        if name[len(head) :] == str(ordinal):
-            return name
+    if text is not None:
+        for line in text.splitlines():
+            name = line.split("\t", 1)[0].strip()
+            head = name.rstrip("0123456789")
+            if head.upper() not in _PHYSICAL_INDEX_DEVICE_PREFIXES:
+                continue
+            if name[len(head) :] == str(ordinal):
+                return name
+    # Said out loud rather than dropped in silence: the load still runs, on whichever device this
+    # build picks for itself, which is what happens today for every native load. Refusing instead
+    # would take the GPU selection from "not honoured here" to "cannot load at all" on any build
+    # older than the one that added --list-devices, including a user's own SD_CLI_PATH copy, since
+    # sd.cpp treats an unknown argument as fatal.
+    logger.warning(
+        "sd_cpp.device_pin_unresolved: this build does not report a CUDA/ROCm device %s "
+        "(--list-devices %s), so the graph runs on its own default device",
+        ordinal,
+        "was unreadable" if text is None else "does not list it",
+    )
     return None
 
 
