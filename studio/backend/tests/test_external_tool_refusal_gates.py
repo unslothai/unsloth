@@ -81,7 +81,12 @@ def _finish(reason: str) -> str:
 class FakeTransport:
     heals_text_tool_calls = False
 
-    def __init__(self, turns, *, max_turns = 20):
+    def __init__(
+        self,
+        turns,
+        *,
+        max_turns = 20,
+    ):
         self.turns = [list(turn) for turn in turns]
         self.requests: list[dict] = []
         self.max_turns = max_turns
@@ -182,7 +187,7 @@ def test_a_turn_cut_short_does_not_execute_its_call(executed, reason):
 
 @pytest.mark.parametrize("reason", ["tool_calls", "stop"])
 def test_a_completed_turn_still_executes(executed, reason):
-    """"stop" is how llama.cpp and vLLM commonly end a good tool call.
+    """ "stop" is how llama.cpp and vLLM commonly end a good tool call.
 
     Refusing it would disable tool calling on exactly the self-hosted servers
     this path exists to serve.
