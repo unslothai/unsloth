@@ -27,16 +27,54 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import sys
+import sysconfig
 
 logger = logging.getLogger(__name__)
 
-_UNAVAILABLE_MSG = (
+_WHAT_IS_LOST = (
+    "Training, dataset previews and Data Recipes need it; chat and model downloads "
+    "do not."
+)
+
+# The ARM64-Windows story is the REASON this gate exists, but it is not the only
+# way to arrive here: any environment missing `datasets` lands in the same branch,
+# including an ordinary Linux install with a half-finished venv. Telling that user
+# to "install x64 Python from python.org (it runs emulated)" is advice for a
+# machine they are not sitting at, and it hides the actual remedy. So the tier
+# gets its own text and everyone else gets the plain one.
+_ARM64_WINDOWS_MSG = (
     "Datasets are unavailable in this installation: the datasets library (and pyarrow, "
-    "which it is built on) publishes no wheels for native ARM64 Windows. Training, "
-    "dataset previews and Data Recipes need it; chat and model downloads do not. "
-    "Install x64 Python from https://www.python.org/downloads/windows/ (it runs "
+    "which it is built on) publishes no wheels for native ARM64 Windows. "
+    + _WHAT_IS_LOST
+    + " Install x64 Python from https://www.python.org/downloads/windows/ (it runs "
     "emulated) and re-run the Unsloth installer to get the full product."
 )
+
+_GENERIC_MSG = (
+    "Datasets are unavailable in this installation: the datasets library is not "
+    "installed. " + _WHAT_IS_LOST + " Re-run the Unsloth installer, or install it "
+    "into this environment with `pip install datasets`."
+)
+
+
+def _is_arm64_windows() -> bool:
+    """The tier this gate was built for: a NATIVE ARM64 Python on Windows.
+
+    `sysconfig.get_platform()` rather than `platform.machine()`, because the
+    question is which wheels this interpreter can install, and an x64 interpreter
+    emulated on ARM hardware answers "win-amd64" here -- correctly, since it can
+    install pyarrow. Same predicate the installer keys the tier off.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        return sysconfig.get_platform() == "win-arm64"
+    except Exception:
+        return False
+
+
+_UNAVAILABLE_MSG = _ARM64_WINDOWS_MSG if _is_arm64_windows() else _GENERIC_MSG
 
 
 def _probe() -> bool:

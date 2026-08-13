@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import sys
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -54,9 +55,49 @@ class TestAvailabilityProbe:
         assert issubclass(datasets_availability.DatasetsUnavailable, RuntimeError)
 
     def test_detail_names_the_fix_not_just_the_problem(self):
-        detail = datasets_availability.unavailable_detail()
-        assert "x64" in detail.lower()
-        assert "arm64" in detail.lower()
+        """Whichever text is chosen, it must say what to DO, not only what is wrong."""
+        detail = datasets_availability.unavailable_detail().lower()
+        assert "installer" in detail or "install" in detail
+
+    def test_the_arm64_windows_advice_is_confined_to_arm64_windows(self):
+        """The tier is the reason this gate exists, not the only way to reach it.
+
+        Any environment missing `datasets` lands in the same branch, including an
+        ordinary Linux box with a half-finished venv. Telling that user to install
+        x64 Python from python.org because it "runs emulated" is advice for a
+        machine they are not sitting at, and it buries the real remedy. This test
+        exists because the message used to be a single constant that said exactly
+        that to everyone.
+        """
+        arm64 = datasets_availability._ARM64_WINDOWS_MSG.lower()
+        assert "arm64" in arm64 and "x64" in arm64
+
+        generic = datasets_availability._GENERIC_MSG.lower()
+        assert "arm64" not in generic, "non-ARM64 users must not be told about ARM64"
+        assert "x64" not in generic, "nor sent to download a different interpreter"
+        assert "pip install datasets" in generic
+
+        # Both halves say what is lost, since that is the part every caller needs.
+        for message in (arm64, generic):
+            assert "training" in message and "chat" in message
+
+    def test_the_tier_predicate_reads_the_interpreter_not_the_hardware(self):
+        """`sysconfig.get_platform()`, because the question is which wheels this
+        interpreter can install. An x64 Python emulated on ARM hardware answers
+        `win-amd64` and CAN install pyarrow, so it must not get the tier text."""
+        import sysconfig
+
+        with mock.patch.object(datasets_availability.sys, "platform", "win32"):
+            with mock.patch.object(sysconfig, "get_platform", return_value="win-arm64"):
+                assert datasets_availability._is_arm64_windows() is True
+            with mock.patch.object(sysconfig, "get_platform", return_value="win-amd64"):
+                assert datasets_availability._is_arm64_windows() is False
+
+        # Linux and macOS never take the tier branch, whatever their arch says.
+        for platform_name in ("linux", "darwin"):
+            with mock.patch.object(datasets_availability.sys, "platform", platform_name):
+                with mock.patch.object(sysconfig, "get_platform", return_value="win-arm64"):
+                    assert datasets_availability._is_arm64_windows() is False
 
     def test_http_dependency_raises_503(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_FORCE_NO_DATASETS", "1")
