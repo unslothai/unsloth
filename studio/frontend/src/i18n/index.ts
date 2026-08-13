@@ -14,6 +14,7 @@ export {
   LOCALE_STORAGE_KEY,
   LOCALE_INITIALIZATION_TIMEOUT_MS,
   getLocale,
+  getLocaleCatalogFailed,
   getLocalePreference,
   getPendingLocalePreference,
   initializeLocale,
@@ -21,6 +22,7 @@ export {
   setLocale,
   subscribeLocale,
   useLocale,
+  useLocaleCatalogFailed,
   useLocalePreference,
   usePendingLocalePreference,
 } from "./locale-store";

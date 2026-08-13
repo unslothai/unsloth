@@ -46,6 +46,18 @@ let currentLocale: Locale = DEFAULT_LOCALE;
 let pendingPreference: LocalePreference | null = null;
 let pendingPreferenceShouldPersist = false;
 let areListenersActive = false;
+/**
+ * The catalog the current preference resolves to failed, so currentLocale is a
+ * fallback rather than that preference's own language.
+ *
+ * Comparing the preference to the locale cannot stand in for this: `auto`
+ * resolves through the browser, so a failed auto reads as `auto` with English
+ * in effect, which is also what a successful auto looks like to an English
+ * browser. The UI needs the difference, because a controlled Select never fires
+ * onValueChange for the value it already shows: naming a preference whose
+ * catalog failed is what makes it the one preference the user cannot re-pick.
+ */
+let currentCatalogFailed = false;
 
 export function isLocalePreference(value: unknown): value is LocalePreference {
   return value === AUTO_LOCALE || isSupportedLocale(value);
@@ -149,11 +161,14 @@ function commitPreference(
   const didChange =
     preference !== currentPreference ||
     locale !== currentLocale ||
-    pendingPreference !== null;
+    pendingPreference !== null ||
+    currentCatalogFailed;
   currentPreference = preference;
   currentLocale = locale;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
+  // This preference's catalog is loaded, so a retry has nothing left to fix.
+  currentCatalogFailed = false;
   syncDocumentLang(locale);
   if (didChange) notifySubscribers();
   return "applied";
@@ -167,21 +182,37 @@ function commitFallbackLocale(
   const didChange =
     preference !== currentPreference ||
     currentLocale !== DEFAULT_LOCALE ||
-    pendingPreference !== null;
+    pendingPreference !== null ||
+    !currentCatalogFailed;
   currentPreference = preference;
   currentLocale = DEFAULT_LOCALE;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
+  // Adopted, but on the fallback catalog rather than this preference's own.
+  currentCatalogFailed = true;
   syncDocumentLang(currentLocale);
   if (didChange) notifySubscribers();
 }
 
 type LocaleCatalogLoader = (locale: Locale) => Promise<void> | undefined;
 
-function failPreference(revision: number): void {
+function failPreference(
+  revision: number,
+  preference: LocalePreference,
+  locale: Locale,
+): void {
   if (revision !== preferenceRevision || pendingPreference === null) return;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
+  // A rejected pick leaves the standing preference untouched, so it is still
+  // serving its own catalog and stays re-pickable; the flag must not move.
+  // A refresh of the preference already in effect is the other case: a
+  // `languagechange` re-resolving `auto` onto a language whose catalog fails
+  // leaves that preference pointing at a locale the app is not showing, which
+  // is exactly the state the retry path needs to see.
+  if (preference === currentPreference && locale !== currentLocale) {
+    currentCatalogFailed = true;
+  }
   notifySubscribers();
 }
 
@@ -241,7 +272,7 @@ function applyPreference(
         if (adoptOnFailure) {
           commitFallbackLocale(preference, revision);
         } else {
-          failPreference(revision);
+          failPreference(revision, preference, locale);
         }
         return "failed";
       },
@@ -315,6 +346,14 @@ function getPendingPreferenceSnapshot(): LocalePreference | null {
 
 function getServerPendingPreferenceSnapshot(): null {
   return null;
+}
+
+function getCatalogFailedSnapshot(): boolean {
+  return currentCatalogFailed;
+}
+
+function getServerCatalogFailedSnapshot(): false {
+  return false;
 }
 
 export function subscribeLocale(listener: () => void): () => void {
@@ -396,6 +435,10 @@ export function getPendingLocalePreference(): LocalePreference | null {
   return pendingPreference;
 }
 
+export function getLocaleCatalogFailed(): boolean {
+  return currentCatalogFailed;
+}
+
 export function setLocale(
   preference: LocalePreference,
   {
@@ -435,5 +478,13 @@ export function usePendingLocalePreference(): LocalePreference | null {
     subscribeLocale,
     getPendingPreferenceSnapshot,
     getServerPendingPreferenceSnapshot,
+  );
+}
+
+export function useLocaleCatalogFailed(): boolean {
+  return useSyncExternalStore(
+    subscribeLocale,
+    getCatalogFailedSnapshot,
+    getServerCatalogFailedSnapshot,
   );
 }

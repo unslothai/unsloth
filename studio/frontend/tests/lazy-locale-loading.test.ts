@@ -410,6 +410,7 @@ const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
       isLocalePreference: localeStore.isLocalePreference,
       setLocale: localeStore.setLocale,
       useLocale: localeStore.getLocale,
+      useLocaleCatalogFailed: localeStore.getLocaleCatalogFailed,
       useLocalePreference: localeStore.getLocalePreference,
       usePendingLocalePreference: localeStore.getPendingLocalePreference,
       useT: () => (key: string) => key,
@@ -484,4 +485,88 @@ test("the language menu shows a pending choice while its catalog loads", async (
   finishLoading();
   assert.equal(await selected, "applied");
   assert.equal(shownLanguage(), "it");
+});
+
+test("auto detection stays retryable when its detected catalog fails", async () => {
+  await localeStore.setLocale("auto", { loadMessages: () => undefined });
+
+  navigatorState.language = "de-DE";
+  navigatorState.languages = ["de-DE"];
+  try {
+    // What hydration issues: adopt the stored preference even when its catalog
+    // never arrives, so the local value does not drift from the server's.
+    const result = await localeStore.setLocale("auto", {
+      loadMessages: () => Promise.reject(new Error("chunk 404")),
+      adoptOnFailure: true,
+    });
+
+    assert.equal(result, "failed");
+    // Auto resolved to German, German never loaded, so English is in effect
+    // while the preference is still, correctly, auto.
+    assert.equal(localeStore.getLocalePreference(), "auto");
+    assert.equal(localeStore.getLocale(), "en");
+
+    // Naming auto here would make Auto-detect the value the Select already
+    // holds, so re-picking it would fire nothing and the failed detection
+    // could never be retried.
+    assert.equal(shownLanguage(), "en");
+    assert.ok(canPick("auto"));
+
+    // And the retry that buys, once the chunk is reachable again.
+    assert.equal(
+      await localeStore.setLocale("auto", {
+        loadMessages: () => Promise.resolve(),
+      }),
+      "applied",
+    );
+    assert.equal(localeStore.getLocale(), "de");
+    assert.equal(shownLanguage(), "auto");
+  } finally {
+    navigatorState.language = "en-US";
+    navigatorState.languages = ["en-US"];
+  }
+});
+
+test("a refreshed auto whose new catalog fails is still retryable", async () => {
+  await localeStore.setLocale("auto", { loadMessages: () => undefined });
+  assert.equal(localeStore.getLocale(), "en");
+
+  navigatorState.language = "de-DE";
+  navigatorState.languages = ["de-DE"];
+  try {
+    // The shape handleLanguageChange issues on a browser language change:
+    // re-apply the standing auto preference, without adopting on failure.
+    const result = await localeStore.setLocale("auto", {
+      loadMessages: () => Promise.reject(new Error("chunk 404")),
+    });
+
+    assert.equal(result, "failed");
+    assert.equal(localeStore.getLocalePreference(), "auto");
+    assert.equal(localeStore.getLocale(), "en");
+    assert.equal(shownLanguage(), "en");
+    assert.ok(canPick("auto"));
+  } finally {
+    navigatorState.language = "en-US";
+    navigatorState.languages = ["en-US"];
+  }
+});
+
+test("a rejected pick leaves a working auto preference named", async () => {
+  assert.equal(
+    localeStore.setLocale("auto", { loadMessages: () => undefined }),
+    "applied",
+  );
+
+  // Rejected, so the standing preference never moved and auto is still serving
+  // its own catalog. The menu has to keep naming auto here, or a failed pick of
+  // an unrelated language would be enough to hide it.
+  assert.equal(
+    await localeStore.setLocale("ru", {
+      loadMessages: () => Promise.reject(new Error("chunk 404")),
+    }),
+    "failed",
+  );
+  assert.equal(localeStore.getLocalePreference(), "auto");
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(shownLanguage(), "auto");
 });

@@ -15,6 +15,7 @@ import {
   isLocalePreference,
   setLocale,
   useLocale,
+  useLocaleCatalogFailed,
   useLocalePreference,
   usePendingLocalePreference,
   useT,
@@ -25,12 +26,15 @@ export function LanguageSelect() {
   const locale = useLocale();
   const preference = useLocalePreference();
   const pendingPreference = usePendingLocalePreference();
-  // A preference diverges from the locale only when its catalog failed and
-  // English was adopted. Show what is in effect there: a controlled Select never
-  // fires onValueChange for the value it already holds, so naming the failed
-  // language would leave no way to retry it.
-  const activePreference =
-    preference === AUTO_LOCALE || preference === locale ? preference : locale;
+  const catalogFailed = useLocaleCatalogFailed();
+  // Show what is in effect whenever the preference's own catalog failed and a
+  // fallback was adopted: a controlled Select never fires onValueChange for the
+  // value it already holds, so naming the failed preference would leave no way
+  // to retry it. This has to come from the store rather than a
+  // `preference !== locale` comparison, because a failed `auto` still reads as
+  // `auto`, and its fallback locale is indistinguishable from a successful
+  // detection that landed on the same language.
+  const activePreference = catalogFailed ? locale : preference;
 
   return (
     <Select
