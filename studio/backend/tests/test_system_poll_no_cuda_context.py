@@ -320,7 +320,13 @@ def test_rocm_apu_inventory_keeps_the_gtt_total(monkeypatch):
 class _FakeRocmProps(_FakeProps):
     """Discrete card as a current ROCm runtime describes it: the flag is filled in."""
 
-    def __init__(self, name = "MI300X", total = 191505498112, arch = "gfx942", integrated = 0):
+    def __init__(
+        self,
+        name = "MI300X",
+        total = 191505498112,
+        arch = "gfx942",
+        integrated = 0,
+    ):
         super().__init__(name, total)
         self.gcnArchName = arch
         self.is_integrated = integrated
@@ -396,7 +402,12 @@ def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch
 class _FakeUnclassifiedApuProps(_FakeProps):
     """gfx1103 Phoenix: a real APU that sits outside the classifier's arch set."""
 
-    def __init__(self, total = _APU_CARVE_OUT, *, integrated = 0):
+    def __init__(
+        self,
+        total = _APU_CARVE_OUT,
+        *,
+        integrated = 0,
+    ):
         super().__init__("AMD Radeon 780M Graphics", total)
         self.gcnArchName = "gfx1103"
         if integrated is not None:
