@@ -1277,32 +1277,42 @@ export function SharedComposer({
         if (
           targetIsGguf &&
           // Not for the diffusion runner, which appends none of them.
-          resolvedIsDiffusion !== true &&
-          ownConfig.llamaExtraArgs === undefined
+          resolvedIsDiffusion !== true
         ) {
           try {
-            const resolvedArgs = await fetchLoadExtraArgs(
-              sel.id,
-              sel.id,
-              sel.ggufVariant ?? null,
-            );
             // Sanitised for the same reason the panel sanitises what it hydrates:
-            // this turns a stored list into an EXPLICIT /load argument, which is
-            // validated strictly rather than going through the carry-over paths
-            // that drop a newly denied flag quietly. A pane on an install upgraded
-            // across a denylist change would otherwise answer 400 on a comparison
-            // that ran the day before.
+            // either list becomes an EXPLICIT /load argument, which is validated
+            // strictly rather than going through the carry-over paths that drop a
+            // newly denied flag quietly. A pane on an install upgraded across a
+            // denylist change would otherwise answer 400 on a comparison that ran
+            // the day before, whether the list came from the server or from this
+            // browser's own storage.
             const managed = await loadManagedLlamaFlags();
-            const cleaned = sanitizeStoredExtraArgs(
-              resolvedArgs,
-              managed?.managed ?? new Set<string>(),
-              {
-                maxBytes: managed?.maxBytes,
-                windowsCommandBudget: managed?.windowsCommandBudget,
-              },
-            );
-            if (cleaned.length > 0) {
-              ownConfig.llamaExtraArgs = cleaned;
+            const clean = (tokens: readonly string[]) =>
+              sanitizeStoredExtraArgs(
+                tokens,
+                managed?.managed ?? new Set<string>(),
+                {
+                  maxBytes: managed?.maxBytes,
+                  windowsCommandBudget: managed?.windowsCommandBudget,
+                },
+              );
+            const local = ownConfig.llamaExtraArgs;
+            if (local === undefined) {
+              const resolvedArgs = await fetchLoadExtraArgs(
+                sel.id,
+                sel.id,
+                sel.ggufVariant ?? null,
+              );
+              const cleaned = clean(resolvedArgs);
+              if (cleaned.length > 0) {
+                ownConfig.llamaExtraArgs = cleaned;
+              }
+            } else if (local !== null && local.length > 0) {
+              const cleaned = clean(local);
+              if (cleaned.length !== local.length) {
+                ownConfig.llamaExtraArgs = cleaned.length > 0 ? cleaned : [];
+              }
             }
           } catch {
             // The load still works; a real overrides outage surfaces there.

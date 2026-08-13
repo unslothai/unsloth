@@ -879,6 +879,15 @@ class LlamaFlagCatalogResponse(BaseModel):
             "editor mirrors it because the quoting can double a backslash-heavy value."
         ),
     )
+    default_parallel_slots: int = Field(
+        1,
+        description = (
+            "Serving slots a load gets when it names none, the server-wide "
+            "--parallel. An editor needs it to judge a pass-through --batch-size: "
+            "llama-server aborts on a batch below the slots it serves, and with the "
+            "Slots field blank this is the number the launch will use."
+        ),
+    )
     probe_ok: bool = Field(
         False,
         description = (

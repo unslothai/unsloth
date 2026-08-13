@@ -310,6 +310,28 @@ def test_a_value_that_belongs_to_a_flag_is_still_fine():
     assert _lsa.validate_extra_args(["--control-vector-layer-range", "1", "10"])
 
 
+def test_the_underscore_spelling_keeps_its_detached_value():
+    # llama.cpp takes both spellings (measured on b10360: `llama-server --ctx_size
+    # 4096 --help` prints its help), and _flag_name folds one onto the other. Deciding
+    # attachment from that fold read "--ctx_size 4096" as a flag carrying its own
+    # value and then refused the 4096 as a bare token, which is a list the CLI has
+    # passed through for as long as the field has existed.
+    for good in (
+        ["--ctx_size", "4096"],
+        ["--n_gpu_layers", "5"],
+        ["--rope_scaling", "yarn"],
+        ["--ctx_size=4096"],
+        ["--top-k", "20", "--ctx_size", "4096"],
+    ):
+        assert _lsa.validate_extra_args(good) == good
+    # The value is still consumed exactly once: a second bare token has no owner.
+    with pytest.raises(ValueError, match = "bare value"):
+        _lsa.validate_extra_args(["--ctx_size", "4096", "stray"])
+    # And an "=" form is genuinely attached, so what follows it is bare too.
+    with pytest.raises(ValueError, match = "bare value"):
+        _lsa.validate_extra_args(["--ctx_size=4096", "stray"])
+
+
 def test_a_two_value_flag_is_kept_whole():
     # Half of this option is not a smaller version of it: llama-server refuses
     # "--control-vector-layer-range 1" on the command line, so a list that carries it

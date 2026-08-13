@@ -140,13 +140,30 @@ export function windowsCommandLength(tokens: readonly string[]): number {
   return result.join("").length;
 }
 
+/**
+ * Whether this token carries its own value instead of expecting the next one.
+ *
+ * Not "the name changed": extraArgFlagName also folds llama.cpp's underscore
+ * spelling, and the binary takes both, so comparing the folded name against the raw
+ * token read "--ctx_size 4096" as attached and then called the 4096 a bare value.
+ * Only "=" and an attached short like -np8 are values in the same token. Mirrors
+ * _value_is_attached in llama_server_args.py.
+ */
+function valueIsAttached(token: string, flag: string): boolean {
+  const raw = token.trim();
+  if (raw.includes("=")) {
+    return true;
+  }
+  return raw.replace(UNDERSCORE, "-") !== flag;
+}
+
 /** Whether this token's value is the NEXT token rather than part of itself. */
 function takesNextToken(
   token: string,
   flag: string,
   next: string | undefined,
 ): boolean {
-  if (token.includes("=") || flag !== token.trim()) {
+  if (valueIsAttached(token, flag)) {
     return false;
   }
   return next !== undefined && extraArgFlagName(next) === null;
@@ -684,8 +701,28 @@ export function diagnoseExtraArgs(
   // is the difference between a red line under the box and a failed load. Two-value
   // flags are allowed for, as they are on the backend.
   let pendingValues = 0;
-  // The flag those values are owed to, for the end-of-input check below.
+  // The flag those values are owed to, for the checks below.
   let pendingOwner: string | null = null;
+  // A flag left waiting for its value, either because the next token is another flag
+  // or because the text ended. Reported only when the arity is known: the catalogue
+  // read this build's own help and lists it as value-taking, or it is the two-value
+  // flag whose arity needs no probe. An unverified flag keeps the benefit of the
+  // doubt, as it does above. llama-server exits during startup on these, which is a
+  // failed load rather than a red line under the box.
+  const owedValues: string[] = [];
+  const noteOwed = (owner: string | null, pending: number) => {
+    if (owner === null || pending <= 0) {
+      return;
+    }
+    if (
+      TWO_VALUE_FLAGS.has(owner) ||
+      (catalog?.probeOk === true &&
+        owner in catalog.flags &&
+        !catalog.switches.has(owner))
+    ) {
+      owedValues.push(owner);
+    }
+  };
   for (const token of tokens) {
     const flag = extraArgFlagName(token);
     if (flag === null) {
@@ -702,7 +739,10 @@ export function diagnoseExtraArgs(
       }
       continue;
     }
-    const attached = token.includes("=") || flag !== token.trim();
+    // Before the obligation is replaced: "--numa --verbose" leaves --numa without
+    // the value it needs, and only this point in the walk still knows that.
+    noteOwed(pendingOwner, pendingValues);
+    const attached = valueIsAttached(token, flag);
     pendingValues = TWO_VALUE_FLAGS.has(flag)
       ? // An attached value is ONE of the two, so the option still owes its END.
         attached
@@ -718,6 +758,7 @@ export function diagnoseExtraArgs(
           : 1;
     pendingOwner = pendingValues > 0 ? flag : null;
   }
+  noteOwed(pendingOwner, pendingValues);
 
   const seen = new Set<string>();
   const unknown: string[] = [];
@@ -735,7 +776,7 @@ export function diagnoseExtraArgs(
     // in `-ngl 20 -ngl many` it is the second one the backend parses and refuses, so
     // checking only the first would leave Load enabled for a request that 400s.
     if (INTEGER_VALUE_FLAGS.has(flag) || VALUE_REQUIRED_FLAGS.has(flag)) {
-      const attached = flag !== token.trim();
+      const attached = valueIsAttached(token, flag);
       const value = attached ? token.split("=")[1] : tokens[index + 1];
       // A flag whose value is the next token has none when that token is itself a
       // flag: `--ctx-size --numa` reads --numa as the value in a shell and as a
@@ -830,36 +871,24 @@ export function diagnoseExtraArgs(
     }
   }
 
-  // A flag left waiting for a value at the end of the text. Reported only when the
-  // catalogue was read and lists it, because that is the only case where its arity is
-  // known: llama-server then exits during startup, which is a failed load rather than
-  // a red line under the box. An unverified flag keeps the benefit of the doubt, as
-  // it does above.
-  if (
-    pendingOwner !== null &&
-    pendingValues > 0 &&
-    (TWO_VALUE_FLAGS.has(pendingOwner) ||
-      (catalog?.probeOk === true &&
-        pendingOwner in catalog.flags &&
-        !catalog.switches.has(pendingOwner)))
-  ) {
-    const message = TWO_VALUE_FLAGS.has(pendingOwner)
-      ? `${pendingOwner} needs two values, a start and an end layer.`
-      : INTEGER_VALUE_FLAGS.has(pendingOwner)
-        ? `${pendingOwner} needs a number after it.`
-        : `${pendingOwner} needs a value after it.`;
-    if (!reportedValues.has(message)) {
-      reportedValues.add(message);
-      out.push({ level: "error", message });
-    }
-  }
-
   if (stripped.length > 0) {
     out.push({
       level: "warning",
       message: `${stripped.join(", ")} will be removed: the GPU selection above owns placement. Set GPU Memory to Default to pass it yourself.`,
     });
   }
+  for (const owner of owedValues) {
+    const message = TWO_VALUE_FLAGS.has(owner)
+      ? `${owner} needs two values, a start and an end layer.`
+      : INTEGER_VALUE_FLAGS.has(owner)
+        ? `${owner} needs a number after it.`
+        : `${owner} needs a value after it.`;
+    if (!reportedValues.has(message)) {
+      reportedValues.add(message);
+      out.push({ level: "error", message });
+    }
+  }
+
   if (memoryStripped.length > 0) {
     const setting = memoryStripped[0][1];
     out.push({

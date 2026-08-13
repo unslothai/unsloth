@@ -6721,6 +6721,12 @@ class _LoadPlacement(NamedTuple):
     diffusion_kind: Optional[bool]
 
 
+class _NoParallelRequest:
+    """A stand-in for a load that named no slot count, for reading the default."""
+
+    n_parallel = None
+
+
 def _resolve_parallel_slots(request, fastapi_request: Optional[Request]) -> int:
     if request.n_parallel is not None:
         return request.n_parallel
@@ -9717,7 +9723,9 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
 
 @router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
 async def get_llama_flags(
-    managed_only: bool = False, current_subject: str = Depends(get_current_subject)
+    fastapi_request: Request = None,
+    managed_only: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Flags the installed llama-server accepts, for the extra-arguments editor.
 
@@ -9744,6 +9752,13 @@ async def get_llama_flags(
         "max_bytes": max_extra_args_bytes(),
         "windows_command_budget": (
             WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_RESERVE if sys.platform == "win32" else 0
+        ),
+        # The slot count a load gets when it names none, read the same way the loader
+        # reads it. An editor cannot see this number, and llama-server aborts on a
+        # batch below the slots it serves, so without it a pass-through -b 2 looks
+        # fine here and takes down a launch that runs four slots.
+        "default_parallel_slots": _resolve_parallel_slots(
+            _NoParallelRequest(), fastapi_request
         ),
     }
 

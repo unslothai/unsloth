@@ -65,6 +65,7 @@ import {
   type LlamaFlagCatalog,
   loadLlamaFlagCatalog,
   loadManagedLlamaFlags,
+  subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import {
   fetchLoadExtraArgs,
@@ -1259,17 +1260,28 @@ function ExtraArgsRow({
     setText(external);
   }, [external]);
 
+  // Re-read on invalidation, not only on mount: updating llama.cpp from the banner
+  // replaces the binary while this panel stays open, and a row holding the old
+  // build's catalogue would go on judging arity, and calling flags unknown, against
+  // help text that no longer describes the server it is about to launch.
+  const [catalogEpoch, setCatalogEpoch] = useState(0);
+  useEffect(
+    () => subscribeLlamaFlagCatalog(() => setCatalogEpoch((epoch) => epoch + 1)),
+    [],
+  );
   useEffect(() => {
     let cancelled = false;
     loadLlamaFlagCatalog().then((loaded) => {
-      if (!cancelled && loaded) {
+      if (!cancelled) {
+        // Null is "cannot verify": adopted as well, or the row would keep checking
+        // against the previous binary after an update it cannot read.
         setCatalog(loaded);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [catalogEpoch]);
 
   // Model Memory removes some of these before the launch: apply_model_memory_policy
   // emits its own load mode and strips the rest, so an --mlock typed here would be
@@ -1300,7 +1312,10 @@ function ExtraArgsRow({
     manualGpuMemory: config.gpuMemoryMode === "manual",
     // The same floor the batch control shows, for the same reason: with Slots blank
     // the count is the server default this page cannot see, so only the hard 2 holds.
-    batchFloor: Math.max(2, config.nParallel ?? 2),
+    batchFloor: Math.max(
+      2,
+      config.nParallel ?? catalog?.defaultParallelSlots ?? 2,
+    ),
     keepResident: modelMemory?.keepResident ?? false,
     noRamReserve: modelMemory?.noRamReserve ?? false,
   });
@@ -1658,15 +1673,27 @@ export function ModelConfigPage({
         // benefit of the doubt the row gives an unprobed build.
         return;
       }
-      setExtraArgsLoadable(
-        extraArgsAreLoadable(
-          diagnoseExtraArgs(formatExtraArgs(args), catalog, {
-            gpuSelectionActive: configState.selectedGpuIds != null,
-            manualGpuMemory: configState.gpuMemoryMode === "manual",
-            batchFloor: Math.max(2, configState.nParallel ?? 2),
-          }),
-        ),
+      const loadable = extraArgsAreLoadable(
+        diagnoseExtraArgs(formatExtraArgs(args), catalog, {
+          gpuSelectionActive: configState.selectedGpuIds != null,
+          manualGpuMemory: configState.gpuMemoryMode === "manual",
+          batchFloor: Math.max(
+            2,
+            // The server-wide default when the Slots field is blank: that is the
+            // count the launch will serve, and llama-server aborts on a batch
+            // below it.
+            configState.nParallel ?? catalog.defaultParallelSlots ?? 2,
+          ),
+        }),
       );
+      // Only ever tightens. This judges the TOKENS, and formatExtraArgs quotes them
+      // back into a balanced string, so an unclosed quote the row objected to reads
+      // as fine here; raising the verdict would re-enable Load over the unfinished
+      // value the user is still typing. A list that is genuinely clean keeps
+      // whatever verdict already stands, which is true unless the row set it.
+      if (!loadable) {
+        setExtraArgsLoadable(false);
+      }
     });
     return () => {
       cancelled = true;
@@ -1807,6 +1834,7 @@ export function ModelConfigPage({
             switches: new Set<string>(),
             maxBytes: managed?.maxBytes ?? 0,
             windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
+            defaultParallelSlots: managed?.defaultParallelSlots ?? 0,
             probeOk: false,
           }),
         );

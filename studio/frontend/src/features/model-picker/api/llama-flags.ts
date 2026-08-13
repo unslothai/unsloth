@@ -20,6 +20,12 @@ export type LlamaFlagCatalog = {
    */
   windowsCommandBudget: number;
   /**
+   * Slots a load gets when it names none, the server-wide --parallel. Needed to
+   * judge a pass-through --batch-size: llama-server aborts on a batch below the
+   * slots it serves, and with the Slots field blank this is what the launch uses.
+   */
+  defaultParallelSlots: number;
+  /**
    * False when `--help` could not be read. Nothing may then be reported as a typo:
    * an unverifiable flag is not a wrong one.
    */
@@ -35,6 +41,8 @@ type ApiLlamaFlagCatalog = {
   max_bytes?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   windows_command_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  default_parallel_slots?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   probe_ok?: boolean;
 };
@@ -62,10 +70,28 @@ export type LlamaManagedFlags = {
   managed: ReadonlySet<string>;
   maxBytes: number;
   windowsCommandBudget: number;
+  defaultParallelSlots: number;
 };
 
 let inFlightManaged: Promise<LlamaManagedFlags | null> | null = null;
 let cachedManaged: LlamaManagedFlags | null = null;
+
+const catalogListeners = new Set<() => void>();
+
+/**
+ * Told when the catalogue is invalidated, for a consumer holding one in state.
+ *
+ * Clearing the module cache is not enough for a row that already read it: updating
+ * llama.cpp from the banner replaces the binary while the panel stays mounted, and
+ * the row would go on judging arity against the old build's help until the section
+ * is closed and reopened.
+ */
+export function subscribeLlamaFlagCatalog(listener: () => void): () => void {
+  catalogListeners.add(listener);
+  return () => {
+    catalogListeners.delete(listener);
+  };
+}
 
 /** Drop the cache, for a caller that knows the binary just changed. */
 export function invalidateLlamaFlagCatalog(): void {
@@ -76,6 +102,9 @@ export function invalidateLlamaFlagCatalog(): void {
   // binary that has just been replaced.
   inFlightCatalog = null;
   // Not the denylist: that is Unsloth's own list and no binary changes it.
+  for (const listener of catalogListeners) {
+    listener();
+  }
 }
 
 /**
@@ -108,6 +137,9 @@ export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
         managed: new Set(body.managed ?? []),
         maxBytes: body.max_bytes ?? 0,
         windowsCommandBudget: body.windows_command_budget ?? 0,
+        // 0 on a backend that predates the field, which reads as "not known" and
+        // leaves the editor's own hard floor of 2 in charge.
+        defaultParallelSlots: body.default_parallel_slots ?? 0,
       };
       return cachedManaged;
     } catch {
@@ -145,6 +177,9 @@ export function loadLlamaFlagCatalog(): Promise<LlamaFlagCatalog | null> {
         // leaving the editor's own default in charge.
         maxBytes: body.max_bytes ?? 0,
         windowsCommandBudget: body.windows_command_budget ?? 0,
+        // 0 on a backend that predates the field, which reads as "not known" and
+        // leaves the editor's own hard floor of 2 in charge.
+        defaultParallelSlots: body.default_parallel_slots ?? 0,
         probeOk: Boolean(body.probe_ok),
       };
       if (generation !== catalogGeneration) {

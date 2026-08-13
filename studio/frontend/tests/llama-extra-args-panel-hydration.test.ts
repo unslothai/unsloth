@@ -87,3 +87,30 @@ test("a collapsed section stops objecting once nothing is left to object to", ()
   // withdraw the verdict it left standing, so Load stayed disabled.
   assert.match(PANEL, /setExtraArgsLoadable\(true\);\n\s*return;/);
 });
+
+const COMPOSER = readFileSync(
+  path.join(HERE, "..", "src/features/chat/shared-composer.tsx"),
+  "utf8",
+);
+
+test("a compare pane sanitizes the local list as well as the fetched one", () => {
+  // A config saved by an older build can still name a flag that is managed now, and
+  // the pane sends whichever list it holds as an explicit /load argument, so the
+  // comparison came back 400 instead of running.
+  assert.match(COMPOSER, /const local = ownConfig\.llamaExtraArgs;/);
+  assert.match(COMPOSER, /const cleaned = clean\(local\);/);
+});
+
+test("the hidden revalidation can only tighten the verdict", () => {
+  // It judges the TOKENS, and formatExtraArgs quotes them back into a balanced
+  // string, so an unclosed quote the row objected to reads as fine here. Raising the
+  // verdict would re-enable Load over the value the user is still typing.
+  assert.match(PANEL, /if \(!loadable\) \{\n\s*setExtraArgsLoadable\(false\);/);
+});
+
+test("a mounted row re-reads the catalogue when the binary changes", () => {
+  // Updating llama.cpp from the banner replaces the binary while the panel stays
+  // open; the row would otherwise judge arity against the old build's help.
+  assert.match(PANEL, /subscribeLlamaFlagCatalog\(\(\) => setCatalogEpoch/);
+  assert.match(PANEL, /\}, \[catalogEpoch\]\);/);
+});

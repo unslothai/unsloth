@@ -42,6 +42,7 @@ const CATALOG: LlamaFlagCatalog = {
   switches: new Set(["--verbose"]),
   maxBytes: 32 * 1024,
   windowsCommandBudget: 0,
+  defaultParallelSlots: 0,
   probeOk: true,
 };
 
@@ -115,6 +116,7 @@ test("nothing is called unknown when the probe failed", () => {
     switches: new Set<string>(),
     maxBytes: 32 * 1024,
     windowsCommandBudget: 0,
+    defaultParallelSlots: 0,
     probeOk: false,
   };
   assert.deepEqual(
@@ -890,6 +892,7 @@ test("an unverified flag keeps the benefit of the doubt at the end", () => {
     switches: new Set<string>(),
     maxBytes: 0,
     windowsCommandBudget: 0,
+    defaultParallelSlots: 0,
     probeOk: false,
   };
   assert.deepEqual(diagnoseExtraArgs("--rope-scaling", unverified), []);
@@ -909,6 +912,7 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
     switches: new Set<string>(),
     maxBytes: 0,
     windowsCommandBudget: 0,
+    defaultParallelSlots: 0,
     probeOk: false,
   };
   assert.equal(levels("--control-vector-layer-range 1", unverified)[0], "error");
@@ -1026,5 +1030,73 @@ test("Model Memory reports the flags its settings remove", () => {
       /will be removed/.test(d.message),
     ),
     false,
+  );
+});
+
+test("llama.cpp's underscore spelling is not read as an attached value", () => {
+  // _flag_name folds --ctx_size to --ctx-size, and the binary takes both (measured
+  // on b10360: `llama-server --ctx_size 4096 --help` prints its help). Deciding
+  // attachment by comparing the folded name against the raw token called the 4096 a
+  // bare value and disabled Load for a spelling that works.
+  assert.deepEqual(
+    diagnoseExtraArgs("--numa distribute", CATALOG).filter(
+      (d) => d.level === "error",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    diagnoseExtraArgs("--rope_scaling yarn", CATALOG).filter(
+      (d) => d.level === "error",
+    ),
+    [],
+  );
+  // Still attached when it really is: an "=" form, or a short with its value glued
+  // on. --n_parallel folds onto the managed --n-parallel and stays refused.
+  assert.ok(
+    diagnoseExtraArgs("--rope_scaling yarn --numa", CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+  assert.ok(
+    diagnoseExtraArgs("--n_parallel 8", CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+});
+
+test("a flag that interrupts another's value is refused", () => {
+  // "--numa --verbose" leaves --numa without the value this build's help says it
+  // takes, and llama-server exits during startup. The end-of-input check could not
+  // see it: the obligation was overwritten by the next flag first.
+  const messages = (input: string) =>
+    diagnoseExtraArgs(input, CATALOG)
+      .filter((d) => d.level === "error")
+      .map((d) => d.message);
+  assert.deepEqual(messages("--numa --verbose"), [
+    "--numa needs a value after it.",
+  ]);
+  assert.deepEqual(messages("--numa --numa distribute"), [
+    "--numa needs a value after it.",
+  ]);
+  // A switch owes nothing, and an unverified flag keeps the benefit of the doubt.
+  assert.deepEqual(messages("--verbose --numa distribute"), []);
+  assert.deepEqual(messages("--tempp --numa distribute"), []);
+});
+
+test("the batch floor follows the server-wide slot default", () => {
+  // With Slots blank the launch serves the server-wide --parallel (4 in run.py),
+  // so -b 2 aborts even though it clears the hard floor of 2. The catalogue
+  // publishes that number because the browser cannot see it.
+  const withDefault = { ...CATALOG, defaultParallelSlots: 4 };
+  assert.ok(
+    diagnoseExtraArgs("-b 2", withDefault, { batchFloor: 4 }).some(
+      (d) => d.level === "error",
+    ),
+  );
+  assert.deepEqual(
+    diagnoseExtraArgs("-b 4", withDefault, { batchFloor: 4 }).filter(
+      (d) => d.level === "error",
+    ),
+    [],
   );
 });

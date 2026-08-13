@@ -189,6 +189,21 @@ def _flag_name(token: str) -> Optional[str]:
     return name
 
 
+def _value_is_attached(token: str, flag: str) -> bool:
+    """Whether this token carries its own value, rather than expecting the next one.
+
+    Not "the name changed": _flag_name also folds llama.cpp's underscore spelling
+    (--ctx_size is --ctx-size to it, and the binary takes both), so comparing the
+    normalised name against the raw token read "--ctx_size 4096" as attached and then
+    refused the 4096 as a bare value. Only "=" and an attached short like -np8 are
+    values in the same token.
+    """
+    raw = token.strip()
+    if "=" in raw:
+        return True
+    return raw.replace("_", "-") != flag
+
+
 def _is_spawnable(token: str) -> bool:
     """Whether execve could carry this token at all (no unpaired surrogates)."""
     try:
@@ -266,7 +281,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 pending_two_value -= 1
         else:
             # Its own value when attached, otherwise the tokens that follow.
-            attached = "=" in token or flag != token.strip()
+            attached = _value_is_attached(token, flag)
             if pending_two_value > 0:
                 raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
             # An attached value is ONE of the two, not the whole option:
@@ -329,7 +344,7 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         ``source`` defaults to the input list; the trimming loop passes the list it
         is shortening, where "the next token" means the one just removed.
         """
-        if "=" in token or flag != token.strip():
+        if _value_is_attached(token, flag):
             return False
         seq = tokens if source is None else source
         if source is not None:
