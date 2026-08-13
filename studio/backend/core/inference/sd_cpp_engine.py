@@ -233,8 +233,71 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
-def _is_legacy_sd_cpp_binary(binary: str) -> bool:
-    """Whether an ambiguous PATH executable named ``sd`` identifies as stable-diffusion.cpp."""
+# Identity verdicts, keyed by the file itself (path + mtime + size) rather than the path alone, so
+# replacing a binary in place re-probes it while a rebuild elsewhere on PATH is unaffected. Bounded:
+# a Studio session sees a handful of candidates, and a runaway key set would only ever come from a
+# path being rewritten under us, which is exactly the case that must not be served from here.
+_IDENTITY_MEMO: dict[tuple[str, int, int, int], bool] = {}
+_IDENTITY_MEMO_LOCK = threading.Lock()
+_IDENTITY_MEMO_MAX = 32
+
+
+def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
+    """A cache key that changes whenever ``binary``'s CONTENT could have, or None when it cannot be
+    read -- an unreadable candidate is never memoized, so a file that appears later is probed.
+
+    ``st_ctime`` as well as ``st_mtime``: metadata-preserving copies (``cp -p``, ``shutil.copy2``,
+    an archive carrying source timestamps) restore the modification time of the file they replace,
+    so a same-sized replacement is otherwise indistinguishable from the binary it overwrote. The
+    inode change time is not restorable that way, and on Windows it stands in for the creation
+    time, which a replacement changes too."""
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return None
+    return (
+        str(Path(binary).resolve(strict = False)), st.st_mtime_ns, st.st_ctime_ns, st.st_size
+    )
+
+
+def help_text_identifies_sd_cpp(help_text: str) -> bool:
+    """Whether ``--help`` output belongs to stable-diffusion.cpp.
+
+    Identity, NOT capability: "is this the right program at all", which is a different question
+    from ``sd_cpp_supports_minimax_h3``'s "does this build carry the H3 options". Accepts the
+    project banner (current upstream's ``print_usage`` prints ``stable-diffusion.cpp version ...``
+    first) or the full legacy option signature, which is what the pre-banner builds -- the ones
+    that shipped the binary as ``sd`` -- print instead.
+
+    Pure, so a caller that has already paid for the ``--help`` output can reuse it rather than
+    spawning the binary a second time.
+    """
+    return "stable-diffusion.cpp" in help_text.lower() or all(
+        marker in help_text for marker in _LEGACY_HELP_MARKERS
+    )
+
+
+def sd_cpp_binary_identifies(binary: str) -> bool:
+    """``help_text_identifies_sd_cpp`` against a live ``binary``.
+
+    Fails CLOSED: every caller is deciding whether to trust an ambiguously named executable, and a
+    probe that cannot be read is no evidence that it is the one we want. Memoized per file
+    revision -- discovery runs on every load and ``ensure_sd_cpp_binary`` alone resolves twice, so
+    without this a candidate that hangs costs its full timeout again on each one.
+
+    Only a verdict the probe actually PRODUCED is memoized. A timeout or a failed spawn leaves the
+    file untouched, so its key does not change either, and remembering that "no" would blacklist a
+    genuine build for the life of the process over one slow ``--help`` under disk or memory
+    pressure. Same rule as ``utils.node_runtime``, which memoizes only an adequate result so a
+    runtime installed after the first probe is still picked up.
+    """
+    key = _identity_key(binary)
+    if key is not None:
+        with _IDENTITY_MEMO_LOCK:
+            cached = _IDENTITY_MEMO.get(key)
+        if cached is not None:
+            return cached
+    probed = True
     try:
         result = subprocess.run(
             [binary, "--help"],
@@ -250,9 +313,25 @@ def _is_legacy_sd_cpp_binary(binary: str) -> bool:
         help_text = (result.stdout or "") + "\n" + (result.stderr or "")
     except (OSError, subprocess.SubprocessError):
         help_text = ""
-    identified = "stable-diffusion.cpp" in help_text.lower() or all(
-        marker in help_text for marker in _LEGACY_HELP_MARKERS
-    )
+        probed = False
+    identified = help_text_identifies_sd_cpp(help_text)
+    if key is not None and probed:
+        with _IDENTITY_MEMO_LOCK:
+            if len(_IDENTITY_MEMO) >= _IDENTITY_MEMO_MAX:
+                _IDENTITY_MEMO.clear()
+            _IDENTITY_MEMO[key] = identified
+    return identified
+
+
+def _is_legacy_sd_cpp_binary(binary: str) -> bool:
+    """Whether an ambiguous PATH executable named ``sd`` identifies as stable-diffusion.cpp.
+
+    The PATH fallback is the one hop that picks a candidate purely by filename, and ``sd`` is a
+    name Debian and Ubuntu already ship an unrelated find-and-replace utility under, so accepting
+    it on the name alone pointed native diffusion at the wrong program AND suppressed the managed
+    install (#8507). Rejecting one is read-only: the unrelated command is left exactly as it is.
+    """
+    identified = sd_cpp_binary_identifies(binary)
     if not identified:
         logger.warning(
             "ignoring PATH executable %s named sd because its --help output does not identify "

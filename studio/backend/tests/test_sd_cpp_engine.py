@@ -50,6 +50,7 @@ def _isolate_binary_discovery(tmp_path_factory, monkeypatch):
     Autouse rather than a helper because the failure does not need a fixture to reach it:
     ``SdCppEngine(binary = None)`` calls the finder from its constructor.
     """
+    eng._IDENTITY_MEMO.clear()  # a verdict from another test must never answer for this one
     root = tmp_path_factory.mktemp("no_sd_cpp")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root / "studio"))
     monkeypatch.delenv("STUDIO_HOME", raising = False)
@@ -179,6 +180,126 @@ def test_rejected_legacy_sd_allows_managed_install(tmp_path, monkeypatch):
 
     assert backend.ensure_sd_cpp_binary(accelerator = "cpu") == str(installed)
     assert installs == [{"accelerator": "cpu"}]
+
+
+def test_identity_probe_is_memoized_per_file_revision(tmp_path, monkeypatch):
+    # Discovery runs on every load, and ensure_sd_cpp_binary resolves twice on its own, so an
+    # unrelated `sd` was re-executed several times per load -- once per full 10s timeout when the
+    # candidate hangs. The verdict is keyed on the file, not the path, so an in-place replacement
+    # is still re-probed rather than answered from a stale entry.
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    runs: list[list[str]] = []
+
+    def _run(cmd, **_kwargs):
+        runs.append(cmd)
+        return types.SimpleNamespace(
+            stdout = "Find & replace occurrences of a pattern\n", stderr = "", returncode = 0
+        )
+
+    monkeypatch.setattr(eng.subprocess, "run", _run)
+
+    assert find_sd_cpp_binary() is None
+    assert find_sd_cpp_binary() is None
+    assert len(runs) == 1
+
+    # Replaced in place by a genuine build: a new revision, so the old verdict does not apply.
+    candidate.write_text("#!/bin/sh\n# a real stable-diffusion.cpp build now\n")
+    os.utime(candidate, (0, 0))
+
+    def _run_real(cmd, **_kwargs):
+        runs.append(cmd)
+        return types.SimpleNamespace(
+            stdout = "stable-diffusion.cpp version unknown\n", stderr = "", returncode = 0
+        )
+
+    monkeypatch.setattr(eng.subprocess, "run", _run_real)
+    assert find_sd_cpp_binary() == str(candidate)
+    assert len(runs) == 2
+
+
+def test_identity_probe_rekeys_a_timestamp_preserving_replacement(tmp_path, monkeypatch):
+    # cp -p / shutil.copy2 / an archive carrying source timestamps restore the mtime of the file
+    # they overwrite, so path + mtime + size alone would serve the old verdict for a different
+    # program. The inode change time is not restorable that way.
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("A" * 64)
+    stamp = os.stat(candidate)
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    runs: list[list[str]] = []
+
+    def _reject(cmd, **_kwargs):
+        runs.append(cmd)
+        return types.SimpleNamespace(stdout = "Find & replace\n", stderr = "", returncode = 0)
+
+    monkeypatch.setattr(eng.subprocess, "run", _reject)
+    assert find_sd_cpp_binary() is None
+
+    # Same path, same size, mtime restored -- a different program underneath.
+    candidate.write_text("B" * 64)
+    os.utime(candidate, ns = (stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert os.stat(candidate).st_mtime_ns == stamp.st_mtime_ns
+
+    def _accept(cmd, **_kwargs):
+        runs.append(cmd)
+        return types.SimpleNamespace(
+            stdout = "stable-diffusion.cpp version unknown\n", stderr = "", returncode = 0
+        )
+
+    monkeypatch.setattr(eng.subprocess, "run", _accept)
+    assert find_sd_cpp_binary() == str(candidate)
+    assert len(runs) == 2
+
+
+def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypatch):
+    # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
+    # Remembering that "no" would blacklist a genuine build for the life of the process over one
+    # slow --help under disk or memory pressure -- Studio would have to be restarted to see it.
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+
+    def _timeout(*_args, **_kwargs):
+        raise eng.subprocess.TimeoutExpired("sd", 10)
+
+    monkeypatch.setattr(eng.subprocess, "run", _timeout)
+    assert find_sd_cpp_binary() is None
+    assert eng._IDENTITY_MEMO == {}
+
+    # Same file, unchanged on disk, and the probe now answers: the earlier failure must not stand in.
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            stdout = "stable-diffusion.cpp version unknown\n", stderr = "", returncode = 0
+        ),
+    )
+    assert find_sd_cpp_binary() == str(candidate)
+
+
+def test_identity_probe_does_not_memoize_a_candidate_it_cannot_stat(monkeypatch):
+    # No key means no cache entry: a path that does not resolve yet must be re-probed once it does,
+    # rather than being remembered as "not stable-diffusion.cpp" for the life of the process.
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: "/nonexistent/sd" if stem == "sd" else None)
+    runs = []
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda cmd, **_k: (
+            runs.append(cmd),
+            types.SimpleNamespace(stdout = "unrelated\n", stderr = "", returncode = 0),
+        )[1],
+    )
+
+    assert find_sd_cpp_binary() is None
+    assert find_sd_cpp_binary() is None
+    assert len(runs) == 2
+    assert eng._IDENTITY_MEMO == {}
 
 
 def test_find_returns_none_when_absent(tmp_path, monkeypatch):
