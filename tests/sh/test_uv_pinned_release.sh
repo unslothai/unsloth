@@ -109,7 +109,7 @@ if [ -n "$_snapshot_at" ] && [ -n "$_first_mutation" ] && [ "$_snapshot_at" -lt 
 else
     bad "the login PATH snapshot is missing or too late (snapshot=$_snapshot_at first mutation=$_first_mutation)"
 fi
-if grep -q 'case ":\$_UNSLOTH_LOGIN_PATH:" in' "$INSTALL_SH"; then
+if grep -q '_path_has_dir "\$_UNSLOTH_LOGIN_PATH"' "$INSTALL_SH"; then
     ok "the shell-profile guard tests the inherited PATH, not the one we prepended to"
 else
     bad "the shell-profile guard tests the inherited PATH, not the one we prepended to"
@@ -120,11 +120,10 @@ fi
 # path does not, so an empty _SHELL_PROFILE means the next terminal resolves neither unsloth nor
 # uv. Run the real block from install.sh rather than grepping it.
 # The guard now calls _persist_login_path_dir, so the extract has to carry the function too.
-_fn_start=$(grep -n '^_persist_login_path_dir() {' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_guard_start=$(grep -n 'case ":\$_UNSLOTH_LOGIN_PATH:" in' "$INSTALL_SH" | head -1 | cut -d: -f1)
-# Through the second esac and the fi that closes the custom-uv-directory block after it: the
-# two persistence decisions are one contract and the test drives both.
-_guard_end=$(awk -v s="$_guard_start" 'NR>=s && /^[[:space:]]*esac$/ {n++} n==2 && /^fi$/ {print NR; exit}' "$INSTALL_SH")
+_fn_start=$(grep -n '^_path_has_dir() {' "$INSTALL_SH" | head -1 | cut -d: -f1)
+# Through the sentinel that closes the block: the two persistence decisions are one contract
+# and the test drives both.
+_guard_end=$(grep -n '^# end of the PATH persistence block$' "$INSTALL_SH" | head -1 | cut -d: -f1)
 sed -n "${_fn_start},${_guard_end}p" "$INSTALL_SH" > "$WORK/path_guard.sh"
 mkdir -p "$WORK/fresh_home/.local/bin"
 (
@@ -804,6 +803,106 @@ for _impl in "$INSTALL_SH" "$SETUP_SH"; do
         ok "${_impl##*/} saves and restores the incumbent across the pair"
     else
         bad "${_impl##*/} saves and restores the incumbent across the pair"
+    fi
+done
+
+# A destination holding a glob character is a pattern inside a case arm, so `/opt/*` counted as
+# present whenever the inherited PATH held any /opt entry and the persistence was skipped.
+mkdir -p "$WORK/glob_home/.local/bin" "$WORK/glob_home/opt/star"
+: > "$WORK/glob_home/.bashrc"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/glob_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="$HOME/opt/star:/usr/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/*"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -qF 'opt/*' "$WORK/glob_home/.bashrc" 2>/dev/null; then
+    ok "a uv directory holding a glob character is compared literally"
+else
+    bad "a uv directory holding a glob character is compared literally"
+fi
+
+# An incumbent that cannot be saved cannot be restored, so publishing over it would be a
+# one-way move. Made unsaveable by refusing both the link and the copy.
+mkdir -p "$WORK/home_nosave/.local/bin"
+printf '#!/bin/sh\necho "uv 0.9.9 (incumbent)"\n' > "$WORK/home_nosave/.local/bin/uv"
+printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_nosave/.local/bin/uvx"
+chmod +x "$WORK/home_nosave/.local/bin/uv" "$WORK/home_nosave/.local/bin/uvx"
+(
+    set +e
+    tauri_log() { :; }
+    ln() { return 1; }
+    cp() {
+        case "$*" in
+            -p*) return 1 ;;
+        esac
+        command cp "$@"
+    }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
+    download() { command cp -f "$WORK/uv-fake.tar.gz" "$2"; }
+    HOME="$WORK/home_nosave"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_nosave" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_nosave"; then
+    bad "an unsaveable incumbent declines instead of publishing over it"
+else
+    ok "an unsaveable incumbent declines instead of publishing over it"
+fi
+if "$WORK/home_nosave/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
+    ok "an unsaveable incumbent is left exactly as it was"
+else
+    bad "an unsaveable incumbent is left exactly as it was"
+fi
+
+# With no uv at the destination and uvx failing to publish, there is nothing to put back, so
+# ours comes off: half a pair the host never had is worse than the empty directory it started
+# with, and the fallback installs over neither.
+mkdir -p "$WORK/home_nopred/.local/bin"
+printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_nopred/.local/bin/uvx"
+chmod +x "$WORK/home_nopred/.local/bin/uvx"
+(
+    set +e
+    tauri_log() { :; }
+    mv() {
+        case "$*" in
+            *"/uvx") return 1 ;;
+        esac
+        command mv "$@"
+    }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
+    download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
+    HOME="$WORK/home_nopred"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+) >/dev/null 2>&1 || true
+if [ -e "$WORK/home_nopred/.local/bin/uv" ]; then
+    bad "a rollback with no predecessor removes the uv it published"
+else
+    ok "a rollback with no predecessor removes the uv it published"
+fi
+
+# The fish escapers have to be valid sed. Run them rather than reading them: the setup.sh copy
+# reached sed as `s/\/\\/g` and would have killed setup under set -e after uv was published.
+for _impl in "$INSTALL_SH" "$SETUP_SH"; do
+    _esc_line=$(grep -h 'sed "s/' "$_impl" | grep 'fish\|_quoted=' | head -1)
+    _esc_expr=${_esc_line#*| }
+    if [ -n "$_esc_expr" ] && printf '%s' "/opt/a b" | eval "${_esc_expr%\)}" >/dev/null 2>&1; then
+        ok "${_impl##*/} escapes fish paths with a valid sed expression"
+    else
+        bad "${_impl##*/} escapes fish paths with a valid sed expression"
     fi
 done
 

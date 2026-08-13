@@ -729,8 +729,17 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_WORK:-}" ] && rm -rf "$_UIP_WORK" 2>/dev/null || true
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
-    [ -n "${_UIP_UNDO_UV:-}" ] && rm -f "$_UIP_UNDO_UV" 2>/dev/null || true
-    [ -n "${_UIP_UNDO_UVX:-}" ] && rm -f "$_UIP_UNDO_UVX" 2>/dev/null || true
+    # Restored, not deleted. A signal between the two renames leaves this copy as the only
+    # reference to the incumbent, and removing it would leave a new uv beside an old uvx.
+    # _UIP_DEST is set only while the two renames are in flight.
+    if [ -n "${_UIP_UNDO_UV:-}" ]; then
+        [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UV" "$_UIP_DEST/uv" 2>/dev/null
+        rm -f "$_UIP_UNDO_UV" 2>/dev/null || true
+    fi
+    if [ -n "${_UIP_UNDO_UVX:-}" ]; then
+        [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UVX" "$_UIP_DEST/uvx" 2>/dev/null
+        rm -f "$_UIP_UNDO_UVX" 2>/dev/null || true
+    fi
 }
 
 _on_install_exit() {
@@ -763,6 +772,7 @@ _UIP_STAGE=""
 _UIP_STAGE2=""
 _UIP_UNDO_UV=""
 _UIP_UNDO_UVX=""
+_UIP_DEST=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -2608,32 +2618,64 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             # name; cp is the fallback for a filesystem that refuses one.
             _UIP_UNDO_UV=""
             _UIP_UNDO_UVX=""
-            if [ -e "$_uip_dest/uv" ] && _uip_save=$(mktemp "$_uip_dest/.uv.old.XXXXXX" 2>/dev/null); then
-                if ln -f "$_uip_dest/uv" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uv" "$_uip_save" 2>/dev/null; then
-                    _UIP_UNDO_UV="$_uip_save"
+            if [ -e "$_uip_dest/uv" ]; then
+                # An incumbent that cannot be saved cannot be restored, so publishing over it
+                # would be a one-way move. Decline instead and let the fallback decide.
+                if _uip_save=$(mktemp "$_uip_dest/.uv.old.XXXXXX" 2>/dev/null); then
+                    if ln -f "$_uip_dest/uv" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uv" "$_uip_save" 2>/dev/null; then
+                        _UIP_UNDO_UV="$_uip_save"
+                    else
+                        rm -f "$_uip_save" 2>/dev/null || true
+                        _uip_ready=0
+                    fi
                 else
-                    rm -f "$_uip_save" 2>/dev/null || true
+                    _uip_ready=0
                 fi
             fi
-            if [ -e "$_uip_dest/uvx" ] && _uip_save=$(mktemp "$_uip_dest/.uvx.old.XXXXXX" 2>/dev/null); then
-                if ln -f "$_uip_dest/uvx" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uvx" "$_uip_save" 2>/dev/null; then
-                    _UIP_UNDO_UVX="$_uip_save"
+            if [ -e "$_uip_dest/uvx" ]; then
+                # An incumbent that cannot be saved cannot be restored, so publishing over it
+                # would be a one-way move. Decline instead and let the fallback decide.
+                if _uip_save=$(mktemp "$_uip_dest/.uvx.old.XXXXXX" 2>/dev/null); then
+                    if ln -f "$_uip_dest/uvx" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uvx" "$_uip_save" 2>/dev/null; then
+                        _UIP_UNDO_UVX="$_uip_save"
+                    else
+                        rm -f "$_uip_save" 2>/dev/null || true
+                        _uip_ready=0
+                    fi
                 else
-                    rm -f "$_uip_save" 2>/dev/null || true
+                    _uip_ready=0
                 fi
             fi
-            if mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
-               mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
+            # Published under the trap's eye: a signal between the two renames has to be able
+            # to find the destination to put the incumbents back.
+            _UIP_DEST="$_uip_dest"
+            if [ "$_uip_ready" != "1" ]; then
+                # Nothing was published, so there is nothing to undo and the incumbents are
+                # exactly as they were found.
+                :
+            elif mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
+                 mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
                 _uip_placed=1
             else
                 # Half published: put back what was there. Anything that could not be saved is
                 # left alone rather than deleted, which is still the safer direction.
-                [ -n "$_UIP_UNDO_UV" ] && mv -f "$_UIP_UNDO_UV" "$_uip_dest/uv" 2>/dev/null
-                [ -n "$_UIP_UNDO_UVX" ] && mv -f "$_UIP_UNDO_UVX" "$_uip_dest/uvx" 2>/dev/null
+                # With no predecessor there is nothing to put back, so ours comes off: half a
+                # pair the host never had is worse than the empty destination it started with.
+                if [ -n "$_UIP_UNDO_UV" ]; then
+                    mv -f "$_UIP_UNDO_UV" "$_uip_dest/uv" 2>/dev/null || true
+                else
+                    rm -f "$_uip_dest/uv" 2>/dev/null || true
+                fi
+                if [ -n "$_UIP_UNDO_UVX" ]; then
+                    mv -f "$_UIP_UNDO_UVX" "$_uip_dest/uvx" 2>/dev/null || true
+                else
+                    rm -f "$_uip_dest/uvx" 2>/dev/null || true
+                fi
             fi
             rm -f "$_UIP_UNDO_UV" "$_UIP_UNDO_UVX" 2>/dev/null || true
             _UIP_UNDO_UV=""
             _UIP_UNDO_UVX=""
+            _UIP_DEST=""
         fi
         rm -f "$_UIP_STAGE" "$_UIP_STAGE2" 2>/dev/null || true
         _UIP_STAGE=""
@@ -5354,6 +5396,24 @@ fi
 # the shim path (the directory guard above already rejects a real directory).
 ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
 
+# Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
+# expansion is off for the walk and restored afterwards: a directory holding *, ? or [ would
+# otherwise match an unrelated entry and the persistence would be skipped.
+_path_has_dir() {
+    _phd_glob=on
+    case $- in *f*) _phd_glob=off ;; esac
+    set -f
+    _phd_found=1
+    _phd_old_ifs="$IFS"
+    IFS=:
+    for _phd_entry in $1; do
+        if [ "$_phd_entry" = "$2" ]; then _phd_found=0; break; fi
+    done
+    IFS="$_phd_old_ifs"
+    [ "$_phd_glob" = on ] && set +f
+    return "$_phd_found"
+}
+
 # Put a directory on the PATH of the NEXT shell, not just this process.
 #   $1 the directory  $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always
 #   has)  $3 how to name it in the line we print  $4 the grep that says it is already there
@@ -5399,9 +5459,7 @@ _persist_login_path_dir() {
     fi
 }
 
-case ":$_UNSLOTH_LOGIN_PATH:" in
-    *":$_LOCAL_BIN:"*) ;;  # already on the PATH a new shell will inherit
-    *)
+if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new shell's PATH
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             export PATH="$_LOCAL_BIN:$PATH"
             step "path" "exported $_LOCAL_BIN for this session (no rc-file append in env-override mode)"
@@ -5409,8 +5467,7 @@ case ":$_UNSLOTH_LOGIN_PATH:" in
             _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' "~/.local/bin" '\.local/bin'
             export PATH="$_LOCAL_BIN:$PATH"
         fi
-        ;;
-esac
+fi
 
 # UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME and XDG_DATA_HOME all outrank
 # ~/.local/bin, and astral's installer wrote a PATH line for whichever it picked. Replacing that
@@ -5420,18 +5477,16 @@ esac
 if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN" ] \
    && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
    && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
-    case ":$_UNSLOTH_LOGIN_PATH:" in
-        *":$_UNSLOTH_UV_BIN_DIR:"*) ;;  # already on the PATH a new shell will inherit
-        *)
-            # The rc line is double-quoted, so a path holding $, ` or " would be expanded or
-            # terminated by the shell that reads it. The ~/.local/bin literal is exempt: its
-            # $HOME is meant to stay unexpanded.
-            _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
-            _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
-                "$_UNSLOTH_UV_BIN_DIR" "$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')"
-            ;;
-    esac
+    if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_UNSLOTH_UV_BIN_DIR"; then
+        # The rc line is double-quoted, so a path holding $, ` or " would be expanded or
+        # terminated by the shell that reads it. The ~/.local/bin literal is exempt: its
+        # $HOME is meant to stay unexpanded.
+        _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+        _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
+            "$_UNSLOTH_UV_BIN_DIR" "$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')"
+    fi
 fi
+# end of the PATH persistence block
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
 # create_studio_shortcuts gates persistent menu shortcuts on env-mode;

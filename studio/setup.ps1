@@ -4443,6 +4443,12 @@ function Install-UvFromPinnedRelease {
             $dst = Join-Path $destDir $exe
             if (Test-Path -LiteralPath $dst) {
                 $backup = "$dst.unsloth-old"
+            if (Test-Path -LiteralPath $backup) {
+                # A previous run failed to restore and kept this as the only copy of a
+                # working uv, and told the user where it is. Take a distinct name rather
+                # than overwriting it with whatever is at the destination now.
+                $backup = "$dst.unsloth-old." + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            }
                 try {
                     Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
                     $backups[$dst] = $backup
