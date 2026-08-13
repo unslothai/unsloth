@@ -30,9 +30,14 @@ def _wait_for_device(device):
     if synchronize is None:
         return
     try:
-        synchronize(device)
-    except TypeError:  # torch.mps.synchronize takes no device argument
-        synchronize()
+        try:
+            synchronize(device)
+        except TypeError:  # torch.mps.synchronize takes no device argument
+            synchronize()
+    except Exception:
+        # An async device fault surfaces here as a RuntimeError. It belongs to generate(), whose
+        # caller reports it; a timing stamp must not pre-empt that or skip the cleanup after it.
+        pass
 
 
 class GenerationTimer:
@@ -80,7 +85,10 @@ class GenerationTimer:
 def with_prefill_boundary_processor(logits_processor, timer):
     """Prepend a prefill-boundary stamp to ``logits_processor`` (which may be None).
 
-    The stamp runs first so an expensive penalty processor cannot be charged to prefill.
+    The stamp runs first within this custom list, so the presence-penalty processor sharing it
+    cannot be charged to prefill. transformers still runs its own default processors (min length,
+    repetition penalty, temperature, top-k/top-p/min-p) before the whole custom list, since
+    ``_merge_criteria_processor_list`` appends the custom one to the defaults.
     """
     from transformers import LogitsProcessor, LogitsProcessorList
 

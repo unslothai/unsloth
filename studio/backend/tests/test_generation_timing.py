@@ -72,6 +72,24 @@ def test_both_stamps_wait_for_the_accelerator(monkeypatch):
     assert synced == [cuda, cuda]
 
 
+def test_a_faulting_device_wait_still_produces_timings(monkeypatch):
+    """An async CUDA fault surfaces at the next synchronize, which is inside the stamp. The call
+    sites stamp in a finally and only then end the streamer, so a raise here would strand the
+    stream and kill the worker thread on a traceback that belongs to generate()."""
+    def _boom(device = None):
+        raise RuntimeError("CUDA error: device-side assert triggered")
+
+    monkeypatch.setattr(torch.cuda, "synchronize", _boom)
+
+    cuda = torch.device("cuda", 0)
+    timer = GenerationTimer()
+    timer.start()
+    timer.mark_prefill_end(cuda)
+    timer.finish()
+    assert timer.prompt_ms is not None
+    assert timer.predicted_ms is not None
+
+
 def test_a_cpu_run_has_nothing_to_wait_for(monkeypatch):
     monkeypatch.setattr(
         torch.cuda, "synchronize", lambda device = None: pytest.fail("cpu run synchronized")

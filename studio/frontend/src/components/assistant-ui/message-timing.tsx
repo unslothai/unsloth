@@ -206,7 +206,9 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {(st?.prompt_n ?? 0) > 1 && st?.prompt_per_second != null && (
+              {(st?.prompt_n ?? 0) > 1 &&
+                st?.prompt_per_second != null &&
+                st.prompt_per_second > 0 && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Prompt speed</span>
                   <span className="font-mono tabular-nums">

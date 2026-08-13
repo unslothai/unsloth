@@ -323,6 +323,12 @@ export const MessageResponseDetailsSheet: FC<{
     (promptTokens != null && completionTokens != null
       ? promptTokens + completionTokens
       : undefined);
+  // Same gate as the timing tooltip: a one-token prompt or a missing rate has no speed to show.
+  const promptRate = asNumber(serverTimings?.prompt_per_second);
+  const promptSpeed =
+    (asNumber(serverTimings?.prompt_n) ?? 0) > 1 && (promptRate ?? 0) > 0
+      ? promptRate
+      : undefined;
   const totalTime =
     responseDetails?.durationMs ?? timing?.totalStreamTime ?? undefined;
   const summaryLabel =
@@ -429,7 +435,7 @@ export const MessageResponseDetailsSheet: FC<{
             />
             <DetailRow
               label="Prompt speed"
-              value={formatRate(asNumber(serverTimings?.prompt_per_second))}
+              value={formatRate(promptSpeed)}
               mono
             />
             <DetailRow
