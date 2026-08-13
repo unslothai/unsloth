@@ -9072,12 +9072,9 @@ async def validate_model(
 
 
 # studio_router only: a Studio preflight, kept off the OpenAI-compatible /v1 mount.
-@studio_router.post(
-    "/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse
-)
+@studio_router.post("/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse)
 async def check_transformers_upgrade_route(
-    request: TransformersUpgradeCheckRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: TransformersUpgradeCheckRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Does loading this model need a newer transformers than any installed overlay?
@@ -9120,7 +9117,6 @@ async def check_transformers_upgrade_route(
     transformers_upgrade: Optional[TransformersUpgradeInfo] = None
     try:
         from utils.transformers_latest import check_upgrade_for_model
-
         for target in targets:
             upgrade = await asyncio.to_thread(
                 _offline_guarded,

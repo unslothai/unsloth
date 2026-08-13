@@ -34,7 +34,13 @@ def _route():
     return pytest.importorskip("routes.inference", reason = "inference stack not installed")
 
 
-def _stub(monkeypatch, *, upgrade = None, latest_tier = False, trust_remote_code = False):
+def _stub(
+    monkeypatch,
+    *,
+    upgrade = None,
+    latest_tier = False,
+    trust_remote_code = False,
+):
     """Answer the three preflights the route composes, and nothing else."""
     inf_mod = _route()
     import utils.transformers_latest as latest_mod
@@ -43,9 +49,9 @@ def _stub(monkeypatch, *, upgrade = None, latest_tier = False, trust_remote_code
     monkeypatch.setattr(
         inf_mod, "_requires_trust_remote_code_for_model", lambda *a, **k: trust_remote_code
     )
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", lambda: __import__(
-        "contextlib"
-    ).nullcontext())
+    monkeypatch.setattr(
+        inf_mod, "_hf_offline_if_unreachable", lambda: __import__("contextlib").nullcontext()
+    )
     monkeypatch.setattr(latest_mod, "check_upgrade_for_model", lambda *a, **k: upgrade)
     monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **k: latest_tier)
     monkeypatch.setattr(
@@ -54,9 +60,12 @@ def _stub(monkeypatch, *, upgrade = None, latest_tier = False, trust_remote_code
     return inf_mod
 
 
-def _call(inf_mod, model = MODEL, hf_token = None):
+def _call(
+    inf_mod,
+    model = MODEL,
+    hf_token = None,
+):
     from models.inference import TransformersUpgradeCheckRequest
-
     return asyncio.run(
         inf_mod.check_transformers_upgrade_route(
             TransformersUpgradeCheckRequest(model_name = model, hf_token = hf_token),
