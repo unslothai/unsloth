@@ -66,7 +66,9 @@ async function* nativeBytes(handle: {
     const bytes = await readNativeChatImportChunk(
       handle.token,
       offset,
-      NATIVE_CHUNK_BYTES,
+      // Never past the size the picker recorded: bytes appended to a file that
+      // is still being written are not part of the export that was chosen.
+      Math.min(NATIVE_CHUNK_BYTES, handle.size - offset),
     );
     // The picker recorded the size, so a short read means the file shrank since
     // then. Stopping quietly would pass a partial export off as the whole one.

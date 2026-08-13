@@ -357,3 +357,28 @@ test("a nested value at column 0 does not end the record that contains it", asyn
     assert.deepEqual(malformed, [], `chunk size ${size}`);
   }
 });
+
+test("a pretty-printed conversation after a damaged row is framed, not shredded into lines", async () => {
+  // Line-parsing the region behind the boundary lost the whole record when it
+  // arrived in one chunk, and emitted its nested objects as records when it did
+  // not, so the outcome again depended on the chunk size.
+  const conversation = {
+    id: "c2",
+    messages: [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+    ],
+  };
+  const text = `{"id":1\n${JSON.stringify(conversation, null, 2)}\n{"id":3}\n`;
+  for (const size of [1, 7, 40, 200, text.length]) {
+    const out: unknown[] = [];
+    const malformed: string[] = [];
+    for await (const record of streamJsonRecords(asChunks(text, size), {
+      onMalformed: (bad) => malformed.push(bad),
+    })) {
+      out.push(record);
+    }
+    assert.deepEqual(out, [conversation, { id: 3 }], `chunk size ${size}`);
+    assert.deepEqual(malformed, ['{"id":1'], `chunk size ${size}`);
+  }
+});

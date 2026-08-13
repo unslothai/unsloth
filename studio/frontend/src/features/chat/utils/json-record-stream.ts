@@ -217,11 +217,16 @@ export async function* streamJsonRecords(
       // keeps a file whose first row is broken from buffering whole.
       if (!sawArrayStart && start >= 0) {
         const lastNewline = buffer.lastIndexOf("\n");
-        if (lastNewline > start && NEW_RECORD_LINE.test(buffer.slice(start, lastNewline))) {
-          const salvaged = salvageLines(buffer.slice(start, lastNewline), lineFramed);
-          for (const text of salvaged.damaged) options.onMalformed?.(text);
-          yield* salvaged.records;
-          buffer = buffer.slice(lastNewline + 1);
+        const boundary =
+          lastNewline > start ? NEW_RECORD_LINE.exec(buffer.slice(start, lastNewline)) : null;
+        if (boundary) {
+          // Only the text before the boundary is damaged. The scanner resumes
+          // from the boundary itself, so a pretty-printed record after a broken
+          // row is framed by its nesting rather than shredded into lines.
+          const at = start + boundary.index + boundary[0].length - 1;
+          const damaged = buffer.slice(start, at).trim();
+          if (damaged) options.onMalformed?.(damaged);
+          buffer = buffer.slice(at);
           scan = 0;
           start = -1;
           depth = 0;

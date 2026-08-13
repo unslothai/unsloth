@@ -183,7 +183,11 @@ function contentWithDetailsToParts(content: string): unknown[] {
 
     const attributes = detailsAttributes(match[1]);
     const body = detailsBody(match[2], attributes.type === "reasoning");
-    if (attributes.type === "tool_calls") {
+    if (attributes.type === undefined) {
+      // A plain <details> the model wrote is formatting, not an Open WebUI
+      // construct, so it keeps its markup.
+      pushText(parts, match[0]);
+    } else if (attributes.type === "tool_calls") {
       const result =
         attributes.result !== undefined ? parseJsonLoose(attributes.result) : body || undefined;
       parts.push({
@@ -206,6 +210,9 @@ function contentWithDetailsToParts(content: string): unknown[] {
 
   return parts;
 }
+
+/** Built-ins studio names differently from the Responses item they arrive in. */
+const BUILTIN_TOOL_NAMES: Record<string, string> = { shell: "code_execution" };
 
 /** Modern assistant turns: Responses-API items stored on `message.output`. */
 function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: boolean } {
@@ -277,7 +284,24 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       continue;
     }
 
-    if (item.type === "function_call_output") {
+    // Built-in Responses tools (`web_search_call`, `shell_call`, ...) follow the
+    // same `<tool>_call` / `<tool>_call_output` pair as a function call, so they
+    // become the same portable tool part rather than being dropped.
+    const builtin = typeof item.type === "string" ? /^(\w+)_call$/.exec(item.type) : null;
+    if (builtin) {
+      const callId = str(item.call_id) ?? str(item.id) ?? crypto.randomUUID();
+      const part: Dict = {
+        type: "tool-call",
+        toolCallId: callId,
+        toolName: BUILTIN_TOOL_NAMES[builtin[1]] ?? builtin[1],
+        args: isDict(item.action) ? item.action : {},
+      };
+      toolCallIndex.set(callId, part);
+      parts.push(part);
+      continue;
+    }
+
+    if (typeof item.type === "string" && item.type.endsWith("_call_output")) {
       const callId = str(item.call_id);
       // `output` is a plain string for most tools and a content array only when
       // the tool returned images or files.
@@ -391,7 +415,15 @@ function collectNodes(chat: Dict): Node[] {
   const history = isDict(chat.history) ? chat.history : null;
   const historyMessages = history && isDict(history.messages) ? history.messages : null;
 
-  if (!historyMessages) {
+  const byId = new Map<string, Node>();
+  for (const [id, raw] of Object.entries(historyMessages ?? {})) {
+    if (!isDict(raw)) continue;
+    byId.set(id, { id, parentId: str(raw.parentId), raw });
+  }
+
+  // An empty or unusable DAG is damage like a missing one: the flat branch is
+  // then the only copy of the conversation left.
+  if (byId.size === 0) {
     // No DAG: the flat active branch is all that survived.
     const flat = Array.isArray(chat.messages) ? chat.messages : [];
     const nodes: Node[] = [];
@@ -407,12 +439,6 @@ function collectNodes(chat: Dict): Node[] {
       previousId = id;
     }
     return nodes;
-  }
-
-  const byId = new Map<string, Node>();
-  for (const [id, raw] of Object.entries(historyMessages)) {
-    if (!isDict(raw)) continue;
-    byId.set(id, { id, parentId: str(raw.parentId), raw });
   }
 
   // Re-derive children from parentId: `childrenIds` goes stale on edits, and an

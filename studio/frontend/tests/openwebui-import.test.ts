@@ -630,3 +630,76 @@ test("a generated image comes over as an image, not as a dropped output item", (
     [{ type: "image", image: "data:image/png;base64,AAAA" }],
   );
 });
+
+test("a plain details block the model wrote keeps its markup", () => {
+  const answer = "Here:\n<details><summary>Spoiler</summary>secret</details>\nDone.";
+  const conversation = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf(
+        [{ id: "a", parentId: null, role: "assistant", content: answer, timestamp: 1 }],
+        "a",
+      ),
+    }),
+    "fallback",
+  );
+  assert.ok(conversation);
+  assert.ok(text(conversation, 0).includes("<summary>Spoiler</summary>"));
+  assert.ok(text(conversation, 0).includes("Done."));
+});
+
+test("an empty history map falls back to the flat branch instead of dropping the chat", () => {
+  for (const messages of [{}, { m1: "not an object" }]) {
+    const conversation = openWebUIRecordToConversation(
+      chatRecord({
+        history: { messages, currentId: "m1" },
+        messages: [
+          { id: "m1", role: "user", content: "q", timestamp: 1 },
+          { id: "m2", role: "assistant", content: "a", timestamp: 2 },
+        ],
+      }),
+      "fallback",
+    );
+    assert.ok(conversation);
+    assert.equal(conversation.messages.length, 2);
+    assert.equal(conversation.messages[1].parentId, conversation.messages[0].id);
+  }
+});
+
+test("built-in Responses tools import as tool parts rather than disappearing", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content: "Lisbon is sunny.",
+          output: [
+            {
+              type: "web_search_call",
+              id: "ws_1",
+              status: "completed",
+              action: { type: "search", query: "lisbon weather" },
+            },
+            { type: "shell_call", call_id: "sh_1", action: { type: "exec", commands: ["ls -la"] } },
+            { type: "shell_call_output", call_id: "sh_1", output: "total 0" },
+            { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "Lisbon is sunny." }] },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    calls.map((call) => call.toolName),
+    ["web_search", "code_execution"],
+  );
+  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather" });
+  assert.deepEqual(calls[1].args, { type: "exec", commands: ["ls -la"] });
+  assert.equal(calls[1].result, "total 0");
+});
