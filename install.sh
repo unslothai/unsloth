@@ -5421,7 +5421,10 @@ fi
 # installer means persisting its destination too. Both of astral's opt-outs are honoured:
 # UV_NO_MODIFY_PATH, and UV_UNMANAGED_INSTALL, which forces no-modify-path there and in
 # Install-UvFromRelease, so a caller asking for an unmanaged install gets no profile write here.
-if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN" ] \
+# The default destination IS ~/.local/bin, so this must not be gated on it differing: an
+# ordinary install is the case that matters most, and gating it there left every normal machine
+# with the single-file write the shim path has always done.
+if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
    && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
    && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
     if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_UNSLOTH_UV_BIN_DIR"; then
@@ -5432,7 +5435,15 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN
         # Anchored on both sides, so /opt/uv is not satisfied by /opt/uv-old and the match has
         # to be a whole PATH entry rather than any occurrence of the text.
         _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')
-        _uv_pattern="(^|[^[:alnum:]_.~/-])$_uv_grep_esc([^[:alnum:]_.~/-]|\$)"
+        # ...and the $HOME-relative spelling as well, because the shim block above writes
+        # `export PATH="$HOME/.local/bin:$PATH"` unexpanded. Without this the default install
+        # would add a second line for the same directory in the same file.
+        case "$_UNSLOTH_UV_BIN_DIR" in
+            "$HOME"/*)
+                _uv_grep_esc="$_uv_grep_esc|\\\$HOME$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[].[^$*\\/]/\\&/g')"
+                ;;
+        esac
+        _uv_pattern="(^|[^[:alnum:]_.~/-])($_uv_grep_esc)([^[:alnum:]_.~/-]|\$)"
         # Every startup file astral's installer wired, because it is the installer we replaced:
         # ~/.profile always, each of the bash files that exists, zsh under ZDOTDIR, and the fish
         # drop-in regardless of the current shell. Writing only the one file for the shell that

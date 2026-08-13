@@ -751,6 +751,7 @@ fi
 # write a profile line for whichever destination it chose. Without one the export dies with that
 # shell and every later run reinstalls uv.
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
+SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
 _sp_start=$(grep -n '^_setup_persist_uv_path() {' "$SETUP_SH" | head -1 | cut -d: -f1)
 _sp_end=$(awk -v s="$_sp_start" 'NR>s && /^\}$/ {print NR; exit}' "$SETUP_SH")
 sed -n "${_sp_start},${_sp_end}p" "$SETUP_SH" > "$WORK/setup_path.sh"
@@ -974,6 +975,46 @@ if grep -q 'if ($launcherPs1 -like "\\\\\*")' "$_ps1" \
     ok "a UNC launcher gets a policy that can actually load it"
 else
     bad "a UNC launcher gets a policy that can actually load it"
+fi
+
+# The DEFAULT install puts uv in ~/.local/bin, so the all-profile write must not be gated on the
+# destination differing from it: gating there left every ordinary machine with the single-file
+# write, which is the case that matters most.
+_dh="$WORK/default_home"
+mkdir -p "$_dh/.local/bin"
+: > "$_dh/.bashrc"; : > "$_dh/.bash_profile"
+for _pass in 1 2; do
+    (
+        set +e
+        step() { :; }
+        HOME="$_dh"; export HOME
+        SHELL="/bin/bash"; export SHELL
+        unset ZSH_VERSION ZDOTDIR UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+        _LOCAL_BIN="$HOME/.local/bin"
+        _STUDIO_HOME_REDIRECT="none"
+        _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+        _UNSLOTH_UV_BIN_DIR="$HOME/.local/bin"
+        # shellcheck disable=SC1090
+        . "$WORK/path_guard.sh"
+    ) >/dev/null 2>&1 || true
+done
+_dmiss=""
+for _f in .profile .bashrc .bash_profile .config/fish/conf.d/unsloth.fish; do
+    _n=$(grep -c "local/bin" "$_dh/$_f" 2>/dev/null) || _n=0
+    [ "$_n" = "1" ] || _dmiss="$_dmiss $_f=$_n"
+done
+if [ -z "$_dmiss" ]; then
+    ok "a default install wires every startup file, once each"
+else
+    bad "a default install wires every startup file, once each ($_dmiss)"
+fi
+
+# studio/setup.ps1 replaced astral's installer, so a failed pinned install needs somewhere to go
+# or the whole setup silently drops to pip for torch and everything after it.
+if grep -q 'if ($uvPinned -ne $true -and (Get-Command winget' "$SETUP_PS1"; then
+    ok "setup.ps1 still has a uv fallback when the pinned install fails"
+else
+    bad "setup.ps1 still has a uv fallback when the pinned install fails"
 fi
 
 echo
