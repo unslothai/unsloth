@@ -321,10 +321,24 @@ def _statements(text: str, failed: list):
         yield from _with_suite_tail(stmt)
 
 
-_SUITE_HEADS = frozenset((
-    "if", "elif", "else", "for", "while", "with", "try", "except", "finally",
-    "def", "class", "async", "match", "case",
-))
+_SUITE_HEADS = frozenset(
+    (
+        "if",
+        "elif",
+        "else",
+        "for",
+        "while",
+        "with",
+        "try",
+        "except",
+        "finally",
+        "def",
+        "class",
+        "async",
+        "match",
+        "case",
+    )
+)
 
 
 def _with_suite_tail(stmt: list):
@@ -1171,7 +1185,12 @@ def _index_cancellations(cancel: dict) -> dict:
     return indexed
 
 
-def _is_cancelled(indexed: list, start: int, col: int, declared_global: bool = False) -> bool:
+def _is_cancelled(
+    indexed: list,
+    start: int,
+    col: int,
+    declared_global: bool = False,
+) -> bool:
     for at_col, (ats, entries) in indexed:
         if at_col > col:
             break  # sorted by indent, so nothing deeper can reach this call
@@ -1308,9 +1327,7 @@ def _fstring_spans(
                 frontier, start, col, bool(spans) and _declares_global(spans, start)
             )
 
-    for span in _regex_spans(
-        code, receivers, funcs, live, aliases.loaders, aliases.loader_modules
-    ):
+    for span in _regex_spans(code, receivers, funcs, live, aliases.loaders, aliases.loader_modules):
         out.append(_Span(base + span.start(), base + span.end()))
 
 
@@ -1716,10 +1733,7 @@ class _ExecEvalPattern:
             # `import_module(n).exec(...)` reaches the builtin without the word
             # `builtins` appearing anywhere.
             or "import_module" in content
-            or (
-                ("exec" in content or "eval" in content)
-                and _RE_STRING_ESCAPE.search(content)
-            )
+            or (("exec" in content or "eval" in content) and _RE_STRING_ESCAPE.search(content))
         ):
             failed: list = []
             for stmt in _statements(content, failed):

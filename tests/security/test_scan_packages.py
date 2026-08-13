@@ -2884,8 +2884,7 @@ def test_a_rebinding_cancels_only_after_its_own_right_hand_side():
 
     # And the rebinding still silences what comes after it.
     after = (
-        "import builtins as b\nimport marshal\n"
-        "mod = __import__('os')\nb = load()\nb.eval(x)\n"
+        "import builtins as b\nimport marshal\nmod = __import__('os')\nb = load()\nb.eval(x)\n"
     )
     assert _high(after, "pkg/_infer.py") == [], "a call past the rebinding is not the builtin"
 
@@ -2924,7 +2923,10 @@ def test_import_module_is_a_loader_only_where_it_is_the_standard_one():
     # `import_module` is not a builtin. Trusting the bare name in every file made
     # any unrelated function of that name a builtins-module receiver, so ordinary
     # `import_module(name).eval(x)` inference code scored HIGH.
-    for binding in ("from registry import import_module\n", "def import_module(n): return REG[n]\n"):
+    for binding in (
+        "from registry import import_module\n",
+        "def import_module(n): return REG[n]\n",
+    ):
         payload = f"{binding}import marshal\nmod = __import__('os')\nimport_module(name).eval(x)\n"
         assert _high(payload, "pkg/_infer.py") == [], f"not a loader:\n{payload}"
 
