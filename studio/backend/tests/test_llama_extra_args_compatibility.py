@@ -349,9 +349,7 @@ def test_the_loader_and_the_panel_resolve_the_same_row(monkeypatch):
     assert key == "/models/Foo.gguf:Q4_K_M"
 
     # With no such row, the alias answers.
-    key, override = oas.resolve_override_for_load(
-        "/models/other.gguf", "unsloth/model-gguf", None
-    )
+    key, override = oas.resolve_override_for_load("/models/other.gguf", "unsloth/model-gguf", None)
     assert override["llama_extra_args"] == ["--top-k", "20"]
 
 

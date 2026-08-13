@@ -741,7 +741,6 @@ def override_lookup_candidates(
     file_variant = None
     if not variant and load_id.lower().endswith(".gguf"):
         from hub.utils.gguf import extract_quant_label
-
         file_variant = extract_quant_label(os.path.basename(load_id))
     ordered = [
         f"{load_id}:{variant}" if variant else None,

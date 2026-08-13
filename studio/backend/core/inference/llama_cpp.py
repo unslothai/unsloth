@@ -4965,8 +4965,7 @@ class LlamaCppBackend:
                         # The first token that is not an alias: a placeholder when it
                         # is one space away, the description when it is further.
                         current_takes_value = (
-                            _previous_end is not None
-                            and _match.start() - _previous_end == 1
+                            _previous_end is not None and _match.start() - _previous_end == 1
                         )
                         break
                     # Extract long-form flag tokens from the DECLARATION

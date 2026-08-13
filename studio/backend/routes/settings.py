@@ -1071,10 +1071,7 @@ def get_openai_auto_switch_overrides(
     resolved: Optional[dict] = None
     if model_id:
         from utils.openai_auto_switch_settings import resolve_override_for_load
-
-        resolved_key, resolved = resolve_override_for_load(
-            model_id, alias_id, gguf_variant
-        )
+        resolved_key, resolved = resolve_override_for_load(model_id, alias_id, gguf_variant)
     return ModelOverridesResponse(
         overrides = get_model_overrides(),
         resolved = resolved,
