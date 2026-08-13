@@ -212,9 +212,9 @@ def test_only_the_updater_health_probe_asks_for_isolation():
                 )
             ):
                 isolated_callers.add(parent.name)
-    assert isolated_callers == {"_interpreter_health_error"}, (
-        f"unexpected isolated managed CLI callers: {sorted(isolated_callers)}"
-    )
+    assert isolated_callers == {
+        "_interpreter_health_error"
+    }, f"unexpected isolated managed CLI callers: {sorted(isolated_callers)}"
 
 
 def test_the_windows_existence_gate_accepts_a_quarantined_venv():

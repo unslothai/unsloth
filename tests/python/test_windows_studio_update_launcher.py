@@ -927,11 +927,17 @@ def bare_probe_venv(real_venv):
         # package it decided it disliked.
         ("an emptied package directory", {}),
         # An interrupted install: the package landed, its dependencies did not.
-        ("a package whose imports are missing", {"__init__.py": "import unsloth_cli_missing_dep\n"}),
+        (
+            "a package whose imports are missing",
+            {"__init__.py": "import unsloth_cli_missing_dep\n"},
+        ),
         # A partially written __init__ that imports but has no app to hand back.
         ("a package with no app attribute", {"__init__.py": "VERSION = '1'\n"}),
         # An __init__ that raises on import, which no spec lookup ever executes.
-        ("a package whose import raises", {"__init__.py": "raise RuntimeError('half installed')\n"}),
+        (
+            "a package whose import raises",
+            {"__init__.py": "raise RuntimeError('half installed')\n"},
+        ),
     ],
 )
 def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
@@ -952,9 +958,9 @@ def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
         (package / name).write_text(body, encoding = "utf-8")
 
     monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
-    assert not studio._managed_cli_package_present(python), (
-        f"{shape} must not pass the gate: the trampoline cannot start it"
-    )
+    assert not studio._managed_cli_package_present(
+        python
+    ), f"{shape} must not pass the gate: the trampoline cannot start it"
 
     # Anti-vacuity: the same venv with a package that does import passes, so the
     # assertion above is about the shape and not about the fixture being broken.
