@@ -3,6 +3,7 @@
 
 import {
   AUTH_SESSION_CLEARED_EVENT,
+  AUTH_TOKEN_KEY,
   getAuthSessionEpoch,
 } from "@/features/auth/session";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -34,7 +35,8 @@ function subscribeToProjects(onStoreChange: () => void): () => void {
   return () => projectSubscribers.delete(onStoreChange);
 }
 
-function getProjectsSnapshot(): ProjectRecord[] {
+// Exported for tests.
+export function getProjectsSnapshot(): ProjectRecord[] {
   return cachedProjects;
 }
 
@@ -57,9 +59,17 @@ export function resetChatProjectsState(): void {
 
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, resetChatProjectsState);
+
+  // That event is same-document, so another tab's logout reaches this one only as a storage
+  // event. An access-token refresh rewrites the key, so only its removal ended the session.
+  window.addEventListener("storage", (event) => {
+    if (event.key !== AUTH_TOKEN_KEY || event.newValue !== null) return;
+    resetChatProjectsState();
+  });
 }
 
-function loadProjects(
+// Exported for tests.
+export function loadProjects(
   force = false,
   followUpIfPending = false,
 ): Promise<ProjectRecord[]> {

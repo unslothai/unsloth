@@ -19,6 +19,11 @@ export function registerStoreStubResolver(): void {
   register("../store-stub-resolver.mjs", import.meta.url);
 }
 
+/** The store stubs, plus a deferred chat-history-storage for use-chat-projects. */
+export function registerChatProjectsStorageResolver(): void {
+  register("../chat-projects-storage-resolver.mjs", import.meta.url);
+}
+
 export type StorageFake = {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
