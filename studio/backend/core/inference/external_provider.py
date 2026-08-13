@@ -862,7 +862,13 @@ class ExternalProviderClient:
         timeout: float = 120.0,
     ):
         self.provider_type = provider_type
-        self.base_url = base_url.rstrip("/")
+        # Single choke point for every outbound provider request (chat, models,
+        # responses, messages, containers): the URL is caller-controlled, so it
+        # is validated here even when a route already checked it. Routes turn the
+        # ValueError into a 400; reaching it here means a caller bypassed them.
+        from core.inference.providers import validate_provider_base_url
+
+        self.base_url = validate_provider_base_url(base_url)
         # Strip a legacy `/openai` suffix from Google-hosted bases so configs
         # saved before the native switch still route correctly. Custom proxy
         # paths ending in `/openai` are left untouched.
@@ -5447,13 +5453,21 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    # The type may live only in the SSE `event:` field, not in the data object.
+                    sse_event_name = ""
                     try:
                         while True:
                             try:
                                 line = await lines_gen.__anext__()
                             except StopAsyncIteration:
                                 break
-                            if not line or line.startswith("event:"):
+                            if not line:
+                                # A name never carries past the blank line that ends its event,
+                                # or a stale `response.failed` would fail a later frame.
+                                sse_event_name = ""
+                                continue
+                            if line.startswith("event:"):
+                                sse_event_name = line[len("event:") :].strip()
                                 continue
                             if not line.startswith("data:"):
                                 continue
@@ -5492,7 +5506,14 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            event_type = response_event_type(event)
+                            try:
+                                event_type = response_event_type(event, sse_event_name)
+                            except ValueError:
+                                # An OpenAI-compatible endpoint behind this base URL can answer
+                                # a Responses request with Chat Completions frames, so skipping
+                                # an unrecognisable frame beats failing the whole completion.
+                                # The ChatGPT path stays strict, where the shape is guaranteed.
+                                continue
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":

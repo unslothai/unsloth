@@ -113,6 +113,10 @@ pub struct NativeIntakeState {
     lease_secret: Vec<u8>,
 }
 
+/// Per process, and deliberately not persisted: a key on disk outlives every
+/// backend restart, and spent nonces are only remembered in memory, so a
+/// consumed lease could be replayed against a replacement inside the TTL. The
+/// adopted-survivor case is answered by `native_path_leases_usable` instead.
 pub fn new_native_intake_state() -> NativeIntakeState {
     NativeIntakeState {
         inner: Mutex::new(NativeIntakeInner::default()),

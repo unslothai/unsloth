@@ -132,8 +132,16 @@ def _row_to_response(row: dict) -> McpServerResponse:
 
 
 @router.get("/", response_model = list[McpServerResponse])
-async def list_mcp_servers(current_subject: str = Depends(get_current_subject)):
-    return [_row_to_response(row) for row in mcp_servers_db.list_servers()]
+async def list_mcp_servers(
+    current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
+):
+    rows = mcp_servers_db.list_servers()
+    if via_api_key:
+        # Drop the row, not just its fields: `url` is the argv (carries
+        # credentials), `headers` is the subprocess env, and a blanked url would
+        # round-trip into update as a bogus command.
+        rows = [row for row in rows if not is_stdio(row["url"])]
+    return [_row_to_response(row) for row in rows]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
