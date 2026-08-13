@@ -33,8 +33,7 @@ SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _BLOCK_START = "# ── Does PyTorch see the GPU this installer just announced? ──"
 _BLOCK_END = "# ── 7. Prefer prebuilt llama.cpp bundles"
 
-# Colours are the assertion surface for severity: the harness prints the names themselves,
-# so a report demoted from $C_ERR to $C_WARN fails rather than passing on text alone.
+# Colour is the assertion surface for severity: a report demoted from $C_ERR to $C_WARN fails here.
 _HARNESS_HEAD = """
 C_DIM="DIM"; C_RST=""; C_OK="OK"; C_WARN="WARN"; C_ERR="ERR"
 step()    { printf 'STEP|%s|%s|%s\\n' "$1" "$2" "${3:-OK}"; }
@@ -117,8 +116,8 @@ def _run_block(
     real_timeout = shutil.which("timeout")
     if with_timeout:
         assert real_timeout, "this test host has no timeout(1) to delegate to"
-        # Records the bound setup.sh ASKED for, then enforces a short one, so the hang
-        # case is observable without waiting out the real 90 seconds.
+        # Records the bound setup.sh ASKED for, then enforces a short one, so the hang case is
+        # observable without waiting out the real 90 seconds.
         _write_exec(
             stub_bin / "timeout",
             "#!/bin/sh\n"
@@ -127,8 +126,8 @@ def _run_block(
             f'exec "{real_timeout}" {timeout_bound} "$@"\n',
         )
     else:
-        # No `timeout` on PATH: the fallback arm must still run, with only the
-        # utilities the block itself uses reachable.
+        # No `timeout` on PATH: the fallback arm must still run, with only the block's own
+        # utilities reachable.
         for tool in ("bash", "grep", "tail", "cut", "sh", "sleep", "cat"):
             found = shutil.which(tool)
             assert found, f"missing {tool}"
@@ -139,8 +138,8 @@ def _run_block(
         shutil.copy2(venv / "bin" / "python", stub_bin / "python")
         (stub_bin / "python").chmod(0o755)
     elif path_python is not None:
-        # A DIFFERENT answer than the venv's, so a probe that drifted onto the system
-        # interpreter changes the report instead of matching by coincidence.
+        # A DIFFERENT answer than the venv's, so a probe that drifted onto the system interpreter
+        # changes the report instead of matching by coincidence.
         _write_exec(stub_bin / "python", f"#!/bin/sh\nprintf '%s' '{path_python}'\n")
 
     script = "\n".join(
@@ -212,16 +211,14 @@ def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
     assert "SUB|detected by the installer: AMD ROCm (gfx1201) -- Radeon RX 9070 XT|ERR" in out
     assert f"SUB|torch.cuda.is_available() is False in {venv}|ERR" in out
     assert "SUB|torch 2.9.0+cpu, device_count 0, torch.version.hip none|ERR" in out
-    # Naming the symptom stops it being filed twice, but only conditionally: with the Vulkan
-    # bundle the backend fills inference_gpu from get_vulkan_inference_gpu_info() and the
-    # monitor shows real VRAM, so promising "--" would be false. "PyTorch", because a false
+    # Naming the symptom stops it being filed twice, but only conditionally: with the Vulkan bundle
+    # the monitor shows real VRAM, so promising "--" would be false. "PyTorch", because a false
     # torch.cuda.is_available() says nothing about a GGUF bundle offloading to the same card.
     assert (
         "SUB|PyTorch training and GPU inference are unavailable; chat and GGUF still work.|ERR"
         in out
     )
-    # Not "runs on CPU": hardware.py leaves CHAT_ONLY true on the fallback and disables
-    # Train/Export, so promising CPU training is the opposite of what happens.
+    # Not "runs on CPU": hardware.py leaves CHAT_ONLY true on the fallback and disables Train/Export.
     assert "will run on CPU" not in out
     assert (
         'SUB|If the Live monitor shows VRAM "--" and "No visible GPU", that is this, not a second bug.|ERR'
@@ -339,8 +336,8 @@ def test_both_probe_arms_carry_the_in_process_deadline(block):
     arms = [line for line in block.splitlines() if '-c "$_setup_torch_probe"' in line]
     assert len(arms) == 2, arms
     assert all('"$_setup_torch_py"' in line for line in arms), arms
-    # One arm bounded by timeout(1), one for hosts without it; both share the same probe
-    # string, so the in-process deadline covers each.
+    # One arm bounded by timeout(1), one for hosts without it; the shared probe string carries the
+    # in-process deadline for both.
     assert sum(1 for line in arms if "timeout 90 " in line) == 1, arms
     assert block.count("_setup_torch_probe='import signal; signal.alarm(90); ") == 1
 

@@ -126,9 +126,9 @@ check "probe was extracted" "$([ -n "$_probe" ] && echo yes || echo no)" "yes"
 check "probe carries its own deadline" \
     "$(printf '%s' "$_probe" | grep -q 'signal.alarm(' && echo yes || echo no)" "yes"
 # Both arms must run the SAME string, or only one is bounded. Comment lines are excluded: the
-# summary arm below names the same call. So is the #8473 torch-visibility probe, which asks the
-# same question inside its OWN bounded probe -- excluded by name rather than by loosening the
-# count, so a copy-pasted xpu literal in an unbounded arm still fails here.
+# summary arm below names the same call. So is the #8473 torch-visibility probe, which asks it
+# inside its OWN bounded probe -- excluded by name rather than by raising the count, so a
+# copy-pasted xpu literal in an unbounded arm still fails here.
 check "no second probe literal" \
     "$(grep -v '^ *#' "$SETUP_SH" | grep -v "^ *_setup_torch_probe='" | grep -c "torch.xpu.is_available()")" "1"
 check "fallback arm reuses the probe" \
