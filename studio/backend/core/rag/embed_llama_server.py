@@ -272,7 +272,7 @@ class LlamaServerBackend:
     def _use_gpu(self) -> bool:
         """``RAG_EMBED_DEVICE``: ``gpu``/``cpu`` force it; ``auto`` uses a GPU when
         present. A sticky CPU fallback (after an auto GPU start fails) wins."""
-        dev = config.EMBED_DEVICE.lower()
+        dev = config.embed_device_preference()
         if dev == "gpu":
             return True
         if dev == "cpu" or self._force_cpu:
@@ -424,7 +424,7 @@ class LlamaServerBackend:
         try:
             self._spawn_once(use_gpu)
         except RuntimeError:
-            auto = config.EMBED_DEVICE.lower() not in ("gpu", "cpu")
+            auto = config.embed_device_preference() == "auto"
             if use_gpu and auto:
                 logger.warning("embed server GPU start failed; falling back to CPU")
                 self._force_cpu = True

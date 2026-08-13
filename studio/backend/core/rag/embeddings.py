@@ -74,8 +74,11 @@ def _device() -> str:
     differently, which is intended: that backend offloads inside its own subprocess,
     where the context dies with the child and costs the backend nothing.
     """
-    if (config.EMBED_DEVICE or "auto").strip().lower() not in ("gpu", "cuda"):
+    if config.embed_device_preference() != "gpu":
         return "cpu"
+    # Still a table lookup, so asking for a GPU on a host without one, or on Apple
+    # where this backend has no torch device, lands on CPU rather than on a device
+    # string torch cannot open.
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 

@@ -132,6 +132,24 @@ EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 # of the process (712 MiB on a B200, against 74 MiB of weights), so "auto" there means
 # CPU. Set "gpu" to offload either one; "cpu" keeps both off the GPU.
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
+
+
+def embed_device_preference() -> str:
+    """``EMBED_DEVICE`` normalized to exactly ``gpu``, ``cpu`` or ``auto``.
+
+    One reader for both backends, because they used to disagree about the same
+    string: the llama path compared a bare ``.lower()``, so ``" gpu "`` fell through
+    to auto, and an Intel user writing the accelerator's own name (``xpu``) got CPU
+    from a setting that named their device. Anything that is not recognizably a
+    request for CPU or for an accelerator is ``auto``, so a typo degrades to each
+    backend's default rather than to silence.
+    """
+    value = (EMBED_DEVICE or "").strip().lower()
+    if value in ("gpu", "cuda", "rocm", "hip", "xpu", "mps", "metal"):
+        return "gpu"
+    if value == "cpu":
+        return "cpu"
+    return "auto"
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
 EMBED_BATCH = int(os.environ.get("RAG_EMBED_BATCH", "64"))
