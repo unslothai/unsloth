@@ -610,6 +610,68 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert asked == [self._SIBLING]
 
+    def test_a_real_stat_of_the_destination_cancels_the_redirect(self, monkeypatch):
+        """The same cancellation, with `_same_filesystem` left unstubbed.
+
+        Cancelling is the one outcome the helper cannot reach by accident:
+        every failure inside it, `os.stat` included, returns True and takes
+        the redirect. So a real destination that is really rejected is proof
+        that both stats resolved and compared equal.
+        """
+        import shutil
+        import tempfile
+
+        # Under the tempfile default, so it shares that mount by construction.
+        destination = tempfile.mkdtemp(prefix = "unsloth-staging-test-")
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (destination, "moved"),
+        )
+        monkeypatch.setattr(S, "free_bytes", lambda path: self._SIBLING + 10 * GB - 1)
+        try:
+            assert S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8") == "model"
+        finally:
+            shutil.rmtree(destination, ignore_errors = True)
+
+    def test_the_redirect_creates_its_target_before_returning_it(self, monkeypatch, tmp_path):
+        """Which is why stat-ing the destination is safe on a first export.
+
+        `kaggle_tmp_redirect` returns a message only after `os.makedirs`
+        succeeded, and the `unsloth.disk_utils` fallback never returns one, so
+        the helper is unreachable with a destination that does not exist.
+        """
+        from unsloth.disk_utils import HAS_ZOO_DISK_UTILS
+
+        if not HAS_ZOO_DISK_UTILS:
+            assert S.kaggle_tmp_redirect("model", need_bytes = GB)[1] is None
+            return
+
+        import unsloth_zoo.disk_utils as zoo
+
+        working = tmp_path / "kaggle" / "working"
+        scratch = tmp_path / "tmp"
+        working.mkdir(parents = True)
+        scratch.mkdir()
+        monkeypatch.setattr(zoo, "KAGGLE_WORKING", str(working))
+        monkeypatch.setattr(zoo, "KAGGLE_TMP", str(scratch))
+        monkeypatch.setenv("UNSLOTH_IS_KAGGLE", "1")
+        monkeypatch.delenv("UNSLOTH_KAGGLE_USE_TMP", raising = False)
+        # The working directory is full and the scratch overlay is not, which
+        # is the only shape that moves anything.
+        monkeypatch.setattr(
+            zoo,
+            "free_bytes",
+            lambda path: 1 if os.path.abspath(str(path)) == str(working) else 1000 * GB,
+        )
+        monkeypatch.chdir(working)
+        target, message = zoo.kaggle_tmp_redirect(
+            "model", need_bytes = GB, what = "16-bit merge",
+        )
+        assert message is not None, "the redirect never fired, so nothing was proven"
+        assert os.path.isdir(target)
+
 
 class TestMergeHeadroomMatchesTheZooGuard:
     """A working directory that is "just big enough" is not big enough.
