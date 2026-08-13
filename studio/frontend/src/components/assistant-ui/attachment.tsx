@@ -25,7 +25,7 @@ import {
   pastedTextContentPreview,
   pastedTextPreview,
 } from "@/features/chat";
-import { formatBytes } from "@/features/hub/lib/format";
+import { formatBytes } from "@/features/hub";
 import { cn } from "@/lib/utils";
 import {
   AttachmentPrimitive,
