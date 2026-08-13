@@ -125,7 +125,20 @@ def _make_backend(
 
 def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(monkeypatch):
     stream = [
-        _progress(processed = 1000, cached = 100, time_ms = 100),
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
+                "prompt_progress": {
+                    "total": 1000,
+                    "processed": 1000,
+                    "cache": 100,
+                    "time_ms": 100,
+                },
+                "timings": {"prompt_ms": 100, "prompt_per_second": 9000},
+            }
+        )
+        + "\n",
         "data: "
         + json.dumps(
             {
@@ -158,6 +171,7 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert payloads[0]["timings_per_token"] is True
     assert samples[0]["prompt_n"] == 900
     assert samples[0]["prompt_per_second"] == 9000
+    assert "prompt_ms" not in samples[0]
     assert samples[-1]["predicted_per_second"] == 200
 
 

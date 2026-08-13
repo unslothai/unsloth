@@ -3257,6 +3257,8 @@ def _report_live_llama_timings(callback, chunk) -> None:
     sample = dict(timings) if isinstance(timings, dict) else {}
     progress = chunk.get("prompt_progress")
     if isinstance(progress, dict):
+        # Live prefill is not TTFT; keep prompt_ms for terminal engine timings only.
+        sample.pop("prompt_ms", None)
         try:
             processed = max(0.0, float(progress.get("processed", 0)))
             cached = max(0.0, float(progress.get("cache", 0)))
@@ -3265,7 +3267,6 @@ def _report_live_llama_timings(callback, chunk) -> None:
             if math.isfinite(elapsed_ms) and elapsed_ms > 0 and math.isfinite(prompt_n):
                 sample.update(
                     prompt_n = prompt_n,
-                    prompt_ms = elapsed_ms,
                     prompt_per_second = prompt_n / (elapsed_ms / 1000.0),
                 )
         except (TypeError, ValueError, OverflowError):
@@ -18240,6 +18241,40 @@ class LlamaCppBackend:
                 yield response, first_token_deadline
 
     @staticmethod
+    def _is_prompt_progress_only_chunk(chunk: str) -> bool:
+        """Return true when an SSE transport chunk contains prompt progress and no output."""
+        saw_progress = False
+        for line in chunk.splitlines():
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload:
+                continue
+            try:
+                data = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                return False
+            if not isinstance(data, dict) or not isinstance(data.get("prompt_progress"), dict):
+                return False
+            choices = data.get("choices")
+            if isinstance(choices, list):
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    if choice.get("finish_reason"):
+                        return False
+                    delta = choice.get("delta")
+                    if isinstance(delta, dict) and any(
+                        value not in (None, "", [])
+                        for key, value in delta.items()
+                        if key != "role"
+                    ):
+                        return False
+            saw_progress = True
+        return saw_progress
+
+
+    @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
         cancel_event: Optional[threading.Event] = None,
@@ -18263,7 +18298,7 @@ class LlamaCppBackend:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
                     LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
-                if chunk:
+                if chunk and not LlamaCppBackend._is_prompt_progress_only_chunk(chunk):
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,

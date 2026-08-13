@@ -3500,6 +3500,23 @@ def _monitor_usage(
         )
 
 
+
+def _monitor_perf_callback(monitor_id: Optional[str], context_length):
+    """Build a timing sink only when a monitor row or wrapper sink can consume it."""
+    if not monitor_id and _monitor_perf_sink.get() is None:
+        return None
+
+    def _callback(timings: dict) -> None:
+        _monitor_usage(
+            monitor_id,
+            None,
+            context_length,
+            timings = timings,
+        )
+
+    return _callback
+
+
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
     call_name = str(name or "tool")
     if arguments is None or arguments == "":
@@ -12760,14 +12777,11 @@ async def openai_chat_completions(
                 )
             )
 
-        def _gguf_perf_callback(timings: dict) -> None:
-            _monitor_usage(
-                monitor_id,
-                None,
-                llama_backend.context_length,
-                timings = timings,
-            )
-
+        _gguf_perf_callback = (
+            _monitor_perf_callback(monitor_id, llama_backend.context_length)
+            if not _wants_multiple_choices(payload)
+            else None
+        )
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
                 delta = delta.model_copy(update = {"content": ""})
@@ -19215,11 +19229,9 @@ async def anthropic_messages(
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
                 promote_reasoning_only = False,
-                perf_callback = lambda timings: _monitor_usage(
+                perf_callback = _monitor_perf_callback(
                     monitor_id,
-                    None,
                     llama_backend.context_length,
-                    timings = timings,
                 ),
             )
 
@@ -19261,11 +19273,9 @@ async def anthropic_messages(
             stop = stop,
             cancel_event = cancel_event,
             promote_reasoning_only = False,
-            perf_callback = lambda timings: _monitor_usage(
+            perf_callback = _monitor_perf_callback(
                 monitor_id,
-                None,
                 llama_backend.context_length,
-                timings = timings,
             ),
         )
 
