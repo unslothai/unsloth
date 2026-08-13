@@ -1927,7 +1927,23 @@ _setup_torch_sees_xpu=false
 _setup_torch_devices=0
 _setup_torch_ver=""
 _setup_torch_hip=""
-if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
+#
+# An explicit CPU pin is a request, not a fault. install_python_stack's
+# _explicit_cpu_torch_index_url treats UNSLOTH_TORCH_INDEX_FAMILY=cpu (or an index URL
+# whose leaf is cpu) as authoritative and force-reinstalls the CPU wheel, so torch
+# answering False there is the configuration working. Parsed here rather than reusing
+# _setup_pin_leaf: that one is assigned inside the fast-path branch, so it is unset on a
+# fresh install and on any run where the PyPI version check could not answer. Only the
+# EXACT cpu leaf, like every other leaf parser -- a cu128 or rocm pin still expects a GPU.
+_setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+_setup_gpucheck_pin="${_setup_gpucheck_pin%%\#*}"
+_setup_gpucheck_pin="${_setup_gpucheck_pin%%\?*}"
+while [ "${_setup_gpucheck_pin%/}" != "$_setup_gpucheck_pin" ]; do
+    _setup_gpucheck_pin="${_setup_gpucheck_pin%/}"
+done
+_setup_gpucheck_pin_leaf=$(printf '%s' "${_setup_gpucheck_pin##*/}" | tr '[:upper:]' '[:lower:]')
+if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } \
+    && [ "$_setup_gpucheck_pin_leaf" != "cpu" ]; then
     case "${UNSLOTH_SKIP_TORCH_GPU_CHECK:-}" in
         1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
         *) _setup_skip_torch_check=false ;;
@@ -1995,7 +2011,8 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
         substep "torch ${_setup_torch_ver:-unknown}, device_count ${_setup_torch_devices:-0}, torch.version.hip ${_setup_torch_hip:-none}" "$C_ERR"
         # Named so the report matches what the user is about to see, instead of
         # leaving them to discover it and file it as a second, separate bug.
-        substep "Studio will run CPU-only: the Live monitor will show VRAM \"--\" and \"No visible GPU\"." "$C_ERR"
+        substep "Training and torch GPU inference will run on CPU; chat and GGUF are unaffected." "$C_ERR"
+        substep "If the Live monitor shows VRAM \"--\" and \"No visible GPU\", that is this, not a second bug." "$C_ERR"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then
         verbose_substep "torch sees $_setup_torch_devices GPU(s) (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"

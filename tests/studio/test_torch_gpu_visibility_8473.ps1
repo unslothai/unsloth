@@ -109,6 +109,10 @@ $setupText = (Get-Content -Raw $setup) -replace "`r`n", "`n"
 $reportPat = '(?s)(# ── Does PyTorch see the GPU this installer announced\? ──.*?\n\}\n)'
 $report = if ($setupText -match $reportPat) { $Matches[1] } else { "" }
 Check "the report block was found"        ($report -ne "")
+# Comment-stripped, for the checks that assert a variable is NOT read: the block's own comments
+# name the flags it deliberately stopped re-deriving, and would satisfy those matches on prose.
+$reportCode = (($report -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Check "the comment strip left code"       ($reportCode -match 'Get-TorchGpuVisibility')
 Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`n") -match $reportPat))
 
 Write-Host "the check runs on the update that prints 'dependencies up to date'"
@@ -132,6 +136,13 @@ Check "it names the wheel"                ($report -match 'substep "torch \$\(\$
 Check "it names torch.version.hip"        ($report -match 'torch\.version\.hip \$_gpuCheckHip')
 # Naming the symptom is what stops the user filing it a second time as a UI bug.
 Check "it names what the user will see"   ($report -match 'No visible GPU')
+# ...conditionally. llama.cpp is a separate stack: with the Vulkan bundle the backend fills
+# inference_gpu from get_vulkan_inference_gpu_info() and the monitor shows that card's real
+# VRAM, so promising "--" and a CPU-only Studio would be a false prediction there.
+Check "it does not promise a CPU-only Studio" (-not ($report -match 'Studio will run CPU-only'))
+Check "it claims only what torch answered" ($report -match 'Training and torch GPU inference will run on CPU')
+Check "the monitor line is conditional"   ($report -match 'If the Live monitor shows VRAM')
+Check "chat and GGUF are exempted"        ($report -match 'chat and GGUF are unaffected')
 Check "it says where to report it"        ($report -match 'github\.com/unslothai/unsloth/issues')
 # A CPU-only Studio still chats. Failing the install over a diagnostic would be a regression.
 Check "it never fails the setup"          (-not ($report -match 'Exit-SetupFailure|exit 1|\$stackExit'))
@@ -169,6 +180,13 @@ Write-Host "and it costs nothing where it cannot help"
 Check "no-torch mode is excluded"         ($report -match '-not \$NoTorchMode')
 Check "a CPU-only host is excluded"       ($report -match '\$_gpuCheckAnnounced -and')
 Check "there is an escape hatch"          ($report -match 'UNSLOTH_SKIP_TORCH_GPU_CHECK')
+# An explicit cpu pin is a request, not a fault: install_python_stack force-reinstalls the CPU
+# wheel for it, so a red "cannot see the GPU" would accuse the user of their own setting.
+Check "an explicit cpu pin is excluded"   ($report -match '\$_gpuCheckPinLeaf -ne "cpu"')
+# Resolved here, not read off $TorchIndexPinned / $CuTag: those live inside the dependency-pass
+# branch and are $null on the "dependencies up to date" run this check exists for.
+Check "the pin is resolved fresh"         ($report -match '\$_gpuCheckPinLeaf = Get-TorchIndexLeaf \(Get-PinnedTorchIndexUrl\)')
+Check "a GPU pin is not excluded with it" (-not ($reportCode -match '\$CuTag|\$TorchIndexPinned'))
 Check "a missing interpreter is excluded" ($report -match 'Test-Path -LiteralPath \$_gpuCheckPy')
 Check "it probes the venv interpreter"    ($report -match '\$_gpuCheckPy = Join-Path \$VenvDir "Scripts\\python\.exe"')
 Check "the probe is called once"          ((([regex]::Matches($report, 'Get-TorchGpuVisibility')).Count) -eq 1)
@@ -177,8 +195,6 @@ Write-Host "the announced GPU is quoted from the summary, not re-derived"
 # Re-deriving from the raw detection flags disagreed with the summary on a host with an Intel
 # Arc next to an AMD card whose arch gets no ROCm wheels: the scan lets Intel win there and
 # $script:ROCmGfxArch stays populated, so the report named a GPU nobody announced (#8473).
-$reportCode = (($report -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
-Check "the comment strip left code"       ($reportCode -match 'Get-TorchGpuVisibility')
 Check "it quotes the summary"             ($reportCode -match '\$_gpuCheckAnnounced = \$script:GpuSummaryAnnounced')
 Check "it re-derives nothing"             (-not ($reportCode -match '\$_gpuCheckAnnounced = "'))
 Check "it reads no detection flag"        (-not ($reportCode -match '\$script:ROCmGfxArch|\$HasROCm|\$HasNvidiaSmi|\$script:IsIntelXpu'))
@@ -204,6 +220,7 @@ function Write-StudioLine { param(`$a, `$b, `$c) }
 `$HasROCm = [bool]`$V['HasROCm']
 `$ROCmGpuLabel = `$V['ROCmGpuLabel']
 `$HipSdkInstalled = [bool]`$V['HipSdkInstalled']
+`$AmdHasGpuWheels = [bool]`$V['AmdHasGpuWheels']
 `$script:ROCmGfxArch = `$V['ROCmGfxArch']
 `$script:ROCmVersionFull = `$V['ROCmVersionFull']
 $summary
@@ -223,17 +240,27 @@ Check "Intel wins the summary"            ($sHybrid.Lines -match 'STEP\|gpu\|Int
 Check "and Intel is what is announced"    ($sHybrid.Announced -eq "Intel GPU")
 Check "no AMD announcement is invented"   (-not ($sHybrid.Announced -match 'AMD'))
 
-$sAmd = Invoke-Summary @{ ROCmGfxArch = "gfx1201" }
+$sAmd = Invoke-Summary @{ ROCmGfxArch = "gfx1201"; AmdHasGpuWheels = $true }
 Check "a ROCm-wheel AMD host is announced" ($sAmd.Announced -eq "AMD GPU (gfx1201)")
-$sHip = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx1100)"; ROCmGfxArch = "gfx1100" }
+$sHip = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx1100)"; ROCmGfxArch = "gfx1100"; AmdHasGpuWheels = $true }
 Check "a HIP SDK AMD host is announced"   ($sHip.Announced -eq "AMD GPU (gfx1100)")
 
-# Nothing to reconcile: no accelerator at all, and an AMD card the summary has already told the
-# user gets CPU torch. A red "PyTorch cannot see it" there would contradict the line above it.
+# Nothing to reconcile: no accelerator at all, and any AMD card the install path deliberately
+# sends to CPU torch. A red "PyTorch cannot see it" there contradicts the line above it and asks
+# the user to report a working configuration. Every AMD arm has to agree, so all three are run.
 $sNone = Invoke-Summary @{}
 Check "a CPU-only host announces nothing" ($null -eq $sNone.Announced)
 $sUnknownArch = Invoke-Summary @{ ROCmGpuLabel = "AMD Radeon 780M" }
 Check "an arch-less AMD host is not accused" ($null -eq $sUnknownArch.Announced)
+# Vega / RDNA1 / MI300 on Windows: $HasROCm is true, the arch is outside $_rocmWheelArches, and
+# the install path warns "not in supported arch list -- falling back to CPU-only PyTorch".
+$sVega = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx900)"; ROCmGfxArch = "gfx900" }
+Check "an unmapped arch on the ROCm arm is not accused" ($null -eq $sVega.Announced)
+Check "and the summary still announced it"  ($sVega.Lines -match 'STEP\|gpu\|AMD ROCm \(gfx900\)')
+$sVegaSdk = Invoke-Summary @{ HipSdkInstalled = $true; ROCmGpuLabel = "AMD Radeon VII"; ROCmGfxArch = "gfx906" }
+Check "an unmapped arch on the HIP SDK arm is not accused" ($null -eq $sVegaSdk.Announced)
+$sVegaBundled = Invoke-Summary @{ ROCmGfxArch = "gfx1010" }
+Check "an unmapped arch on the bundled-wheel arm is not accused" ($null -eq $sVegaBundled.Announced)
 
 # A hybrid Intel/NVIDIA host on the XPU wheel answers SeesGpu=False and still runs on the
 # GPU, because _detect_hardware_locked falls through from CUDA to XPU. Accusing that host of

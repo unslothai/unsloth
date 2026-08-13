@@ -2646,8 +2646,10 @@ if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
 # detection flags. Re-deriving disagrees: on a host with an Intel Arc next to an AMD card whose
 # arch gets no ROCm wheels the scan lets Intel win here, while $script:ROCmGfxArch stays
 # populated, so the reconciliation named an AMD GPU the summary never talked about.
-# $null = the summary announced nothing to reconcile against (no accelerator, or an AMD arch it
-# already said gets CPU torch), and the reconciliation stays silent.
+# $null = the summary announced nothing to reconcile against, and the reconciliation stays
+# silent: no accelerator, or an AMD card outside $_rocmWheelArches. Those get CPU torch by
+# design ($ROCmIndexUrl stays null and the install path warns "not in supported arch list"), so
+# torch answering False is the expected outcome, not a fault to report.
 $script:GpuSummaryAnnounced = $null
 if ($HasNvidiaSmi) {
     step "gpu" "NVIDIA GPU detected"
@@ -2663,7 +2665,7 @@ if ($HasNvidiaSmi) {
     $script:GpuSummaryAnnounced = "Intel GPU"
 } elseif ($HasROCm) {
     step "gpu" $ROCmGpuLabel
-    $script:GpuSummaryAnnounced = if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { "AMD GPU" }
+    $script:GpuSummaryAnnounced = if ($AmdHasGpuWheels) { "AMD GPU ($script:ROCmGfxArch)" } else { $null }
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
@@ -2673,9 +2675,7 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
     step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
-    # Only with an arch: without one this branch already tells the user GPU torch is off the
-    # table, and the reconciliation would just repeat it in red.
-    $script:GpuSummaryAnnounced = if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { $null }
+    $script:GpuSummaryAnnounced = if ($AmdHasGpuWheels) { "AMD GPU ($script:ROCmGfxArch)" } else { $null }
     substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
     substep "       This is a driver issue, not an SDK issue." "Yellow"
     substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
@@ -2688,7 +2688,7 @@ if ($HasNvidiaSmi) {
     substep "Detected: $ROCmGpuLabel" "Cyan"
     substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
     Write-StudioLine ""
-    $script:GpuSummaryAnnounced = "AMD GPU ($script:ROCmGfxArch)"
+    $script:GpuSummaryAnnounced = if ($AmdHasGpuWheels) { "AMD GPU ($script:ROCmGfxArch)" } else { $null }
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
     step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
@@ -5158,7 +5158,14 @@ if ($stackExit -ne 0) {
 # $script:ROCmGfxArch is still set.
 $_gpuCheckAnnounced = $script:GpuSummaryAnnounced
 $_gpuCheckPy = Join-Path $VenvDir "Scripts\python.exe"
-if ($_gpuCheckAnnounced -and -not $NoTorchMode -and
+# An explicit CPU pin is a request, not a fault: install_python_stack's
+# _explicit_cpu_torch_index_url treats a cpu leaf as authoritative and force-reinstalls the CPU
+# wheel, so torch answering False there is the configuration working. Resolved fresh rather than
+# read off $TorchIndexPinned / $CuTag: both are assigned inside the dependency-pass branch, so on
+# the "dependencies up to date" run this check exists for they are $null. Exact leaf only -- a
+# cu128 or rocm pin still expects a GPU.
+$_gpuCheckPinLeaf = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
     $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy
@@ -5180,7 +5187,8 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and
         substep "torch $($_gpuVisibility.TorchVersion), device_count $($_gpuVisibility.DeviceCount), torch.version.hip $_gpuCheckHip" "Red"
         # Named so the report matches what the user is about to see, rather than leaving them to
         # find it and file it as a second, separate bug.
-        substep "Studio will run CPU-only: the Live monitor will show VRAM `"--`" and `"No visible GPU`"." "Red"
+        substep "Training and torch GPU inference will run on CPU; chat and GGUF are unaffected." "Red"
+        substep "If the Live monitor shows VRAM `"--`" and `"No visible GPU`", that is this, not a second bug." "Red"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "Red"
     } elseif (-not $_gpuVisibility.Answered) {
         # Quiet when TORCH is absent: there is nothing to reconcile, and a warning there would be

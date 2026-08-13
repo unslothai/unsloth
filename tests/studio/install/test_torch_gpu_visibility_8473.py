@@ -162,6 +162,8 @@ def _run_block(
     )
     run_env = dict(os.environ)
     run_env.pop("UNSLOTH_SKIP_TORCH_GPU_CHECK", None)
+    run_env.pop("UNSLOTH_TORCH_INDEX_URL", None)
+    run_env.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
     run_env.update(env or {})
     run_env["PATH"] = (
         str(stub_bin) if not with_timeout else f"{stub_bin}{os.pathsep}{run_env.get('PATH', '')}"
@@ -206,7 +208,19 @@ def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
     assert "SUB|detected by the installer: AMD ROCm (gfx1201) -- Radeon RX 9070 XT|ERR" in out
     assert f"SUB|torch.cuda.is_available() is False in {venv}|ERR" in out
     assert "SUB|torch 2.9.0+cpu, device_count 0, torch.version.hip none|ERR" in out
-    # Naming the symptom the user is about to see is what stops it being filed twice.
+    # Naming the symptom the user is about to see is what stops it being filed twice, but only
+    # as a conditional: llama.cpp is a separate stack, and with the Vulkan bundle the backend
+    # fills inference_gpu from get_vulkan_inference_gpu_info() and the monitor shows that card's
+    # real VRAM, so promising a CPU-only Studio and a "--" readout would be false there.
+    assert (
+        "SUB|Training and torch GPU inference will run on CPU; chat and GGUF are unaffected.|ERR"
+        in out
+    )
+    assert (
+        'SUB|If the Live monitor shows VRAM "--" and "No visible GPU", that is this, not a second bug.|ERR'
+        in out
+    )
+    assert "Studio will run CPU-only" not in out
     assert "No visible GPU" in out
     assert "https://github.com/unslothai/unsloth/issues" in out
     # Loud, never fatal: a CPU-only Studio still chats.
@@ -347,6 +361,42 @@ def test_the_check_can_be_switched_off(block, tmp_path):
     )
     assert result["calls"] == ""
     assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "cpu"},
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "CPU"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cpu/"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.internal/whl/cpu?token=abc"},
+    ],
+)
+def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
+    """install_python_stack's _explicit_cpu_torch_index_url treats a cpu leaf as authoritative
+    and force-reinstalls the CPU wheel, so torch answering False is the pin working. Accusing
+    that host of a broken GPU and asking it to file an issue is the false alarm this whole
+    check must not become. install.sh already carries the same exclusion for its ROCm line."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.4"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.internal/whl/cpu-private"},
+    ],
+)
+def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):
+    """The exclusion is the EXACT cpu leaf, not any pin: a cu128 or rocm pin asked for a GPU
+    wheel, so a torch that sees nothing under one is exactly the mismatch worth reporting."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
 
 
 def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):
