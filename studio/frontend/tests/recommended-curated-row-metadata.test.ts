@@ -16,6 +16,7 @@ import ts from "typescript";
 
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 import {
+  IMAGE_CATALOG,
   VIDEO_CATALOG,
   curatedCapabilitiesFor,
   curatedTotalParamsFor,
@@ -91,11 +92,33 @@ test("a curated audio family reports audio the repo name never mentions", () => 
   assert.equal(curatedCapabilitiesFor(LTX_GGUF, VIDEO_CATALOG)?.audio, true);
 });
 
-test("curated capabilities claim nothing they were not given", () => {
+test("curated capabilities claim nothing they were not given, beyond the scope", () => {
   const caps = curatedCapabilitiesFor(H3_GGUF, VIDEO_CATALOG);
-  assert.deepEqual(caps, { vision: false, reasoning: false, audio: true });
-  // A group that declares none returns undefined, so the row falls back to name detection.
-  assert.equal(curatedCapabilitiesFor(WAN_BF16, VIDEO_CATALOG), undefined);
+  // vision and reasoning stay false: nothing declared them, and nothing may infer them.
+  assert.deepEqual(caps, {
+    vision: false,
+    reasoning: false,
+    audio: true,
+    imageGen: false,
+    // Not a declaration but not a guess either: the group sits in the video catalog.
+    videoGen: true,
+  });
+  // A group declaring no capabilities still answers, because its scope alone says what it makes.
+  // Undefined is reserved for an id the catalog does not know.
+  assert.deepEqual(curatedCapabilitiesFor(WAN_BF16, VIDEO_CATALOG), {
+    vision: false,
+    reasoning: false,
+    audio: false,
+    imageGen: false,
+    videoGen: true,
+  });
+  assert.equal(curatedCapabilitiesFor("someone/not-curated", VIDEO_CATALOG), undefined);
+});
+
+test("an image group reports image generation, not video", () => {
+  const caps = curatedCapabilitiesFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG);
+  assert.equal(caps?.imageGen, true);
+  assert.equal(caps?.videoGen, false);
 });
 
 test("every video group whose description says audio declares the capability", () => {

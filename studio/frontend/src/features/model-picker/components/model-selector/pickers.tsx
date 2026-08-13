@@ -62,6 +62,7 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -76,8 +77,11 @@ import {
   DashboardCircleIcon,
   Download01Icon,
   Flag01Icon,
+  FlimSlateIcon,
   Folder02Icon,
+  FolderSearchIcon,
   HelpCircleIcon,
+  Image03Icon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -91,7 +95,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type SetStateAction,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -125,7 +131,7 @@ import {
   type CatalogGroup,
   artifactForRepoId,
   curatedCapabilitiesFor,
-  curatedDisplayNameFor,
+  curatedRowLabelFor,
   curatedSizeBytesFor,
   curatedTotalParamsFor,
   groupForRepoId,
@@ -449,23 +455,91 @@ function formatBytes(bytes: number): string {
 
 // Small icon badges for what a model can do (vision / reasoning / audio).
 // Vision and reasoning badges were dropped to keep rows uncluttered.
-const CAPABILITY_BADGES = [
-  { key: "audio" as const, icon: AudioWave01Icon, title: "Audio" },
+// Most distinguishing first, because only the first MAX_CAPABILITY_BADGES are drawn: what a model
+// GENERATES separates it from the whole list, reasoning separates it from very little. Each glyph
+// is the one the rest of the app already uses for that thing -- the Images and Video page icons
+// from the sidebar nav, the eye the On Device vision badge draws, the composer's thinking bulb.
+const CAPABILITY_BADGES: {
+  key: keyof ModelCapabilities;
+  title: string;
+  Glyph: (props: { className: string }) => ReactNode;
+}[] = [
+  {
+    key: "videoGen",
+    title: "Generates video",
+    Glyph: (props) => (
+      <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.8} {...props} />
+    ),
+  },
+  {
+    key: "imageGen",
+    title: "Generates images",
+    Glyph: (props) => (
+      <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
+    ),
+  },
+  {
+    key: "vision",
+    title: "Reads images",
+    Glyph: (props) => (
+      <HugeiconsIcon icon={ViewIcon} strokeWidth={1.8} {...props} />
+    ),
+  },
+  {
+    key: "audio",
+    title: "Generates audio",
+    Glyph: (props) => (
+      <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
+    ),
+  },
+  {
+    key: "reasoning",
+    title: "Reasoning",
+    Glyph: (props) => <BulbIcon {...props} />,
+  },
 ];
 
-function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
+/**
+ * Which capability glyphs are worth drawing in the current picker; null draws them all.
+ *
+ * A media picker has already filtered the list to one kind of model, so its own kind is not
+ * information: every row of the Images picker generates images. Audio is the exception on Video,
+ * where only some models carry a soundtrack. Context rather than a prop because every row in the
+ * tree wants the same answer and it comes from the picker, not the row.
+ */
+const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
+  null,
+);
+
+// The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every
+// column after it lined up. Three is what fits without eating into the name.
+const MAX_CAPABILITY_BADGES = 3;
+
+function CapabilityIcons({
+  caps,
+  omit,
+}: {
+  caps: ModelCapabilities;
+  /** A capability another badge on the same row already draws, so it is not drawn twice. */
+  omit?: keyof ModelCapabilities;
+}) {
+  const scope = useContext(CapabilityScope);
   return (
     <>
-      {CAPABILITY_BADGES.filter((b) => caps[b.key]).map((b) => (
-        <span
-          key={b.key}
-          title={b.title}
-          aria-label={b.title}
-          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
-        >
-          <HugeiconsIcon icon={b.icon} className="size-3" strokeWidth={1.8} />
-        </span>
-      ))}
+      {CAPABILITY_BADGES.filter(
+        (b) => caps[b.key] && b.key !== omit && (scope?.includes(b.key) ?? true),
+      )
+        .slice(0, MAX_CAPABILITY_BADGES)
+        .map(({ key, title, Glyph }) => (
+          <span
+            key={key}
+            title={title}
+            aria-label={title}
+            className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+          >
+            <Glyph className="size-3" />
+          </span>
+        ))}
     </>
   );
 }
@@ -680,8 +754,11 @@ function isRuntimeLoadedModel(
 const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
-  // One capability / vision / downloaded badge.
+  // One capability / vision / downloaded badge. Used where the picker's scope allows at most one.
   badge: "min-w-min min-[560px]:w-[24px]",
+  // Room for MAX_CAPABILITY_BADGES glyphs (18px each, gap-1). Reserved at the maximum wherever
+  // that many can appear: sized for one, a row with three shifted every column after it.
+  badgeWide: "min-w-min min-[560px]:w-[62px]",
   // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
   vram: "min-w-min min-[560px]:w-[4em]",
   // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
@@ -717,6 +794,7 @@ function ModelRow({
   downloaded,
   showVision,
   quantChip,
+  tags,
   alignMeta,
   showSize,
   className,
@@ -747,6 +825,9 @@ function ModelRow({
   showVision?: boolean;
   /** Grey chip beside the name, for rows that load one specific quant. */
   quantChip?: string | null;
+  /** Chips for what used to sit in brackets after the name: the artifact format, and a
+   *  resolution when one variant differs from another only by it. Same chip as On Device. */
+  tags?: string[];
   /** Column layout (see META_COLUMN): "device" reserves the quant chip,
    *  "hub" the download and VRAM badges those lists carry instead. */
   alignMeta?: "device" | "hub";
@@ -777,6 +858,13 @@ function ModelRow({
   // Use the passed-in capabilities (tag-aware) or infer from the repo name.
   const caps = capabilities ?? detectCapabilities({ id: label });
   const showCaps = hasAnyCapability(caps);
+  // Only hold the wide slot open where more than one glyph can actually land. The Images and
+  // Video pickers draw at most one, so reserving three there is dead space on every row.
+  const capabilityScope = useContext(CapabilityScope);
+  const badgeColumn =
+    capabilityScope && capabilityScope.length <= 1
+      ? META_COLUMN.badge
+      : META_COLUMN.badgeWide;
   const aligned = alignMeta !== undefined;
   // One dot per row. A second format shares the first's colour anyway, so it
   // rides along in the tooltip instead of pushing the name out of line.
@@ -851,6 +939,13 @@ function ModelRow({
             {quantChip}
           </span>
         ) : null}
+        {tags && tags.length > 0 ? (
+          <span className="ml-1.5 flex shrink-0 items-center gap-1 self-center">
+            {tags.map((tag) => (
+              <QuantChip key={tag} label={tag} />
+            ))}
+          </span>
+        ) : null}
       </span>
       <span
         className={cn(
@@ -864,16 +959,20 @@ function ModelRow({
           <span
             className={cn(
               "flex shrink-0 items-center justify-center gap-1 text-ui-10",
-              META_COLUMN.badge,
+              badgeColumn,
             )}
           >
-            {showCaps && <CapabilityIcons caps={caps} />}
+            {showCaps && (
+              <CapabilityIcons caps={caps} omit={showVision ? "vision" : undefined} />
+            )}
             {showVision && <VisionBadge />}
             {downloaded && !loaded ? <DownloadedBadge /> : null}
           </span>
         ) : (
           <>
-            {showCaps && <CapabilityIcons caps={caps} />}
+            {showCaps && (
+              <CapabilityIcons caps={caps} omit={showVision ? "vision" : undefined} />
+            )}
             {showVision && <VisionBadge />}
             {loaded && (
               <DotTag
@@ -2233,6 +2332,8 @@ export function HubModelPicker({
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
+  onPickLocalModel,
+  pickLocalModelLabel,
   onModelsChange,
   onConfigure,
   deleteDisabled = false,
@@ -2258,6 +2359,10 @@ export function HubModelPicker({
   onFoldersChange?: () => void;
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
+  /** Load a model file the user points at. Native builds only, so it is absent in the browser. */
+  onPickLocalModel?: () => void;
+  /** Its translated label. This file holds no translations, so the caller passes the string. */
+  pickLocalModelLabel?: string;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
@@ -2873,9 +2978,33 @@ export function HubModelPicker({
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
   // Format filter toggle for the Unsloth listing.
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  // What this picker's task filter has already established about every row it can show. The Images
+  // and Video pages pass their generation tasks; chat passes none and keeps the full set.
+  const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
+    const tasks: readonly string[] = task
+      ? typeof task === "string"
+        ? [task]
+        : task
+      : [];
+    if (tasks.length === 0) return null;
+    // Video keeps audio: a soundtrack is the one thing that separates two video models here.
+    if (VIDEO_GEN_TASKS.some((t) => tasks.includes(t))) return ["audio"];
+    if (IMAGE_GEN_TASKS.some((t) => tasks.includes(t))) return [];
+    if (AUDIO_GEN_TASKS.some((t) => tasks.includes(t))) return [];
+    return null;
+  }, [task]);
+
   // MLX and Safetensors repos are one download, so a row can name its size.
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
+
+  // A curated row's name and its chips. Ids outside the catalog have neither, so they show the
+  // raw repo id exactly as before.
+  const curatedRow = useCallback(
+    (id: string) =>
+      (catalog && curatedRowLabelFor(id, catalog)) ?? { name: id, tags: [] as string[] },
+    [catalog],
+  );
 
   // Paint curated rows before any request, so a task-scoped picker whose models
   // are already in memory does not sit on a spinner for a round trip.
@@ -3172,9 +3301,25 @@ export function HubModelPicker({
     }
     if (catalog) {
       for (const row of catalogSeedRows) {
-        if (map.has(row.id)) continue;
         const curated = curatedCapabilitiesFor(row.id, catalog);
-        if (curated) map.set(row.id, curated);
+        if (!curated) continue;
+        const detected = map.get(row.id);
+        // Merged, not skipped when the listing already answered. A curated entry states what the
+        // model does (H3's audio track, which no tag on the repo mentions); the listing only ever
+        // adds to that. Taking whichever arrived first dropped the declaration on any row the
+        // listing happened to return.
+        map.set(
+          row.id,
+          detected
+            ? {
+                vision: detected.vision || curated.vision,
+                reasoning: detected.reasoning || curated.reasoning,
+                audio: detected.audio || curated.audio,
+                imageGen: detected.imageGen || curated.imageGen,
+                videoGen: detected.videoGen || curated.videoGen,
+              }
+            : curated,
+        );
       }
     }
     return map;
@@ -4851,7 +4996,7 @@ export function HubModelPicker({
   };
 
   return (
-    <>
+    <CapabilityScope.Provider value={capabilityScope}>
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the
           last dropdown's right edge (none on the wider Connected box). */}
@@ -4881,6 +5026,25 @@ export function HubModelPicker({
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             )}
           </div>
+          {/* The local twin of Search Hub, and shown for the same reason: this row is where a
+              search that found nothing ends, so both "look elsewhere" answers belong on it. On
+              Device only, since a file off the disk is not something the Hub sections list.
+              Icon-only, like the picker's other disk actions, so the field keeps its width. */}
+          {section === "downloaded" && onPickLocalModel ? (
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={onPickLocalModel}
+                  aria-label={pickLocalModelLabel}
+                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-h) shrink-0 items-center justify-center rounded-full border-0 text-foreground transition-colors"
+                >
+                  <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{pickLocalModelLabel}</TooltipContent>
+            </Tooltip>
+          ) : null}
           {onBrowseHub ? (
             <Tooltip>
               <TooltipTrigger asChild={true}>
@@ -5863,9 +6027,8 @@ export function HubModelPicker({
                         return (
                           <div key={id}>
                             <ModelRow
-                              label={
-                                (catalog && curatedDisplayNameFor(id, catalog)) || id
-                              }
+                              label={curatedRow(id).name}
+                              tags={curatedRow(id).tags}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
@@ -5971,9 +6134,8 @@ export function HubModelPicker({
                       return (
                         <div key={id}>
                           <ModelRow
-                            label={
-                              (catalog && curatedDisplayNameFor(id, catalog)) || id
-                            }
+                            label={curatedRow(id).name}
+                            tags={curatedRow(id).tags}
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
@@ -6087,9 +6249,8 @@ export function HubModelPicker({
                         return (
                           <div key={id}>
                             <ModelRow
-                              label={
-                                (catalog && curatedDisplayNameFor(id, catalog)) || id
-                              }
+                              label={curatedRow(id).name}
+                              tags={curatedRow(id).tags}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
@@ -6213,7 +6374,7 @@ export function HubModelPicker({
         onKeepTransport={resumeUpdateConflict}
         onSwitchTransport={restartUpdateConflict}
       />
-    </>
+    </CapabilityScope.Provider>
   );
 }
 

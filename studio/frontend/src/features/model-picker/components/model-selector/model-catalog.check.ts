@@ -21,6 +21,7 @@ import {
   catalogToModelOptions,
   classifyGgufFit,
   curatedDisplayNameFor,
+  curatedRowLabelFor,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -240,6 +241,59 @@ assert.equal(
   curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
   "MiniMax H3 (GGUF)",
 );
+
+// ── curatedRowLabelFor ─────────────────────────────────────────────────────────
+// The row form: format (and a resolution when that is the only difference) become chips, and only
+// what actually names the variant stays in brackets.
+
+assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG), {
+  name: "MiniMax H3",
+  tags: ["BF16"],
+});
+// "(official)" said which BF16 build it was when there was only one BF16 row; as a chip it is noise.
+assert.deepEqual(curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG), {
+  name: "MiniMax H3",
+  tags: ["GGUF"],
+});
+// A label part that is not a format or a resolution names the variant, so it stays in the name.
+assert.deepEqual(
+  curatedRowLabelFor("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG),
+  { name: "HiDream I1 (Dev (distilled))", tags: ["BF16"] },
+);
+assert.deepEqual(
+  curatedRowLabelFor(
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+    VIDEO_CATALOG,
+  ),
+  { name: "HunyuanVideo 1.5", tags: ["BF16", "720p"] },
+);
+assert.deepEqual(
+  curatedRowLabelFor(
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+    VIDEO_CATALOG,
+  ),
+  { name: "HunyuanVideo 1.5", tags: ["BF16", "480p"] },
+);
+// One artifact means nothing to tell apart, so the row stays bare.
+assert.deepEqual(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG), {
+  name: "LTX 2 (base)",
+  tags: [],
+});
+assert.equal(curatedRowLabelFor("someone/not-in-the-catalog", VIDEO_CATALOG), null);
+
+// No two rows of a group may render identically, or the picker offers the same thing twice.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
+  for (const group of catalog) {
+    const seen = new Set<string>();
+    for (const artifact of group.artifacts) {
+      const row = curatedRowLabelFor(artifact.repoId, catalog);
+      assert.ok(row, `${artifact.repoId} is in the catalog it came from`);
+      const key = `${row.name} | ${row.tags.join(",")}`;
+      assert.equal(seen.has(key), false, `${group.displayName}: two rows both read "${key}"`);
+      seen.add(key);
+    }
+  }
+}
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 

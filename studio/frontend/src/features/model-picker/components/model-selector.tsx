@@ -20,7 +20,6 @@ import {
   CloudIcon,
   DashboardSquare01Icon,
   Download01Icon,
-  FolderSearchIcon,
   RemoveCircleIcon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
@@ -605,6 +604,8 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
+              onPickLocalModel={onPickLocalModel}
+              pickLocalModelLabel={t("picker.pickModelFile")}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -627,20 +628,6 @@ function ModelSelectorContent({
                 />
               }
             />
-
-            {onPickLocalModel ? (
-              <div className="mt-1.5 border-t border-border/70 pt-1.5">
-                <button
-                  type="button"
-                  onClick={onPickLocalModel}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-                  title={t("picker.pickModelFile")}
-                >
-                  <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-                  {t("picker.pickModelFile")}
-                </button>
-              </div>
-            ) : null}
           </>
         )}
       </TooltipProvider>
