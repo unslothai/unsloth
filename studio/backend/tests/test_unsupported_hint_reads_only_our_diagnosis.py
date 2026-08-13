@@ -31,7 +31,13 @@ REWRITE = "This model is not supported yet"
 def _failure_carrying(child_output: str) -> str:
     """The API error for a llama-server death whose output is ``child_output``."""
     return LlamaCppBackend._classify_llama_start_failure(
-        child_output, "/m.gguf", "u/x", 1, None, "/tmp/llama-1-port-8080.log", (),
+        child_output,
+        "/m.gguf",
+        "u/x",
+        1,
+        None,
+        "/tmp/llama-1-port-8080.log",
+        (),
     )
 
 
@@ -67,8 +73,10 @@ def test_our_text_still_rewrites_even_when_a_tail_is_attached():
 def test_the_nvfp4_matcher_also_ignores_the_tail():
     ours = "NVFP4 checkpoint with per-module MLX quantization metadata"
     assert _is_unsupported_nvfp4_inference_error(ours)
-    tail = ("llama-server failed to start.\n\nllama-server output:\n"
-            "nvfp4 per-module mlx quantization metadata\n")
+    tail = (
+        "llama-server failed to start.\n\nllama-server output:\n"
+        "nvfp4 per-module mlx quantization metadata\n"
+    )
     assert not _is_unsupported_nvfp4_inference_error(tail)
 
 
