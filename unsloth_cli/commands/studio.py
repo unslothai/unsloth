@@ -192,9 +192,10 @@ _MANAGED_CLI_IMPORT_PROBE = (
     "import importlib.util; sys.exit(0 if importlib.util.find_spec('unsloth_cli') else 1)"
 )
 
-# Seconds. A managed interpreter that cannot answer this in the time a bare
-# `-c` start takes is not going to serve Studio either, and the caller treats a
-# timeout as "no verdict" rather than as a missing package.
+# Seconds, and generous: this is a bare interpreter start plus a path-finder
+# walk, but it can run from cold on a machine whose antivirus is scanning the
+# venv it just quarantined a file out of. The caller treats a timeout as "no
+# verdict" rather than as a missing package, so overrunning it is not fatal.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
 # CreateProcess refuses a program blocked by an Application Control policy with
@@ -349,6 +350,9 @@ def _managed_cli_package_present(python: Path) -> bool:
             [str(python), "-X", "utf8", "-c", _MANAGED_CLI_IMPORT_PROBE],
             capture_output = True,
             timeout = _MANAGED_CLI_IMPORT_PROBE_TIMEOUT,
+            # Same as every other managed-interpreter probe here: a non-interactive
+            # Windows launch must not flash a console window (issue #8490's sibling).
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         # The probe itself never produced a verdict (no interpreter, a policy
