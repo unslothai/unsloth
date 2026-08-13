@@ -209,6 +209,13 @@ class ToolLoopTransport(Protocol):
     # structured delta.tool_calls. Codex never does; a self-hosted GGUF often does.
     heals_text_tool_calls: bool
 
+    # Whether the transport already stripped Studio's control vocabulary from
+    # every raw upstream line. A transport that has not is sanitized here; one
+    # that has must not be sanitized twice, because by this point its own
+    # synthesized frames (a provider-hosted image result, say) are indis-
+    # tinguishable from a forged one and would be thrown away.
+    sanitizes_provider_frames: bool
+
     def stream(
         self,
         *,
@@ -528,6 +535,7 @@ async def stream_with_studio_tools(
     heal_names = (
         heal_gate(policy.auto_heal, tools, tool_choice) if transport.heals_text_tool_calls else None
     )
+    transport_sanitizes = bool(getattr(transport, "sanitizes_provider_frames", False))
 
     skip_autoinject = run.continue_final_message or (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
@@ -612,11 +620,15 @@ async def stream_with_studio_tools(
                 # relayed on, and the client tells them apart only by shape. A
                 # provider's copy of that vocabulary would therefore paint a card
                 # for a tool that never ran, so strip it before anything below
-                # can relay it.
-                sanitized = sanitize_provider_sse_line(line)
-                if sanitized is None:
-                    continue
-                line = sanitized
+                # can relay it. Skipped for a transport that already did it at
+                # the point the raw bytes arrived: everything reaching here from
+                # one of those is this server's own frame, and stripping it drops
+                # a retained hosted tool's result after the provider billed it.
+                if not transport_sanitizes:
+                    sanitized = sanitize_provider_sse_line(line)
+                    if sanitized is None:
+                        continue
+                    line = sanitized
                 payload = _chunk_payload(line)
                 if payload is None:
                     yield line

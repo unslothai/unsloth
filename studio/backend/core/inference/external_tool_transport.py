@@ -44,6 +44,11 @@ class OAICompatTransport:
     """
 
     heals_text_tool_calls = True
+    # ExternalProviderClient sanitizes every raw upstream line at the point it
+    # arrives, before any translation. What it yields on top of that is this
+    # server's own synthesized frames (a provider-hosted image or web-search
+    # result), which a second pass in the loop could no longer tell apart.
+    sanitizes_provider_frames = True
 
     def __init__(
         self,

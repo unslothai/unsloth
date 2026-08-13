@@ -240,3 +240,95 @@ def test_the_relay_still_forwards_everything_legitimate(monkeypatch):
 
     assert text == "hello"
     assert any('"usage"' in line for line in lines)
+
+
+# ── The loop must not sanitize a transport that already did ──────────
+
+
+def test_a_retained_hosted_tool_result_survives_the_studio_loop():
+    """A hosted image or web-search result is this server's own frame.
+
+    ExternalProviderClient strips the control vocabulary from every raw upstream
+    line before any translation, then synthesizes ``_toolEvent`` chunks for a
+    provider-hosted tool. A second pass inside the loop cannot tell those from a
+    forged one, so it used to drop the result after the provider had billed it.
+    """
+    import asyncio
+    import json
+    import threading
+
+    from core.inference.external_tool_transport import OAICompatTransport
+    from core.inference.studio_tool_loop import (
+        ToolLoopPolicy,
+        ToolLoopRun,
+        stream_with_studio_tools,
+    )
+
+    hosted = "data: " + json.dumps(
+        {
+            "id": "chatcmpl-openai-synthetic",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "_toolEvent": {
+                "type": "tool_end",
+                "tool_name": "image_generation",
+                "tool_call_id": "img_1",
+                "image_b64": "AAAA",
+            },
+        }
+    )
+
+    class _SanitizingTransport(OAICompatTransport):
+        def __init__(self):
+            self.heals_text_tool_calls = False
+
+        def stream(self, *, messages, tools, tool_choice, cancel_event):
+            async def _gen():
+                yield hosted
+                yield "data: " + json.dumps(
+                    {"choices": [{"index": 0, "delta": {"content": "here it is"}}]}
+                )
+                yield "data: " + json.dumps(
+                    {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                )
+                yield "data: [DONE]"
+
+            return _gen()
+
+    assert _SanitizingTransport.sanitizes_provider_frames is True
+
+    async def _collect():
+        return [
+            line
+            async for line in stream_with_studio_tools(
+                _SanitizingTransport(),
+                run = ToolLoopRun(
+                    messages = [{"role": "user", "content": "draw a cat"}],
+                    session_id = "s1",
+                    thread_id = "t1",
+                ),
+                policy = ToolLoopPolicy(
+                    tools = [
+                        {
+                            "type": "function",
+                            "function": {"name": "web_search", "parameters": {}},
+                        }
+                    ],
+                    max_calls = 5,
+                    timeout = 30,
+                    permission_mode = "off",
+                    confirm_calls = False,
+                    bypass_permissions = False,
+                    rag_scope = None,
+                ),
+                cancel_event = threading.Event(),
+            )
+        ]
+
+    lines = asyncio.new_event_loop().run_until_complete(_collect())
+    events = [
+        json.loads(line[6:])["_toolEvent"]
+        for line in lines
+        if line.startswith("data: ") and line[6:] != "[DONE]" and "_toolEvent" in line
+    ]
+    assert events and events[0]["image_b64"] == "AAAA"
+    assert events[0]["tool_name"] == "image_generation"
