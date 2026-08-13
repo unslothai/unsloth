@@ -228,6 +228,7 @@ class TestTheVerdictIsKeyedOffTheTierNotTheLibrary:
 
     def test_a_missing_library_alone_is_not_the_tier(self, monkeypatch):
         monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: False)
         monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
         monkeypatch.setattr(datasets_availability, "_is_arm64_windows", lambda: False)
         monkeypatch.setattr(datasets_availability.sys, "prefix", tempfile.mkdtemp())
@@ -236,6 +237,7 @@ class TestTheVerdictIsKeyedOffTheTierNotTheLibrary:
 
     def test_a_native_arm64_windows_interpreter_is_the_tier(self, monkeypatch):
         monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: False)
         monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
         monkeypatch.setattr(datasets_availability, "_is_arm64_windows", lambda: True)
         assert datasets_availability.is_inference_only_tier() is True
@@ -246,6 +248,7 @@ class TestTheVerdictIsKeyedOffTheTierNotTheLibrary:
         root = tempfile.mkdtemp()
         (Path(root) / ".unsloth-no-datasets").write_text("", encoding = "utf-8")
         monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: False)
         monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
         monkeypatch.setattr(datasets_availability, "_is_arm64_windows", lambda: False)
         monkeypatch.setattr(datasets_availability.sys, "prefix", root)
@@ -377,12 +380,12 @@ class TestCompatibilityRoutersAreGated:
 
 
 class TestChatOnlyVerdictDoesNotHideModels:
-    """`datasets_unavailable` disables Train, and nothing else.
+    """Which model FORMATS run here is the hardware's question, not this tier's.
 
-    Every other chat-only reason is a statement about the runtime, and the picker
-    reasonably hides non-GGUF rows on one. This tier keeps torch and Transformers
-    and advertises chat, so reusing the same verdict made ordinary safetensors
-    models unselectable on an install that can run them."""
+    The tier machine is CPU-only, so the hardware pass reports chat_only anyway and
+    the picker restricts to GGUF exactly as it does on every other CPU-only host.
+    Exempting `datasets_unavailable` from that filter made safetensors selectable on
+    a box the rest of the UI treats as GGUF-only."""
 
     @staticmethod
     def _adapter() -> str:
@@ -391,21 +394,18 @@ class TestChatOnlyVerdictDoesNotHideModels:
         )
         return path.read_text(encoding = "utf-8")
 
-    def test_format_filter_exempts_datasets_unavailable(self):
+    def test_no_reason_is_exempted_from_the_format_filter(self):
         source = self._adapter()
-        index = source.index("function chatOnlyLimitsModelFormats()")
-        body = source[index : source.index("\n}", index)]
-        assert 'chatOnlyReason !== "datasets_unavailable"' in body
+        assert "datasets_unavailable" not in source
 
     @pytest.mark.parametrize(
         "fn", ["function runsOnThisPlatform(", "function cachedModelsRunOnThisPlatform("]
     )
-    def test_filters_route_through_the_exemption(self, fn):
+    def test_filters_ask_the_hardware_verdict(self, fn):
         source = self._adapter()
         index = source.index(fn)
         body = source[index : source.index("\n}", index)]
-        assert "chatOnlyLimitsModelFormats()" in body
-        assert "isChatOnly()" not in body
+        assert "isChatOnly()" in body
 
     def test_sidebar_disables_data_recipes_in_the_tier(self):
         """Every Data Recipes seed path reads pandas or datasets.load_dataset, and
@@ -420,3 +420,27 @@ class TestChatOnlyVerdictDoesNotHideModels:
         recipes = recipes[: recipes.index("\n    },")]
         assert "disabled: datasetsUnavailable" in recipes
         assert "recipesDisabledHint" in recipes
+
+
+class TestTheGateReopensAfterAnInstall:
+    """The 503 says `pip install datasets`. Cached for the life of the process, that
+    advice does nothing until Studio is restarted, which the message never mentions."""
+
+    def test_availability_is_reprobed_while_it_is_false(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: False)
+        assert datasets_availability.datasets_available() is False
+
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: True)
+        assert datasets_availability.datasets_available() is True
+
+    def test_a_true_answer_is_not_reprobed(self, monkeypatch):
+        """The cost stays on the failing path: an install that has the library must
+        not pay two find_spec calls per gated request."""
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", True)
+        calls = []
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: calls.append(1) or True)
+        assert datasets_availability.datasets_available() is True
+        assert calls == []

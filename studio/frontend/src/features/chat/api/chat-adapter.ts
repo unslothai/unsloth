@@ -2164,20 +2164,6 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
   return row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf");
 }
 
-/** `chat_only` for a reason that says nothing about which model FORMATS run here.
- *
- * Every other chat-only verdict is a statement about the runtime -- no GPU, an Intel
- * Mac, MLX missing -- and hiding non-GGUF rows follows from it. `datasets_unavailable`
- * is not: the ARM64 inference-only tier keeps torch and Transformers and advertises
- * chat and model downloads, and only dataset-backed TRAINING is gone. Treating it like
- * the others made every local and cached safetensors model unselectable on an install
- * that can run them. */
-function chatOnlyLimitsModelFormats(): boolean {
-  const platform = usePlatformStore.getState();
-  if (!platform.fetched || !platform.isChatOnly()) return false;
-  return platform.chatOnlyReason !== "datasets_unavailable";
-}
-
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides
  * every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
@@ -2185,7 +2171,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   // Until the backend reports it, chatOnly is a BROWSER guess: a Mac browser on
   // a remote Linux Studio would hide every local safetensors model and fetch
   // the default. Failing open is safe: validation refuses an ineligible pick.
-  if (!chatOnlyLimitsModelFormats()) return true;
+  if (!platform.fetched || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
   }
@@ -2200,7 +2186,8 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 /** The picker hides cached non-GGUF rows outright on a chat-only install
  * (visibleCachedModelRows). Same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
-  return !chatOnlyLimitsModelFormats();
+  const platform = usePlatformStore.getState();
+  return !platform.fetched || !platform.isChatOnly();
 }
 
 /** One loadable thing on this device, from any inventory. `listVariants` is

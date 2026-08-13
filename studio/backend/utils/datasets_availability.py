@@ -24,6 +24,7 @@ ModuleNotFoundError if reached. This is the gate that keeps them unreached.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import logging
 import os
@@ -133,6 +134,13 @@ def datasets_available() -> bool:
     """
     if os.environ.get("UNSLOTH_FORCE_NO_DATASETS") == "1":
         return False
+    global DATASETS_AVAILABLE
+    if not DATASETS_AVAILABLE:
+        # Re-probed, because the 503 tells the user to install it: without this the
+        # gate stays shut for the life of the process and the advice does nothing
+        # until Studio is restarted. Two find_spec calls, on the failing path only.
+        importlib.invalidate_caches()
+        DATASETS_AVAILABLE = _probe()
     return DATASETS_AVAILABLE
 
 
