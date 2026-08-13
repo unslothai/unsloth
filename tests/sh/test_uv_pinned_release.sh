@@ -150,6 +150,94 @@ else
     ok "a rejected archive installs nothing"
 fi
 
+# Repeat application. The installer is re-run on every upgrade and every repair, so the second
+# and third pass over the same HOME must land on the same tree, not accumulate or half-replace.
+_sig() { printf '%s|%s' "$(cd "$1" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" \
+                        "$(cat "$1/.local/bin/uv" 2>/dev/null)"; }
+_idem_ok=1
+_idem_sig=""
+for _i in 1 2 3; do
+    ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_idem" > "$WORK/out_idem_$_i" 2>&1 || true
+    grep -q '^rc=0$' "$WORK/out_idem_$_i" || _idem_ok=0
+    _s=$(_sig "$WORK/home_idem")
+    [ -z "$_idem_sig" ] && _idem_sig="$_s"
+    [ "$_s" = "$_idem_sig" ] || _idem_ok=0
+done
+if [ "$_idem_ok" = 1 ]; then
+    ok "runs 1..3 over the same HOME leave an identical tree"
+else
+    bad "repeat application is not idempotent"
+    sed 's/^/      /' "$WORK/out_idem_3"
+fi
+
+# A stale uv from an older install is replaced in place. Two copies under one destination would
+# leave PATH order deciding which one runs.
+printf 'stale binary' > "$WORK/home_idem/.local/bin/uv"
+ADVERTISED="$FIXTURE_SHA" run_case "$WORK/home_idem" > "$WORK/out_replace" 2>&1 || true
+if grep -q 'fake' "$WORK/home_idem/.local/bin/uv" 2>/dev/null \
+   && [ "$(cd "$WORK/home_idem" && find . -name uv -type f | wc -l | tr -d ' ')" = 1 ]; then
+    ok "an existing uv at the destination is replaced in place"
+else
+    bad "an existing uv at the destination is replaced in place"
+fi
+
+# Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
+# installing at all, so every host must either get its own triple or decline to the fallback.
+_probe_asset() { # $1 fn, $2 os, $3 arch, $4 libc
+    (
+        set +e
+        # Bind before the stubs: inside a function body $2/$3/$4 are the stub's own arguments.
+        _pa_os="$2"; _pa_arch="$3"; _pa_libc="$4"
+        tauri_log() { :; }
+        # shellcheck disable=SC1090
+        . "$WORK/uvfns.sh"
+        uname() { case "${1:-}" in -m) echo "$_pa_arch" ;; *) echo "$_pa_os" ;; esac; }
+        ldd() { if [ "$_pa_libc" = musl ]; then echo "musl libc 1.2.4"; else echo "ldd (GNU libc) 2.35"; fi; }
+        "$1" 2>/dev/null
+    )
+}
+_matrix_bad=0
+# "<os> <arch> <libc> <expected triple, or - to decline>"
+while read -r _m_os _m_arch _m_libc _m_want; do
+    [ -n "$_m_os" ] || continue
+    # `|| _m_got=`: a declining host exits non-zero, and set -e would end the run here.
+    _m_got=$(_probe_asset _uv_pinned_asset "$_m_os" "$_m_arch" "$_m_libc") || _m_got=""
+    if [ "$_m_want" = "-" ]; then
+        [ -z "$_m_got" ] || { echo "      $_m_os/$_m_arch/$_m_libc should decline, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)); }
+    else
+        case "$_m_got" in
+            "uv-$_m_want.tar.gz "*) : ;;
+            *) echo "      $_m_os/$_m_arch/$_m_libc expected $_m_want, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)) ;;
+        esac
+    fi
+done <<'MATRIX'
+Linux x86_64 gnu x86_64-unknown-linux-gnu
+Linux amd64 gnu x86_64-unknown-linux-gnu
+Linux aarch64 gnu aarch64-unknown-linux-gnu
+Linux arm64 gnu aarch64-unknown-linux-gnu
+Darwin x86_64 gnu x86_64-apple-darwin
+Darwin arm64 gnu aarch64-apple-darwin
+Darwin aarch64 gnu aarch64-apple-darwin
+Linux x86_64 musl -
+Linux aarch64 musl -
+Linux armv7l gnu -
+Linux i686 gnu -
+Linux ppc64le gnu -
+Linux riscv64 gnu -
+Linux s390x gnu -
+Darwin i386 gnu -
+FreeBSD x86_64 gnu -
+SunOS x86_64 gnu -
+MINGW64_NT-10.0 x86_64 gnu -
+CYGWIN_NT-10.0 x86_64 gnu -
+unknown unknown gnu -
+MATRIX
+if [ "$_matrix_bad" = 0 ]; then
+    ok "every host either gets its own triple or declines to the fallback"
+else
+    bad "the host matrix has $_matrix_bad wrong outcomes"
+fi
+
 # An unpinned host must decline, so the caller falls back instead of installing nothing.
 (
     set +e
