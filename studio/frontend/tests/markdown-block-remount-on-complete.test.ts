@@ -4,13 +4,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-const MARKDOWN_TEXT_PATH = new URL(
-  "../src/components/assistant-ui/markdown-text.tsx",
-  import.meta.url,
-).pathname;
+const MARKDOWN_TEXT_PATH = fileURLToPath(
+  new URL("../src/components/assistant-ui/markdown-text.tsx", import.meta.url),
+);
 const source = ts.createSourceFile(
   MARKDOWN_TEXT_PATH,
   readFileSync(MARKDOWN_TEXT_PATH, "utf8"),
@@ -33,6 +33,7 @@ function findFunction(name: string): ts.FunctionDeclaration | null {
 
 const ANIMATION_FREE_BLOCK_PROPS_RE = /^<Block\s+\{\.\.\.blockProps\}/;
 const ANIMATION_FREE_HELPER_RE = /withoutStreamdownAnimationPlugin/;
+const NULL_ANIMATION_PLUGIN_RE = /animatePlugin:\s*null/;
 const MEMOISED_BLOCK_RE =
   /const\s+StreamdownBlock\s*=\s*memo\(StreamdownBlockContent\)/;
 
@@ -45,6 +46,11 @@ test("the block props use the animation-free plugin list", () => {
     body,
     ANIMATION_FREE_HELPER_RE,
     "the helper must filter Streamdown's animation rehype plugin",
+  );
+  assert.match(
+    body,
+    NULL_ANIMATION_PLUGIN_RE,
+    "the filtered animation plugin must not reach Streamdown's Block",
   );
 });
 

@@ -440,6 +440,9 @@ function useCoalescedStreamingText(
     return cancelScheduledRender;
   }, [cancelScheduledRender]);
 
+  // The live chat producer only appends while a message is running. Comparing
+  // lengths avoids rescanning a growing reply on every token; message identity
+  // handles thread switches, and the queued frame commits the latest text.
   if (
     isStreaming &&
     displayed.messageId === messageId &&
