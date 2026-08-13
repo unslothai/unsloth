@@ -13,32 +13,41 @@ import { installLocalStorageFake } from "./helpers/kit.ts";
 register("./chat-search-index-resolver.mjs", import.meta.url);
 const { store } = installLocalStorageFake();
 
-// The shared fake's addEventListener is a no-op, so a module-level storage listener would
-// register into nothing. Swap in one that keeps its listeners, before the import below
-// registers them.
-const storageListeners = new Set<(event: { key: string | null }) => void>();
+// The shared fake's addEventListener is a no-op, so the module-level listeners would
+// register into nothing. Swap in one that keeps them, before the import below registers
+// them. dispatchEvent is real enough to route by type, since the storage listener re-raises
+// the same-document history event through it.
+type Listener = (event: { key?: string | null; type?: string }) => void;
+const listeners = new Map<string, Set<Listener>>();
 Object.assign(globalThis.window as object, {
-  addEventListener: (type: string, fn: (event: { key: string | null }) => void) => {
-    if (type === "storage") storageListeners.add(fn);
+  addEventListener: (type: string, fn: Listener) => {
+    const forType = listeners.get(type) ?? new Set<Listener>();
+    forType.add(fn);
+    listeners.set(type, forType);
   },
-  removeEventListener: (type: string, fn: (event: { key: string | null }) => void) => {
-    if (type === "storage") storageListeners.delete(fn);
+  removeEventListener: (type: string, fn: Listener) => {
+    listeners.get(type)?.delete(fn);
+  },
+  dispatchEvent: (event: { type: string }) => {
+    for (const fn of listeners.get(event.type) ?? []) fn(event);
+    return true;
   },
 });
-const fireStorage = (key: string | null) => {
-  for (const fn of storageListeners) fn({ key });
+const fire = (type: string, event: { key?: string | null } = {}) => {
+  for (const fn of listeners.get(type) ?? []) fn({ type, ...event });
 };
+const fireStorage = (key: string | null) => fire("storage", { key });
 
 const { chatSearchIndexHasRows, writeCachedIndex } = await import(
   "../src/features/chat/hooks/use-chat-search-index.ts"
 );
-const { CHAT_HISTORY_REVISION_KEY } = await import(
+const { CHAT_HISTORY_REVISION_KEY, CHAT_HISTORY_UPDATED_EVENT } = await import(
   "./helpers/store-stubs/chat-search-history.ts"
 );
 const { rememberChatSearchHasRows } = await import(
   "../src/features/chat/utils/chat-search-history-hint.ts"
 );
-const { setAuthSessionEpochForTest } = await import(
+const { AUTH_SESSION_CLEARED_EVENT, setAuthSessionEpochForTest } = await import(
   "./helpers/store-stubs/chat-search-auth.ts"
 );
 
@@ -137,6 +146,53 @@ test("another tab's history change drops the cached rows", () => {
   // Rows gone, so the next open rebuilds instead of offering a chat another tab deleted,
   // and the stale empty hint goes with them. Without the listener this still reads true.
   assert.equal(chatSearchIndexHasRows(), null);
+});
+
+test("another tab's history change reaches an open dialog's rebuild", () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([row]);
+
+  // What an open dialog subscribes to. Dropping the cache alone would leave it showing the
+  // rows it built before the change, with nothing scheduled to replace them.
+  let rebuilds = 0;
+  const onHistory = () => {
+    rebuilds += 1;
+  };
+  (globalThis.window as Window).addEventListener(
+    CHAT_HISTORY_UPDATED_EVENT,
+    onHistory,
+  );
+  try {
+    fireStorage(CHAT_HISTORY_REVISION_KEY);
+    assert.equal(
+      rebuilds,
+      1,
+      "the cross-tab change has to re-raise as a local one",
+    );
+  } finally {
+    (globalThis.window as Window).removeEventListener(
+      CHAT_HISTORY_UPDATED_EVENT,
+      onHistory,
+    );
+  }
+});
+
+test("a logout takes the persisted hint with it", () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([row]);
+  writeCachedIndex(null);
+  assert.equal(chatSearchIndexHasRows(), true);
+
+  // The hint outlives the page, so a reload on the login screen would otherwise hand this
+  // account's history to whoever signs in next.
+  fire(AUTH_SESSION_CLEARED_EVENT);
+  assert.equal(
+    chatSearchIndexHasRows(),
+    null,
+    "the next account's first open must not be sized by the previous one",
+  );
 });
 
 test("an unrelated storage key leaves the cache alone", () => {

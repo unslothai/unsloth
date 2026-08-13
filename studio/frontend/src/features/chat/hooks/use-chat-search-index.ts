@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthSessionEpoch } from "@/features/auth";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  getAuthSessionEpoch,
+} from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
 import {
   batchListChatMessages,
@@ -35,6 +38,8 @@ export interface ChatSearchItem {
 
 const THREAD_LIMIT = 200;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
+// Past the dialog's 180ms exit, so releasing uncached rows never lands mid-animation.
+const ROW_RELEASE_DELAY_MS = 300;
 
 // Keys whose values are base64 image/audio payloads, not searchable text.
 const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
@@ -276,6 +281,15 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key !== CHAT_HISTORY_REVISION_KEY) return;
     writeCachedIndex(null);
+    // Dropping the cache alone leaves an already-open dialog showing the rows it built
+    // before the change, with nothing scheduled to replace them. Re-raise the change as a
+    // same-document event so every in-tab listener handles it exactly as a local one.
+    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+  });
+  // The hint outlives the page, so a logout has to take it with it: otherwise the next
+  // account to sign in after a reload sizes its first open from the previous one's history.
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    forgetChatSearchHasRows();
   });
 }
 
@@ -307,15 +321,21 @@ export function useChatSearchIndex(enabled: boolean): {
       if (items.length > 0) setItems([]);
       if (!loading) setLoading(true);
     }
-    // Closing onto no cache means these rows are the only thing still holding the
-    // conversation text, whether the index was too large to keep or was invalidated.
-    // The next open rebuilds either way, so releasing them costs nothing.
-    if (!enabled && readCachedIndex() === null && items.length > 0) setItems([]);
   }
 
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
+      // With nothing cached, these rows are the last thing holding the conversation text,
+      // so they have to be released. Not during the closing render though: the portal stays
+      // mounted for the exit animation, and emptying the list inside it is the teardown this
+      // dialog exists to avoid. Waiting for the exit costs one timer and no visible frame.
+      const release = setTimeout(() => {
+        if (readCachedIndex() !== null) return;
+        // Same reference when there is nothing to release, so a closed dialog that never
+        // held rows does not re-render for this.
+        setItems((prev) => (prev.length > 0 ? [] : prev));
+      }, ROW_RELEASE_DELAY_MS);
       // History can change while the dialog is closed, so drop the cache rather
       // than reopening onto rows for chats that no longer exist. Only the cache is
       // touched: clearing state would also re-render for every streaming chunk.
@@ -323,7 +343,10 @@ export function useChatSearchIndex(enabled: boolean): {
         writeCachedIndex(null);
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
-      return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
+      return () => {
+        clearTimeout(release);
+        window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
+      };
     }
     let cancelled = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;

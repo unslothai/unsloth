@@ -92,11 +92,16 @@ export class GenerationLengthError extends Error {
   }
 }
 
-export function notifyChatHistoryUpdated(): void {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
-    // The event above is same-document, so another tab's delete or rename cannot reach a
-    // cache built here. A storage write is what crosses, and the value only has to differ.
+// Streaming fires the event below per chunk, so the cross-tab write is coalesced: a
+// synchronous setItem on that path would block the producing tab and wake every other
+// tab for every chunk. Other tabs only need to learn that the history moved, not when.
+const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
+let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
+
+function publishChatHistoryRevision(): void {
+  if (revisionWriteTimer !== null) return;
+  revisionWriteTimer = setTimeout(() => {
+    revisionWriteTimer = null;
     try {
       window.localStorage?.setItem(
         CHAT_HISTORY_REVISION_KEY,
@@ -105,6 +110,15 @@ export function notifyChatHistoryUpdated(): void {
     } catch {
       // Private modes can refuse the write. The in-tab listeners are unaffected.
     }
+  }, CROSS_TAB_REVISION_DEBOUNCE_MS);
+}
+
+export function notifyChatHistoryUpdated(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+    // The event above is same-document, so another tab's delete or rename cannot reach a
+    // cache built here. A storage write is what crosses, and the value only has to differ.
+    publishChatHistoryRevision();
   }
 }
 
