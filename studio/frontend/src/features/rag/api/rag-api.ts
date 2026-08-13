@@ -219,8 +219,15 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
   }
 }
 
+export const PROJECT_SOURCES_UPDATED_EVENT = "unsloth-project-sources-updated";
+
 export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent(PROJECT_SOURCES_UPDATED_EVENT, { detail: { projectId } }),
+    );
+  }
 }
 
 export async function listLinkedFolders(

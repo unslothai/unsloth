@@ -4,8 +4,12 @@
 import { Button } from "@/components/ui/button";
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useRef } from "react";
-import { invalidateProjectSources, listProjectDocuments } from "../api/rag-api";
+import { useCallback, useEffect, useRef } from "react";
+import {
+  PROJECT_SOURCES_UPDATED_EVENT,
+  invalidateProjectSources,
+  listProjectDocuments,
+} from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
@@ -45,6 +49,22 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const handleLinkedSourcesChanged = useCallback(() => {
     invalidateProjectSources(projectId);
     void refresh({ quiet: true });
+  }, [projectId, refresh]);
+
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce
+  // through invalidateProjectSources; refresh the mounted list when they do.
+  useEffect(() => {
+    const onSourcesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+      if (detail?.projectId === projectId) void refresh({ quiet: true });
+    };
+    window.addEventListener(PROJECT_SOURCES_UPDATED_EVENT, onSourcesUpdated);
+    return () => {
+      window.removeEventListener(
+        PROJECT_SOURCES_UPDATED_EVENT,
+        onSourcesUpdated,
+      );
+    };
   }, [projectId, refresh]);
 
   const empty = documents.length === 0;
