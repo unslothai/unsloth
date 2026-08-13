@@ -170,6 +170,26 @@ def test_a_removed_flag_is_not_published_as_supported(monkeypatch, tmp_path):
         assert removed not in caps["flags"], removed
 
 
+def test_short_aliases_are_published_too(monkeypatch, tmp_path):
+    # -t is as valid as --threads, and the catalogue is what the editor checks a
+    # typed flag against, so publishing only long names warned that a correct flag
+    # was not in this build.
+    caps = _probe_with_help(
+        monkeypatch,
+        tmp_path,
+        "-t, --threads N                         number of threads (default: -1)\n"
+        "-fa, --flash-attn on|off|auto           set Flash Attention use\n",
+    )
+
+    assert "--threads" in caps["flags"]
+    assert "-t" in caps["flags"]
+    assert caps["flags"]["-t"] == caps["flags"]["--threads"]
+    assert "-fa" in caps["flags"]
+    # A value placeholder is not a flag.
+    assert "-1" not in caps["flags"]
+    assert "N" not in caps["flags"]
+
+
 def test_a_help_that_exited_nonzero_says_so(monkeypatch, tmp_path):
     # Partial output parses fine, so nothing else in the dict would reveal that the
     # rest of the catalogue is missing.

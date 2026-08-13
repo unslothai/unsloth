@@ -75,6 +75,21 @@ export function modelOverrideKey(
  * the first edit would then replace a list nobody saw. Keys are tried most specific
  * first, then folded, mirroring that order.
  */
+/** A POSIX absolute path, which the backend keeps case-sensitive. */
+const POSIX_PATH = /^\//;
+
+function foldOverrideKey(key: string): string {
+  const separator = key.lastIndexOf(":");
+  const id = separator === -1 ? key : key.slice(0, separator);
+  const quant = separator === -1 ? "" : key.slice(separator);
+  // Only the quant folds for a POSIX path: "/models/Foo:Q4_K_M" has to be
+  // reachable from the browser's "/models/Foo:q4_k_m" without "/models/foo"
+  // matching "/models/Foo".
+  return POSIX_PATH.test(id)
+    ? `${id}${quant.toLowerCase()}`
+    : `${id.toLowerCase()}${quant.toLowerCase()}`;
+}
+
 export function resolveStoredExtraArgs(
   overrides: ApiModelOverrides,
   keys: readonly string[],
@@ -85,15 +100,21 @@ export function resolveStoredExtraArgs(
       return exact;
     }
   }
+  // Folding, by the same rule the backend resolves with: a POSIX path is
+  // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
+  // arguments stored for /models/Foo.gguf and then send them explicitly on Load.
+  // Windows, UNC and WSL paths do fold, and so does the quant suffix the browser
+  // lowercases before storing.
   const folded = new Map<string, string[]>();
   for (const [key, value] of Object.entries(overrides)) {
     const args = value?.llama_extra_args;
-    if (args && args.length > 0 && !folded.has(key.toLowerCase())) {
-      folded.set(key.toLowerCase(), args);
+    const foldedKey = foldOverrideKey(key);
+    if (args && args.length > 0 && !folded.has(foldedKey)) {
+      folded.set(foldedKey, args);
     }
   }
   for (const key of keys) {
-    const match = folded.get(key.toLowerCase());
+    const match = folded.get(foldOverrideKey(key));
     if (match) {
       return match;
     }

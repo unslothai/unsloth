@@ -74,6 +74,7 @@ import {
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker";
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -422,6 +423,9 @@ async function syncInferenceStatusToStore(options?: {
  * the refresh below leaves it intact.
  */
 export async function resyncInferenceStatusAfterServerModelChange(): Promise<void> {
+  // Both llama.cpp update paths land here, and an update replaces the binary whose
+  // --help the flag catalogue describes.
+  invalidateLlamaFlagCatalog();
   if (!isExternalModelId(useChatRuntimeStore.getState().params.checkpoint)) {
     useChatRuntimeStore.getState().clearCheckpoint();
   }

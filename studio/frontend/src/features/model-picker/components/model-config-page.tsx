@@ -884,7 +884,6 @@ function GgufAdvancedSettings({
   gpuDevices,
   gpuLayersInputRef,
   moeLayersInputRef,
-  overrideKeys,
   onExtraArgsLoadableChange,
 }: {
   config: PerModelConfig;
@@ -899,7 +898,6 @@ function GgufAdvancedSettings({
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
   /** Which stored entries the extra-arguments row reads, most specific first. */
-  overrideKeys: readonly string[];
   onExtraArgsLoadableChange: (loadable: boolean) => void;
 }) {
   const batchAdviceId = useId();
@@ -1203,7 +1201,6 @@ function GgufAdvancedSettings({
         <ExtraArgsRow
           config={config}
           update={update}
-          overrideKeys={overrideKeys}
           onLoadableChange={onExtraArgsLoadableChange}
         />
       )}
@@ -1223,12 +1220,10 @@ function GgufAdvancedSettings({
 function ExtraArgsRow({
   config,
   update,
-  overrideKeys,
   onLoadableChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  overrideKeys: readonly string[];
   onLoadableChange: (loadable: boolean) => void;
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
@@ -1251,67 +1246,6 @@ function ExtraArgsRow({
       cancelled = true;
     };
   }, []);
-
-  // The one field on this page whose stored value the local config may never have
-  // seen. Everything else here is written by this panel, but llama_extra_args can be
-  // set through the overrides API with no UI involved, which is exactly why that
-  // route preserves it when omitted. Showing an empty box for a model that has flags
-  // would read as "none", and the first edit would then submit a list that silently
-  // dropped them. Fetched, not guessed.
-  //
-  // Read by the hydration below when its response lands, never as dependencies: an
-  // arrow prop and an array literal are new values on every render, so depending on
-  // them would cancel and restart the request on each keystroke.
-  const latest = useRef({ text, update, overrideKeys });
-  useEffect(() => {
-    latest.current = { text, update, overrideKeys };
-  });
-
-  const hydrated = useRef<string | null>(null);
-  // Joined because an array literal is a new value every render, and this is the
-  // effect's identity.
-  const keyIdentity = overrideKeys.join("\u0000");
-  useEffect(() => {
-    if (
-      config.llamaExtraArgs !== undefined ||
-      hydrated.current === keyIdentity
-    ) {
-      return;
-    }
-    let cancelled = false;
-    fetchModelOverrides()
-      .then((overrides) => {
-        // Marked here rather than before the request: StrictMode replays the effect
-        // (setup, cleanup, setup), so a key marked up front would leave the first
-        // fetch cancelled and the second setup returning early, and the box would
-        // never fill in development.
-        if (cancelled) {
-          return;
-        }
-        hydrated.current = keyIdentity;
-        const stored = resolveStoredExtraArgs(
-          overrides,
-          latest.current.overrideKeys,
-        );
-        // Only while the box is still untouched, or a slow response would land on
-        // top of what the user typed in the meantime.
-        if (stored.length > 0 && latest.current.text === "") {
-          setText(formatExtraArgs(stored));
-          // Into the config as well as the box. The load sends what the config
-          // holds, and the route's omission path inherits from a resident process
-          // rather than from this stored override, so filling only the textarea
-          // would show flags the launch then did not use.
-          latest.current.update({ llamaExtraArgs: stored });
-        }
-      })
-      .catch(() => {
-        // Nothing to say: the box is still usable, and the load would report a real
-        // problem with the overrides service far more clearly than this row could.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [keyIdentity, config.llamaExtraArgs]);
 
   const diagnostics = diagnoseExtraArgs(
     text,
@@ -1485,6 +1419,60 @@ export function ModelConfigPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
+  }, [configId, target.ggufVariant]);
+
+  // The one field on this page whose stored value the local config may never have
+  // seen. Everything else here is written by this panel, but llama_extra_args can be
+  // set through the overrides API with no UI involved, which is exactly why that
+  // route preserves it when omitted. Showing an empty box for a model that has flags
+  // would read as "none", and the first edit would then submit a list that silently
+  // dropped them. Fetched, not guessed.
+  //
+  // Here rather than in the row that displays it: that row is inside Advanced
+  // settings, which is not rendered while the section is collapsed, so a panel
+  // opened closed would never fetch and a cold load would launch without the stored
+  // arguments. The row seeds its textarea from the config either way.
+  const extraArgsHydrated = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
+  useEffect(() => {
+    const keys = [modelOverrideKey(configId, target.ggufVariant), configId];
+    // Joined because an array literal is a new value on every render.
+    const identity = keys.join("\u0000");
+    if (extraArgsHydrated.current === identity) {
+      return;
+    }
+    let cancelled = false;
+    fetchModelOverrides()
+      .then((overrides) => {
+        // Marked here rather than before the request: StrictMode replays the effect
+        // (setup, cleanup, setup), so a key marked up front would leave the first
+        // fetch cancelled and the second setup returning early, and the box would
+        // never fill in development.
+        if (cancelled) {
+          return;
+        }
+        extraArgsHydrated.current = identity;
+        // Through the resolver, not a literal lookup: the backend folds identities
+        // and falls back from repo:QUANT to the bare repo before it reads a row.
+        const stored = resolveStoredExtraArgs(overrides, keys);
+        if (stored.length === 0) {
+          return;
+        }
+        setConfig((current) =>
+          // Only a config that has not read them yet, or a slow response would land
+          // on top of an edit made in the meantime.
+          current.llamaExtraArgs === undefined
+            ? { ...current, llamaExtraArgs: stored }
+            : current,
+        );
+      })
+      .catch(() => {
+        // Nothing to say: the panel is still usable, and the load would report a
+        // real problem with the overrides service far more clearly than this could.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [configId, target.ggufVariant]);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
@@ -2014,10 +2002,6 @@ export function ModelConfigPage({
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
-                overrideKeys={[
-                  modelOverrideKey(configId, target.ggufVariant),
-                  configId,
-                ]}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
               />
             )}

@@ -2818,6 +2818,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+              // Checked with the same arguments the load below sends, or a list
+              // the backend refuses would pass this gate and fail the launch.
+              ...(config.llamaExtraArgs !== undefined
+                ? { llama_extra_args: config.llamaExtraArgs ?? [] }
+                : {}),
             }
           : {}),
       }))
@@ -2863,6 +2868,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+            // Remembered pass-through arguments, for the same reason as the rest of
+            // this block: nothing is resident at startup, so the omission path has
+            // nothing to inherit them from and the model would come up without the
+            // flags the user asked to be remembered. Undefined means this config
+            // predates the field; a cleared list is an explicit none.
+            ...(config.llamaExtraArgs !== undefined
+              ? { llama_extra_args: config.llamaExtraArgs ?? [] }
+              : {}),
           }
         : {}),
     }).catch((error: unknown) => {

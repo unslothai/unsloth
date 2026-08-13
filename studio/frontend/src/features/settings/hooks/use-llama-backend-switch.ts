@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import { useT } from "@/i18n";
 import {
   signalLlamaJobStarted,
@@ -163,6 +164,8 @@ export function useLlamaBackendSwitch() {
     void (async () => {
       try {
         const started = await switchLlamaBackend(requested);
+        // A different build accepts a different set of flags.
+        invalidateLlamaFlagCatalog();
         if (!started.started) {
           if (!mounted.current) {
             return;

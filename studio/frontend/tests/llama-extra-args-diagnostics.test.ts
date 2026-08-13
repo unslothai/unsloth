@@ -259,8 +259,10 @@ test("the row stores argv tokens, not the typed string", () => {
 });
 
 test("the box is filled from the stored flags, not left looking empty", () => {
-  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
-  const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
+  const panel = pageSource.slice(
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  const body = panel.replace(/\s+/g, " ");
   // The overrides API can set these with no UI involved, and this panel's config
   // comes from local storage, so the only way the box can show what is actually
   // set is to ask. An empty box would read as "no flags" and the first edit would
@@ -268,22 +270,34 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   assert.match(body, /fetchModelOverrides\(\)/);
   // Through the resolver, not a literal lookup: the backend folds identities and
   // falls back from repo:QUANT to the bare repo before it reads a row.
-  assert.match(
-    body,
-    /resolveStoredExtraArgs\( overrides, latest\.current\.overrideKeys, \)/,
-  );
+  assert.match(body, /const stored = resolveStoredExtraArgs\(overrides, keys\)/);
   // Into the config, not only the textarea. The load sends what the config holds,
   // and the route's omission path inherits from a resident process rather than
   // from this stored override, so a box that filled without the config would show
   // flags the launch did not use.
-  assert.match(body, /latest\.current\.update\(\{ llamaExtraArgs: stored \}\)/);
+  assert.match(body, /llamaExtraArgs: stored/);
   // And the key is marked only once a response is in hand, or StrictMode's replayed
   // effect cancels the first fetch and skips the second.
-  const marked = body.indexOf("hydrated.current = keyIdentity");
+  const marked = body.indexOf("extraArgsHydrated.current = identity");
   assert.ok(
     marked > body.indexOf("if (cancelled) { return; }"),
     "mark after the response",
   );
+});
+
+test("hydration is not gated behind the advanced disclosure", () => {
+  // The row that displays these lives inside GgufAdvancedSettings, which is only
+  // rendered while the section is open. A panel opened with it collapsed would
+  // never fetch, and a cold load would then launch without the stored arguments,
+  // so the fetch belongs in the parent that always mounts.
+  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
+  const rowBody = row.slice(0, row.indexOf("\n}\n"));
+  assert.doesNotMatch(rowBody, /fetchModelOverrides/);
+  const advanced = pageSource.slice(
+    pageSource.indexOf("function GgufAdvancedSettings("),
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  assert.doesNotMatch(advanced, /fetchModelOverrides/);
 });
 
 test("the row does not withdraw its objection when it unmounts", () => {
