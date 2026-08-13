@@ -190,12 +190,20 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
 
 
 def test_custom_provider_registry_is_hidden():
+    """Hidden entries reach the frontend, flagged, rather than being filtered out.
+
+    They used to be dropped from /registry entirely, which is why the UI could
+    never learn that the self-hosted presets run Studio tools. The UI filters
+    the dropdown on ``hidden`` instead.
+    """
     from core.inference.providers import get_provider_info, list_available_providers
 
     info = get_provider_info("custom")
     assert info is not None
     assert info["hidden"] is True
-    assert "custom" not in {p["provider_type"] for p in list_available_providers()}
+    entry = next(p for p in list_available_providers() if p["provider_type"] == "custom")
+    assert entry["hidden"] is True
+    assert entry["supports_studio_tools"] is True
 
 
 def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):

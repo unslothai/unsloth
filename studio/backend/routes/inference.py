@@ -2317,9 +2317,16 @@ from core.inference.passthrough_healing import (
 from core.inference.providers import (
     get_base_url,
     get_provider_info,
+    provider_runs_local_tools,
     validate_provider_base_url,
 )
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_tool_transport import OAICompatTransport
+from core.inference.studio_tool_loop import (
+    ToolLoopPolicy,
+    ToolLoopRun,
+    stream_with_studio_tools,
+)
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from routes.provider_credentials import resolve_provider_api_key_or_400
 from storage import providers_db
@@ -11336,13 +11343,24 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
-    codex_studio_tool_loop = (
-        provider_type == "openai_codex" and _explicit_studio_tool_loop_requested(payload)
+    # Studio's tools run on this host, so any provider whose wire format can
+    # carry a tool schema out and a result back can use them. The capability is
+    # declared per provider type in the registry, not hardcoded here.
+    #
+    # Streaming is part of the condition, not an afterthought: the loop is an SSE
+    # protocol (tool_start / tool_end and the approval handshake all ride the
+    # stream), so a non-streaming request still cannot honour confirm_tool_calls
+    # and must still be refused below rather than silently proxied without it.
+    studio_tool_loop = (
+        provider_runs_local_tools(provider_type)
+        and payload.stream is True
+        and _explicit_studio_tool_loop_requested(payload)
     )
+    codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     if (
         payload.confirm_tool_calls
         and not payload.bypass_permissions
-        and not codex_studio_tool_loop
+        and not studio_tool_loop
         and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
@@ -11706,10 +11724,44 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
+    # Studio-owned tool loop for every non-Codex provider that declares the
+    # capability. The catalog comes from the same selector the local and Codex
+    # paths use, so an omitted enabled_tools means "all allowed built-ins" and an
+    # explicit empty list stays empty.
+    external_studio_tools: list[dict] = []
+    if studio_tool_loop:
+        external_studio_tools = await _select_request_tools(
+            payload,
+            tools_on = _effective_enable_tools(payload) is True,
+            mcp_allowed = bool(payload.mcp_enabled),
+        )
+    run_studio_tool_loop = bool(external_studio_tools)
+    if run_studio_tool_loop and payload.bypass_permissions:
+        # Full access disables the sandbox at execution time, so the schemas must
+        # say so too rather than describing a sandbox the model will not get.
+        _external_nudge = _build_tool_action_nudge(
+            tools = external_studio_tools,
+            model_name = model,
+            full_access = True,
+            full_access_only = True,
+        )
+        if _external_nudge:
+            chat_messages = _append_to_system_message(chat_messages, _external_nudge)
+
+    cancel_event = threading.Event()
+    cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+
+    async def _watch_disconnect() -> None:
+        # A tool loop can sit for minutes inside execute_tool with no SSE line
+        # arriving, so poll rather than waiting for the next yield to notice.
+        while not cancel_event.is_set():
+            if await request.is_disconnected():
+                cancel_event.set()
+                return
+            await asyncio.sleep(0.1)
+
     async def _stream():
-        gen = client.stream_chat_completion(
-            messages = chat_messages,
-            model = model,
+        _provider_kwargs = dict(
             temperature = payload.temperature,
             top_p = payload.top_p,
             # Honor max_completion_tokens when max_tokens is absent, so a
@@ -11720,17 +11772,61 @@ async def _proxy_to_external_provider(
             top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
-            enabled_tools = payload.enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
-            tools = payload.tools,
-            tool_choice = payload.tool_choice,
             fast_mode = payload.fast_mode,
-            continue_final_message = _continue_final_message(payload),
-            stream = payload.stream,
+            response_format = _extract_response_format(payload),
+        )
+        if run_studio_tool_loop:
+            # The Studio loop owns the tool surface for this turn. The caller's
+            # own catalog is dropped for the same reason the Codex path drops it
+            # (the model would return calls this server is not authorized to
+            # run), and enabled_tools is withheld so the provider's hosted
+            # builtins do not double up on the local web_search.
+            gen = stream_with_studio_tools(
+                OAICompatTransport(
+                    client,
+                    model = model,
+                    continue_final_message = _continue_final_message(payload),
+                    enabled_tools = None,
+                    stream = True,
+                    **_provider_kwargs,
+                ),
+                run = ToolLoopRun(
+                    messages = chat_messages,
+                    session_id = payload.session_id,
+                    thread_id = payload.thread_id,
+                    tool_choice = payload.tool_choice,
+                    continue_final_message = _continue_final_message(payload),
+                ),
+                policy = ToolLoopPolicy(
+                    tools = external_studio_tools,
+                    max_calls = payload.max_tool_calls_per_message or 25,
+                    timeout = payload.tool_call_timeout or 300,
+                    permission_mode = payload.permission_mode or "auto",
+                    confirm_calls = _permission_mode_confirm(payload),
+                    bypass_permissions = bool(payload.bypass_permissions),
+                    rag_scope = payload.rag_scope,
+                    auto_heal = payload.auto_heal_tool_calls,
+                ),
+                cancel_event = cancel_event,
+            )
+        else:
+            gen = client.stream_chat_completion(
+                messages = chat_messages,
+                model = model,
+                enabled_tools = payload.enabled_tools,
+                tools = payload.tools,
+                tool_choice = payload.tool_choice,
+                continue_final_message = _continue_final_message(payload),
+                stream = payload.stream,
+                **_provider_kwargs,
+            )
+        disconnect_task = (
+            asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
         )
         try:
             sent_done = False
@@ -11779,14 +11875,31 @@ async def _proxy_to_external_provider(
             )
             yield "data: [DONE]\n\n"
         finally:
+            cancel_event.set()
+            if disconnect_task is not None:
+                disconnect_task.cancel()
             try:
                 await gen.aclose()
             except RuntimeError:
                 pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
             await client.close()
 
+    def _tracked_stream():
+        # Only the tool loop is registered: it can run for minutes and a /load
+        # needs to know it would interrupt a chat. The plain proxy stays
+        # untracked, as it was before.
+        if not run_studio_tool_loop:
+            return _stream()
+
+        async def _wrapped():
+            with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
+                async for chunk in _stream():
+                    yield chunk
+
+        return _wrapped()
+
     return StreamingResponse(
-        _stream(),
+        _tracked_stream(),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",

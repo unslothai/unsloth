@@ -968,6 +968,7 @@ def test_transient_refresh_failure_does_not_require_reauthorization(monkeypatch)
 
 def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
 
     class FakeCodexClient:
         def __init__(self):
@@ -1000,7 +1001,7 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
         },
     ]
     monkeypatch.setattr(
-        tool_loop,
+        loop_core,
         "build_rag_autoinject",
         lambda *_args: {
             "events": [{"type": "status", "text": "Searching documents"}],
@@ -1043,6 +1044,7 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
 
 def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
 
     class FakeCodexClient:
         def __init__(self):
@@ -1059,7 +1061,7 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
 
     executed = []
     monkeypatch.setattr(
-        tool_loop,
+        loop_core,
         "execute_tool",
         lambda name, arguments, **kwargs: executed.append((name, arguments, kwargs)) or "42",
     )
@@ -1121,6 +1123,7 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
 
 def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
 
     class FakeCodexClient:
         def __init__(self):
@@ -1137,7 +1140,7 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
 
     executed = []
     monkeypatch.setattr(
-        tool_loop,
+        loop_core,
         "execute_tool",
         lambda name, arguments, **kwargs: executed.append(name) or "ok",
     )

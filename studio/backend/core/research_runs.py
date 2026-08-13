@@ -1155,7 +1155,10 @@ class ResearchSupervisor:
             "temperature": inference.get("temperature", 0.2),
         }
 
-        if inference.get("providerType") == "openai_codex":
+        # Route the hop to whichever saved connection the run was created with.
+        # The route's _sanitize_config already refused anything but an enabled
+        # saved connection of a studio-tools-capable provider type.
+        if inference.get("providerType"):
             payload.update(
                 {
                     "provider_id": inference["providerId"],

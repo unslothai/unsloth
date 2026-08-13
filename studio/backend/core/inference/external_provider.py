@@ -945,6 +945,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
         continue_final_message: Optional[bool] = None,
+        response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -1185,6 +1186,11 @@ class ExternalProviderClient:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        # JSON mode / guided decoding. Every OpenAI-compatible server accepts
+        # this (llama.cpp, vLLM and Ollama all implement it), and dropping it
+        # silently turned a caller's structured-output request into free prose.
+        if response_format is not None:
+            body["response_format"] = response_format
 
         url = f"{self.base_url}/chat/completions"
         logger.info(

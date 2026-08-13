@@ -184,14 +184,44 @@ export function providerModelSupportsVision(
 }
 
 
+/** Provider-level capability key. Self-hosted model ids are user-supplied, so
+ * there is no per-model entry to look up: the registry declares the capability
+ * once for the whole provider type and it applies to every model on it. */
+export const PROVIDER_CAPABILITY_WILDCARD = "*";
+
 export function providerModelSupportsStudioTools(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean | null {
-  if (!providerType || !modelId) return null;
+  if (!providerType) return null;
   hydrateProviderModelCapabilities();
-  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.studio_tools;
-  return typeof value === "boolean" ? value : null;
+  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  if (modelId) {
+    const value = capabilities?.[modelId]?.studio_tools;
+    if (typeof value === "boolean") return value;
+  }
+  const providerDefault = capabilities?.[PROVIDER_CAPABILITY_WILDCARD]?.studio_tools;
+  return typeof providerDefault === "boolean" ? providerDefault : null;
+}
+
+/** Whether the connection behind an ``external::`` model id runs Studio tools.
+ *
+ * Resolves the provider type from the saved connection, so callers that only
+ * have a checkpoint id (the runtime store) can ask the capability question
+ * without reaching for the providers store and risking an import cycle.
+ */
+export function externalModelSupportsStudioTools(
+  checkpoint: string | null | undefined,
+): boolean {
+  const selection = parseExternalModelId(checkpoint);
+  if (!selection) return false;
+  const provider = loadExternalProviders().find(
+    (candidate) => candidate.id === selection.providerId,
+  );
+  if (!provider) return false;
+  return (
+    providerModelSupportsStudioTools(provider.providerType, selection.modelId) === true
+  );
 }
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";

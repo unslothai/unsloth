@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-owned tool execution loop for the ChatGPT Codex subscription transport."""
+"""Studio-owned tool execution loop for the ChatGPT Codex subscription transport.
+
+The loop itself now lives in ``core.inference.studio_tool_loop`` and is shared
+with every other external provider. What stays here is the Codex transport: the
+app-server call signature, its conversation-affinity ids, and the encrypted
+reasoning replay that only this provider emits.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import threading
 
 from dataclasses import dataclass
@@ -14,63 +18,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from core.inference.openai_codex_client import OpenAICodexClient
-from core.inference.tool_loop_controller import strip_result_for_model
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
-from state.tool_approvals import (
-    TOOL_REJECTED_MESSAGE,
-    abort_tool_decision,
-    begin_tool_decision,
-    new_approval_id,
-    wait_tool_decision,
+from core.inference.studio_tool_loop import (
+    ToolLoopPolicy,
+    ToolLoopRun,
+    stream_with_studio_tools,
 )
-
-
-_TOOL_BUDGET_EXHAUSTED = (
-    "Studio did not execute this tool call because the per-message tool-call limit was reached. "
-    "Continue with the available results and answer without calling another tool."
-)
-
-
-def _sse(payload: dict[str, Any]) -> str:
-    return "data: " + json.dumps(payload, separators = (",", ":"))
-
-
-def _chunk_payload(line: str) -> dict[str, Any] | None:
-    if not line.startswith("data:"):
-        return None
-    raw = line[5:].strip()
-    if not raw or raw == "[DONE]":
-        return None
-    try:
-        value = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _normalized_call(call: dict[str, Any]) -> dict[str, Any] | None:
-    call_id = call.get("id")
-    function = call.get("function")
-    if not isinstance(call_id, str) or not call_id or not isinstance(function, dict):
-        return None
-    name = function.get("name")
-    arguments = function.get("arguments", "")
-    if not isinstance(name, str) or not name:
-        return None
-    if not isinstance(arguments, str):
-        arguments = json.dumps(arguments)
-    try:
-        parsed = json.loads(arguments or "{}")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        parsed = {"_raw": arguments}
-    if not isinstance(parsed, dict):
-        parsed = {"value": parsed}
-    return {
-        "id": call_id,
-        "type": "function",
-        "function": {"name": name, "arguments": arguments or "{}"},
-        "arguments": parsed,
-    }
 
 
 @dataclass(frozen = True)
@@ -97,7 +49,43 @@ class CodexToolPolicy:
     rag_scope: dict[str, Any] | None
 
 
-async def stream_codex_with_studio_tools(
+class CodexTransport:
+    """One Codex turn as OpenAI-shaped SSE lines.
+
+    Codex emits structured ``delta.tool_calls`` and never writes a call as text,
+    so text-form healing stays off: there is nothing to repair, and running the
+    healer would only add a buffering window to a stream that does not need one.
+    """
+
+    heals_text_tool_calls = False
+
+    def __init__(self, client: OpenAICodexClient, run: CodexRunContext) -> None:
+        self._client = client
+        self._run = run
+
+    def stream(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: Any,
+        cancel_event: threading.Event,
+    ) -> AsyncIterator[str]:
+        return self._client.stream(
+            provider_id = self._run.provider_id,
+            thread_id = self._run.thread_id,
+            messages = messages,
+            model = self._run.model,
+            max_tokens = None,
+            reasoning_effort = self._run.reasoning_effort,
+            response_format = self._run.response_format,
+            tools = tools,
+            tool_choice = tool_choice,
+            cancel_event = cancel_event,
+        )
+
+
+def stream_codex_with_studio_tools(
     client: OpenAICodexClient,
     *,
     run: CodexRunContext,
@@ -105,221 +93,24 @@ async def stream_codex_with_studio_tools(
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
     """Stream Codex, execute requested Studio tools, and continue until a final answer."""
-    conversation = [dict(message) for message in run.messages]
-    remaining = policy.max_calls
-    unlimited = remaining >= 9999
-    provider_id = run.provider_id
-    thread_id = run.thread_id
-    session_id = run.session_id
-    model = run.model
-    reasoning_effort = run.reasoning_effort
-    tools = policy.tools
-    tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
-    allowed_tool_names = {
-        name
-        for tool in tools
-        if isinstance(tool, dict)
-        and isinstance(tool.get("function"), dict)
-        and isinstance((name := tool["function"].get("name")), str)
-        and name
-    }
-    tool_call_timeout = policy.timeout
-    permission_mode = policy.permission_mode
-    confirm_tool_calls = policy.confirm_calls
-    bypass_permissions = policy.bypass_permissions
-    rag_scope = policy.rag_scope
-
-    skip_autoinject = run.continue_final_message or (
-        confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+    return stream_with_studio_tools(
+        CodexTransport(client, run),
+        run = ToolLoopRun(
+            messages = run.messages,
+            session_id = run.session_id,
+            thread_id = run.thread_id,
+            tool_choice = run.tool_choice,
+            continue_final_message = run.continue_final_message,
+        ),
+        policy = ToolLoopPolicy(
+            tools = policy.tools,
+            max_calls = policy.max_calls,
+            timeout = policy.timeout,
+            permission_mode = policy.permission_mode,
+            confirm_calls = policy.confirm_calls,
+            bypass_permissions = policy.bypass_permissions,
+            rag_scope = policy.rag_scope,
+            auto_heal = False,
+        ),
+        cancel_event = cancel_event,
     )
-    autoinject = (
-        None
-        if skip_autoinject
-        else await asyncio.to_thread(build_rag_autoinject, conversation, rag_scope)
-    )
-    if autoinject:
-        for event in autoinject["events"]:
-            yield _sse(event)
-        conversation.extend(autoinject["messages"])
-
-    round_id = 0
-
-    while not cancel_event.is_set():
-        by_index: dict[int, dict[str, Any]] = {}
-        assistant_text: list[str] = []
-        reasoning_extra: dict[str, Any] | None = None
-        finish_reason: str | None = None
-
-        tools_available = tool_choice != "none" and (unlimited or remaining > 0)
-        generator = client.stream(
-            provider_id = provider_id,
-            thread_id = thread_id,
-            messages = conversation,
-            model = model,
-            max_tokens = None,
-            reasoning_effort = reasoning_effort,
-            response_format = run.response_format,
-            tools = tools if tools_available else None,
-            tool_choice = tool_choice if tools_available else "none",
-            cancel_event = cancel_event,
-        )
-        async for line in generator:
-            payload = _chunk_payload(line)
-            if payload:
-                choices = payload.get("choices")
-                choice = choices[0] if isinstance(choices, list) and choices else {}
-                if isinstance(choice, dict):
-                    delta = choice.get("delta")
-                    if isinstance(delta, dict):
-                        content = delta.get("content")
-                        if isinstance(content, str):
-                            assistant_text.append(content)
-                        extra = delta.get("extra_content")
-                        if isinstance(extra, dict):
-                            reasoning_extra = extra
-                        raw_calls = delta.get("tool_calls")
-                        if isinstance(raw_calls, list):
-                            for raw_call in raw_calls:
-                                if not isinstance(raw_call, dict):
-                                    continue
-                                index = raw_call.get("index")
-                                if not isinstance(index, int):
-                                    index = len(by_index)
-                                current = by_index.setdefault(
-                                    index,
-                                    {
-                                        "id": "",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    },
-                                )
-                                if isinstance(raw_call.get("id"), str):
-                                    current["id"] = raw_call["id"]
-                                function = raw_call.get("function")
-                                if isinstance(function, dict):
-                                    if isinstance(function.get("name"), str):
-                                        current["function"]["name"] = function["name"]
-                                    if isinstance(function.get("arguments"), str):
-                                        current["function"]["arguments"] += function["arguments"]
-                    if isinstance(choice.get("finish_reason"), str):
-                        finish_reason = choice["finish_reason"]
-            yield line
-
-        calls = [
-            normalized
-            for _, call in sorted(by_index.items())
-            if (normalized := _normalized_call(call)) is not None
-        ]
-        if finish_reason != "tool_calls" or not calls:
-            return
-
-        round_id += 1
-
-        assistant_message: dict[str, Any] = {
-            "role": "assistant",
-            "content": "".join(assistant_text),
-            "tool_calls": [
-                {"id": call["id"], "type": "function", "function": call["function"]}
-                for call in calls
-            ],
-        }
-        if reasoning_extra:
-            assistant_message["extra_content"] = reasoning_extra
-        conversation.append(assistant_message)
-
-        for call in calls:
-            call_id = call["id"]
-            name = call["function"]["name"]
-            arguments = call["arguments"]
-            allowed_call = tool_choice != "none" and name in allowed_tool_names
-            has_budget = unlimited or remaining > 0
-            within_budget = allowed_call and has_budget
-            if within_budget and not unlimited:
-                remaining -= 1
-            needs_confirmation = (
-                allowed_call
-                and confirm_tool_calls
-                and not bypass_permissions
-                and permission_mode != "off"
-            )
-            if needs_confirmation and permission_mode == "auto":
-                needs_confirmation = is_high_risk_tool_call(name, arguments)
-            approval_id = new_approval_id() if needs_confirmation else ""
-            decision_slot = (
-                begin_tool_decision(session_id, approval_id)
-                if needs_confirmation and within_budget
-                else None
-            )
-            yield _sse(
-                {
-                    "type": "tool_start",
-                    "tool_name": name,
-                    "tool_call_id": call_id,
-                    "arguments": arguments,
-                    "provenance": {"source": "local", "round_id": round_id},
-                    "approval_id": approval_id if within_budget else "",
-                    "awaiting_confirmation": needs_confirmation and within_budget,
-                }
-            )
-            if not has_budget:
-                result = _TOOL_BUDGET_EXHAUSTED
-            elif not allowed_call:
-                result = "Studio did not execute this tool call because the tool is disabled."
-            else:
-                try:
-                    decision = (
-                        await asyncio.to_thread(
-                            wait_tool_decision,
-                            decision_slot,
-                            approval_id,
-                            cancel_event = cancel_event,
-                        )
-                        if decision_slot is not None
-                        else None
-                    )
-                    if decision == "deny":
-                        decision_slot = None
-                        result = TOOL_REJECTED_MESSAGE
-                    else:
-                        decision_slot = None
-                        timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                        try:
-                            result = await asyncio.to_thread(
-                                execute_tool,
-                                name,
-                                arguments,
-                                cancel_event = cancel_event,
-                                timeout = timeout,
-                                session_id = session_id,
-                                thread_id = thread_id,
-                                rag_scope = rag_scope,
-                                disable_sandbox = bypass_permissions,
-                            )
-                        except Exception as exc:
-                            if cancel_event.is_set():
-                                return
-                            result = f"Error: tool raised an exception: {exc}"
-                finally:
-                    if decision_slot is not None:
-                        abort_tool_decision(decision_slot, approval_id)
-            result_text = result if isinstance(result, str) else json.dumps(result)
-
-            model_result = strip_result_for_model(result_text, name)
-            yield _sse(
-                {
-                    "type": "tool_end",
-                    "tool_name": name,
-                    "tool_call_id": call_id,
-                    "arguments": arguments,
-                    "result": result_text,
-                    "provenance": {"source": "local", "round_id": round_id},
-                }
-            )
-            conversation.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "name": name,
-                    "content": model_result,
-                }
-            )

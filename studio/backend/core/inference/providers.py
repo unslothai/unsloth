@@ -39,6 +39,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_kind": "chatgpt_oauth",
         "base_url_editable": False,
         "model_ids_editable": False,
@@ -60,6 +61,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         # Scope the picker to the current generation. /v1/models returns many
@@ -127,6 +129,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         # Native API takes the bare key on `x-goog-api-key`.
         "auth_header": "x-goog-api-key",
         "auth_prefix": "",
@@ -169,6 +172,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": False,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
@@ -193,6 +197,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "model_id_allowlist": re.compile(
@@ -217,6 +222,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
@@ -237,6 +243,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -255,6 +262,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -284,6 +292,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         # Force /v1/chat/completions -- vLLM's /v1/responses rebuilds messages
@@ -301,6 +310,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -317,6 +327,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -333,6 +344,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -368,6 +380,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "extra_headers": {
@@ -389,6 +402,26 @@ def get_base_url(provider_type: str) -> str | None:
     """Return the default base URL for a provider type."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
+
+
+def provider_runs_local_tools(provider_type: str | None) -> bool:
+    """Whether Studio may run its own tool loop against this provider type.
+
+    Studio's tools (web_search, python, terminal, MCP, knowledge-base search)
+    execute on the Studio host, so any provider whose wire format can carry a
+    tool schema out and a tool result back can use them. That is the whole
+    OpenAI-compatible family plus Gemini, whose native shape is translated to
+    and from OpenAI chunks in ``external_provider.py``.
+
+    Anthropic is deliberately absent: ``_stream_anthropic`` only appends
+    Anthropic's own hosted builtins and never forwards a caller's function-tool
+    schemas, so the loop would advertise a catalog the model never sees.
+    Enabling it needs OpenAI -> Anthropic schema translation plus tool_use /
+    tool_result message replay, which is separate work. Anthropic keeps its
+    hosted web_search, web_fetch and code_execution meanwhile.
+    """
+    info = PROVIDER_REGISTRY.get(provider_type or "")
+    return bool(info and info.get("studio_tools"))
 
 
 # Cloud-metadata hosts. The backend fetches the base URL on the caller's behalf,
@@ -546,13 +579,14 @@ def validate_provider_base_url(base_url: str) -> str:
 def list_available_providers() -> list[dict[str, Any]]:
     """Return all registered providers (for the /registry endpoint).
 
-    Hidden entries are filtered out: they exist only for backend lookups and
-    are surfaced via ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown.
+    Hidden entries are included so their capabilities reach the frontend: the
+    self-hosted presets (custom / vLLM / Ollama / llama.cpp) are all hidden, and
+    filtering them here is why the UI could never learn they run Studio tools.
+    They stay out of the dropdown -- the UI filters on ``hidden`` and surfaces
+    them via ``CUSTOM_PROVIDER_PRESETS`` instead.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if info.get("hidden"):
-            continue
         result.append(
             {
                 "provider_type": provider_type,
@@ -563,6 +597,8 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
+                "supports_studio_tools": bool(info.get("studio_tools")),
+                "hidden": bool(info.get("hidden")),
                 "model_list_mode": info.get("model_list_mode", "remote"),
                 "auth_kind": info.get("auth_kind", "api_key"),
                 "base_url_editable": info.get("base_url_editable", True),

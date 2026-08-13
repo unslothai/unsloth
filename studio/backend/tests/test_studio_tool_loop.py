@@ -1,0 +1,491 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The provider-agnostic Studio tool loop.
+
+The transport is faked so these exercise the loop itself: turn cycling, the
+budget, approvals, and the text-form healing that self-hosted models need. The
+scripted streams are shaped like what llama.cpp, vLLM and Ollama actually emit,
+including the malformed cases that motivated the healing path.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+
+import pytest
+
+from core.inference import studio_tool_loop as loop_mod
+from core.inference.studio_tool_loop import (
+    ToolLoopPolicy,
+    ToolLoopRun,
+    stream_with_studio_tools,
+)
+
+
+def _sse(delta = None, finish = None, **extra) -> str:
+    choice: dict = {"index": 0, "delta": delta or {}}
+    if finish is not None:
+        choice["finish_reason"] = finish
+    payload: dict = {"choices": [choice]}
+    payload.update(extra)
+    return "data: " + json.dumps(payload)
+
+
+_DONE = "data: [DONE]"
+
+
+def _tool(name: str, description: str = "") -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+
+WEB = _tool("web_search")
+PY = _tool("python")
+
+
+class FakeTransport:
+    """Replays scripted turns and records what the loop asked for each time."""
+
+    def __init__(self, turns, *, heals = True):
+        self.turns = [list(turn) for turn in turns]
+        self.heals_text_tool_calls = heals
+        self.requests: list[dict] = []
+
+    def stream(self, *, messages, tools, tool_choice, cancel_event):
+        self.requests.append(
+            {
+                "messages": [dict(message) for message in messages],
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
+        )
+        lines = self.turns.pop(0) if self.turns else [_DONE]
+
+        async def _gen():
+            for line in lines:
+                yield line
+
+        return _gen()
+
+
+@pytest.fixture
+def executed(monkeypatch):
+    """Record every execute_tool call and return a canned result."""
+    calls: list[dict] = []
+
+    def _execute(name, arguments, **kwargs):
+        calls.append({"name": name, "arguments": arguments, **kwargs})
+        return f"RESULT<{name}>"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
+    monkeypatch.setattr(loop_mod, "strip_result_for_model", lambda result, name = None: result)
+    return calls
+
+
+def _run(transport, *, tools = None, tool_choice = None, messages = None, **policy_kwargs):
+    policy_fields = {
+        "tools": tools if tools is not None else [WEB],
+        "max_calls": 25,
+        "timeout": 300,
+        "permission_mode": "off",
+        "confirm_calls": False,
+        "bypass_permissions": False,
+        "rag_scope": None,
+    }
+    policy_fields.update(policy_kwargs)
+    cancel_event = threading.Event()
+
+    async def _collect():
+        out = []
+        agen = stream_with_studio_tools(
+            transport,
+            run = ToolLoopRun(
+                messages = messages or [{"role": "user", "content": "hi"}],
+                session_id = "s1",
+                thread_id = "t1",
+                tool_choice = tool_choice,
+            ),
+            policy = ToolLoopPolicy(**policy_fields),
+            cancel_event = cancel_event,
+        )
+        async for line in agen:
+            out.append(line)
+        return out
+
+    return asyncio.run(_collect())
+
+
+def _events(lines, kind):
+    out = []
+    for line in lines:
+        if not line.startswith("data: "):
+            continue
+        raw = line[6:]
+        if raw == "[DONE]":
+            continue
+        payload = json.loads(raw)
+        if payload.get("type") == kind:
+            out.append(payload)
+    return out
+
+
+def _visible_text(lines) -> str:
+    text = []
+    for line in lines:
+        if not line.startswith("data: "):
+            continue
+        raw = line[6:]
+        if raw == "[DONE]":
+            continue
+        payload = json.loads(raw)
+        if payload.get("type") in ("tool_start", "tool_end"):
+            continue
+        for choice in payload.get("choices") or []:
+            content = (choice.get("delta") or {}).get("content")
+            if isinstance(content, str):
+                text.append(content)
+    return "".join(text)
+
+
+# ── Structured tool calls (a well-behaved provider) ───────────────
+
+
+def test_structured_call_executes_and_continues(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "call_a", "function": {"name": "web_search", "arguments": '{"query":"unsloth"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Here is what I found."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    assert executed[0]["arguments"] == {"query": "unsloth"}
+    assert len(_events(lines, "tool_start")) == 1
+    assert _events(lines, "tool_end")[0]["result"] == "RESULT<web_search>"
+    assert "Here is what I found." in _visible_text(lines)
+
+    # The follow-up turn replays assistant tool_calls then the tool result.
+    follow_up = transport.requests[1]["messages"]
+    assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
+    assert follow_up[-1]["content"] == "RESULT<web_search>"
+
+
+def test_streamed_tool_name_fragments_are_not_concatenated(executed):
+    """llama-server re-sends the whole name as it grows: web -> web_search."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web"}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":'}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"x"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    assert executed[0]["arguments"] == {"query": "x"}
+
+
+# ── Text-form calls (what small self-hosted models actually emit) ──
+
+
+def test_text_form_tool_call_is_healed_and_executed(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "Let me look. "}),
+                _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "unsloth"}}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ],
+            [_sse({"content": "Found it."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    assert executed[0]["arguments"] == {"query": "unsloth"}
+    # The markup is consumed, the prose around it survives.
+    visible = _visible_text(lines)
+    assert "Let me look." in visible
+    assert "<tool_call>" not in visible
+
+
+def test_partial_marker_split_across_deltas_is_not_broken(executed):
+    """The signal itself straddles a chunk boundary."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "<tool"}),
+                _sse({"content": '_call>{"name": "web_search", "arg'}),
+                _sse({"content": 'uments": {"query": "split"}}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    assert executed[0]["arguments"] == {"query": "split"}
+    assert "<tool" not in _visible_text(lines)
+
+
+def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
+    """The vLLM hang: an envelope the model opens and never closes.
+
+    Nothing may be swallowed. The turn must end with the held text visible
+    rather than rendering an empty answer, and no call may be invented.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "thinking... "}),
+                _sse({"content": '<tool_call>{"name": "web_sea'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    visible = _visible_text(lines)
+    assert "thinking..." in visible
+    # The unparseable residue is flushed verbatim, not held forever.
+    assert "web_sea" in visible
+
+
+def test_undeclared_text_call_is_not_promoted(executed):
+    """A name outside the selected catalog is data, not a call."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport, tools = [WEB])
+
+    assert executed == []
+    assert "terminal" in _visible_text(lines)
+
+
+def test_fenced_rehearsal_is_documentation_not_a_call(executed):
+    """Markerless syntax quoted in markdown code must never execute (#6967, #8312)."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "Docs:\n```\npython[ARGS]{\"code\": \"1\"}\n```\n"}),
+                _sse(finish = "stop"),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport, tools = [WEB, PY])
+
+    assert executed == []
+    assert "python[ARGS]" in _visible_text(lines)
+
+
+def test_healing_is_off_for_a_transport_that_does_not_need_it(executed):
+    """Codex emits structured calls; its text stream is relayed untouched."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ]
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert "<tool_call>" in _visible_text(lines)
+
+
+def test_structured_call_makes_the_healer_dormant(executed):
+    """A provider that emits both must not have its text double-counted."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "prefix <tool_c"}),
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    # Held text is flushed when the healer goes dormant, never dropped.
+    assert "prefix <tool_c" in _visible_text(lines)
+
+
+# ── Budget ────────────────────────────────────────────────────────
+
+
+def test_zero_budget_withdraws_the_catalog(executed):
+    transport = FakeTransport([[_sse({"content": "no tools for me"}), _sse(finish = "stop"), _DONE]])
+    _run(transport, max_calls = 0)
+
+    assert executed == []
+    assert transport.requests[0]["tools"] is None
+    assert transport.requests[0]["tool_choice"] == "none"
+
+
+def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
+    decisions = ["deny", "allow"]
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod,
+        "wait_tool_decision",
+        lambda slot, approval, cancel_event = None: decisions.pop(0),
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c2", "function": {"name": "python", "arguments": '{"query":"2"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(
+        transport,
+        tools = [PY],
+        max_calls = 1,
+        permission_mode = "auto",
+        confirm_calls = True,
+    )
+
+    # The denial consumed no budget, so the second call still had one left.
+    assert [call["name"] for call in executed] == ["python"]
+    assert executed[0]["arguments"] == {"query": "2"}
+
+
+# ── Permissions ───────────────────────────────────────────────────
+
+
+def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
+    slots: list = []
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: slots.append(approval) or object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow")
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(
+        transport,
+        tools = [WEB, PY],
+        permission_mode = "auto",
+        confirm_calls = True,
+    )
+
+    # web_search is not high-risk, so it runs without an approval card.
+    assert slots == []
+    assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
+    assert [call["name"] for call in executed] == ["web_search"]
+
+
+def test_full_access_disables_the_sandbox_at_execution(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tools = [PY], bypass_permissions = True)
+
+    assert executed[0]["disable_sandbox"] is True
+
+
+def test_sandbox_stays_on_by_default(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tools = [PY])
+
+    assert executed[0]["disable_sandbox"] is False
+
+
+# ── Forced tool choice ────────────────────────────────────────────
+
+
+def test_forced_choice_is_cleared_after_the_first_execution(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tool_choice = "required")
+
+    assert transport.requests[0]["tool_choice"] == "required"
+    # The result follow-up must be free to answer in prose.
+    assert transport.requests[1]["tool_choice"] == "auto"

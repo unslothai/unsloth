@@ -3639,10 +3639,13 @@ export function createOpenAIStreamAdapter(
         if (
           !selectedCheckpoint ||
           (researchExternalSelection &&
-            researchExternalProvider?.providerType !== "openai_codex")
+            providerModelSupportsStudioTools(
+              researchExternalProvider?.providerType,
+              researchExternalSelection.modelId,
+            ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or ChatGPT/Codex subscription.",
+            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
           );
         }
         const reasoningRequested =
@@ -3654,6 +3657,7 @@ export function createOpenAIStreamAdapter(
             researchExternalSelection && researchExternalProvider
               ? {
                   providerId: researchExternalProvider.id,
+                  providerType: researchExternalProvider.providerType,
                   modelId: researchExternalSelection.modelId,
                 }
               : undefined,
@@ -5024,8 +5028,9 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // ChatGPT/Codex function calls are executed by Studio. Other
-              // external providers keep their provider-hosted tool envelope.
+              // Studio executes the calls for any provider that advertises the
+              // capability. Providers that do not keep their provider-hosted
+              // tool envelope in the branch below.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
                 codeToolsEnabled ||
@@ -5052,6 +5057,13 @@ export function createOpenAIStreamAdapter(
                       runtime.toolCallTimeout >= 9999
                         ? 9999
                         : runtime.toolCallTimeout * 60,
+                    // Self-hosted models often write a call as text rather than
+                    // emitting structured tool_calls, so the external loop heals
+                    // and nudges exactly like the local one. Omitting these left
+                    // the backend on its process defaults, which is not what the
+                    // user set in Settings.
+                    auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
                     ...(ragEnabled || projectRagEnabled

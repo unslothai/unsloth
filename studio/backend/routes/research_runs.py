@@ -21,6 +21,7 @@ from auth.authentication import get_current_subject
 from core.inference.message_content import content_to_text
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
+from core.inference.providers import provider_runs_local_tools
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 
@@ -204,8 +205,11 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
+        # A saved connection is still mandatory: the run is durable, so an
+        # inline key would have to be persisted, and _is_sensitive_key exists to
+        # stop exactly that. Only the provider-type allowlist is widened.
         if (
-            provider_type != "openai_codex"
+            not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
             or not provider_id.strip()
             or not isinstance(external_model, str)
@@ -213,15 +217,15 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research supports only a saved ChatGPT/Codex connection",
+                detail = "Durable research requires a saved connection whose provider supports Studio tools",
             )
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        if provider["provider_type"] != "openai_codex" or not provider["is_enabled"]:
+        if provider["provider_type"] != provider_type or not provider["is_enabled"]:
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires an enabled ChatGPT/Codex connection",
+                detail = "Durable research requires an enabled connection of the requested provider type",
             )
 
     # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is

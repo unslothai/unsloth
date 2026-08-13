@@ -4478,7 +4478,10 @@ const ComposerToolsMenu: FC<{
   const researchDisabled =
     !researchAvailable ||
     (Boolean(externalSelection) &&
-      selectedExternalProvider?.providerType !== "openai_codex") ||
+      providerModelSupportsStudioTools(
+        selectedExternalProvider?.providerType,
+        externalSelection?.modelId,
+      ) !== true) ||
     incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
