@@ -9,6 +9,11 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "../utils/chat-history-storage";
+import {
+  chatSearchHadRows,
+  forgetChatSearchHasRows,
+  rememberChatSearchHasRows,
+} from "../utils/chat-search-history-hint";
 
 export interface ChatSearchItem {
   type: "single" | "compare";
@@ -221,20 +226,35 @@ let cachedIndexEpoch = -1;
 // The cache outlives the sidebar and a web logout only navigates, so it is scoped to the
 // auth session: a second account must never open onto the previous user's chats.
 function readCachedIndex(): ChatSearchItem[] | null {
-  if (cachedIndexEpoch !== getAuthSessionEpoch()) cachedIndex = null;
+  if (cachedIndexEpoch !== getAuthSessionEpoch()) {
+    // A session change inside this page load. The next account's history is unknown, so the
+    // previous one's row hint must not size its dialog either. -1 is "nothing cached yet",
+    // which is every page load and must leave this account's own hint alone.
+    if (cachedIndexEpoch !== -1) forgetChatSearchHasRows();
+    cachedIndex = null;
+    cachedIndexEpoch = getAuthSessionEpoch();
+  }
   return cachedIndex;
 }
 
-function writeCachedIndex(next: ChatSearchItem[] | null): void {
+// Exported for tests, which drive the real bookkeeping rather than a stand-in.
+export function writeCachedIndex(next: ChatSearchItem[] | null): void {
   cachedIndex = next;
   cachedIndexEpoch = getAuthSessionEpoch();
+  // Invalidation says the snapshot is stale, not that the history is empty, so only a
+  // completed build updates the hint.
+  if (next !== null) rememberChatSearchHasRows(next.length > 0);
 }
 
-// How many rows a completed build left behind, readable during render so the dialog can size
-// itself before its opening paint. An index that has not been built yet counts as none: the
-// first open of a page load must not reserve a height it may never fill.
-export function cachedChatSearchIndexItemCount(): number {
-  return readCachedIndex()?.length ?? 0;
+// Whether the dialog should size itself for rows, readable during render so it can pick a
+// height before its opening paint. A built cache answers exactly; an unbuilt or invalidated
+// one falls back to what the last completed build left behind, which is the only thing that
+// can answer on the FIRST open of a page load -- the index is built while the dialog is open,
+// so at that point the cache is always empty however many chats are stored.
+export function chatSearchIndexHasRows(): boolean {
+  const cached = readCachedIndex();
+  if (cached !== null) return cached.length > 0;
+  return chatSearchHadRows();
 }
 
 export function useChatSearchIndex(enabled: boolean): {

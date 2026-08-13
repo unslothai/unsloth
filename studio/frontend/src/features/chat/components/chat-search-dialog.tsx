@@ -15,7 +15,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
-  cachedChatSearchIndexItemCount,
+  chatSearchIndexHasRows,
   useChatSearchIndex,
 } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
@@ -75,7 +75,7 @@ export function ChatSearchDialog() {
   // The dialog is centered, so the list height is decided per open and only ever relaxed
   // from compact to fixed, never back, for that whole open.
   const [compactList, setCompactList] = useState(() =>
-    isCompactChatSearchList(true, cachedChatSearchIndexItemCount()),
+    isCompactChatSearchList(true, chatSearchIndexHasRows()),
   );
 
   // Reset during the opening render rather than in an effect: Radix mounts the portal as
@@ -88,13 +88,11 @@ export function ChatSearchDialog() {
     if (isOpen) {
       setQuery("");
       setRowLimit(INITIAL_ROW_COUNT);
-      setCompactList(
-        isCompactChatSearchList(true, cachedChatSearchIndexItemCount()),
-      );
+      setCompactList(isCompactChatSearchList(true, chatSearchIndexHasRows()));
     }
-  } else if (compactList !== isCompactChatSearchList(compactList, items.length)) {
-    // The first open of a page load has no cached index, so the fixed height is taken when
-    // that build lands rather than up front.
+  } else if (compactList !== isCompactChatSearchList(compactList, items.length > 0)) {
+    // Backstop for an open that started with no hint at all (a browser that has never built
+    // the index): the fixed height is taken when that first build lands.
     setCompactList(false);
   }
 
