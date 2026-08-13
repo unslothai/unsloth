@@ -65,9 +65,6 @@ _OS_CELLS = {
 OS_KEYS = list(_OS_CELLS)
 
 
-# ----------------------------------------------------------------------------- #
-# Fakes
-# ----------------------------------------------------------------------------- #
 def _device(
     arch = "",
     *,
@@ -244,9 +241,6 @@ def probe_env(tmp_path, monkeypatch):
     return fake_binary
 
 
-# ----------------------------------------------------------------------------- #
-# Cell builders: one per (os, vendor) pair.
-# ----------------------------------------------------------------------------- #
 def _install_cell(monkeypatch, tmp_path, os_key, vendor):
     """Set up one matrix cell and return the expected ``_get_gpu_free_memory``
     result. Every cell plants a marker covering NOTHING its devices report, so a

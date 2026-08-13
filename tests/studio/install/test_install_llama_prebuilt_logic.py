@@ -1959,12 +1959,10 @@ def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
 
 
 def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
-    """gfx_target/mapped_targets must be invisible to the fingerprint (#7624). The
-    pair is recorded for the runtime arch gate, not to describe the payload: the same
-    asset with the same sha256 is the same install whether or not the marker names its
-    built archs. Leaking them into the fingerprint would stale every existing ROCm
-    install the moment this shipped. Inverse of the cudart-pair test below, which pins
-    a field that MUST invalidate."""
+    """gfx_target/mapped_targets must be invisible to the fingerprint (#7624): the
+    same asset with the same sha256 is the same install whether or not the marker
+    names its built archs, and leaking them in would stale every existing ROCm install
+    the moment this shipped. Inverse of the cudart-pair test below."""
     choice_kwargs = dict(
         repo = "unslothai/llama.cpp",
         tag = "release-1",
@@ -2032,11 +2030,9 @@ def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
 
 
 def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
-    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624). Only
-    published_rocm_choice_for_host sets them, so every other choice keeps the None
-    default and the marker records [] -- the empty list that makes the runtime gate
-    fail open on a non-ROCm bundle. A non-empty one would gate GPUs against archs the
-    bundle was never built for."""
+    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624): only
+    published_rocm_choice_for_host sets them, so the marker records [] and the runtime
+    gate fails open on a non-ROCm bundle."""
     checksums = ApprovedReleaseChecksums(
         repo = "unslothai/llama.cpp",
         release_tag = "release-1",
@@ -2113,10 +2109,9 @@ def _sync_arch_coverage(install_dir, choice):
 
 
 def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
-    """An install made before mapped_targets existed must gain it on reuse.
+    """An install made before mapped_targets existed must gain it on reuse:
     write_prebuilt_metadata only runs on a real install and the field sits outside the
-    fingerprint, so without this backfill the #7624 gate keeps failing open on an
-    up-to-date install until an unrelated llama.cpp release forces a reinstall."""
+    fingerprint, so without the backfill the gate fails open indefinitely (#7624)."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
