@@ -46,7 +46,8 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "ask",
     label: "Ask for approval",
-    description: "Always ask before tool calls edit files or use the internet",
+    description:
+      "Always ask before tool calls, editing files or using the internet",
     icon: Hand,
   },
   {
