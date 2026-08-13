@@ -64,6 +64,7 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
+  supportsCustomMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
@@ -164,6 +165,9 @@ export function ChatProvidersSettings({
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [editingBackendProviderType, setEditingBackendProviderType] = useState<
+    string | null
+  >(null);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(
     null,
   );
@@ -188,8 +192,14 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  const isGenericCustomProvider =
-    providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
+  // The override is keyed on the type the BACKEND stores, which is not always the
+  // type the UI shows. Creating a connection has no server row yet, so the stored type
+  // is unknown until the create call returns; `supportsCustomMaxOutputTokens` falls
+  // back to the outgoing mapping for that case.
+  const supportsMaxOutputTokens = supportsCustomMaxOutputTokens(
+    providerType,
+    editingProviderId ? editingBackendProviderType : null,
+  );
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
@@ -287,6 +297,7 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -389,6 +400,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -687,7 +699,7 @@ export function ChatProvidersSettings({
         isCustomProvider,
         providerType,
       );
-      const maxOutputTokens = isGenericCustomProvider
+      const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
       const created = await createProviderConfig({
@@ -714,6 +726,9 @@ export function ChatProvidersSettings({
       const provider: ExternalProviderConfig = {
         id: created.id,
         providerType: uiProviderType,
+        // Recorded now rather than waiting for the next backend sync, so reopening
+        // this connection in the same session knows what the server actually stored.
+        backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
@@ -829,10 +844,9 @@ export function ChatProvidersSettings({
         isEditingCustomProvider,
         existing.providerType,
       );
-      const maxOutputTokens =
-        existing.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
-          ? parseMaxOutputTokens(maxOutputTokensDraft)
-          : undefined;
+      const maxOutputTokens = supportsMaxOutputTokens
+        ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
           ? customProviderName.trim() ||
@@ -865,6 +879,7 @@ export function ChatProvidersSettings({
           provider.id === editingProviderId
             ? {
                 ...provider,
+                backendProviderType: updated.provider_type,
                 name: updated.display_name,
                 baseUrl: updated.base_url ?? "",
                 models: modelsToSave,
@@ -910,6 +925,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setMaxOutputTokensDraft(provider.maxOutputTokens?.toString() ?? "");
+    setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
@@ -1286,7 +1302,7 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
-              {providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? (
+              {supportsMaxOutputTokens ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
@@ -1303,13 +1319,23 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">
+                    {/*
+                      A TEXT input, deliberately, matching NumericValueInput in the
+                      run-settings panel. `type="number"` runs the HTML value
+                      sanitization algorithm, which replaces anything the engine does
+                      not read as a valid floating-point number with the EMPTY STRING
+                      (WHATWG HTML 4.10.5). Blank means "no override" here, so a
+                      grouped or localised entry such as "131,072" would leave the box
+                      looking filled, report "" to React, and silently CLEAR the
+                      user's override on save with no error. Keeping the raw string
+                      lets `parseMaxOutputTokens` reject it and say why.
+                    */}
                     <Input
                       id="provider-max-output-tokens"
-                      type="number"
+                      type="text"
                       inputMode="numeric"
-                      min={CUSTOM_MAX_OUTPUT_TOKENS_MIN}
-                      max={Number.MAX_SAFE_INTEGER}
-                      step={1}
+                      autoComplete="off"
+                      spellCheck={false}
                       value={maxOutputTokensDraft}
                       onChange={(event) =>
                         setMaxOutputTokensDraft(event.target.value)

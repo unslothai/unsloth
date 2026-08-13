@@ -99,6 +99,7 @@ import {
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
+  resolveExternalMaxTokensClamp,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
@@ -761,23 +762,35 @@ export function ChatSettingsPanel({
     };
   }
 
+  // Lower a live Max Tokens that no longer fits the active connection's cap. The
+  // decision itself lives in `resolveExternalMaxTokensClamp`, which documents why a
+  // missing provider must NOT be read as the 32,768 fallback.
   useEffect(() => {
-    if (!isExternalModel || params.maxTokens <= maxTokensMax) {
+    const clampedMaxTokens = resolveExternalMaxTokensClamp({
+      settingsHydrated,
+      hasActiveExternalProvider: activeExternalProvider != null,
+      isExternalModel,
+      maxTokens: params.maxTokens,
+      maxTokensMax,
+    });
+    if (clampedMaxTokens == null) {
       return;
     }
-    const nextParams = { ...params, maxTokens: maxTokensMax };
+    const nextParams = { ...params, maxTokens: clampedMaxTokens };
     const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
       ? getPresetSource(activePreset)
       : "modified";
     setActivePresetSource(nextSource);
     onParamsChange(nextParams);
   }, [
+    activeExternalProvider,
     activePreset,
     activePresetBaseline,
     isExternalModel,
     maxTokensMax,
     onParamsChange,
     params,
+    settingsHydrated,
     setActivePresetSource,
   ]);
 

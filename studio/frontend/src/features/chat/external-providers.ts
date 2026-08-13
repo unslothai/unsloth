@@ -18,6 +18,16 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /**
+   * The provider type as the BACKEND stores it, when known.
+   *
+   * `providerType` above is the UI type, which `resolveUiProviderTypeFromConfig`
+   * reports as "custom" for rows saved as `openai` with a custom name or base URL.
+   * The Max Tokens limit override is keyed on the STORED type server-side, so
+   * anything deciding whether to send it has to look here rather than at the UI type.
+   * Absent for entries that predate this field; treat that as "unknown", not "custom".
+   */
+  backendProviderType?: string;
   /** Optional maximum Max Tokens cap for a generic Custom connection. */
   maxOutputTokens?: number;
 
@@ -214,6 +224,32 @@ export function normalizeCustomMaxOutputTokens(
     return undefined;
   }
   return value;
+}
+
+/**
+ * Whether a connection may carry a per-connection Max Tokens limit.
+ *
+ * Both types have to agree. `uiProviderType` decides what the dialog draws, and the
+ * generic Custom editor is the only one with the field. `backendProviderType` decides
+ * what the server accepts, and it is NOT always the same value: a row stored as
+ * `openai` with a custom name or base URL is reported as "custom" by
+ * `resolveUiProviderTypeFromConfig`, yet the backend still rejects an override on it.
+ *
+ * A null / undefined `backendProviderType` means "unknown" -- an entry synced before
+ * the field existed, or a connection being created that has no server row yet. Those
+ * fall back to the outgoing mapping, which is what the create call is about to send,
+ * so a brand new Custom connection keeps working exactly as it did.
+ */
+export function supportsCustomMaxOutputTokens(
+  uiProviderType: string | null | undefined,
+  backendProviderType: string | null | undefined,
+): boolean {
+  if (uiProviderType !== LEGACY_CUSTOM_PROVIDER_TYPE) return false;
+  const effective =
+    typeof backendProviderType === "string" && backendProviderType.length > 0
+      ? backendProviderType
+      : toExternalBackendProviderType(uiProviderType);
+  return effective === LEGACY_CUSTOM_PROVIDER_TYPE;
 }
 
 export const CUSTOM_PROVIDER_PRESETS = [
@@ -432,6 +468,13 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    // Anything non-string that survived a hand-edited localStorage entry becomes
+    // undefined, which reads as "unknown backend type" and sends nothing.
+    backendProviderType:
+      typeof raw.backendProviderType === "string" &&
+      raw.backendProviderType.trim().length > 0
+        ? raw.backendProviderType.trim()
+        : undefined,
     maxOutputTokens: normalizeCustomMaxOutputTokens(
       providerType,
       raw.maxOutputTokens,

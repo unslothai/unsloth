@@ -13,6 +13,8 @@ Endpoints:
 """
 
 import uuid
+from typing import Optional
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -110,8 +112,22 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
 
 
-def _validate_max_output_tokens_contract(provider_type: str, field_was_set: bool) -> None:
-    if field_was_set and provider_type != "custom":
+def _validate_max_output_tokens_contract(
+    provider_type: str,
+    field_was_set: bool,
+    value: Optional[int] = None,
+) -> None:
+    """Reject a non-null override on a provider type that has its own documented caps.
+
+    An explicit null is allowed through on every type. The dialog renders the Max Tokens
+    limit row from the UI provider type, which `resolveUiProviderTypeFromConfig` reports
+    as "custom" for rows STORED as `openai` with a custom name or base URL, and a blank
+    field serialises as null rather than as an omission. Rejecting the null too meant an
+    unrelated edit of such a connection -- a rename, a model change, a key rotation --
+    failed with an error about a field the user never touched. Clearing an override that
+    cannot exist is a no-op, so there is nothing to protect against here.
+    """
+    if field_was_set and value is not None and provider_type != "custom":
         raise HTTPException(
             status_code = 400,
             detail = "Max Tokens limit can only be overridden for generic Custom providers.",
@@ -183,6 +199,7 @@ async def create_provider_config(
     _validate_max_output_tokens_contract(
         payload.provider_type,
         "max_output_tokens" in payload.model_fields_set,
+        payload.max_output_tokens,
     )
 
     _validate_provider_auth_contract(
@@ -247,6 +264,7 @@ async def update_provider_config(
     _validate_max_output_tokens_contract(
         existing["provider_type"],
         max_output_tokens_requested,
+        payload.max_output_tokens,
     )
     _validate_provider_auth_contract(
         existing_info,

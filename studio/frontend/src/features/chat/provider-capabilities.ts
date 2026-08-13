@@ -177,6 +177,38 @@ export function getExternalMaxOutputTokens(
   return EXTERNAL_MAX_OUTPUT_TOKENS;
 }
 
+/**
+ * The lowered Max Tokens a live settings panel should write back, or null to leave the
+ * value alone.
+ *
+ * Split out of the settings panel's effect so the decision is testable without a DOM.
+ * The two availability guards are load-bearing, because the caller PERSISTS what this
+ * returns and this only ever lowers. `isExternalModel` is derived from the checkpoint
+ * string alone, while `maxTokensMax` comes from the resolved provider, and the two
+ * disagree whenever the provider is momentarily unavailable: connections toggled off,
+ * a cold browser where settings hydrate before the provider sync lands, or a
+ * connection disabled or deleted while selected. In each of those the cap collapses to
+ * the 32,768 fallback, and clamping there would silently destroy a configured
+ * override the moment the provider list blinked. No provider means the cap is unknown,
+ * not 32,768.
+ *
+ * Returning the cap itself (never a smaller value) is what makes this converge in a
+ * single pass: feeding the result back in yields null.
+ */
+export function resolveExternalMaxTokensClamp(input: {
+  settingsHydrated: boolean;
+  hasActiveExternalProvider: boolean;
+  isExternalModel: boolean;
+  maxTokens: number;
+  maxTokensMax: number;
+}): number | null {
+  if (!input.settingsHydrated || !input.hasActiveExternalProvider) return null;
+  if (!input.isExternalModel || input.maxTokens <= input.maxTokensMax) {
+    return null;
+  }
+  return input.maxTokensMax;
+}
+
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
