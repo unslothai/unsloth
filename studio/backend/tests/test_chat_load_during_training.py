@@ -1173,7 +1173,6 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         # _DEFAULT_N_UBATCH and fail these assertions for a reason that has nothing to do with the
         # slot count under test, so drop them for the call.
         import os
-
         env = {
             key: value
             for key, value in os.environ.items()
