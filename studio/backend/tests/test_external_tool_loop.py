@@ -1292,3 +1292,218 @@ def test_denied_call_does_not_trigger_an_action_nudge(monkeypatch):
     assert len(client.calls) == 2
     statuses = [event.get("content") for event in _events(lines) if event["type"] == "tool_status"]
     assert NUDGE_TOOL_CALLS_STATUS not in statuses
+
+
+def test_rag_autoinject_runs_before_the_first_provider_turn(monkeypatch):
+    """The tool nudge promises attached passages, so retrieval must precede turn one."""
+    from core.inference import tools as inference_tools
+
+    monkeypatch.setattr(
+        inference_tools,
+        "build_rag_autoinject",
+        lambda conversation, rag_scope: {
+            "events": [
+                {
+                    "type": "tool_end",
+                    "tool_name": "search_knowledge_base",
+                    "tool_call_id": "auto_0",
+                    "result": "Passage 1",
+                }
+            ],
+            "messages": [{"role": "user", "content": "Passage: unsloth trains fast."}],
+        },
+    )
+    client = _FakeClient(
+        [[_chunk(content = "It trains fast."), _finish("stop"), "data: [DONE]"]]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "what do the docs say"}],
+                model = "qwen3-14b",
+                tools = [RAG_TOOL],
+                rag_scope = {"thread_id": "thread-1"},
+            )
+        )
+    )
+    first_turn = client.calls[0]["messages"]
+    assert first_turn[-1]["content"] == "Passage: unsloth trains fast."
+    assert any(
+        event.get("tool_name") == "search_knowledge_base" for event in _events(lines)
+    )
+
+
+def test_ask_mode_skips_rag_autoinject(monkeypatch):
+    """A retrieval call that would prompt is left to the confirm gate."""
+    from core.inference import tools as inference_tools
+
+    monkeypatch.setattr(
+        inference_tools,
+        "build_rag_autoinject",
+        lambda conversation, rag_scope: pytest.fail("autoinject must not run under ask"),
+    )
+    client = _FakeClient(
+        [[_chunk(content = "Ask me to search."), _finish("stop"), "data: [DONE]"]]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "what do the docs say"}],
+                model = "qwen3-14b",
+                tools = [RAG_TOOL],
+                rag_scope = {"thread_id": "thread-1"},
+                confirm_tool_calls = True,
+                permission_mode = "ask",
+            )
+        )
+    )
+    assert len(client.calls) == 1
+
+
+def test_continued_partial_merges_the_generated_tool_turn():
+    """Two consecutive assistant turns break role alternation on vLLM/llama.cpp."""
+    client = _FakeClient(
+        [
+            [
+                _chunk(content = " and here it is:"),
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "python", "arguments": "{}"},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = " done."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [
+                    {"role": "user", "content": "compute it"},
+                    {"role": "assistant", "content": "Let me compute that"},
+                ],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                continue_final_message = True,
+                execute_tool = lambda *a, **k: "4",
+            )
+        )
+    )
+    assert client.calls[0]["continue_final_message"] is True
+    assert client.calls[1]["continue_final_message"] is False
+    followup = client.calls[1]["messages"]
+    assert [message["role"] for message in followup] == ["user", "assistant", "tool"]
+    assert followup[1]["content"] == "Let me compute thatand here it is:"
+    assert followup[1]["tool_calls"][0]["function"]["name"] == "python"
+
+
+def test_post_tool_nudge_survives_a_repeated_pre_tool_intent():
+    """A stall repeated after the tool ran is a new phase, not a repeat."""
+    intent = "I will search the web for the 2026 box office totals."
+    client = _FakeClient(
+        [
+            [_chunk(reasoning = intent), _finish("stop"), "data: [DONE]"],
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(reasoning = intent), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "The Odyssey led 2026."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "highest grossing movie of 2026"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                execute_tool = lambda *a, **k: "Title: The Odyssey",
+            )
+        )
+    )
+    assert len(client.calls) == 4
+    assert client.calls[3]["messages"][-1]["role"] == "user"
+    assert "web_search" in client.calls[3]["messages"][-1]["content"]
+    assert _content(lines) == "The Odyssey led 2026."
+
+
+def test_usage_details_are_summed_with_the_totals():
+    """Dropping cached/reasoning counts would blank the frontend cache readout."""
+    detailed = "data: " + json.dumps(
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "prompt_tokens_details": {"cached_tokens": 6},
+                "completion_tokens_details": {"reasoning_tokens": 2},
+                "cache_read_input_tokens": 6,
+            },
+        }
+    )
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "python", "arguments": "{}"},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+                detailed,
+                "data: [DONE]",
+            ],
+            [_chunk(content = "ok"), _finish("stop"), detailed, "data: [DONE]"],
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: "ok",
+            )
+        )
+    )
+    usage_chunks = [
+        json.loads(line[len("data:") :].strip())
+        for line in lines
+        if line != "data: [DONE]" and '"usage"' in line
+    ]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0]["usage"] == {
+        "prompt_tokens": 20,
+        "completion_tokens": 10,
+        "total_tokens": 30,
+        "prompt_tokens_details": {"cached_tokens": 12},
+        "completion_tokens_details": {"reasoning_tokens": 4},
+        "cache_read_input_tokens": 12,
+    }

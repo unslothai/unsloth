@@ -4112,6 +4112,16 @@ export function createOpenAIStreamAdapter(
       const localCodeEnabledForThisTurn = Boolean(
         externalLocalToolsEnabled && externalSelection && codeToolsEnabled,
       );
+      // the local runtime also executes RAG and MCP calls, not only Search and Code.
+      const localToolRuntimeForThisTurn = Boolean(
+        externalLocalToolsEnabled &&
+          externalSelection &&
+          (toolsEnabled ||
+            codeToolsEnabled ||
+            mcpEnabledForChat ||
+            ragEnabled ||
+            projectRagEnabled),
+      );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
       // separately). Sourced from `webFetchToolsEnabled`; on providers
       // without web_fetch the toggle is forced off in chat-page setState.
@@ -5128,7 +5138,7 @@ export function createOpenAIStreamAdapter(
                     // server tools.
                     { enable_tools: false }),
               // local tools need the sandbox session, thread scope and permission gate.
-              ...(localWebSearchEnabledForThisTurn || localCodeEnabledForThisTurn
+              ...(localToolRuntimeForThisTurn
                 ? {
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }

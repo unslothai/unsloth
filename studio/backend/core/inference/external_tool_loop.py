@@ -28,6 +28,7 @@ from typing import Any, AsyncGenerator, Callable, Optional, Sequence
 
 from loggers import get_logger
 
+from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS,
@@ -146,14 +147,39 @@ def _delta_text(content: Any) -> str:
     return "".join(parts)
 
 
-def _merge_usage(totals: dict[str, int], usage: Any) -> None:
-    """Sum the countable fields of one turn's usage block into ``totals``."""
+# nested count blocks a provider may report alongside the headline totals.
+_USAGE_DETAIL_FIELDS = (
+    "prompt_tokens_details",
+    "completion_tokens_details",
+    "input_tokens_details",
+    "output_tokens_details",
+)
+
+
+def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
+    """Sum every countable field of one turn's usage block into ``totals``.
+
+    Details are summed alongside the headline totals: the frontend reads
+    ``prompt_tokens_details.cached_tokens`` for its cache readout and pricing reads
+    the reasoning slice, so keeping only the totals would make a tool-loop response
+    report less than the same provider's plain stream.
+    """
     if not isinstance(usage, dict):
         return
-    for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        value = usage.get(field)
+    for field, value in usage.items():
+        if isinstance(value, bool):
+            continue
         if isinstance(value, int):
             totals[field] = totals.get(field, 0) + value
+            continue
+        if field not in _USAGE_DETAIL_FIELDS or not isinstance(value, dict):
+            continue
+        bucket = totals.setdefault(field, {})
+        if not isinstance(bucket, dict):
+            continue
+        for detail, count in value.items():
+            if isinstance(count, int) and not isinstance(count, bool):
+                bucket[detail] = bucket.get(detail, 0) + count
 
 
 class _TurnAccumulator:
@@ -186,7 +212,7 @@ class _TurnAccumulator:
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.finish_reason: Optional[str] = None
         self.failed: bool = False
-        self.usage: dict[str, int] = {}
+        self.usage: dict[str, Any] = {}
         self.provisional_cards: dict[str, str] = {}
         self._provisional_tool_names = provisional_tool_names
         self._args_streamed: set[str] = set()
@@ -370,7 +396,7 @@ class _TurnAccumulator:
         return [self.tool_calls[key] for key in sorted(self.tool_calls)]
 
 
-def _usage_chunk_line(model: str, totals: dict[str, int]) -> Optional[str]:
+def _usage_chunk_line(model: str, totals: dict[str, Any]) -> Optional[str]:
     """One summed usage chunk for the whole loop, or None when unreported.
 
     Per-turn usage chunks are withheld while the loop runs, so a multi-turn
@@ -530,10 +556,29 @@ async def stream_chat_completion_with_local_tools(
     )
 
     conversation = list(messages)
+    # only the opening turn resumes a partial; later turns start from a tool result.
+    continue_final_message = bool(stream_kwargs.pop("continue_final_message", False))
+
+    # first-pass retrieval as in the other loops: the nudge promises passages, so send them.
+    skip_autoinject = continue_final_message or (
+        confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+    )
+    autoinject = None
+    if not skip_autoinject:
+        from core.inference.tools import build_rag_autoinject
+
+        autoinject = await asyncio.to_thread(build_rag_autoinject, conversation, rag_scope)
+    if autoinject:
+        for event in autoinject["events"]:
+            yield _sse(event)
+        conversation.extend(autoinject["messages"])
+    # a KB search ran outside the controller, so the loop opens in its post-tool phase.
+    rag_autoinjected = bool(autoinject)
+
     controller = ToolLoopController(tools = tools, auto_heal_tool_calls = auto_heal_tool_calls)
     all_tool_names = set(_tool_names(tools))
     cancel_event = threading.Event()
-    usage_totals: dict[str, int] = {}
+    usage_totals: dict[str, Any] = {}
     # 9999+ is the local loops' "no limit" sentinel.
     effective_timeout = (
         None if tool_call_timeout is not None and tool_call_timeout >= 9999 else tool_call_timeout
@@ -544,8 +589,8 @@ async def stream_chat_completion_with_local_tools(
     reprompt_count = 0
     post_tool_reprompts = 0
     last_reprompt_text = ""
-    # only the opening turn resumes a partial; later turns start from a tool result.
-    continue_final_message = bool(stream_kwargs.pop("continue_final_message", False))
+    # only the request is one-shot; the flag itself still merges the first generated turn.
+    resume_partial_request = continue_final_message
     forced_tool_choice = tool_choice
     tool_denied = False
 
@@ -569,10 +614,10 @@ async def stream_chat_completion_with_local_tools(
                 tools = active_tools or None,
                 tool_choice = forced_tool_choice if active_tools else None,
                 stream = True,
-                continue_final_message = continue_final_message,
+                continue_final_message = resume_partial_request,
                 **stream_kwargs,
             )
-            continue_final_message = False
+            resume_partial_request = False
             try:
                 async for line in gen:
                     for forwarded in turn.feed(line):
@@ -641,7 +686,9 @@ async def stream_chat_completion_with_local_tools(
                 # visible turn: OpenAI deltas are append-only, so text already streamed
                 # cannot be taken back the way a cumulative snapshot can.
                 intent_text = (turn.shown or turn.reasoning).strip()
-                already_acted = any(record.executed for record in controller.history)
+                already_acted = rag_autoinjected or any(
+                    record.executed for record in controller.history
+                )
                 used, cap = (
                     (post_tool_reprompts, MAX_POST_TOOL_REPROMPTS)
                     if already_acted
@@ -670,7 +717,12 @@ async def stream_chat_completion_with_local_tools(
                         cap,
                         len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": intent_text})
+                    # merges into a resumed partial; the nudge below is a user turn.
+                    append_assistant_turn(
+                        conversation,
+                        {"role": "assistant", "content": intent_text},
+                        continue_final_message = continue_final_message,
+                    )
                     tool_hint = " or ".join(_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {"role": "user", "content": reprompt_to_act_message(tool_hint)}
@@ -836,6 +888,8 @@ async def stream_chat_completion_with_local_tools(
                 completion = controller.record_result(decision, result)
                 executed_calls += 1
                 turn_executed_real_tool = True
+                # opens the post-tool phase; a carried-over stall text would eat its nudge.
+                last_reprompt_text = ""
                 resolved_provisional.add(decision.tool_call_id)
                 yield _sse(completion.tool_end_event())
                 tool_messages.append(completion.tool_message())
@@ -847,7 +901,12 @@ async def stream_chat_completion_with_local_tools(
             if assistant_tool_calls:
                 assistant_message["tool_calls"] = assistant_tool_calls
             if assistant_message["content"] or assistant_tool_calls:
-                conversation.append(assistant_message)
+                # merges into a resumed partial, so a continued tool turn stays one message.
+                append_assistant_turn(
+                    conversation,
+                    assistant_message,
+                    continue_final_message = continue_final_message,
+                )
             conversation.extend(tool_messages)
             append_deferred_nudges(conversation, nudge_messages)
             if turn_executed_real_tool:
