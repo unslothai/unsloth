@@ -4124,7 +4124,14 @@ class DiffusionBackend:
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays honest.
                     effective_policy, effective_tiling = apply_memory_plan(
-                        pipe, plan, device = device, logger = logger
+                        pipe,
+                        plan,
+                        device = device,
+                        # Indexed when a card was selected: the CPU-offload APIs read the index off
+                        # this string and default to cuda:0 without one, which would page modules
+                        # onto a different card than the one generation runs on.
+                        placement_device = target.torch_device,
+                        logger = logger,
                     )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is explicit.

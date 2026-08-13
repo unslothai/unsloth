@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type GpuIndexKind,
   type PinnableGpuContext,
@@ -247,8 +247,15 @@ export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
  */
 export function useDiffusionGpuChoices(): SystemGpuDevice[] {
   const devices = useGpuDevices(true);
-  const context = pinnableGpuContext(devices, true);
-  return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];
+  // Memoized on the device list, which only changes when the inventory does. pinnableGpuContext
+  // builds a fresh filtered array per call, so an unmemoized return changed identity on every
+  // render of the page holding it: it feeds the load-advanced snapshot, that feeds the download
+  // footprint resolver, and the GGUF picker re-runs its effect whenever the resolver changes --
+  // clearing the sizes it had and re-POSTing a download plan per variant on every status poll.
+  return useMemo(() => {
+    const context = pinnableGpuContext(devices, true);
+    return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];
+  }, [devices]);
 }
 
 /** Whether device discovery is settled enough to rewrite remembered UI state. */

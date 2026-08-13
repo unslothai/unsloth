@@ -79,6 +79,7 @@ import {
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { NegativePromptField } from "@/components/negative-prompt-field";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -843,7 +844,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Advanced (load-time) options; "auto"/"off" map to the backend defaults. "Reapply" reloads with new values.
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to. Only offered on a multi-card CUDA / ROCm host.
-  const [selectedGpu, setSelectedGpu] = useState("auto");
+  // Persisted, unlike the selects around it: those are reseeded from the loaded build, and the
+  // status carries the device a pipeline is on but not which card, so a refresh would reset this
+  // one to Auto while the model stayed put and the next Reapply would move it to the default GPU.
+  // A stored id is only a hint; the send path below still drops one whose card is no longer there.
+  const [selectedGpu, setSelectedGpu] = usePersistedChoice(
+    "unsloth_video_gpu_choice",
+    "auto",
+  );
   const gpuChoices = useDiffusionGpuChoices();
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [attentionBackend, setAttentionBackend] = useState<

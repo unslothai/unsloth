@@ -3729,7 +3729,15 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
-            offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
+            offload_policy, vae_tiling = apply_memory_plan(
+                pipe,
+                plan,
+                device = device,
+                # Same reason as the image path: a bare "cuda" sends the CPU-offload hooks to
+                # ordinal 0 whatever was selected.
+                placement_device = target.torch_device,
+                logger = logger,
+            )
             # A dual-DiT MoE needs no extra per-expert pass: apply_memory_plan covers every DiT; a second pass would duplicate-hook.
             if not vae_tiling:
                 # Whole-clip decode is the video memory peak; tiling is near-free, so always on.

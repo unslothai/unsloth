@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -1239,7 +1240,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to. Only offered on a multi-card CUDA / ROCm host.
-  const [selectedGpu, setSelectedGpu] = useState("auto");
+  // Persisted, unlike the selects around it: those are reseeded from the loaded build, and the
+  // status carries the device a pipeline is on but not which card, so a refresh would reset this
+  // one to Auto while the model stayed put and the next Reapply would move it to the default GPU.
+  // A stored id is only a hint; the send path below still drops one whose card is no longer there.
+  const [selectedGpu, setSelectedGpu] = usePersistedChoice(
+    "unsloth_image_gpu_choice",
+    "auto",
+  );
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
