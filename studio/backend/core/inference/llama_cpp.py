@@ -10424,8 +10424,10 @@ class LlamaCppBackend:
             bounds the one piece interpolated straight from the child.
             """
             value = value.strip()
-            return value if len(value) <= _FAILURE_QUOTE_CHARS else (
-                value[:_FAILURE_QUOTE_CHARS] + "..."
+            return (
+                value
+                if len(value) <= _FAILURE_QUOTE_CHARS
+                else (value[:_FAILURE_QUOTE_CHARS] + "...")
             )
 
         unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", scan_tail, re.IGNORECASE)
