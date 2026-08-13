@@ -230,11 +230,11 @@ function writeCachedIndex(next: ChatSearchItem[] | null): void {
   cachedIndexEpoch = getAuthSessionEpoch();
 }
 
-// Whether a build has already established that the history is empty, readable during render
-// so the dialog can size itself before its opening paint.
-export function cachedChatSearchIndexIsEmpty(): boolean {
-  const cached = readCachedIndex();
-  return cached !== null && cached.length === 0;
+// How many rows a completed build left behind, readable during render so the dialog can size
+// itself before its opening paint. An index that has not been built yet counts as none: the
+// first open of a page load must not reserve a height it may never fill.
+export function cachedChatSearchIndexItemCount(): number {
+  return readCachedIndex()?.length ?? 0;
 }
 
 export function useChatSearchIndex(enabled: boolean): {

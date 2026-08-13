@@ -15,10 +15,11 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
-  cachedChatSearchIndexIsEmpty,
+  cachedChatSearchIndexItemCount,
   useChatSearchIndex,
 } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
+import { isCompactChatSearchList } from "../utils/chat-search-list-height";
 
 // Rows mounted while the dialog animates open; the rest follow once it settles,
 // so a long history never lays out hundreds of rows mid-transition.
@@ -71,9 +72,11 @@ export function ChatSearchDialog() {
   // over a reopened dialog whose input is empty.
   const activeQuery = query === "" ? "" : deferredQuery;
   const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
-  // The dialog is centered, so the list height is decided once per open and held for that
-  // whole open: only an index already known to be empty starts compact.
-  const [compactList, setCompactList] = useState(cachedChatSearchIndexIsEmpty);
+  // The dialog is centered, so the list height is decided per open and only ever relaxed
+  // from compact to fixed, never back, for that whole open.
+  const [compactList, setCompactList] = useState(() =>
+    isCompactChatSearchList(true, cachedChatSearchIndexItemCount()),
+  );
 
   // Reset during the opening render rather than in an effect: Radix mounts the portal as
   // this render commits, and an effect would trim rows only after React had already built
@@ -85,8 +88,14 @@ export function ChatSearchDialog() {
     if (isOpen) {
       setQuery("");
       setRowLimit(INITIAL_ROW_COUNT);
-      setCompactList(cachedChatSearchIndexIsEmpty());
+      setCompactList(
+        isCompactChatSearchList(true, cachedChatSearchIndexItemCount()),
+      );
     }
+  } else if (compactList !== isCompactChatSearchList(compactList, items.length)) {
+    // The first open of a page load has no cached index, so the fixed height is taken when
+    // that build lands rather than up front.
+    setCompactList(false);
   }
 
   const visibleItems = useMemo(
