@@ -3535,8 +3535,13 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
-def _overlay_local_core_package(name: str, local_repo: str) -> bool:
-    """Install one core package from the source selected by --local."""
+def _overlay_local_core_package(name: str, local_repo: str, *, strict: bool = True) -> bool:
+    """Install one core package from the source selected by --local.
+
+    strict=False reports a failed install instead of exiting, which the metadata
+    repair needs: by the time it installs, it has already removed the records it
+    is replacing, so it has to say so rather than die mid-way.
+    """
     canonical = re.sub(r"[-_.]+", "-", name).lower()
     if canonical == "unsloth":
         step_label = f"overlaying local repo (editable): {local_repo}"
@@ -3549,6 +3554,10 @@ def _overlay_local_core_package(name: str, local_repo: str) -> bool:
     else:
         return False
     _step(_LABEL, step_label)
+    if not strict:
+        return pip_install_try(
+            install_label, "--no-cache-dir", "--no-deps", *args, constrain = False
+        )
     pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
     return True
 
@@ -3556,6 +3565,54 @@ def _overlay_local_core_package(name: str, local_repo: str) -> bool:
 def _overlay_local_core_packages(local_repo: str) -> None:
     for name in ("unsloth", "unsloth-zoo"):
         _overlay_local_core_package(name, local_repo)
+
+
+def _run_ok(label: str, cmd: list) -> bool:
+    """run() without the exit: the metadata repair has to unwind, not die."""
+    if VERBOSE:
+        _step(_LABEL, f"{label}...", _dim)
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        env = _install_env_for_cmd(cmd),
+        **_windows_hidden_subprocess_kwargs(),
+    )
+    if result.returncode != 0 and result.stdout:
+        _safe_print(_redact_install_output(result.stdout))
+    return result.returncode == 0
+
+
+def _is_overlayable_core_package(name: str) -> bool:
+    """Whether _overlay_local_core_package knows a source for this name."""
+    return re.sub(r"[-_.]+", "-", name).lower() in ("unsloth", "unsloth-zoo")
+
+
+def _stage_replacement(name: str):
+    """Download the wheel that will replace a package, before it is removed.
+
+    Returns a directory to install from, or None when the package cannot be
+    fetched -- which must abort the repair while the existing install is still
+    intact. Uses pip directly, as the uninstall loop does: this runs after the
+    unreadable records have been deleted, so pip can parse what remains.
+    """
+    staging = tempfile.mkdtemp(prefix = "unsloth_metadata_repair_")
+    # No --no-build-isolation: an index that only offers an sdist has to be able
+    # to build its metadata, exactly as the install that follows would.
+    cmd = [sys.executable, "-m", "pip", "download", "--no-deps", "--dest", staging, name]
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        env = _install_env_for_cmd(cmd),
+        **_windows_hidden_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        if VERBOSE and result.stdout:
+            _safe_print(_redact_install_output(result.stdout))
+        shutil.rmtree(staging, ignore_errors = True)
+        return None
+    return staging
 
 
 def _repair_duplicate_core_metadata(
@@ -3572,6 +3629,11 @@ def _repair_duplicate_core_metadata(
     requested source can then be installed without asking a resolver to replace
     the existing torch build. The normal dependency pass still follows this
     repair.
+
+    The replacement is fetched BEFORE anything is removed. The uninstall loop
+    deletes every record it finds, so an index that is unreachable at that
+    moment -- offline, a private package name, a mirror outage -- would
+    otherwise leave the venv with no unsloth at all and no way back.
     """
     duplicates: list[tuple[str, int]] = []
     seen: set[str] = set()
@@ -3586,50 +3648,93 @@ def _repair_duplicate_core_metadata(
             duplicates.append((name, record_count))
 
     repaired: list[str] = []
-    for name, record_count in duplicates:
-        _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
-        invalid_paths = install_manifest.invalid_metadata_paths(name)
-        for path in invalid_paths:
-            try:
-                shutil.rmtree(path)
-            except OSError:
-                _safe_print(
-                    _red(f"   could not remove invalid metadata for {name}: {path}"),
-                    file = sys.stderr,
-                )
-                return False
-        if invalid_paths:
-            importlib.invalidate_caches()
-            record_count = len(install_manifest.installed_versions(name))
-        while record_count:
-            run(
-                f"Removing an installed metadata record for {name}",
-                [sys.executable, "-m", "pip", "uninstall", "-y", name],
-            )
-            importlib.invalidate_caches()
-            remaining = len(install_manifest.installed_versions(name))
-            if remaining >= record_count:
-                _safe_print(
-                    _red(f"   could not remove every metadata record for {name}"),
-                    file = sys.stderr,
-                )
-                return False
-            record_count = remaining
+    staging_dirs: list[str] = []
+    try:
+        for name, record_count in duplicates:
+            _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
+            invalid_paths = install_manifest.invalid_metadata_paths(name)
+            for path in invalid_paths:
+                try:
+                    shutil.rmtree(path)
+                except OSError:
+                    _safe_print(
+                        _red(f"   could not remove invalid metadata for {name}: {path}"),
+                        file = sys.stderr,
+                    )
+                    return False
+            if invalid_paths:
+                importlib.invalidate_caches()
+                record_count = len(install_manifest.installed_versions(name))
 
-        canonical = re.sub(r"[-_.]+", "-", name).lower()
-        source_repo = local_repo or (ci_source_overlay if canonical == "unsloth" else "")
-        # Installer handoffs may already have applied a local or CI source.
-        # Restore that provenance now that no ambiguous record remains.
-        restored = source_repo and _overlay_local_core_package(name, source_repo)
-        if not restored:
-            pip_install(
-                f"Repairing duplicate metadata for {name}",
-                "--no-cache-dir",
-                "--no-deps",
-                "--force-reinstall",
-                name,
-            )
-        repaired.append(name)
+            canonical = re.sub(r"[-_.]+", "-", name).lower()
+            source_repo = local_repo or (ci_source_overlay if canonical == "unsloth" else "")
+            # A local or git source installs from a path or URL, so there is
+            # nothing to stage; anything else comes off an index, which has to
+            # be proven reachable while the current install is still intact.
+            overlaid = bool(source_repo) and _is_overlayable_core_package(name)
+            staged = ""
+            if not overlaid:
+                staged = _stage_replacement(name)
+                if staged is None:
+                    _safe_print(
+                        _red(
+                            f"   could not fetch a replacement for {name}; leaving "
+                            "the existing install in place"
+                        ),
+                        file = sys.stderr,
+                    )
+                    return False
+                staging_dirs.append(staged)
+
+            while record_count:
+                if not _run_ok(
+                    f"Removing an installed metadata record for {name}",
+                    [sys.executable, "-m", "pip", "uninstall", "-y", name],
+                ):
+                    _safe_print(
+                        _red(f"   could not uninstall a metadata record for {name}"),
+                        file = sys.stderr,
+                    )
+                    return False
+                importlib.invalidate_caches()
+                remaining = len(install_manifest.installed_versions(name))
+                if remaining >= record_count:
+                    _safe_print(
+                        _red(f"   could not remove every metadata record for {name}"),
+                        file = sys.stderr,
+                    )
+                    return False
+                record_count = remaining
+
+            # Installer handoffs may already have applied a local or CI source.
+            # Restore that provenance now that no ambiguous record remains.
+            if overlaid:
+                restored = _overlay_local_core_package(name, source_repo, strict = False)
+            else:
+                restored = pip_install_try(
+                    f"Repairing duplicate metadata for {name}",
+                    "--no-cache-dir",
+                    "--no-deps",
+                    "--force-reinstall",
+                    "--no-index",
+                    "--find-links",
+                    staged,
+                    name,
+                )
+            if not restored:
+                _safe_print(
+                    _red(
+                        f"   could not reinstall {name} after removing its duplicate "
+                        "metadata; it is no longer installed. Re-run the installer "
+                        "to restore it."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+            repaired.append(name)
+    finally:
+        for staging in staging_dirs:
+            shutil.rmtree(staging, ignore_errors = True)
 
     importlib.invalidate_caches()
     remaining = [name for name in repaired if not install_manifest.installed_version_probe(name)[0]]

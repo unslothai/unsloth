@@ -568,9 +568,11 @@ class TestDuplicateCoreMetadataRepair:
         def record_run(label, cmd):
             assert not malformed.exists()
             commands.append((label, cmd))
+            return True
 
-        monkeypatch.setattr(ips, "run", record_run)
-        monkeypatch.setattr(ips, "pip_install", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_run_ok", record_run)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
         assert not malformed.exists()
@@ -603,13 +605,14 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: invalidations.append(True))
         monkeypatch.setattr(
             ips,
-            "run",
-            lambda label, cmd: commands.append((label, cmd)),
+            "_run_ok",
+            lambda label, cmd: commands.append((label, cmd)) or True,
         )
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
         monkeypatch.setattr(
             ips,
-            "pip_install",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+            "pip_install_try",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is True
@@ -618,7 +621,15 @@ class TestDuplicateCoreMetadataRepair:
             [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"],
         ]
         assert len(installs) == 1
-        assert installs[0][1] == ("--no-cache-dir", "--no-deps", "--force-reinstall", "unsloth")
+        assert installs[0][1] == (
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "--no-index",
+            "--find-links",
+            "/staged",
+            "unsloth",
+        )
         assert len(invalidations) == 3
 
     def test_repair_fails_when_uninstall_does_not_remove_a_record(self, monkeypatch, capsys):
@@ -634,9 +645,10 @@ class TestDuplicateCoreMetadataRepair:
             lambda _name: next(probes),
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
         installs = []
-        monkeypatch.setattr(ips, "pip_install", lambda *a, **k: installs.append((a, k)))
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: installs.append((a, k)))
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert installs == []
@@ -673,11 +685,12 @@ class TestDuplicateCoreMetadataRepair:
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
         monkeypatch.setattr(
             ips,
-            "pip_install",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+            "pip_install_try",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
         )
 
         assert ips._repair_duplicate_core_metadata(
@@ -702,11 +715,12 @@ class TestDuplicateCoreMetadataRepair:
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
         monkeypatch.setattr(
             ips,
-            "pip_install",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+            "pip_install_try",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
         )
 
         assert ips._repair_duplicate_core_metadata(("custom-package",), local_repo = "/src/unsloth")
@@ -715,6 +729,9 @@ class TestDuplicateCoreMetadataRepair:
             "--no-cache-dir",
             "--no-deps",
             "--force-reinstall",
+            "--no-index",
+            "--find-links",
+            "/staged",
             "custom-package",
         )
 
@@ -732,11 +749,12 @@ class TestDuplicateCoreMetadataRepair:
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
         monkeypatch.setattr(
             ips,
-            "pip_install",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+            "pip_install_try",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
         )
 
         assert ips._repair_duplicate_core_metadata(
@@ -750,6 +768,96 @@ class TestDuplicateCoreMetadataRepair:
         source = inspect.getsource(ips.install_python_stack).replace(" ", "")
         assert 'os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY","")' in source
         assert "ci_source_overlay=ci_source_overlay" in source
+
+    def test_the_replacement_is_staged_before_any_record_is_removed(self, monkeypatch):
+        """The uninstall loop deletes every record, so the replacement has to be
+        in hand first. Otherwise an index that is unreachable at that moment
+        leaves the venv with no unsloth and nothing to reinstall from."""
+        probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
+        order = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(
+            ips, "_stage_replacement", lambda _name: order.append("stage") or "/staged"
+        )
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: order.append("uninstall") or True)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **k: order.append("install") or True
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        # Two records, so two uninstalls: pip removes one per invocation.
+        assert order == ["stage", "uninstall", "uninstall", "install"]
+
+    def test_repair_leaves_the_install_alone_when_the_replacement_cannot_be_fetched(
+        self, monkeypatch, capsys
+    ):
+        probes = iter((["2026.8.12", "2026.8.15"],))
+        removals = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: removals.append(a) or True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert removals == []
+        assert "could not fetch a replacement" in capsys.readouterr().err
+
+    def test_a_failed_reinstall_reports_instead_of_exiting(self, monkeypatch, capsys):
+        probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], []))
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: False)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert "no longer installed" in capsys.readouterr().err
+
+    def test_a_failed_uninstall_reports_instead_of_exiting(self, monkeypatch, capsys):
+        probes = iter((["2026.8.12", "2026.8.15"],))
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: False)
+        installs = []
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: installs.append(a))
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert installs == []
+        assert "could not uninstall" in capsys.readouterr().err
+
+    def test_staging_directories_are_cleaned_up(self, monkeypatch, tmp_path):
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: str(staged))
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert not staged.exists()
 
     def test_normal_local_overlay_still_applies_both_sources(self, monkeypatch):
         installs = []
