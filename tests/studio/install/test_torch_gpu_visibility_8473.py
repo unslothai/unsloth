@@ -165,6 +165,13 @@ def _run_block(
             f'#!/bin/sh\necho "{_tool}: command not found" >&2\nexit 127\n',
         )
     # The host architecture the arch gate consults. Only a positive non-x86_64 answer demotes.
+    # Pinned rather than inherited, or the suite would answer differently per runner: on an arm64
+    # macOS runner the real `uname -m` demotes every AMD arch, the report is never reached, and 35
+    # checks fail for a reason that has nothing to do with what they test. The tests that DO test
+    # the gate name the arch they want. Not in the no-timeout mode, where PATH is deliberately cut
+    # down to the tools the block must run without, `uname` among them.
+    if uname_machine is None and with_timeout:
+        uname_machine = "x86_64"
     if uname_machine is not None:
         _write_exec(
             stub_bin / "uname",
