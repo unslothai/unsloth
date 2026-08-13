@@ -1915,7 +1915,11 @@ def _vram_reserve_floor_mib(total_mib: float) -> float:
 
 
 def _vram_usable_mib(
-    free_mib: float, total_mib: float, frac: float, *, pooled: bool = False
+    free_mib: float,
+    total_mib: float,
+    frac: float,
+    *,
+    pooled: bool = False,
 ) -> float:
     """Free MiB one card offers a load at ``frac``, unclamped.
 
@@ -6951,9 +6955,7 @@ class LlamaCppBackend:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
             budget_frac = _active_vram_fraction() - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
-        budget_mib = _vram_usable_mib(
-            available_mib, total_mib or 0, budget_frac, pooled = pooled
-        )
+        budget_mib = _vram_usable_mib(available_mib, total_mib or 0, budget_frac, pooled = pooled)
         if total_mib is not None and total_mib > 0:
             budget_mib = max(0.0, budget_mib)
         budget_bytes = budget_mib * 1024 * 1024
@@ -14447,7 +14449,9 @@ class LlamaCppBackend:
         return flags
 
     def adopt_load_intent_if_matched(
-        self, intent: GgufLoadIntent, vram_fraction: Optional[float] = None
+        self,
+        intent: GgufLoadIntent,
+        vram_fraction: Optional[float] = None,
     ) -> bool:
         """Match live state and adopt the caller's compatible GPU placement.
 
@@ -14509,9 +14513,7 @@ class LlamaCppBackend:
         # the child still on the old fraction. None means placement never used it
         # (manual, or no discrete GPU), where a reload would change nothing.
         _launched_frac = self._vram_fraction_launched
-        _active_frac = (
-            vram_fraction if vram_fraction is not None else _active_vram_fraction()
-        )
+        _active_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
         if _launched_frac is not None and float(_launched_frac) != _active_frac:
             logger.info("VRAM budget changed since launch; forcing a reload")
             return False
