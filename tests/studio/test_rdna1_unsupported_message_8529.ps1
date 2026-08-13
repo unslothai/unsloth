@@ -354,6 +354,28 @@ Check "setup.ps1's peer scan writes neither the label nor the inference list" (
     -not $setupPeerBlock.Extent.Text.Contains('$script:ROCmGpuLabels =')
 )
 
+# A mask names the card, so a masked-out peer cannot answer for it: the suppression has to
+# yield to HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES, as the arch-borrowing rule already
+# does. CUDA_VISIBLE_DEVICES must NOT count; it masks NVIDIA devices, and counting it fired
+# the verdict beside a covered Radeon on every host that sets it.
+foreach ($pair in @(
+    @{ F = "install.ps1";      P = $installPath },
+    @{ F = "studio/setup.ps1"; P = (Join-Path $root "studio/setup.ps1") }
+)) {
+    $text = (Get-Content -Raw $pair.P) -replace "`r`n", "`n"
+    $i = $text.IndexOf('$unsupMasked = @(')
+    Check "$($pair.F) yields the peer suppression to an AMD visible-device mask" ($i -ge 0)
+    if ($i -ge 0) {
+        $decl = $text.Substring($i, [Math]::Min(240, $text.Length - $i))
+        Check "$($pair.F) counts HIP and ROCR in that mask" (
+            $decl.Contains('HIP_VISIBLE_DEVICES') -and $decl.Contains('ROCR_VISIBLE_DEVICES')
+        )
+        Check "$($pair.F) does not count CUDA_VISIBLE_DEVICES" (
+            -not $decl.Contains('CUDA_VISIBLE_DEVICES')
+        )
+    }
+}
+
 Invoke-Expression (Get-AssignmentSource $installPath '$nameArchTable')
 Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable')
 

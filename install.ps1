@@ -3410,8 +3410,15 @@ exit 0
                 #    arm, which says exactly that. studio/setup.ps1 already scores every
                 #    adapter before it reaches its own lookup.
                 if (-not $ROCmGfxArch) {
+                    # Not under a visible-device mask: the user named the card, so the verdict
+                    # is about that one and a masked-out peer cannot answer for it. Same rule
+                    # studio/setup.ps1 applies to its own peer check.
                     $coveredPeer = $false
-                    foreach ($peerName in $wmiAmdNames) {
+                    # HIP/ROCR only: CUDA_VISIBLE_DEVICES masks NVIDIA devices and says
+                    # nothing about which Radeon was chosen.
+                    $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
+                        Where-Object { $null -ne $_ }
+                    foreach ($peerName in $(if ($unsupMasked) { @() } else { $wmiAmdNames })) {
                         foreach ($row in $nameArchTable) {
                             if ($peerName -match $row.P) { $coveredPeer = $true; break }
                         }
