@@ -2133,8 +2133,12 @@ class DiffusionBackend:
                     return None
                 from huggingface_hub import HfApi
 
-                info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
-                sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
+                info = HfApi(token = hf_token or None).model_info(
+                    source.location, files_metadata = True
+                )
+                sizes = {
+                    s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])
+                }
                 # Primary name first, then the legacy one, in the order the loader tries them.
                 for name in (source.filename, source.fallback_filename):
                     if name and name in sizes:
