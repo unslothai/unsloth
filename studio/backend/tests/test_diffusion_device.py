@@ -649,7 +649,12 @@ def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
 # ── GPU selection ─────────────────────────────────────────────────────
 
 
-def _mask(monkeypatch, visible, *, physical_count = None):
+def _mask(
+    monkeypatch,
+    visible,
+    *,
+    physical_count = None,
+):
     """Stub the hardware layer's parent-visible view, the mask `gpu_ids` is expressed against."""
     import utils.hardware.hardware as hw
 

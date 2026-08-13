@@ -1240,7 +1240,10 @@ class DiffusionBackend:
             )
 
     def _resolve_device_target(
-        self, fam: Optional[DiffusionFamily], *, ordinal: Optional[int] = None
+        self,
+        fam: Optional[DiffusionFamily],
+        *,
+        ordinal: Optional[int] = None,
     ) -> DiffusionDeviceTarget:
         """The device target with the family fp16 guard applied.
 

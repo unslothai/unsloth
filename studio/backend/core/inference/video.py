@@ -986,6 +986,7 @@ class VideoBackend:
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
+
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
 
