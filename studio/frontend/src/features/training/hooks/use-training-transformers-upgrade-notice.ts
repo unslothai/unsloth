@@ -10,6 +10,10 @@ import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { trainingLoadsIn4Bit } from "../api/mappers";
 import {
+  type TrainingTransformersUpgradeNotice,
+  trainingTransformersUpgradeNotice,
+} from "../lib/training-transformers-upgrade";
+import {
   hasUpgradeNoticeCache,
   readUpgradeNoticeCache,
   upgradeNoticeCacheKey,
@@ -17,16 +21,12 @@ import {
 } from "../lib/training-upgrade-notice-cache";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 
-export interface TrainingTransformersUpgradeNotice {
-  /** transformers release the run would offer to install, or null when none is needed. */
-  installVersion: string | null;
-  /** The picked method asks for 4-bit but the run would load 16-bit anyway. */
-  fourBitUnavailable: boolean;
-}
+export type { TrainingTransformersUpgradeNotice };
 
 const EMPTY: TrainingTransformersUpgradeNotice = {
   installVersion: null,
   fourBitUnavailable: false,
+  installSwitchesTo16Bit: false,
 };
 
 /** What the Configure preview must disclose about the transformers this model needs.
@@ -113,13 +113,8 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
   if (!(selectedModel && check)) {
     return EMPTY;
   }
-  const installable = Boolean(
-    check.upgrade?.supported_in_pypi && check.upgrade?.pypi_version,
+  return trainingTransformersUpgradeNotice(
+    check,
+    trainingLoadsIn4Bit({ trainingMethod, selectedModel }),
   );
-  return {
-    installVersion: installable ? (check.upgrade?.pypi_version ?? null) : null,
-    fourBitUnavailable:
-      check.forces16Bit &&
-      trainingLoadsIn4Bit({ trainingMethod, selectedModel }),
-  };
 }

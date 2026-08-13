@@ -1259,6 +1259,8 @@ export const zhCN = {
         "已安装的 transformers 均不支持该架构。启动运行时会先提示安装 transformers {version}。",
       noticeSixteenBitOnly:
         "该架构以 16 位 LoRA 训练：无法使用 4 位，因此显存需求远高于 QLoRA。",
+      noticeInstallSwitchesSixteenBit:
+        "安装该版本而非沿用模型自带代码，会将本次运行切换为 16 位 LoRA，显存需求远高于 QLoRA。",
       advancedSettings: "高级设置",
       defaultAdvancedSettings: "默认值",
       nonDefaultAdvancedSettings: "{count} 项非默认设置",

@@ -1333,6 +1333,8 @@ export const es = {
         "Ninguna versión instalada de transformers admite todavía esta arquitectura. Al iniciar la ejecución se ofrecerá instalar transformers {version} primero.",
       noticeSixteenBitOnly:
         "Esta arquitectura se entrena en LoRA de 16 bits: 4 bits no está disponible, así que la ejecución necesita mucha más VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Instalar esa versión en lugar de conservar el código propio del modelo cambia esta ejecución a LoRA de 16 bits, que necesita mucha más VRAM que QLoRA.",
       advancedSettings: "Ajustes avanzados",
       defaultAdvancedSettings: "Valores predeterminados",
       nonDefaultAdvancedSettings: "{count} no predeterminados",

@@ -24,6 +24,45 @@ export interface TrainingTransformersUpgradeOutcome {
   requiresTrustRemoteCode: boolean;
 }
 
+/** What the Configure preview must disclose about transformers and precision. */
+export interface TrainingTransformersUpgradeNotice {
+  /** transformers release the run would offer to install, or null when none is needed. */
+  installVersion: string | null;
+  /** The picked method asks for 4-bit but the run would load 16-bit anyway. */
+  fourBitUnavailable: boolean;
+  /** 4-bit survives only if the user keeps the model's own code: taking Install instead
+   *  activates the latest sidecar, which trains 16-bit. */
+  installSwitchesTo16Bit: boolean;
+}
+
+/** Turn one upgrade check into the preview's disclosure.
+ *
+ * `forces16Bit` is a single answer for a run whose precision depends on which dialog
+ * action the user takes. A model that both ships its own modeling code and is shipped by
+ * the offered release gets BOTH actions: the custom-code fallback loads it on the current
+ * transformers in 4-bit, so the backend reports forces_16bit=false, while Install
+ * activates the latest sidecar, which trains 16-bit. Advertising that install next to an
+ * unqualified "QLoRA - 4-bit" understates the VRAM of the run the user may well pick, so
+ * the choice is disclosed rather than assumed away.
+ *
+ * `installable && !forces16Bit` is exactly that case and nothing else: forces_16bit is
+ * `latest_tier_active || install_only_upgrade`, and install_only_upgrade is itself
+ * installable-and-no-custom-code, so an offered install the backend does not already call
+ * 16-bit can only be one held back by a custom-code fallback. */
+export function trainingTransformersUpgradeNotice(
+  check: TransformersUpgradeCheck,
+  loadsIn4Bit: boolean,
+): TrainingTransformersUpgradeNotice {
+  const installable = Boolean(
+    check.upgrade?.supported_in_pypi && check.upgrade?.pypi_version,
+  );
+  return {
+    installVersion: installable ? (check.upgrade?.pypi_version ?? null) : null,
+    fourBitUnavailable: check.forces16Bit && loadsIn4Bit,
+    installSwitchesTo16Bit: installable && !check.forces16Bit && loadsIn4Bit,
+  };
+}
+
 /** Names the worker's own failure ("... is not supported yet in transformers==x.y.z")
  *  rather than a generic start error, and says what to do about it. */
 export function getTrainingTransformersUpgradeRequiredMessage(

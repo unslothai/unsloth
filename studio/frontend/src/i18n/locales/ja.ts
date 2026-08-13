@@ -1270,6 +1270,8 @@ export const ja = {
         "インストール済みの transformers はこのアーキテクチャに未対応です。実行を開始すると、まず transformers {version} のインストールを確認します。",
       noticeSixteenBitOnly:
         "このアーキテクチャは 16 ビット LoRA で学習します。4 ビットは利用できないため、QLoRA より大幅に多い VRAM が必要です。",
+      noticeInstallSwitchesSixteenBit:
+        "モデル独自のコードを使う代わりにそのリリースをインストールすると、この実行は 16 ビット LoRA に切り替わり、QLoRA より大幅に多い VRAM が必要になります。",
       advancedSettings: "詳細設定",
       defaultAdvancedSettings: "デフォルト",
       nonDefaultAdvancedSettings: "デフォルト以外の設定: {count} 件",

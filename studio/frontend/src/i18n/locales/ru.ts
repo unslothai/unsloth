@@ -1314,6 +1314,8 @@ export const ru = {
         "Ни одна установленная версия transformers пока не поддерживает эту архитектуру. При запуске сначала будет предложено установить transformers {version}.",
       noticeSixteenBitOnly:
         "Эта архитектура обучается в 16-битном LoRA: 4-битный режим недоступен, поэтому запуску нужно значительно больше VRAM, чем QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Установка этого выпуска вместо использования собственного кода модели переводит запуск в 16-битный LoRA, которому нужно значительно больше VRAM, чем QLoRA.",
       advancedSettings: "Расширенные настройки",
       defaultAdvancedSettings: "По умолчанию",
       nonDefaultAdvancedSettings: "Нестандартных: {count}",

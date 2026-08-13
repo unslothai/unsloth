@@ -23,8 +23,9 @@ computed exactly like the local overlay answer.
 
 Results are cached in memory and in a small JSON snapshot under ``studio_root()/cache``
 (ttl ~1 day) so repeated tier resolutions never re-fetch; failures are backed off in
-memory. Every fetch is bounded (<=5s, one retry), so a hung network cannot block model
-loading. Fully offline-safe: offline env vars or the kill switch
+memory. Every fetch is bounded by an explicit wall-clock budget on the transfer (not just
+the socket timeout, which only bounds one read), so a hung or drip-feeding network cannot
+block model loading. Fully offline-safe: offline env vars or the kill switch
 ``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1`` make every check return None (current
 behavior preserved).
 
@@ -68,6 +69,18 @@ _AUTO_FILES = ("configuration_auto.py", "auto_mappings.py")
 
 _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
+# urlopen's timeout is a SOCKET timeout -- CPython documents it as "a timeout in seconds
+# for blocking operations like the connection attempt" -- so it bounds each individual
+# read, never the whole transfer. A mirror that sends a few bytes just inside it keeps
+# resp.read() alive indefinitely (measured: 12 chunks 1s apart read in 12.0s under
+# timeout=5.0), which makes every bound derived from the timeout an underestimate. So the
+# transfer gets its own wall-clock budget: one timeout's worth for the connect, one for
+# the body, checked between reads.
+_FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
+# One attempt's true worst case: the budget, plus the single socket read already blocking
+# when it runs out (the deadline is only tested between reads).
+_FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
+_READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
 _FAILURE_BACKOFF_SECONDS = 300
 
@@ -84,15 +97,17 @@ _is_fetching: bool = False
 # fetch's answer instead of reporting "no answer" (see _get_snapshot).
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
-# Bounds that wait, and the bound is the refresh's OWN worst case: the PyPI version plus
-# both auto files at each of the two refs, every one of them allowed its retry. Giving up
-# earlier is not a graceful fallback here -- the answer it falls through to reads as "no
-# upgrade needed" all the way up to the Start button, so a wait that expires while the
-# fetch is still legitimately running launches the run on the architecture this gate
-# exists to stop. Derived, not a literal, so tuning a timeout or a retry cannot silently
-# reopen that gap.
+# Backstop for that wait, and the bound is the refresh's OWN worst case: the PyPI version
+# plus both auto files at each of the two refs, every one of them allowed its retry, each
+# attempt costing _FETCH_ATTEMPT_SECONDS. Derived, not a literal, so tuning a timeout, a
+# retry or the transfer budget cannot silently shrink it below the thing it bounds. Only a
+# backstop, because a clock is the wrong thing to answer on: giving up early is not a
+# graceful fallback here -- the answer it falls through to reads as "no upgrade needed"
+# all the way up to the Start button, so a waiter that expires while the fetch is still
+# legitimately running launches the run on the architecture this gate exists to stop. The
+# waiter therefore re-waits while the refresh is genuinely still in flight (_get_snapshot).
 _REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
-_INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_TIMEOUT_SECONDS + 5.0
+_INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_ATTEMPT_SECONDS + 5.0
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -112,8 +127,30 @@ def _cache_file() -> Path:
 _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
+def _read_within(resp, deadline: float) -> str | None:
+    """Body of *resp*, or None if the transfer is still running at *deadline*.
+
+    ``resp.read()`` in one call has no bound at all: the socket timeout only fires on a
+    read that stalls longer than itself, so a drip-fed response never trips it. ``read1``
+    returns what has arrived instead of blocking for a full chunk, which is what lets the
+    budget be checked as the body comes in.
+    """
+    read1 = getattr(resp, "read1", None)
+    if read1 is None:
+        # A file-like that hands back the whole body in one go has nothing to dribble.
+        return resp.read().decode("utf-8", "replace")
+    chunks: list[bytes] = []
+    while True:
+        if time.monotonic() >= deadline:
+            return None
+        chunk = read1(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks).decode("utf-8", "replace")
+        chunks.append(chunk)
+
+
 def _fetch_text(url: str) -> str | None:
-    """GET *url* with a bounded timeout and one retry; None on any failure.
+    """GET *url* within a bounded wall-clock budget, one retry; None on any failure.
 
     Returns ``_FETCH_MISSING`` (without retrying) on HTTP 404 so callers can tell
     "absent at this ref" apart from "network flaked".
@@ -122,10 +159,19 @@ def _fetch_text(url: str) -> str | None:
     import urllib.request
 
     for attempt in range(1 + _FETCH_RETRIES):
+        deadline = time.monotonic() + _FETCH_DEADLINE_SECONDS
         try:
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
             with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT_SECONDS) as resp:
-                return resp.read().decode("utf-8", "replace")
+                body = _read_within(resp, deadline)
+            if body is not None:
+                return body
+            logger.debug(
+                "Fetch (attempt %d) for %s outran its %.1fs budget",
+                attempt + 1,
+                url,
+                _FETCH_DEADLINE_SECONDS,
+            )
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return _FETCH_MISSING
@@ -274,7 +320,18 @@ def _get_snapshot() -> dict | None:
             _is_fetching = True
             _fetch_done = done = threading.Event()
     if in_flight is not None:
-        in_flight.wait(_INFLIGHT_WAIT_SECONDS)
+        # Wait for the refresh's ACTUAL completion, not for a clock. A computed deadline
+        # cannot be trusted to answer on: the fetch it bounds is only as bounded as the
+        # transfer budget in _fetch_text makes it, and an expiry here is not "no upgrade
+        # needed" -- it is "the answer is still being fetched", which the callers above
+        # have no way to tell apart. So re-wait for as long as this same refresh is
+        # genuinely still running; the winner clears _is_fetching and sets the event in
+        # one locked finally, so either condition means it is done.
+        while not in_flight.wait(_INFLIGHT_WAIT_SECONDS):
+            with _lock:
+                if not _is_fetching or _fetch_done is not in_flight:
+                    break
+            logger.debug("Still waiting on the in-flight transformers support refresh")
         with _lock:
             return _memory_snapshot if _snapshot_is_fresh(_memory_snapshot) else None
     fresh = None

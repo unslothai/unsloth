@@ -1298,6 +1298,8 @@ export const ar = {
         "لا يدعم أي إصدار مثبَّت من transformers هذه البنية بعد. عند بدء التشغيل سيُعرض تثبيت transformers {version} أولاً.",
       noticeSixteenBitOnly:
         "تتدرَّب هذه البنية بـ LoRA بدقة 16 بت: خيار 4 بت غير متاح لها، لذا يحتاج التشغيل ذاكرة VRAM أكبر بكثير من QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "تثبيت ذلك الإصدار بدل الإبقاء على شيفرة النموذج نفسه ينقل هذا التشغيل إلى LoRA بدقة 16 بت، وهو يحتاج ذاكرة VRAM أكبر بكثير من QLoRA.",
       advancedSettings: "الإعدادات المتقدمة",
       defaultAdvancedSettings: "الإعدادات الافتراضية",
       nonDefaultAdvancedSettings: "{count} غير افتراضي",

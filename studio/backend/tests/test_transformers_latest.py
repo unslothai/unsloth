@@ -1162,3 +1162,119 @@ def test_failed_staging_install_removes_staging_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
     assert ensure_latest_transformers_venv("5.13.0") is False
     assert not Path(str(venv_dir) + ".staging").exists()
+
+
+def _slow_drip_server(chunks: int, gap: float):
+    """A localhost HTTP server that dribbles a body *gap* seconds at a time.
+
+    Every individual socket read completes well inside the fetch timeout, so a
+    socket-level timeout never fires; only a wall-clock budget on the transfer can stop
+    it. Returns the URL; the thread is a daemon and dies with the test session.
+    """
+    import socket as _socket
+    import threading as _threading
+
+    sock = _socket.socket()
+    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+
+    def serve():
+        try:
+            conn, _ = sock.accept()
+            conn.recv(65536)
+            piece = b"x" * 8
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
+                % (len(piece) * chunks)
+            )
+            for _ in range(chunks):
+                time.sleep(gap)
+                conn.sendall(piece)
+            conn.close()
+        except Exception:
+            pass
+
+    _threading.Thread(target = serve, daemon = True).start()
+    return f"http://127.0.0.1:{sock.getsockname()[1]}/"
+
+
+def test_fetch_text_bounds_the_whole_transfer_not_just_socket_operations(monkeypatch):
+    """A response that dribbles bytes must hit the fetch budget, not run indefinitely.
+
+    ``urlopen(timeout=...)`` is a SOCKET timeout: the CPython docs specify it as "a
+    timeout in seconds for blocking operations like the connection attempt", so it bounds
+    each individual read rather than the whole transfer. A mirror that sends a few bytes
+    just inside that timeout therefore keeps ``resp.read()`` alive for as long as it
+    likes, and every wait derived from the timeout stops being a worst case -- the loser
+    it strands answers None, which reads as "no upgrade needed" at the Start button.
+    """
+    monkeypatch.setattr(tl, "_FETCH_RETRIES", 0)
+    monkeypatch.setattr(tl, "_FETCH_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(tl, "_FETCH_DEADLINE_SECONDS", 0.4)
+    # 30 chunks 0.05s apart: ~1.5s of transfer, every gap far inside the socket timeout.
+    url = _slow_drip_server(chunks = 30, gap = 0.05)
+    started = time.monotonic()
+    body = tl._fetch_text(url)
+    elapsed = time.monotonic() - started
+    assert body is None, "a transfer past its budget must not be accepted as an answer"
+    assert elapsed < 1.2, f"fetch ran {elapsed:.2f}s, past its own budget"
+
+
+def test_fetch_attempt_bound_covers_the_budget_and_one_blocking_read():
+    """The advertised per-attempt worst case must be the budget plus a straddling read.
+
+    The deadline is only checked between reads, so the one socket read already blocking
+    when it expires still runs to the socket timeout. Deriving the attempt bound from
+    both is what keeps the in-flight wait a real ceiling rather than an optimistic one.
+    """
+    assert tl._FETCH_ATTEMPT_SECONDS == tl._FETCH_DEADLINE_SECONDS + tl._FETCH_TIMEOUT_SECONDS
+    urls = 1 + 2 * len(tl._AUTO_FILES)
+    worst_case = urls * (1 + tl._FETCH_RETRIES) * tl._FETCH_ATTEMPT_SECONDS
+    assert tl._INFLIGHT_WAIT_SECONDS >= worst_case
+
+
+def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monkeypatch):
+    """An expired wait must not be turned into "no upgrade needed".
+
+    The wait is a computed deadline, and the fetch it bounds is only as bounded as its
+    own budget makes it. If the winner is still legitimately working when the clock runs
+    out, the loser used to return None -- and None is read as "no upgrade needed" all the
+    way up to Start, which launches the run on the architecture this gate exists to stop.
+    A loser waits for the refresh's actual completion instead.
+    """
+    import threading as _threading
+
+    tl.clear_caches()
+    monkeypatch.setattr(tl, "_load_snapshot_file", lambda: None)
+    monkeypatch.setattr(tl, "_save_snapshot_file", lambda snapshot: None)
+    # The wait expires long before the refresh finishes: a slow mirror doing exactly
+    # what the socket timeout permits.
+    monkeypatch.setattr(tl, "_INFLIGHT_WAIT_SECONDS", 0.05)
+    fetch_started = _threading.Event()
+
+    def slow_refresh():
+        fetch_started.set()
+        time.sleep(0.6)
+        return {
+            "schema": tl._SNAPSHOT_SCHEMA,
+            "fetched_at": time.time(),
+            "pypi_version": "5.99.0",
+            "pypi_model_types": ["brandnew"],
+            "main_model_types": ["brandnew"],
+            "main_checked": True,
+        }
+
+    monkeypatch.setattr(tl, "_refresh_snapshot", slow_refresh)
+    answers: dict[str, dict | None] = {}
+    winner = _threading.Thread(target = lambda: answers.__setitem__("winner", tl._get_snapshot()))
+    winner.start()
+    assert fetch_started.wait(10)
+    loser = _threading.Thread(target = lambda: answers.__setitem__("loser", tl._get_snapshot()))
+    loser.start()
+    winner.join(10)
+    loser.join(10)
+    assert answers["winner"] is not None
+    assert answers["loser"] is not None, "the loser answered 'no upgrade' mid-refresh"
+    assert answers["loser"]["pypi_version"] == "5.99.0"
+    tl.clear_caches()
