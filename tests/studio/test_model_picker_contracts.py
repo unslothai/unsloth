@@ -1693,14 +1693,43 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     fn = src[src.index("async function settleLostGeneration") :]
     fn = fn[: fn.index("\n}\n")]
     assert "sawActive" in fn
+    assert "did not reach the server" in fn
     # The proof used to be an inline knownIds set; it is now a baseline handed
     # to hasUnknownRecord in lib/gallery-flags.ts. Same proof, named helper, so
     # the assertion follows it rather than pinning the old spelling.
     assert "hasUnknownRecord(" in fn
-    assert "baseline" in fn
-    assert "did not reach the server" in fn
+    assert "hasUnknownRecord(\n        baseline," in fn
+    # The caller still snapshots the ids BEFORE the POST and passes THAT SET in.
+    # Pin the argument, not the mere presence of the snapshot expression: with a
+    # fresh `new Set()` in the knownIds slot the snapshot still exists, is still
+    # taken before the POST and `probeBaseline` still reaches the probe, yet every
+    # record already on the page reads as unknown and a POST that never landed is
+    # reported as a finished image. Whitespace is normalised first, so reformatting
+    # the call cannot break the pin.
+    snapshot_pattern = (
+        r"const (\w+) = new Set\(galleryCache\.images\.map\(\(image\) => image\.id\)\);"
+    )
+    assert len(re.findall(snapshot_pattern, src)) == 1, "the pre-POST id snapshot is not unique"
+    snapshot = re.search(snapshot_pattern, src)
+    known_ids = snapshot.group(1)
+    flat = " ".join(src.split())
+    call = re.search(r"const probeBaseline = newRecordProbeBaseline\(\s*(.*?)\s*\);", flat)
+    assert call, "probeBaseline is no longer built by newRecordProbeBaseline"
+    args = [arg.strip() for arg in call.group(1).split(",") if arg.strip()]
+    assert args == ["galleryCache.images", "galleryCache.hasMore", known_ids], args
+    baseline = src.index("const probeBaseline = newRecordProbeBaseline(")
+    # Snapshot, then baseline, then the POST -- in that order.
+    assert snapshot.start() < baseline
+    assert baseline < src.index("await generateDiffusionImage(", baseline)
+    assert "settleLostGeneration(() => isMounted.current, probeBaseline)" in src
+
     flags = _read("lib/gallery-flags.ts")
     assert "export async function hasUnknownRecord" in flags
+    # An unknown row is the proof, and only an unpinned one counts.
+    assert "return !baseline.knownIds.has(record.id);" in flags
+    # Inconclusive listings must refuse to claim proof, else a submission that
+    # never landed reads as a finished image, which is the bug this guards.
+    assert "if (!baseline.canJudgeUnpinned) return false;" in flags
 
 
 def test_parallel_slots_setting_wired_end_to_end():
@@ -2108,7 +2137,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The Vulkan inventory is authoritative even while its probe is temporarily
     # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
     # picker and make DiffusionGemma offer a selection the route rejects.
-    assert "const inference = data?.inference_gpu; " 'if (inference?.backend === "vulkan") {' in src
+    assert 'const inference = data?.inference_gpu; if (inference?.backend === "vulkan") {' in src
     # A confirmed-Vulkan backend with no enumerated devices yet must return no
     # devices, not fall through to the torch/CUDA inventory below.
     assert "if (!(inference.devices ?? []).length) return [];" in src
@@ -3363,15 +3392,37 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     )
     # Representatives are derived per key, not once for the listing.
     group = src.split("const footprintVariants = useMemo(", 1)[1]
-    group = group.split("}, [displayVariants, effectiveRecommended]);", 1)[0]
+    group = group.split("}, [displayVariants, recommendedQuantForVariant]);", 1)[0]
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
-    # The recommended quant still wins, but only inside its own group.
-    # effectiveRecommended went from a single quant to a SET of them, so the
-    # representative test is membership rather than equality. The contract is
-    # unchanged: the recommended quant represents its own group when it has one.
-    assert "effectiveRecommended.has(variant.quant)" in group
-    assert "!effectiveRecommended.has(current.quant)" in group
+    # The recommended quant still wins, and only inside its own group. Main
+    # tracked the source through effectiveRecommended becoming a SET and
+    # asserted membership in it; but that set is flattened across groups, so it
+    # blesses the other group's pick when two families in one repo share quant
+    # names.
+    #
+    # Group-scoping it is right, but this block buckets by the BACKEND's
+    # dependency_key ("flux.2-klein:<digest>") while the recommendation map is
+    # keyed by PRESENTATION group ("quantizations", "text-frames",
+    # "reference-media"). Joining those two key spaces makes every lookup
+    # undefined and the recommended-quant branch dead, leaving whichever row
+    # tier ordering put first to speak for the group. So ask through the
+    # variant, and pin that neither the flattened set nor the crossed-key
+    # lookup is what stands here.
+    assert "const recommended = recommendedQuantForVariant.get(variant);" in group
+    assert "variant.quant === recommended" in group
+    assert "current.quant !== recommended" in group
+    assert "recommended !== undefined" in group
+    assert "effectiveRecommended.has(" not in group
+    assert "effectiveRecommendedByGroup.get(key)" not in group
+
+    # And the map it asks is built from the presentation groups, keyed by the
+    # variant objects those groups hold.
+    builder = src.split("const recommendedQuantForVariant = useMemo(", 1)[1]
+    builder = builder.split("}, [variantGroups, effectiveRecommendedByGroup]);", 1)[0]
+    assert "new Map<GgufVariantDetail, string>()" in builder
+    assert "effectiveRecommendedByGroup.get(group.key)" in builder
+    assert "byVariant.set(variant, recommended)" in builder
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():
