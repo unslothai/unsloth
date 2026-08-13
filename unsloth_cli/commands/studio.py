@@ -214,7 +214,11 @@ _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 _ERROR_ACCESS_DISABLED_BY_POLICY = 1260
 
 
-def _managed_cli_argv(python: Path, *args: str, isolated: bool = False) -> List[str]:
+def _managed_cli_argv(
+    python: Path,
+    *args: str,
+    isolated: bool = False,
+) -> List[str]:
     """argv that runs the managed `unsloth` CLI through *python*.
 
     -X utf8 rather than PYTHONUTF8 so the encoding holds even for a caller that
