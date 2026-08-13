@@ -694,17 +694,23 @@ class TestFitTarget:
         )
         assert "--fit-target" not in flags
 
-    def test_the_move_is_measured_from_the_largest_card(self):
-        # --fit-target takes a per-device list, but in llama.cpp's device order,
-        # not ours. One broadcast value sized by the largest card leaves no device
-        # under the budget.
+    def test_the_move_is_measured_from_the_card_that_makes_it_safe(self):
+        # --fit-target takes a per-device list, but in llama.cpp's enumeration
+        # order, which the visible-device pin and the ROCr/Vulkan ordinal quirks
+        # make not ours to assume; a misaligned list hands a card the wrong margin.
+        # One broadcast value instead, sized by whichever card makes it safe in the
+        # direction asked for.
         import inspect
 
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
         assert "if_vram_frac!=_CTX_FIT_VRAM_FRACTIONandgpus:" in compact
-        assert "_fit_target_delta_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*max(" in compact
+        assert "_fit_target_delta_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*_scale" in compact
+        # Direction picks the card, since one value is broadcast to all of them:
+        # lowering may leave no device under the margin it asked for, and raising
+        # may take none below its own.
+        assert "_scale=(max(_scales)if_vram_frac<_CTX_FIT_VRAM_FRACTIONelsemin(_scales))" in compact
         assert "fit_target_delta_mib=_fit_target_delta_mib," in compact
         # Free stands in for an unreported total (MIG/vGPU, two-column probe), or
         # the whole adjustment would come out of a zero and the budget would be

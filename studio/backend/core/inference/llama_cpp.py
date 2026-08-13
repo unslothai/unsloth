@@ -11608,18 +11608,27 @@ class LlamaCppBackend:
                     # asked for, in both directions. Measured from the default, not
                     # from zero, so the command at the default fraction is byte-
                     # identical to before and the margin tracks the slider.
-                    # One value, broadcast: --fit-target takes a per-device list, but
-                    # its order is llama.cpp's device order, not ours. The largest
-                    # card sets it, so no device is left under the budget.
+                    # One value, broadcast: --fit-target does take a per-device list,
+                    # but in llama.cpp's enumeration order, which the visible-device
+                    # pin and the ROCr/Vulkan ordinal quirks make not ours to assume.
+                    # Misaligning that list would quietly hand a card the wrong
+                    # margin, which is worse than one value chosen to be safe on
+                    # every card. So the direction picks the card: lowering scales by
+                    # the largest, since no device may end up under the margin it
+                    # asked for; raising scales by the smallest, since no device may
+                    # be taken below its own. Mixed cards therefore gain a little
+                    # less, and hold back a little more, than a per-device list would.
                     if _vram_frac != _CTX_FIT_VRAM_FRACTION and gpus:
                         # Free stands in for an unreported total, the same scale
                         # _vram_usable_mib falls back to: MIG/vGPU and the two-column
                         # probe report no total, and deriving the whole adjustment
                         # from a zero would silently drop the budget on exactly the
                         # devices whose headroom is hardest to see.
-                        _fit_target_delta_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * max(
-                            total_by_idx.get(_idx) or _free for _idx, _free in gpus
+                        _scales = [total_by_idx.get(_idx) or _free for _idx, _free in gpus]
+                        _scale = (
+                            max(_scales) if _vram_frac < _CTX_FIT_VRAM_FRACTION else min(_scales)
                         )
+                        _fit_target_delta_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * _scale
 
                     def _gpu_usable(g, frac = _vram_frac):
                         # Callers pass the ACTIVE fraction so the ranking matches the
