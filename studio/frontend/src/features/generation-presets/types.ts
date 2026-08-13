@@ -4,8 +4,8 @@
 export type MediaGenerationKind = "image" | "video";
 
 // A preset is a generation recipe and nothing else. Model-load options are deliberately absent:
-// they take effect only on a reload, they follow the hardware and the checkpoint rather than the
-// recipe, and the resident build already owns them (see features/resident-load).
+// they apply only on a reload, follow the hardware and checkpoint rather than the recipe, and the
+// resident build already owns them (see features/resident-load).
 export interface MediaGenerationPreset<Params> {
   name: string;
   params: Params;

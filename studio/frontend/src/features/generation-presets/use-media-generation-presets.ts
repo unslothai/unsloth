@@ -167,10 +167,9 @@ export function useMediaGenerationPresets<Params extends object>({
       };
       baselineParamsRef.current = definition.params;
       setActivePreset(definition.name);
-      // Unconditional. Comparing against the mount-time value cannot tell a user edit from a
-      // model-driven one, and guessing wrong let a resident model's defaults be autosaved over
-      // the stored recipe. Ordering settles it instead: the store answers, then model defaults
-      // only fill a form the store did not.
+      // Unconditional: comparing against the mount-time value cannot tell a user edit from a
+      // model-driven one, and guessing wrong autosaved a resident model's defaults over the
+      // stored recipe. Ordering settles it -- the store answers, then defaults fill the rest.
       applyParamsRef.current(settings.currentParams);
       setHydrationSource("saved");
     },
@@ -194,9 +193,8 @@ export function useMediaGenerationPresets<Params extends object>({
         if (cancelled) {
           return;
         }
-        // The read is the only thing that failed. Settle the page on local defaults so the load
-        // controls that wait on hydration still work, but never write back over a store this
-        // session could not read.
+        // Only the read failed. Settle on local defaults so the controls waiting on hydration
+        // still work, but never write back over a store this session could not read.
         hydrateLocalSettings("unreadable");
         toast.error(`Could not load ${kind} presets`);
       });
@@ -255,10 +253,9 @@ export function useMediaGenerationPresets<Params extends object>({
     };
   }, [hydrateSavedSettings]);
 
-  // How many actions have taken the form so far. A page records it when a pick claims the recipe
-  // and compares later: a different value means something newer than that pick owns the form now,
-  // so the pick's model defaults must not land on top of it and its rollback is not the one to
-  // restore. Read when a pick is made, not once per hook, so each pick baselines on itself.
+  // How many actions have taken the form so far. A pick records it and compares later: a different
+  // value means something newer owns the form, so the pick's defaults must not land on top of it
+  // and its rollback is not the one to restore. Read per pick, so each baselines on itself.
   const formClaimId = useCallback(() => formClaim.current, []);
 
   const settings = useMemo<MediaGenerationPresetState<Params>>(
@@ -272,10 +269,9 @@ export function useMediaGenerationPresets<Params extends object>({
     latestSettingsRef.current = settings;
   }, [settings]);
 
-  // One state write at a time. A pause between edits while the first PUT is slow puts two in
-  // flight, and the store keeps whichever the backend saw LAST, so the older snapshot could win
-  // and the newest recipe would come back changed on the next read. Same chain the chat settings
-  // path keeps, for the same reason.
+  // One state write at a time. Two in flight and the store keeps whichever the backend saw LAST,
+  // so an older snapshot could win and the newest recipe come back changed on the next read.
+  // Same chain the chat settings path keeps, for the same reason.
   const queueWrite = useCallback((write: () => Promise<unknown>) => {
     inflightWriteRef.current = inflightWriteRef.current
       .catch(() => undefined)
@@ -389,9 +385,8 @@ export function useMediaGenerationPresets<Params extends object>({
   );
 
   // A delete always leaves Default selected: the preset is gone whoever owns the form, and naming
-  // it would leave the control on a definition that no longer exists. Only the form VALUES are the
-  // claim's business, and they follow only when this delete still owns the form and the user did
-  // not edit it while the request was in flight; their newer input owns it in that case.
+  // it would point the control at a definition that no longer exists. The form VALUES follow only
+  // when this delete still owns the form; an edit made while the request was in flight owns it.
   const restoreDefaultAfterDelete = useCallback(
     (paramsBeforeDelete: Params, ownsForm: boolean) => {
       const formUnchanged =
