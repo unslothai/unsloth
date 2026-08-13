@@ -2851,7 +2851,6 @@ class TestTheGenericFallbackCopiesWhatItHolds:
 
     def test_the_dispositions_split_on_the_layout(self):
         import torch
-
         assert S._merge_writer_disposition(torch.nn.Linear(8, 8), "merged_16bit") == (True, True)
         assert S._merge_writer_disposition(_ModelWithLayers(), "merged_16bit") == (False, False)
 
@@ -2918,7 +2917,10 @@ class TestTheGenericFallbackCopiesWhatItHolds:
         import inspect
 
         source = inspect.getsource(S.unsloth_save_model)
-        assert 'or (not hasattr(model, "model") or not hasattr(internal_model.model, "layers"))' in source
+        assert (
+            'or (not hasattr(model, "model") or not hasattr(internal_model.model, "layers"))'
+            in source
+        )
         assert "model.save_pretrained(**save_pretrained_settings)" in source
 
 
@@ -2949,9 +2951,7 @@ class TestASpecialExportStagesFromTheSuppliedDict:
     def _dict(gigabytes = 8):
         import torch
         return {
-            "model.embed_tokens.weight": torch.zeros(
-                gigabytes * 1024**3 // 2, dtype = torch.float16
-            )
+            "model.embed_tokens.weight": torch.zeros(gigabytes * 1024**3 // 2, dtype = torch.float16)
         }
 
     def test_a_compressed_export_measures_the_dict(self, sized):
@@ -2982,11 +2982,11 @@ class TestASpecialExportStagesFromTheSuppliedDict:
 
     def test_the_special_methods_forward_without_casting_twice(self):
         import torch
-
         for method in ("fp8", "mxfp4", "torchao_fp8", "torchao_int8"):
-            assert S._merge_writer_disposition(torch.nn.Linear(8, 8), method) == (True, False), (
-                method
-            )
+            assert S._merge_writer_disposition(torch.nn.Linear(8, 8), method) == (
+                True,
+                False,
+            ), method
 
     def test_both_special_writers_really_pass_the_dict_on(self):
         import inspect
@@ -3024,18 +3024,15 @@ class TestTheGgufPreflightIsToldTheModelDtype:
 
     def test_a_bfloat16_model_reports_bf16(self):
         import torch
-
         assert S._gguf_source_dtype(self._Model(self._Config(torch.bfloat16))) == "bf16"
         assert S._gguf_source_dtype(self._Model(self._Config("bfloat16"))) == "bf16"
 
     def test_a_float16_model_reports_f16(self):
         import torch
-
         assert S._gguf_source_dtype(self._Model(self._Config(torch.float16))) == "f16"
 
     def test_hardware_without_bf16_falls_back_like_the_exporter(self, monkeypatch):
         import torch
-
         monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: False)
         assert S._gguf_source_dtype(self._Model(self._Config(torch.bfloat16))) == "f16"
 
@@ -3084,7 +3081,9 @@ class TestTheGgufPreflightIsToldTheModelDtype:
         monkeypatch.setattr(
             S,
             "_preflight_gguf_disk",
-            lambda **kwargs: (seen.append(kwargs.get("model_dtype")) or (kwargs["save_directory"], True)),
+            lambda **kwargs: (
+                seen.append(kwargs.get("model_dtype")) or (kwargs["save_directory"], True)
+            ),
         )
         with contextlib.suppress(Exception):
             S.unsloth_save_pretrained_gguf(
@@ -3170,9 +3169,7 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
 
     def test_a_cache_on_this_filesystem_is_still_charged_here(self, split):
         """The premise reversed: nothing about the old accounting was wrong there."""
-        split.update(
-            cache_device = 1, here = math.ceil(self.CHECKPOINT / 0.95), there = 1000 * GB
-        )
+        split.update(cache_device = 1, here = math.ceil(self.CHECKPOINT / 0.95), there = 1000 * GB)
         assert self._preflight() == ("model", False)
 
     def test_an_unresolvable_cache_is_charged_where_it_always_was(self, split, monkeypatch):
