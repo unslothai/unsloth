@@ -15,7 +15,7 @@ if _BACKEND_DIR not in sys.path:
 from utils.datasets import cache_safe
 
 
-class WindowsSymlinkPrivilegeError(OSError):
+class WindowsSymlinkPrivilegeError(PermissionError):
     winerror = 1314
 
 

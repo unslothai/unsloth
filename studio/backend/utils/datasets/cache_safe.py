@@ -71,20 +71,23 @@ def load_dataset_cache_safe(*args, **kwargs):
 
     try:
         return load_dataset(*args, **kwargs)
-    except PermissionError as error:
-        return _retry_in_studio_cache(load_dataset, args, kwargs, error)
     except OSError as error:
-        if not _is_windows_symlink_privilege_error(error):
-            raise
-        logger.warning(
-            "Windows denied a Hugging Face cache symlink (%s); retrying with regular files",
-            error,
-        )
-        _disable_hf_symlinks_for_process()
-        try:
-            return load_dataset(*args, **kwargs)
-        except PermissionError as retry_error:
-            return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
+        # Classify the exact Windows failure before generic PermissionError:
+        # OSError's selected subclass for winerror=1314 varies by Python/runtime.
+        if _is_windows_symlink_privilege_error(error):
+            logger.warning(
+                "Windows denied a Hugging Face cache symlink (%s); "
+                "retrying with regular files",
+                error,
+            )
+            _disable_hf_symlinks_for_process()
+            try:
+                return load_dataset(*args, **kwargs)
+            except PermissionError as retry_error:
+                return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
+        if isinstance(error, PermissionError):
+            return _retry_in_studio_cache(load_dataset, args, kwargs, error)
+        raise
 
 
 def _retry_in_studio_cache(load_dataset, args, kwargs, error):
