@@ -415,8 +415,7 @@ def _guard_outcome(
         isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
         # sys.path entries are on disk only when the caller says so, the way the
         # filesystem would answer.
-        exists = lambda path: ntpath.normcase(path)
-        in {ntpath.normcase(p) for p in real_paths},
+        exists = lambda path: ntpath.normcase(path) in {ntpath.normcase(p) for p in real_paths},
         abspath = _abspath,
         home_isdir = lambda path: ntpath.normcase(path)
         not in {ntpath.normcase(home) for home in missing_homes},
