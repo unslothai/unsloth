@@ -8023,6 +8023,18 @@ async def _load_model_impl(
                 model_log_label,
             )
             extra_llama_args = []
+        if config.is_gguf and extra_llama_args:
+            # After the slot count is known, because the floor depends on it. The
+            # editor draws the same line, but a CLI or API caller never sees it, and
+            # this is the one class of pass-through value that takes the server down
+            # during startup rather than being ignored: a 400 here beats a load that
+            # has already unloaded the previous model.
+            from core.inference.llama_server_args import check_batch_floor
+
+            try:
+                check_batch_floor(extra_llama_args, _n_parallel)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
         if config.is_gguf:

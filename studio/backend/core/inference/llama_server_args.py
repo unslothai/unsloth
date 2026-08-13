@@ -697,6 +697,33 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return value
 
 
+def check_batch_floor(args: Optional[Iterable[str]], n_parallel: int) -> None:
+    """Raise when a pass-through --batch-size would abort llama-server.
+
+    The launcher raises the value it emits itself to ``max(slots, 2)``, with the
+    measurements recorded beside that code: ``-b 1`` aborts at any slot count, and a
+    batch below ``--parallel`` aborts too. Extras are appended AFTER that flag and win
+    the last-wins parse, so a small value here is not a smaller batch, it is a server
+    that dies during startup, and by then the previous model has been unloaded.
+
+    Only the shapes that are certainly wrong: an unreadable value is left to
+    llama-server, which names it better than a guess here would.
+    """
+    raw_value = _last_flag_value(args, _BATCH_FLAGS)
+    if raw_value is None:
+        return
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return
+    floor = max(2, int(n_parallel or 1))
+    if value < floor:
+        raise ValueError(
+            f"llama-server aborts on --batch-size {value}: it needs at least {floor} "
+            f"for the {max(1, int(n_parallel or 1))} parallel slot(s) this load serves"
+        )
+
+
 def fit_is_enabled_in(args: Optional[Iterable[str]]) -> bool:
     """Whether the last ``--fit`` in extras turns the fitter ON.
 

@@ -332,6 +332,33 @@ def test_the_underscore_spelling_keeps_its_detached_value():
         _lsa.validate_extra_args(["--ctx_size=4096", "stray"])
 
 
+def test_a_batch_below_the_floor_is_refused_before_the_launch():
+    # llama-server aborts on a batch of 1 at any slot count, and on a batch below the
+    # slots it serves (measured, and recorded beside the launcher that raises its own
+    # --batch-size for it). Extras are appended after that flag and win, so this is a
+    # server that dies during startup, by which time the previous model is unloaded.
+    for args, slots in (
+        (["-b", "1"], 1),
+        (["--batch-size", "0"], 1),
+        (["--batch-size=1"], 1),
+        (["-b", "2"], 4),
+        (["--top-k", "20", "-b", "3"], 4),
+    ):
+        with pytest.raises(ValueError, match = "aborts on --batch-size"):
+            _lsa.check_batch_floor(args, slots)
+    # At or above the floor, and anything this side cannot read, is left alone:
+    # llama-server names an unreadable value better than a guess here would.
+    for args, slots in (
+        (["-b", "2"], 1),
+        (["-b", "4"], 4),
+        (["-b", "8"], 4),
+        (["-b", "abc"], 4),
+        (["--top-k", "20"], 4),
+        ([], 4),
+    ):
+        assert _lsa.check_batch_floor(args, slots) is None
+
+
 def test_a_two_value_flag_is_kept_whole():
     # Half of this option is not a smaller version of it: llama-server refuses
     # "--control-vector-layer-range 1" on the command line, so a list that carries it

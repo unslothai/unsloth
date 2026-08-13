@@ -462,14 +462,17 @@ export function applyActiveModelStatusToStore(
     // a failed switch restores that model without them: the failed target is left
     // resident, so an omitted field cannot inherit across models either.
     //
-    // Adopted only when nothing is recorded yet or the model underneath changed, and
-    // never on a backend that does not publish the field, so a list this tab knows
-    // first-hand is not replaced by an echo that lags a load in flight.
+    // Adopted from every settled status, not only a first read or a model change:
+    // another tab or an API client can reload the SAME model and variant with
+    // different arguments, or with none, and a baseline pinned at the first read
+    // would resend the old list from the rollback path and resurrect arguments that
+    // are not running. seedLoadParams is the guard that matters here, and it is the
+    // same one the rest of this block uses: while a load is in flight performLoad
+    // owns these values, so a poll that answers mid-switch cannot overwrite them.
+    // A backend that does not publish the field changes nothing.
     ...(status.requested_llama_extra_args !== undefined &&
       (status.is_gguf ?? true) &&
-      (prevState.loadedLlamaExtraArgs === null ||
-        hydratingExistingModel ||
-        slotsModelChanged) && {
+      seedLoadParams && {
         loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
       }),
     // one rule per batch pair, see resolveBatchSizeSeed

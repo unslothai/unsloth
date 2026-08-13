@@ -1652,7 +1652,19 @@ export function ModelConfigPage({
   // section freezes it: a bare --threads typed during a cold probe would keep Load
   // enabled and fail at llama-server startup. So while the row is unmounted, the
   // panel re-judges what the config holds once the catalogue lands.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the arguments and the section are the inputs
+  // The row holds its own subscription, but it is unmounted whenever this check is
+  // the one running, so the panel needs its own: an in-app llama.cpp update with
+  // Advanced collapsed would otherwise leave a verdict reached against the previous
+  // binary standing, and Load live for a flag the new one has removed.
+  const [hiddenCatalogEpoch, setHiddenCatalogEpoch] = useState(0);
+  useEffect(
+    () =>
+      subscribeLlamaFlagCatalog(() =>
+        setHiddenCatalogEpoch((epoch) => epoch + 1),
+      ),
+    [],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the arguments, the section and the binary are the inputs
   useEffect(() => {
     if (showAdvanced || !target.isGguf || resolvedIsDiffusion) {
       return;
@@ -1706,6 +1718,7 @@ export function ModelConfigPage({
     configState.nParallel,
     target.isGguf,
     resolvedIsDiffusion,
+    hiddenCatalogEpoch,
   ]);
 
   // Here rather than in the row that displays it: that row is inside Advanced

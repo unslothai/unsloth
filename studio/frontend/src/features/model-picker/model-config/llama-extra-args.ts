@@ -223,6 +223,11 @@ export function sanitizeStoredExtraArgs(
     }
     kept.push(token);
   }
+  // Then the shapes validate_extra_args refuses outright, whatever their size: a
+  // token belonging to no flag, and a two-value option left half-written. The backend
+  // sheds both because its own trimming re-validates after every cut; this mirror
+  // trims by size alone, so it has to know the same rules.
+  let bounded = dropUnvalidatableTokens(dropUnusableValues(kept));
   // Then the bounds, shed from the tail, never leaving a flag without its value.
   //
   // The host's own limits when the caller has them: a Windows install takes 24 KiB,
@@ -232,36 +237,131 @@ export function sanitizeStoredExtraArgs(
   const maxBytes = limits?.maxBytes || EXTRA_ARGS_MAX_BYTES;
   const commandBudget = limits?.windowsCommandBudget ?? 0;
   const overBounds = (): boolean =>
-    kept.length > EXTRA_ARGS_MAX_TOKENS ||
-    TEXT_ENCODER.encode(kept.join("")).length > maxBytes ||
-    (commandBudget > 0 && windowsCommandLength(kept) > commandBudget);
-  while (kept.length > 0 && overBounds()) {
-    kept.pop();
-    const last = kept[kept.length - 1];
+    bounded.length > EXTRA_ARGS_MAX_TOKENS ||
+    TEXT_ENCODER.encode(bounded.join("")).length > maxBytes ||
+    (commandBudget > 0 && windowsCommandLength(bounded) > commandBudget);
+  while (bounded.length > 0 && overBounds()) {
+    bounded.pop();
+    const last = bounded[bounded.length - 1];
     if (
       last !== undefined &&
       extraArgFlagName(last) === last.trim() &&
       !last.includes("=")
     ) {
-      kept.pop();
+      bounded.pop();
     }
-    // A two-value flag goes whole or not at all, matching drop_managed_flags: one
-    // value left behind is a list the server refuses outright.
-    while (kept.length >= 2) {
-      const owner = extraArgFlagName(kept[kept.length - 2]);
-      if (
-        owner !== null &&
-        TWO_VALUE_FLAGS.has(owner) &&
-        extraArgFlagName(kept[kept.length - 1]) === null &&
-        !kept[kept.length - 2].includes("=")
-      ) {
-        kept.length -= 2;
+    // Re-applied after every cut, exactly as the backend re-validates after its own:
+    // shedding one value of a two-value option leaves the other looking ordinary,
+    // whether the first was written attached or not.
+    bounded = dropUnvalidatableTokens(dropUnusableValues(bounded));
+  }
+  return bounded;
+}
+
+/**
+ * A list with the flags whose VALUE the backend's own parsers refuse removed.
+ *
+ * The same list of flags the row reports on, and the same rules: parse_ctx_override
+ * and its siblings raise on a missing or unreadable value, which is a 400 rather than
+ * a note. drop_managed_flags repairs these too, by shedding its tail until the whole
+ * list validates, which costs whatever followed them; removing just the option and
+ * its value keeps the rest of a legacy list working.
+ */
+function dropUnusableValues(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  let skipNext = false;
+  for (const [index, token] of tokens.entries()) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    const flag = extraArgFlagName(token);
+    if (
+      flag === null ||
+      !(INTEGER_VALUE_FLAGS.has(flag) || VALUE_REQUIRED_FLAGS.has(flag))
+    ) {
+      out.push(token);
+      continue;
+    }
+    const attached = valueIsAttached(token, flag);
+    const next = tokens[index + 1];
+    const value = attached ? token.split("=")[1] : next;
+    const missing =
+      value === undefined ||
+      value === "" ||
+      (!attached && extraArgFlagName(value) !== null);
+    const minimum = INTEGER_VALUE_MINIMUM[flag];
+    const unusable =
+      missing ||
+      (INTEGER_VALUE_FLAGS.has(flag) &&
+        (!INTEGER.test(value.trim()) ||
+          (minimum !== undefined && Number(value.trim()) < minimum)));
+    if (!unusable) {
+      out.push(token);
+      continue;
+    }
+    // The value goes with the flag, or it is left as a bare token, which is the
+    // one thing llama-server would read as a model path.
+    skipNext = !attached && !missing;
+  }
+  return out;
+}
+
+/**
+ * A list reduced to what validate_extra_args would accept on shape alone.
+ *
+ * Two rules, both of which the backend enforces by re-validating after each cut it
+ * makes: a bare token belonging to no flag is refused outright (llama-server reads a
+ * positional as the model path, which is what the -m denial exists to prevent), and a
+ * two-value option needs both of its values. Everything else is left alone, because
+ * this side does not know the arity of an ordinary flag either.
+ */
+function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  let pending = 0;
+  let twoValuePending = 0;
+  // Where the incomplete two-value option starts, so the whole of it can go.
+  let ownerAt = -1;
+  for (const token of tokens) {
+    const flag = extraArgFlagName(token);
+    if (flag === null) {
+      if (pending <= 0) {
+        // Ownerless. Dropped rather than kept, which is what drop_managed_flags
+        // does with the same token.
         continue;
       }
-      break;
+      pending -= 1;
+      if (twoValuePending > 0) {
+        twoValuePending -= 1;
+        if (twoValuePending === 0) {
+          ownerAt = -1;
+        }
+      }
+      out.push(token);
+      continue;
     }
+    if (twoValuePending > 0 && ownerAt >= 0) {
+      // A new flag arrived while the option still owed a value: the whole option
+      // goes, along with the value it did get.
+      out.length = ownerAt;
+    }
+    const attached = valueIsAttached(token, flag);
+    if (TWO_VALUE_FLAGS.has(flag)) {
+      // An attached value is one of the two, so the option still owes its END.
+      pending = attached ? 1 : 2;
+      twoValuePending = pending;
+      ownerAt = out.length;
+    } else {
+      pending = attached ? 0 : 1;
+      twoValuePending = 0;
+      ownerAt = -1;
+    }
+    out.push(token);
   }
-  return kept;
+  if (twoValuePending > 0 && ownerAt >= 0) {
+    out.length = ownerAt;
+  }
+  return out;
 }
 
 /** The denylist half of the sanitizer, for a caller that only has that to apply. */

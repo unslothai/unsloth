@@ -114,3 +114,11 @@ test("a mounted row re-reads the catalogue when the binary changes", () => {
   assert.match(PANEL, /subscribeLlamaFlagCatalog\(\(\) => setCatalogEpoch/);
   assert.match(PANEL, /\}, \[catalogEpoch\]\);/);
 });
+
+test("the hidden validation re-runs when the binary changes", () => {
+  // The row's own subscription cannot help here: it is unmounted whenever this
+  // check is the one running, so an in-app llama.cpp update with Advanced collapsed
+  // left a verdict reached against the previous binary standing.
+  assert.match(PANEL, /subscribeLlamaFlagCatalog\(\(\) =>\s*\n?\s*setHiddenCatalogEpoch/);
+  assert.match(PANEL, /hiddenCatalogEpoch,\n\s*\]\);/);
+});

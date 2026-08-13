@@ -1100,3 +1100,60 @@ test("the batch floor follows the server-wide slot default", () => {
     [],
   );
 });
+
+test("the sanitizer drops what the validator refuses on shape", () => {
+  // The upgrade case this exists for: a list saved by an older build, hydrated into
+  // an EXPLICIT request that /load validates strictly. drop_managed_flags repairs
+  // these on the server by re-validating after every cut it makes; this mirror trims
+  // by size alone, so it has to know the same rules.
+  const managed = new Set<string>();
+  // A token belonging to no flag: llama-server would read it as the model path.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--top-k", "20", "stray"], managed),
+    ["--top-k", "20"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["stray", "--top-k", "20"], managed),
+    ["--top-k", "20"],
+  );
+  // A two-value option left half-written, in both spellings.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(
+      ["--top-k", "20", "--control-vector-layer-range", "1"],
+      managed,
+    ),
+    ["--top-k", "20"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(
+      ["--top-k", "20", "--control-vector-layer-range=1", "x".repeat(40000)],
+      managed,
+    ),
+    ["--top-k", "20"],
+  );
+  // Whole, either spelling survives.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(
+      ["--control-vector-layer-range=1", "10"],
+      managed,
+    ),
+    ["--control-vector-layer-range=1", "10"],
+  );
+  // A value the backend's own parser refuses takes its flag with it, and only it:
+  // the server sheds its whole tail instead, which costs whatever followed.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--ctx-size", "abc", "--top-k", "20"], managed),
+    ["--top-k", "20"],
+  );
+  assert.deepEqual(sanitizeStoredExtraArgs(["--cache-type-k"], managed), []);
+  // Valid values are untouched, including the ones whose minimum is negative.
+  for (const list of [
+    ["--ctx-size", "0"],
+    ["-ngl", "-1"],
+    ["--cache-type-k", "q8_0"],
+    ["--numa", "distribute"],
+    ["--ctx_size", "4096"],
+  ]) {
+    assert.deepEqual(sanitizeStoredExtraArgs(list, managed), list);
+  }
+});

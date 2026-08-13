@@ -44,12 +44,14 @@ test("an older backend that omits the field changes nothing", () => {
   assert.match(APPLIER, /status\.requested_llama_extra_args !== undefined/);
 });
 
-test("the baseline is only adopted when it is not already known", () => {
-  // Otherwise an echo that lags a load in flight would overwrite what the switch
-  // just recorded, and the next rollback would resend the previous model's list.
+test("the baseline follows a same-model reload from elsewhere", () => {
+  // Another tab or an API client can reload the same model and variant with other
+  // arguments, or with none: a baseline pinned at the first read would resend the
+  // old list from the rollback path and resurrect arguments that are not running.
+  // The in-flight guard stays, since performLoad owns these values mid-switch.
   assert.match(
     APPLIER,
-    /prevState\.loadedLlamaExtraArgs === null \|\|\s*\n?\s*hydratingExistingModel \|\|\s*\n?\s*slotsModelChanged/,
+    /requested_llama_extra_args !== undefined &&\s*\n\s*\(status\.is_gguf \?\? true\) &&\s*\n\s*seedLoadParams/,
   );
 });
 
