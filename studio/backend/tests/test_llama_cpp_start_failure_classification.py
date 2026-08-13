@@ -1252,6 +1252,10 @@ class TestAnEncodedSecretIsStillRedacted:
             "A=1," * 25000,
             'TOKEN="' + "y" * 100000,
         ],
+        # Named, because pytest puts the whole parameter in the node id and then in
+        # PYTEST_CURRENT_TEST. Windows caps an environment variable at 32767
+        # characters, so a 100 KB id errors the test in setup on that OS alone.
+        ids = ["escaped-quotes", "long-value", "many-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
@@ -1474,6 +1478,9 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "blob",
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
+        # Same reason as above: the parameter is the node id, and the node id
+        # becomes an environment variable.
+        ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         import time
