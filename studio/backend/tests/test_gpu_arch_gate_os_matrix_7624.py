@@ -3,25 +3,24 @@
 
 """OS x GPU-vendor matrix for the #7624 ROCm arch gate in ``_get_gpu_memory``.
 
-The gate drops a device whose gfx arch is missing from the installed prebuilt's
+The gate drops a device whose gfx arch is missing from the prebuilt's
 ``mapped_targets``, and runs on exactly one shape of host (ROCm torch build,
-``for_llama_server = True``). So on every other cell the assertion is that it is
-*inert*: matching output would not prove it (a gate that ran and kept everything
-looks identical), so the marker reader is spied and asserted un-called.
+``for_llama_server = True``). Every other cell asserts it is *inert*, which
+matching output alone cannot show (a gate that ran and kept everything looks
+identical), so the marker reader is spied and asserted un-called.
 
 Matrix: [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only]. macOS has no ROCm,
 so its "AMD" cell is the two real Apple shapes (Apple Silicon MPS, Intel Mac
 Radeon), neither enumerating a ``torch.cuda`` device. WSL is its own cell: ROCm
-there reports through the same torch path yet ``sys.platform`` is "linux", so the
+reports through the same torch path yet ``sys.platform`` is "linux", so the
 Windows-only free-VRAM cap (#8403) must NOT engage.
 
-No AMD GPU or ROCm runtime exists on CI or where these were written, so every AMD
-result is mock-based: torch and its arch attributes, ``sys.platform`` /
-``platform.system``, ``utils.hardware.IS_ROCM``, the marker and the HIP/ROCR/CUDA
-masks are faked in the shapes #7072 / #7624 / #8403 document (AMD SDK wheels
-leaving ``torch.version.hip`` unset; the ``gcn_arch_name`` / ``arch_name`` /
-``gfx_arch_name`` spellings; ``gfx103X`` omitting the gfx1033/1035/1036 iGPUs;
-Windows HIP over-reporting free VRAM).
+No AMD GPU or ROCm runtime exists here, so every AMD result is mock-based: torch
+and its arch attributes, ``sys.platform`` / ``platform.system``,
+``utils.hardware.IS_ROCM``, the marker and the HIP/ROCR/CUDA masks are faked in the
+shapes #7072 / #7624 / #8403 document (AMD SDK wheels leaving ``torch.version.hip``
+unset; the ``gcn_arch_name`` / ``arch_name`` / ``gfx_arch_name`` spellings;
+``gfx103X`` omitting the gfx1033/1035/1036 iGPUs; Windows over-reporting free VRAM).
 """
 
 from __future__ import annotations
@@ -791,13 +790,12 @@ def _run_auto_load(
     apu_ram_stub = None,
     backend = None,
 ):
-    """Drive a real automatic (no explicit GPU pick) llama-server load with the
-    real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
+    """Drive a real automatic (no explicit GPU pick) llama-server load with the real
+    ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
 
-    Everything below the placement decision is faked: the GGUF is a header-only
-    stub, Popen never runs, and the health wait answers from ``returncode``. The
-    point is what placement handed the child, not that llama-server works.
-    """
+    Everything below the placement decision is faked: header-only GGUF, Popen never
+    runs, health wait answers from ``returncode``. The point is what placement handed
+    the child, not that llama-server works."""
     if marker_targets is not None:
         _binary_with_marker(tmp_path, {"mapped_targets": marker_targets})
     binary = str(tmp_path / "build" / "bin" / "llama-server")
@@ -932,10 +930,9 @@ class TestEveryDeviceUncoveredDownstream:
         """Every device gated out must mask the child onto the CPU (#7624).
 
         Before this the empty pool left ``gpu_indices`` None, the launch took the
-        ``--fit on`` arm, the pin block never ran and no HIP/ROCR/CUDA mask was
-        written, so the child enumerated both unsupported cards and died as #7624
-        reports -- with the reactive retry unable to help, its guard needing a truthy
-        ``gpu_indices``. CPU is the only placement that runs here."""
+        ``--fit on`` arm, the pin block never ran and no mask was written, so the
+        child enumerated both unsupported cards and died, with the reactive retry
+        unable to help (its guard needs a truthy ``gpu_indices``)."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(
             [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],

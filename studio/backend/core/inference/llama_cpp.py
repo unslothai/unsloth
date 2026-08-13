@@ -3419,16 +3419,14 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
-        # The ratio the arch gate dropped from this launch's argv, so the
-        # duplicate-load check knows the live server already IS the normalized
-        # answer to the request the UI re-sends verbatim (#7624).
+        # Ratio the arch gate dropped from this argv, so the duplicate-load check
+        # knows the live server already IS this request normalized (#7624).
         self._arch_gate_dropped_tensor_split: Optional[tuple[float, ...]] = None
-        # Same, for the split MODE: the gate normalises --split-mode tensor away when
-        # it forces CPU or leaves one survivor, and the request still asks for it.
+        # Same for the split MODE: the gate drops --split-mode tensor when it forces
+        # CPU or leaves one survivor, and the request still asks for it.
         self._arch_gate_dropped_tensor_parallel: bool = False
-        # The arch gate masked every device away, so the child launched with no
-        # GPU at all (#7624): an AUTOMATIC request recovery turned into a
-        # zero-VRAM launch, which is why holds_no_vram cannot demand manual mode.
+        # Gate masked every device away, so an AUTOMATIC request became a zero-VRAM
+        # launch (#7624), which is why holds_no_vram cannot demand manual mode.
         self._arch_gate_forced_cpu: bool = False
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
@@ -4048,15 +4046,12 @@ class LlamaCppBackend:
         arbiter can leave an image/video pipeline alone when re-asserting ownership.
 
         True for a manual zero-offload load whose argv carried no GPU companion, pin
-        or tensor mode. ``_gpu_offload_active`` None (no GPU detected) or True
-        (something reached the GPU) both keep the normal path.
-
-        True for an arch-gated launch too, on stronger evidence: the gate masked the
-        child onto the CPU with the "-1" sentinel (#7624). That arrives through an
-        AUTOMATIC request, so demanding manual mode would answer False for the very
-        case routes/inference.py:8206 documents, and a server holding no VRAM would
-        keep the CHAT claim and be unloadable by an owner it never competed with.
-        """
+        or tensor mode (``_gpu_offload_active`` None or True keeps the normal path),
+        and for an arch-gated launch masked onto the CPU by the "-1" sentinel
+        (#7624). The latter arrives through an AUTOMATIC request, so demanding manual
+        mode would answer False for the case routes/inference.py:8206 documents and
+        leave a VRAM-less server holding the CHAT claim, unloadable by an owner it
+        never competed with."""
         if self._arch_gate_forced_cpu:
             return True
         return (
@@ -4178,9 +4173,8 @@ class LlamaCppBackend:
             extra_args, intent.tensor_parallel, self._tensor_parallel
         ):
             # A mode the gate normalised away is this request normalized, not a
-            # different one (the rule the dropped ratio below follows). One direction,
-            # guarded on a RECORDED drop, so a launch that dropped nothing cannot
-            # excuse a live tensor server against a layer request.
+            # different one. Guarded on a RECORDED drop, so a launch that dropped
+            # nothing cannot excuse a live tensor server against a layer request.
             if not (self._arch_gate_dropped_tensor_parallel and not self._tensor_parallel):
                 return False
         if (
@@ -4216,10 +4210,9 @@ class LlamaCppBackend:
                         or (
                             (tuple(self._tensor_split) if self._tensor_split else None)
                             != (intent.tensor_split or None)
-                            # A ratio the arch gate dropped at launch is this request
-                            # normalized, not a different one. Guarded on a RECORDED
-                            # drop, never None == None, so a launch that dropped
-                            # nothing cannot excuse a live split. Any other ratio reloads.
+                            # Same rule as the mode above: a dropped ratio is this
+                            # request normalized. Guarded on a RECORDED drop, never
+                            # None == None. Any other ratio reloads.
                             and not (
                                 self._arch_gate_dropped_tensor_split is not None
                                 and self._arch_gate_dropped_tensor_split
@@ -4986,27 +4979,24 @@ class LlamaCppBackend:
 
     @staticmethod
     def _active_gpu_visibility_mask() -> Optional[str]:
-        """The raw visibility mask in force (HIP, then ROCR, then CUDA on ROCm;
-        CUDA otherwise), or None when none is set. The string
-        ``_resolve_visible_physical_ids`` parses, split out so a caller can tell
-        "no mask" from "a mask I cannot map to physical ids"."""
+        """The raw visibility mask in force (HIP, then ROCR, then CUDA on ROCm; CUDA
+        otherwise), or None when unset. Split out so a caller can tell "no mask" from
+        "a mask I cannot map to physical ids"."""
         try:
             import torch
 
-            # Same ROCm detection as _emit_child_gpu_visibility: AMD SDK wheels
-            # leave version.hip unset but encode "rocm" in __version__. The two
-            # must agree, else an inherited ROCR mask reads back as "no mask",
-            # ordinal 0 is labelled physical 0, and the child's new ROCR pin
-            # re-exposes the GPU the inherited mask was hiding.
+            # Same ROCm detection as _emit_child_gpu_visibility (AMD SDK wheels leave
+            # version.hip unset but encode "rocm" in __version__). If the two
+            # disagree an inherited ROCR mask reads back as "no mask" and the child's
+            # new pin re-exposes the GPU it was hiding.
             is_rocm = LlamaCppBackend._torch_is_rocm(torch)
         except Exception:
             is_rocm = False
         if is_rocm:
             hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
-            # ROCR_VISIBLE_DEVICES is a Linux ROCr variable; Windows HIP has no
-            # ROCr layer, so a stray ROCR var there does not mask the runtime and
-            # must not be read as the ordinal->physical mapping (mirrors the
-            # Windows gate in _emit_child_gpu_visibility).
+            # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a
+            # stray ROCR var there masks nothing and must not be read as the
+            # ordinal->physical mapping (mirrors _emit_child_gpu_visibility).
             rocr_v = None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
             cvd = (
                 hip_v
@@ -5034,14 +5024,12 @@ class LlamaCppBackend:
 
     @staticmethod
     def _visibility_mask_is_unmappable() -> bool:
-        """True when a mask IS set but does not resolve to physical ids: ROCr and
-        CUDA both accept UUID tokens (ROCR_VISIBLE_DEVICES="0,GPU-DEADBEEF..."),
-        CUDA also MIG ids. Torch ordinals cannot be mapped back then, so
-        re-emitting them numerically would REPLACE the inherited mask with ids the
-        runtime resolves against the whole host, handing the child cards the parent
-        hid -- including the one a gate just dropped. Callers that would pin fail
-        open, like ``_pin_visible_gpu_order_for_split``. False when no mask is set
-        and for an empty mask (which resolves to "no devices")."""
+        """True when a mask IS set but does not resolve to physical ids: ROCr and CUDA
+        accept UUID tokens (ROCR_VISIBLE_DEVICES="0,GPU-DEADBEEF..."), CUDA also MIG
+        ids. Torch ordinals cannot be mapped back, so re-emitting them numerically
+        would REPLACE the mask with ids the runtime resolves against the whole host,
+        handing the child cards the parent hid, including one a gate just dropped.
+        Callers that would pin fail open. False when unset and for an empty mask."""
         return (
             LlamaCppBackend._active_gpu_visibility_mask() is not None
             and LlamaCppBackend._resolve_visible_physical_ids() is None
@@ -5058,25 +5046,22 @@ class LlamaCppBackend:
         (masking only CUDA_VISIBLE_DEVICES leaves an AMD child seeing every GPU).
 
         Default: HIP_VISIBLE_DEVICES, clearing any inherited ROCR mask so the two
-        can't stack (ROCR re-indexes from 0, then a non-zero HIP pin points out of
+        cannot stack (ROCR re-indexes from 0, a non-zero HIP pin then points out of
         range, HIP sees 0 devices, and llama.cpp falls back to CPU).
 
-        prefer_rocr masks at the ROCr/HSA layer instead (clearing HIP). A HIP mask
+        prefer_rocr masks at the ROCr/HSA layer instead (clearing HIP): a HIP mask
         filters only AFTER the HSA runtime enumerates every agent, and that
-        enumeration segfaults on a GPU the build has no kernels for (a gfx1036 iGPU
-        under a gfx103X prebuilt, which maps only gfx1030/1031/1032/1034) before
-        llama-server logs a line; ROCR drops the device at the driver layer.
+        enumeration segfaults on a GPU the build has no kernels for (gfx1036 iGPU
+        under a gfx103X prebuilt) before llama-server logs a line.
 
         The CPU sentinel ("-1") keeps the HIP mask and leaves an inherited ROCR mask
         alone: HIP sees zero devices either way, so the anti-stacking clear buys
-        nothing while dropping the mask re-exposes agents the parent hid to the
-        enumeration that dies (the rule the embedding CPU launch follows too).
-        Windows keeps the HIP mask as well, ROCR_VISIBLE_DEVICES being Linux-only."""
+        nothing while dropping the mask re-exposes hidden agents to that same
+        enumeration. Windows keeps the HIP mask too, ROCR being Linux-only."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         if pinned == "-1":
-            # A CPU-only child must not keep an inherited LLAMA_ARG_DEVICE /
-            # LLAMA_ARG_MAIN_GPU: llama.cpp rejects a device name that no longer
-            # enumerates and exits instead of running on the CPU we chose for it.
+            # An inherited LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU naming a device that
+            # no longer enumerates makes llama.cpp exit rather than use our CPU.
             LlamaCppBackend._clear_device_placement_env(env)
         try:
             import torch as _torch
@@ -5557,19 +5542,18 @@ class LlamaCppBackend:
             strip_device = True,
         )
 
-    # A concrete per-device gfx arch: "gfx" then digits, plus the optional trailing
-    # hex letter real parts carry (gfx90a, gfx90c). Deliberately does NOT match the
-    # other tokens an arch list can hold -- ROCm 6.3+ generic code objects
-    # (gfx11-generic) and the manifest's family labels (gfx110X) -- since no device
-    # ever reports either as its own arch.
+    # A concrete per-device gfx arch: "gfx" plus digits, with the trailing hex letter
+    # real parts carry (gfx90a, gfx90c), which a digits-only pattern would reject.
+    # Deliberately does NOT match generic code objects (gfx11-generic) or family
+    # labels (gfx110X); no device reports either, and the gate fails open on them.
     _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
 
     @staticmethod
     def _installed_llama_gfx_archs(binary: Optional[str] = None) -> Optional[frozenset]:
-        """Concrete gfx archs the installed llama.cpp ROCm prebuilt was built for
-        (``mapped_targets`` in UNSLOTH_PREBUILT_INFO.json). None when unknown -- no
-        marker (source build / custom link) or a non-ROCm bundle -- so callers fail
-        open and keep every device (#7624). Never raises."""
+        """Concrete gfx archs the installed ROCm prebuilt was built for
+        (``mapped_targets`` in UNSLOTH_PREBUILT_INFO.json). None when unknown (no
+        marker, non-ROCm bundle), so callers fail open and keep every device
+        (#7624). Never raises."""
         try:
             from utils.llama_cpp_freshness import read_install_marker
 
@@ -5584,15 +5568,13 @@ class LlamaCppBackend:
             )
             if not archs:
                 return None
-            # Exact-set membership against what the device reports, so it only
-            # means anything while every token is a concrete arch. One token no
-            # device can report -- a generic code object, a family label, garbage
-            # from a malformed marker -- matches nothing, drops EVERY GPU and
-            # silently forces CPU, worse than not gating. mapped_targets is remote
-            # data versioned independently of this code, so a list we do not fully
-            # understand is "unknown" and fails open. All-or-nothing: dropping just
-            # the odd token out of ["gfx1100", "gfx11-generic"] would under-report
-            # what the build covers.
+            # Exact-set membership against what the device reports, so it only means
+            # anything while every token is concrete. One token no device can report
+            # (generic code object, family label, malformed marker) matches nothing,
+            # dropping EVERY GPU and silently forcing CPU, worse than not gating.
+            # mapped_targets is remote data versioned independently of this code, so
+            # an unrecognised list is "unknown" and fails open, all or nothing:
+            # dropping just the odd token would under-report the build's coverage.
             unknown = sorted(a for a in archs if not LlamaCppBackend._CONCRETE_GFX_ARCH.match(a))
             if unknown:
                 logger.warning(
@@ -5611,24 +5593,23 @@ class LlamaCppBackend:
         mask: unknown coverage, a non-ROCm host, a build covering every card, or an
         inherited mask whose ids we cannot name back to the child.
 
-        For callers that must PIN the gate's answer, not just rank by it. Knowing a
-        supported device exists is not enough: the child enumerates every ROCm
-        agent, and that HSA enumeration is what dies on an uncovered arch, so a
-        mixed host (unsupported iGPU + supported dGPU) passes the gate and still
-        crashes unless the survivors are masked in. Lazy: both probes run only where
-        nothing else pins the child. Never raises."""
+        For callers that must PIN the answer, not just rank by it: the child
+        enumerates every ROCm agent, and that HSA enumeration is what dies on an
+        uncovered arch, so a mixed host (unsupported iGPU + supported dGPU) passes
+        the gate and still crashes unless the survivors are masked in. Lazy, and
+        never raises."""
         try:
             # Coverage first: a cached marker read, where _host_torch_is_rocm imports
-            # torch (~1.3s cold). A CUDA / Vulkan / CPU / macOS bundle records no
-            # mapped_targets, so a non-ROCm install answers [] without that import.
+            # torch (~1.3s cold). Non-ROCm bundles record no mapped_targets, so they
+            # answer [] without that import.
             if cls._installed_llama_gfx_archs(binary) is None:
                 return []  # unknown coverage: fail open, same as the probe
             if not cls._host_torch_is_rocm():
                 return []
             if cls._visibility_mask_is_unmappable():
-                # A UUID/MIG mask leaves the ordinals unmapped, so the pin would
-                # swap it for numbers the runtime resolves against the whole host,
-                # possibly onto the card the gate dropped. Fail open (pre-#7624).
+                # A UUID/MIG mask leaves ordinals unmapped, so pinning would swap it
+                # for numbers the runtime resolves against the whole host, possibly
+                # re-exposing the dropped card. Fail open (pre-#7624).
                 logger.info(
                     "Not pinning the arch gate's survivors: the inherited GPU "
                     "visibility mask is not index based, so they cannot be named "
@@ -5692,33 +5673,27 @@ class LlamaCppBackend:
     ) -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
-        Order:
-          1. ``nvidia-smi`` (NVIDIA CUDA hosts) -- respects
-             ``CUDA_VISIBLE_DEVICES``.
-          2. ``torch.cuda.mem_get_info`` -- universal fallback that works
-             on AMD ROCm too (HIP runtime reuses the ``torch.cuda.*``
-             namespace). Covers the AMD case for issue #5106 (nvidia-smi
-             probe returned [] on AMD) and NVIDIA hosts missing
-             ``nvidia-smi`` from PATH.
+        Order: ``nvidia-smi`` (NVIDIA, respects ``CUDA_VISIBLE_DEVICES``), then
+        ``torch.cuda.mem_get_info``, a universal fallback that works on ROCm too
+        (HIP reuses the ``torch.cuda.*`` namespace). The fallback covers #5106
+        (nvidia-smi returned [] on AMD) and NVIDIA hosts without nvidia-smi on PATH.
 
         On a Vulkan build the ggml Vulkan probe is authoritative, so the indices are
-        ggml's compact Vulkan ordinals (the space ``--device Vulkan<i>`` selects). It
+        ggml's compact Vulkan ordinals (what ``--device Vulkan<i>`` selects). It
         reports ``total`` for discrete cards and 0 for an iGPU (shared RAM) so the
-        fit falls back to free*frac. The torch branch gives an AMD unified-memory APU
-        the same treatment by arch name, ROCm having no iGPU flag of its own.
+        fit falls back to free*frac. The torch branch treats an AMD unified-memory
+        APU the same way by arch name, ROCm having no iGPU flag of its own.
 
         ``for_llama_server`` opts into the ROCm arch gate: devices whose gfx arch is
-        not in the installed prebuilt's built-arch list are dropped, so auto
-        placement cannot pick a GPU that binary has no kernels for (#7624). Off by
-        default, because this probe also backs
-        ``core/rag/embeddings.py::_resolve_auto`` -- a device the prebuilt lacks
-        kernels for is usually still fine under PyTorch, and filtering it there would
-        push sentence-transformers onto the CPU for no reason. Only pass it where a
+        not in the prebuilt's built-arch list are dropped, so auto placement cannot
+        pick a GPU that binary has no kernels for (#7624). Off by default because
+        this probe also backs ``core/rag/embeddings.py::_resolve_auto``, where such a
+        device is usually still fine under PyTorch and filtering it would push
+        sentence-transformers onto the CPU for no reason. Pass it only where a
         llama-server process is about to be placed.
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
-        supported GPU is reachable.
-        """
+        supported GPU is reachable."""
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
@@ -5792,11 +5767,11 @@ class LlamaCppBackend:
             # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
-            # llama-server placement only: gate on the prebuilt's built-arch list
-            # so the free-memory rank can't pick a GPU the binary has no kernels for
+            # llama-server placement only: gate on the prebuilt's built-arch list so
+            # the free-memory rank cannot pick a GPU the binary has no kernels for
             # (#7624: an iGPU reporting shared RAM outranks the dGPU and the child
-            # dies with "device kernel image is invalid"). None = unknown coverage
-            # keeps every device; a device with no reported arch fails open too.
+            # dies with "device kernel image is invalid"). Unknown coverage, or a
+            # device with no reported arch, keeps every device.
             supported_archs = None
             arch_by_id: dict[int, str] = {}
             if for_llama_server and LlamaCppBackend._torch_is_rocm(torch):
@@ -6312,13 +6287,11 @@ class LlamaCppBackend:
     def _clear_split_placement_env(cls, env: dict[str, str]) -> None:
         """Remove an inherited split mode / ratio when the arch gate drops ours.
 
-        LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_TENSOR_SPLIT are the env spelling of
-        --split-mode / --tensor-split, so stripping the tokens alone leaves the
-        inherited value in force (the reason the tensor->layer reconciliation above
-        clears them too). Sharper here: the forced-CPU arm strips --split-mode
-        precisely because a tensor split aborts a child with no visible device, and
-        a narrowed set re-indexes the survivors so an inherited positional ratio
-        lands on the wrong card."""
+        These are the env spelling of --split-mode / --tensor-split, so stripping the
+        tokens alone leaves the inherited value in force. It matters more here: a
+        tensor split aborts a child with no visible device, and a narrowed set
+        re-indexes the survivors so an inherited positional ratio lands on the wrong
+        card."""
         for name in ("LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT"):
             env.pop(name, None)
 
@@ -10215,15 +10188,12 @@ class LlamaCppBackend:
         )
 
     # ROCm's arch-mismatch crash: no compiled kernels for the device it launched on
-    # (#7624). Deterministic, so only a different device helps, not a fit /
-    # flash-attn retry. Two spellings because HIP has two codes for it depending on
-    # where it is caught: hipErrorInvalidImage ("device kernel image is invalid",
-    # what both field logs show) and hipErrorNoBinaryForGpu, documented as code
-    # compiled for a different arch. Matching only the first leaves a build that
-    # raises the second on the misleading GGUF/memory error.
-    # The four codes clr returns for "no code object for THIS device": hip_fatbin.cpp
-    # raises them all, hip_platform.cpp propagates them out of the launch path, and
-    # ggml reprints hipGetErrorString verbatim.
+    # (#7624). Deterministic, so only a different device helps, not a fit / flash-attn
+    # retry. Four spellings because clr returns four codes for "no code object for
+    # THIS device": hip_fatbin.cpp raises them, hip_platform.cpp propagates them out
+    # of the launch path, and ggml reprints hipGetErrorString verbatim. Matching only
+    # hipErrorInvalidImage (what both field logs show) would leave a build raising
+    # hipErrorNoBinaryForGpu on the misleading GGUF/memory error.
     _KERNEL_IMAGE_INVALID_MARKERS = (
         "device kernel image is invalid",  # hipErrorInvalidImage
         "no kernel image is available for execution",  # hipErrorNoBinaryForGpu
@@ -10242,12 +10212,12 @@ class LlamaCppBackend:
     def _arch_crash_retry_gpu_ids(cls, selected, enumerated) -> list[int]:
         """Devices to retry on after a "device kernel image is invalid" crash.
 
-        Prefer the enumerated GPUs the failed launch never touched. When it used
-        every one there is no such fallback and the crash does not name the offending
-        card, so narrow instead: drop the unified-memory devices, where this mismatch
-        keeps landing (#7624 -- the shared-pool APU's system-RAM "free memory" is
-        what outranked the dGPU). Empty when nothing would change, when the narrowing
-        leaves no device, or for a single GPU on a single-GPU host."""
+        Prefer the enumerated GPUs the failed launch never touched. When it used every
+        one the crash does not name the offending card, so narrow instead: drop the
+        unified-memory devices, where this mismatch keeps landing (#7624, the
+        shared-pool APU's system-RAM "free memory" outranked the dGPU). Empty when
+        nothing would change, when narrowing leaves no device, or on a single-GPU
+        host."""
         _selected = set(selected or ())
         if not _selected:
             return []
@@ -10265,22 +10235,19 @@ class LlamaCppBackend:
         """Return cmd with ``--tensor-split``/``-ts`` removed (both spellings and the
         ``--tensor-split=1,2`` form), or None when it carries none.
 
-        The shares are positional over the child's VISIBLE device list: llama.cpp
-        parses them into ``params.tensor_split[i]`` and keeps the first
-        ``n_devices()``. A respawn that masks a device out re-indexes the survivors
-        while keeping the old weights, handing card N the share sized for card N-1.
-        Dropping the flag falls back to llama.cpp's free-VRAM split, correct for any
-        device set."""
+        The shares are positional over the child's VISIBLE device list, so a respawn
+        that masks a device out re-indexes the survivors while keeping the old
+        weights, handing card N the share sized for card N-1. Dropping the flag falls
+        back to llama.cpp's free-VRAM split, correct for any device set."""
         return LlamaCppBackend._without_flags(cmd, ("--tensor-split", "-ts"))
 
     @staticmethod
     def _without_flags(cmd: list[str], names: Collection[str]) -> Optional[list[str]]:
         """Return cmd with every ``names`` flag (and its value) dropped, or None when
-        it carries none. ``_flag_name`` peels ``--key=value`` and the underscore
-        spellings; an ``=`` form carries its own value, so only the two-token form
-        swallows the next entry. Callers must pass VALUE-TAKING flags only:
-        llama.cpp's valueless ones (``--mlock``, ``--no-mmap``, bare ``-fa``) stand
-        alone, so scanning for them here would drop whatever argv entry follows."""
+        it carries none. ``_flag_name`` peels ``--key=value`` and underscore
+        spellings; only the two-token form swallows the next entry. Pass VALUE-TAKING
+        flags only: valueless ones (``--mlock``, ``--no-mmap``, bare ``-fa``) would
+        drop whatever argv entry follows."""
         out: list[str] = []
         found = False
         skip = False
@@ -11757,24 +11724,19 @@ class LlamaCppBackend:
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
-                    # The arch gate covers AUTOMATIC placement only. Gating an
-                    # explicit pin costs more than it buys: the picker filter would
-                    # leave `gpus` empty, so the fit and layer plan never run and the
-                    # launch is forced onto `--fit on`, while `gpu_indices` is
-                    # restored from `gpu_ids` below so the pin happens anyway. A
-                    # pinned uncovered GPU is the user's call and already reports its
-                    # own clear "device kernel image is invalid".
+                    # AUTOMATIC placement only. Gating an explicit pin would leave
+                    # `gpus` empty, skipping the fit and layer plan and forcing
+                    # `--fit on`, yet `gpu_indices` is restored from `gpu_ids` below
+                    # so the pin happens anyway. A pinned uncovered GPU is the user's
+                    # call and already reports "device kernel image is invalid".
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
-                    # Every present device gated out (#7624): the gated probe is
-                    # empty while the ungated one is not. Left alone the launch takes
-                    # the `--fit on` arm with `gpu_indices` still None, so no mask is
-                    # written, the child enumerates every unsupported card and dies
-                    # -- and the reactive retry cannot help, its guard needing a
-                    # truthy `gpu_indices`. CPU is the only placement that runs here,
-                    # so mask the child onto it (mirroring the zero-offload block
-                    # below). ROCm auto placement only; the guard also spares CUDA
-                    # and CPU-only hosts, where an empty probe just means "no GPU",
-                    # a second probe.
+                    # Every present device gated out (#7624). Left alone the launch
+                    # takes the `--fit on` arm with `gpu_indices` still None, so no
+                    # mask is written, the child enumerates every unsupported card and
+                    # dies, and the reactive retry cannot help (its guard needs a
+                    # truthy `gpu_indices`). CPU is the only placement that runs here.
+                    # ROCm auto only; the guard spares CUDA and CPU-only hosts, where
+                    # an empty probe just means "no GPU".
                     if (
                         not gpu_ids
                         and not _gpu_mem
@@ -11782,13 +11744,12 @@ class LlamaCppBackend:
                         and self._host_torch_is_rocm()
                     ):
                         _ungated = self._get_gpu_memory(binary)
-                        # Re-derive the gate's verdict rather than infer it from the
-                        # empty result: _get_gpu_memory turns any probe error into [],
-                        # so "gated empty, ungated not" also describes a one-shot
-                        # failure of the FIRST probe on a host the gate never filters,
-                        # and masking that onto CPU is a silent, permanent cliff. Same
-                        # rule the filter uses -- unknown coverage keeps every device,
-                        # and so does an unreadable arch.
+                        # Re-derive the verdict rather than infer it from the empty
+                        # result: _get_gpu_memory turns any probe error into [], so
+                        # "gated empty, ungated not" also describes a one-shot failure
+                        # of the FIRST probe on a host the gate never filters, and
+                        # masking that onto CPU is a silent, permanent cliff. Unknown
+                        # coverage or an unreadable arch keeps every device.
                         _coverage = self._installed_llama_gfx_archs(binary)
                         _arch_by_id = self._rocm_arch_by_physical_id() if _ungated else {}
                         _all_uncovered = (
@@ -13092,12 +13053,11 @@ class LlamaCppBackend:
                         model_size, self._available_system_memory_mib()
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
-                    # priced every visible card -- including an APU the gate below is
-                    # about to drop, whose shared pool the narrowed child never
-                    # touches. Re-ask for the set the child will actually see, the
-                    # same re-check the arch-crash retry makes. Refusal branch only,
-                    # so a passing launch pays for no probe; an empty answer keeps
-                    # the refusal.
+                    # priced every visible card, including an APU the gate is about to
+                    # drop and whose shared pool the narrowed child never touches.
+                    # Re-ask for the set the child will actually see. Refusal branch
+                    # only, so a passing launch pays for no probe; an empty answer
+                    # keeps the refusal.
                     if _ram_msg and gpu_indices is None and not gpu_ids:
                         _gated_pin = self._arch_gate_survivors(binary)
                         if _gated_pin and not self._amd_apu_wants_unified_memory(_gated_pin):
@@ -13758,11 +13718,10 @@ class LlamaCppBackend:
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
                 )
                 # The gate masks every device away, so the child runs from host RAM
-                # whatever was asked for, while _weights_in_host_memory answered for the
-                # ORIGINAL placement (a manual full offload onto discrete cards reads as
-                # not host-resident). Without this the page-lock is skipped and
-                # _memory_mlock_applicable records that as deliberate, which no relaunch
-                # undoes.
+                # whatever was asked, while _weights_in_host_memory answered for the
+                # ORIGINAL placement. Without this the page-lock is skipped and
+                # _memory_mlock_applicable records that as deliberate, which no
+                # relaunch undoes.
                 if _arch_gate_forced_cpu:
                     _mem_host_resident = True
                 _mem_managed, _mem_extras = apply_model_memory_policy(
@@ -13770,9 +13729,8 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                 )
-                # Remembered so the reload hint and the duplicate-load
-                # comparator don't demand an mlock this launch deliberately
-                # skipped, which no relaunch could ever satisfy.
+                # Remembered so the reload hint and the duplicate-load comparator do
+                # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
                 if should_mlock() and not _mem_host_resident:
                     logger.info(
@@ -13981,16 +13939,14 @@ class LlamaCppBackend:
                 # On ROCm, narrowing only CUDA_VISIBLE_DEVICES leaves the AMD child
                 # seeing the full set, so set HIP_VISIBLE_DEVICES too. Vulkan is pinned
                 # via --device (above), not here.
-                # A deliberate zero-offload load with no GPU companions runs
-                # entirely on CPU, yet a visible CUDA device still costs the child
-                # ~0.5 GB (context + compute scratch) that the CPU-only
-                # classification below reports as free. Hide the GPUs so the load
-                # is exactly what it claims: zero VRAM (verified: GPU stays at idle
-                # baseline and generation runs). Companion loads keep the normal
-                # masking, and a user device pin (in extras or an inherited
-                # LLAMA_ARG_DEVICE) keeps control of its own devices -- the child
-                # aborts on a pin it can't see. The draft-device forms count too:
-                # llama-server parses them even with no drafter loaded.
+                # A deliberate zero-offload load with no GPU companions runs entirely
+                # on CPU, yet a visible CUDA device still costs the child ~0.5 GB
+                # (context + compute scratch) that the CPU-only classification below
+                # reports as free. Hide the GPUs so the load is exactly what it
+                # claims. Companion loads keep the normal masking, and a user device
+                # pin (extras or an inherited LLAMA_ARG_DEVICE) keeps control of its
+                # own devices, the child aborting on a pin it cannot see. The
+                # draft-device forms count too: parsed with no drafter loaded.
                 _cpu_only_zero_offload = (
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
@@ -14003,15 +13959,13 @@ class LlamaCppBackend:
                 # None there, so this branch writes the mask.
                 if _cpu_only_zero_offload or _arch_gate_forced_cpu:
                     self._emit_child_gpu_visibility(env, "-1")
-                    # Manual mode admits tensor parallelism on the FULL device count
-                    # (_effective_gpu_count(None)), which still counts the dropped
-                    # cards, so --split-mode tensor can reach a child that sees none --
-                    # the combination the manual gpu_layers=0 guard above calls out.
-                    # llama_prepare_model_devices then fails the load with
-                    # "LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices" and llama-server
-                    # exits 1 rather than falling back, so normalise to layer/CPU.
-                    # Gate-scoped: the zero-offload arm already dropped Studio's flags,
-                    # and a user --split-mode there is overridden, not stripped.
+                    # Manual mode admits tensor parallelism on the FULL device count,
+                    # which still counts the dropped cards, so --split-mode tensor can
+                    # reach a child that sees none. llama_prepare_model_devices then
+                    # fails with "LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices" and
+                    # llama-server exits 1 rather than falling back, so normalise to
+                    # layer/CPU. Gate-scoped: the zero-offload arm already dropped
+                    # Studio's flags, and a user --split-mode there is overridden.
                     _cpu_cmd = (
                         self._without_flags(cmd, ("--split-mode", "-sm", "--tensor-split", "-ts"))
                         if _arch_gate_forced_cpu
@@ -14032,16 +13986,14 @@ class LlamaCppBackend:
                         self._tensor_parallel = False
                         self._tensor_split = None
                     if _arch_gate_forced_cpu:
-                        # Not gated on the argv strip above: llama.cpp reads the
-                        # LLAMA_ARG_* twins whether or not we ever emitted the
-                        # flags, so an inherited tensor mode aborts a child with
-                        # no visible device on its own.
+                        # Not gated on the argv strip: llama.cpp reads the LLAMA_ARG_*
+                        # twins whether or not we emitted the flags, so an inherited
+                        # tensor mode aborts a child with no visible device on its own.
                         self._clear_split_placement_env(env)
                 elif gpu_indices is not None and not is_vulkan_backend:
-                    # When the user picked GPUs by index, align CUDA's ordering
-                    # with the PCI-bus order the picker enumerated (nvidia-smi),
-                    # so "GPU 1" in the UI is GPU 1 to llama.cpp -- not CUDA's
-                    # default FASTEST_FIRST order (#5025).
+                    # When the user picked GPUs by index, align CUDA's ordering with
+                    # the PCI-bus order the picker enumerated, so "GPU 1" in the UI is
+                    # GPU 1 to llama.cpp, not CUDA's FASTEST_FIRST default (#5025).
                     if gpu_ids:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
@@ -14051,13 +14003,12 @@ class LlamaCppBackend:
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
                 elif not is_vulkan_backend and not gpu_ids:
-                    # Nothing above pinned the child. Two shapes land here and the
-                    # gate breaks both the same way, so they share one probe: `--fit on`
-                    # owning placement (_select_gpus returned (None, True)) and a manual
-                    # per-GPU ratio across ALL GPUs. Either way gpu_indices is None, the
-                    # reactive retry's guard cannot fire, and an uncovered card reaches
-                    # the child. One card short of the forced-CPU branch above; gpu_ids
-                    # is falsy by construction, an explicit pick taking that arm.
+                    # Nothing above pinned the child. Two shapes land here and the gate
+                    # breaks both the same way, so they share one probe: `--fit on`
+                    # owning placement, and a manual per-GPU ratio across ALL GPUs.
+                    # Either way gpu_indices is None, the reactive retry's guard cannot
+                    # fire, and an uncovered card reaches the child. gpu_ids is falsy
+                    # by construction, an explicit pick taking the arm above.
                     _survivors = self._arch_gate_survivors(binary)
                     if _survivors:
                         # The manual ratio was validated against the FULL visible
@@ -14539,11 +14490,9 @@ class LlamaCppBackend:
                         # selection, discrete on this arm by construction, so it never
                         # fired. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
-                        # system RAM, with GGML_CUDA_ENABLE_UNIFIED_MEMORY switched on
-                        # below. Unchecked, an oversized GGUF is OOM-killed mid-load
-                        # instead of getting the refusal the same host gives when the
-                        # APU is picked first. Same guard, re-asked for the set we are
-                        # about to spawn on.
+                        # system RAM. Unchecked, an oversized GGUF is OOM-killed
+                        # mid-load instead of getting the refusal the same host gives
+                        # when the APU is picked first.
                         if model_size is not None and _retry_wants_unified:
                             _retry_ram_msg = self._apu_ram_shortfall_message(
                                 model_size, self._available_system_memory_mib()
@@ -14560,10 +14509,10 @@ class LlamaCppBackend:
                         gpu_indices = _remaining
                         # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided for the CRASHED
                         # set. The canonical #7624 shape crashes on the APU and retries
-                        # on the dGPU, where _amd_apu_wants_unified_memory's docstring
-                        # calls it harmful, so withdraw it -- only the value this launch
-                        # set. Both directions: a markerless mixed host can as easily
-                        # crash on the dGPU and land on the APU, which needs it.
+                        # on the dGPU, where it is harmful, so withdraw it, but only
+                        # the value this launch set. Both directions: a markerless
+                        # mixed host can as easily crash on the dGPU and land on the
+                        # APU, which needs it.
                         if _unified_env_applied and not _retry_wants_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
@@ -14596,10 +14545,9 @@ class LlamaCppBackend:
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
-                            # No ratio record here, unlike the proactive gate:
-                            # _tensor_split is non-None only in manual mode, which
-                            # empties the pool and so leaves gpu_indices None, and this
-                            # arm needs it truthy. No ratio can be live where this runs.
+                            # No ratio record, unlike the proactive gate: _tensor_split
+                            # is non-None only in manual mode, which leaves gpu_indices
+                            # None, and this arm needs it truthy.
                             self._tensor_split = None
                         # A tensor split needs two devices, so narrowing to one makes
                         # --split-mode tensor a no-op still REPORTED as active
@@ -14617,12 +14565,10 @@ class LlamaCppBackend:
                         # This respawn starts from `cmd`, but the crashed launch may
                         # have taken _spawn_and_wait's --fit retry, which appends a
                         # page-lock to its OWN argv and records it. `cmd` never carried
-                        # that lock, so leaving the record alone reports page-locking on
-                        # a child that has none, memory_state_satisfies_settings reads
-                        # the launch as satisfied, and the reload that would apply the
-                        # policy is deduped away. Restore what `cmd` means (a no-op when
-                        # no retry fired), _mem_host_resident included so the respawn's
-                        # own retry can re-arm the lock.
+                        # that lock, so leaving the record alone lets
+                        # memory_state_satisfies_settings judge the launch satisfied and
+                        # dedupe away the reload that would apply the user's page-lock.
+                        # Restore what `cmd` means (a no-op when no retry fired).
                         (
                             _mem_host_resident,
                             self._memory_state,
@@ -14630,14 +14576,13 @@ class LlamaCppBackend:
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
                         # Residency is a property of the DEVICES, which the retry just
-                        # changed: crash on the discrete card, land on the unified-memory
-                        # APU, and the weights are host-backed after all, so the lock the
-                        # first launch skipped ("fully offloaded to a discrete GPU") is
-                        # the one the user asked for. Left alone the respawn runs
-                        # unlocked AND records _memory_mlock_applicable False, reading
-                        # the missing lock as deliberate and deduping away the reload
-                        # that would apply it. Through the same helpers as the first
-                        # launch, so the two cannot drift.
+                        # changed: crash on the discrete card, land on the
+                        # unified-memory APU, and the weights are host-backed after
+                        # all, so the lock the first launch skipped is the one the user
+                        # asked for. Left alone the respawn runs unlocked AND records
+                        # _memory_mlock_applicable False, reading the missing lock as
+                        # deliberate and deduping away the reload that would apply it.
+                        # Through the same helpers, so the two cannot drift.
                         _retry_host_resident = self._weights_in_host_memory(
                             fully_gpu_offloaded = fully_gpu_offloaded,
                             gpu_memory_mode = gpu_memory_mode,
@@ -14653,11 +14598,11 @@ class LlamaCppBackend:
                         # Lock-ADDING direction only: `cmd` carries a policy-emitted
                         # lock only when the first launch found the weights
                         # host-resident, so this is the one direction that adds without
-                        # taking anything back off argv -- and taking flags off would
-                        # mean scanning for --mlock/--no-mmap, VALUELESS in llama.cpp's
+                        # taking anything back off argv. Removing flags would mean
+                        # scanning for --mlock/--no-mmap, VALUELESS in llama.cpp's
                         # parser, so the scan would eat the user extra after them. The
-                        # reverse direction leaves the crashed launch's lock on argv and
-                        # in the record, which stays truthful: the child does hold it.
+                        # reverse direction leaves the crashed launch's lock in place,
+                        # which stays truthful: the child does hold it.
                         if _retry_host_resident and not _mem_host_resident:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
@@ -14665,11 +14610,9 @@ class LlamaCppBackend:
                                 weights_in_host_memory = _retry_host_resident,
                             )
                             if _retry_managed:
-                                # After the user extras, so llama.cpp's last-wins
-                                # parse gives it the final say over any hand-written
-                                # memory flag -- the end state the first launch reaches
-                                # by emitting the lock and letting the policy filter the
-                                # extras. Nothing is stripped, so extras it kept survive.
+                                # After the user extras, so llama.cpp's last-wins parse
+                                # gives it the final say over any hand-written memory
+                                # flag. Nothing is stripped, so kept extras survive.
                                 cmd.extend(_retry_managed)
                             _mem_host_resident = _retry_host_resident
                             self._memory_mlock_applicable = _retry_host_resident
@@ -15084,10 +15027,10 @@ class LlamaCppBackend:
                     gpu_memory_mode == "manual" and gpu_layers == 0
                 ) or _arch_gate_forced_cpu
                 # Published on EVERY load, not only when true: load_model phase 1 only
-                # kills the old process, so a value left from a previous launch would
-                # answer holds_no_vram for the child that replaced it. A host that gains
-                # coverage (a llama.cpp update) would then report a VRAM-holding server
-                # as holding none, and the arbiter leave it unclaimed.
+                # kills the old process, so a stale value would answer holds_no_vram
+                # for the child that replaced it. A host that gains coverage (a
+                # llama.cpp update) would then report a VRAM-holding server as holding
+                # none, and the arbiter leave it unclaimed.
                 self._arch_gate_forced_cpu = bool(_arch_gate_forced_cpu)
                 if _arch_gate_forced_cpu:
                     # False, never None: _classify_gpu_offload answers None here (the

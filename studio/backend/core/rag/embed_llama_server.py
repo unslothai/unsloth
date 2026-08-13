@@ -237,12 +237,11 @@ class LlamaServerBackend:
         """GPU ids to pin the embedding child to, or [] when it needs no mask.
 
         Knowing a supported device exists is not enough: the child enumerates every
-        ROCm agent, and the HSA enumeration is what dies on an uncovered GPU (#7624),
-        so on a mixed host the gate passes on the dGPU and the server still crashes
-        on the iGPU. Pin the survivors instead. Empty (no mask, byte-identical
-        behaviour) unless the gate is both known and actually narrowing: NVIDIA, CPU,
-        Vulkan and macOS have no mapped_targets marker, and a build covering every
-        card needs no pin. Same helper the chat launch uses, so both children agree."""
+        ROCm agent, and that HSA enumeration is what dies on an uncovered GPU (#7624),
+        so on a mixed host the gate passes on the dGPU and the server still crashes on
+        the iGPU. Pin the survivors instead. Empty unless the gate is both known and
+        actually narrowing: NVIDIA, CPU, Vulkan and macOS have no mapped_targets
+        marker, and a build covering every card needs no pin."""
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._arch_gate_survivors(binary)
 
@@ -292,11 +291,10 @@ class LlamaServerBackend:
             # agents below HIP, so clearing it would expose MORE of them to the HSA
             # enumeration that dies on an uncovered arch (#7624).
             env["HIP_VISIBLE_DEVICES"] = "-1"
-            # LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU are the env spelling of --device
-            # / --main-gpu, which this command line does not pass. Hiding every device
-            # while leaving that pick in place is the one combination llama.cpp cannot
-            # serve: it rejects a device name that no longer enumerates and exits
-            # instead of running on the CPU. Same clear the chat sentinel makes.
+            # LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU are the env spelling of --device /
+            # --main-gpu. Hiding every device while leaving that pick in place makes
+            # llama.cpp reject the name that no longer enumerates and exit instead of
+            # running on the CPU. Same clear the chat sentinel makes.
             from core.inference.llama_cpp import LlamaCppBackend
 
             LlamaCppBackend._clear_device_placement_env(env)
