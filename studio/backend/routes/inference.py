@@ -3973,6 +3973,8 @@ def _direct_llama_is_busy() -> bool:
     """
     with _direct_llama_inflight_lock:
         return _direct_llama_inflight > 0
+
+
 def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
     # Disabled admission takes no leases and stays at capacity 1, so a multi-slot
@@ -12765,6 +12767,7 @@ async def openai_chat_completions(
                 llama_backend.context_length,
                 timings = timings,
             )
+
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
                 delta = delta.model_copy(update = {"content": ""})

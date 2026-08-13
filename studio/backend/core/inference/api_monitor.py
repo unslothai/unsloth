@@ -178,9 +178,7 @@ class ApiMonitorEntry:
             "ttft_ms": ttft_ms,
             "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
             "prompt_tok_per_sec": (
-                round(self.prompt_tok_per_sec, 2)
-                if self.prompt_tok_per_sec is not None
-                else None
+                round(self.prompt_tok_per_sec, 2) if self.prompt_tok_per_sec is not None else None
             ),
             # The engine's decode span, not the streamed window: an unknowable first-chunk token
             # count and reasoning tokens both inflate a streamed rate. Absent rather than guessed.

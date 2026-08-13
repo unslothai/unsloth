@@ -3247,6 +3247,8 @@ def _backfill_usage_from_timings(usage, timings):
         out.get("completion_tokens") or 0
     )
     return out
+
+
 def _report_live_llama_timings(callback, chunk) -> None:
     """Report request-scoped llama.cpp progress without altering the public stream."""
     if callback is None or not isinstance(chunk, dict):

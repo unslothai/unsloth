@@ -34,18 +34,24 @@ from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
+
+
 def _progress(*, processed: int, cached: int, time_ms: int) -> str:
-    return "data: " + json.dumps(
-        {
-            "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
-            "prompt_progress": {
-                "total": processed,
-                "processed": processed,
-                "cache": cached,
-                "time_ms": time_ms,
-            },
-        }
-    ) + "\n"
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
+                "prompt_progress": {
+                    "total": processed,
+                    "processed": processed,
+                    "cache": cached,
+                    "time_ms": time_ms,
+                },
+            }
+        )
+        + "\n"
+    )
 
 
 def _done() -> str:
@@ -120,7 +126,8 @@ def _make_backend(
 def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(monkeypatch):
     stream = [
         _progress(processed = 1000, cached = 100, time_ms = 100),
-        "data: " + json.dumps(
+        "data: "
+        + json.dumps(
             {
                 "choices": [{"index": 0, "delta": {"content": "OK"}}],
                 "timings": {
@@ -132,7 +139,8 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
                     "predicted_per_second": 200,
                 },
             }
-        ) + "\n",
+        )
+        + "\n",
         _done(),
     ]
     payloads: list[dict] = []
@@ -176,6 +184,8 @@ def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatc
     assert payloads[0]["timings_per_token"] is True
     assert samples[0]["prompt_per_second"] == 8000
     assert [event["text"] for event in events if event["type"] == "content"] == ["done"]
+
+
 def _patch_successful_respawn(
     monkeypatch,
     backend,
