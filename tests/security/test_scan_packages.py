@@ -3155,3 +3155,108 @@ def test_an_import_inside_a_function_is_not_visible_to_a_sibling():
         "    def m(self, data):\n        run(marshal.loads(data))\n"
     )
     assert _high(in_class), "a class-body import is not scoped away"
+
+
+def test_a_module_name_split_across_adjacent_literals_still_loads_builtins():
+    # The compiler joins adjacent literals and folds `+` between two of them, so
+    # `__import__('built' 'ins')` returns the same module `__import__('builtins')`
+    # does. Requiring one STRING token left the alias unrecorded, which demoted an
+    # executed builtin from the scan-blocking HIGH to a MEDIUM obfuscation note.
+    tail = "b.exec(marshal.loads(BLOB))\n"
+    for spelling in (
+        "__import__('built' 'ins')",
+        "__import__('bu' 'ilt' 'ins')",
+        "__import__(('builtins'))",
+        "__import__('built' + 'ins')",
+        "__import__(\n    'built'\n    'ins'\n)",
+    ):
+        payload = f"import marshal\nb = {spelling}\n{tail}"
+        assert _high(payload), f"{spelling} loads builtins:\n{payload}"
+
+    walrus = f"import marshal\nif (b := __import__('built' 'ins')):\n    {tail}"
+    assert _high(walrus), "a walrus binding reads the joined literal too"
+    loader = (
+        "import marshal\nfrom importlib import import_module\n"
+        f"b = import_module('built' 'ins')\n{tail}"
+    )
+    assert _high(loader), "the other loader joins its literals the same way"
+
+    # The join is what is read, not the fact that a literal was split: a run that
+    # spells anything else is still an unknown module.
+    for spelling in ("__import__('js' 'on')", "__import__('builtins' 'x')", "__import__(b'built' b'ins')"):
+        payload = f"import marshal\nb = {spelling}\n{tail}"
+        assert _high(payload, "pkg/_infer.py") == [], f"{spelling} is not builtins:\n{payload}"
+
+
+def test_a_function_that_assigns_an_alias_shadows_it_over_the_whole_body():
+    # Python decides what is local by scanning the block, not by running it, so
+    # a call written above the assignment raises `UnboundLocalError` instead of
+    # reaching the module-level alias. Cutting only from the assignment onwards
+    # read `def f(): run(marshal.loads(x)); run = model` as an executed builtin.
+    payload = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def f():\n    run(marshal.loads(BLOB))\n    run = model\n"
+    )
+    assert _high(payload, "pkg/_infer.py") == [], f"the call is unbound, not the builtin:\n{payload}"
+    nested = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def f():\n    run(marshal.loads(BLOB))\n    if x:\n        run = model\n"
+    )
+    assert _high(nested, "pkg/_infer.py") == [], "an assignment anywhere in the body makes it local"
+    in_fstring = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def f():\n    y = f'{run(marshal.loads(BLOB))}'\n    run = model\n"
+    )
+    assert _high(in_fstring, "pkg/_infer.py") == [], "the f-string scan reads the same shadow"
+
+    # It is the assigning function that is shadowed, and only it.
+    sibling = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def g():\n    run = model\ndef f():\n    run(marshal.loads(BLOB))\n"
+    )
+    assert _high(sibling), "a sibling function still resolves the module-level alias"
+    module_level = (
+        "from builtins import exec as run\nimport marshal\nrun(marshal.loads(BLOB))\nrun = model\n"
+    )
+    assert _high(module_level), "module-level code runs top to bottom, so the call above stands"
+    rearmed = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    b = model\n    b = __import__('builtins')\n"
+        "    b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(rearmed), "putting the module back in the name re-arms it"
+    imported = (
+        "import marshal\ndef f():\n    run = model\n"
+        "    from builtins import exec as run\n    run(marshal.loads(BLOB))\n"
+    )
+    assert _high(imported), "a local import re-arms the alias too"
+    declared = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    global b\n    b.exec(marshal.loads(BLOB))\n    b = model\n"
+    )
+    assert _high(declared), "`global b` stops the assignment creating a local"
+
+
+def test_an_assignment_under_a_global_declaration_cancels_the_alias():
+    # `global b` makes the assignment write the module-level name, so `b` really
+    # is the model at the call below it. Skipping every indented cancellation for
+    # a scope that declared the name global emitted a HIGH for that call.
+    payload = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    global b\n    b = model\n    b.eval(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload, "pkg/_infer.py") == [], f"`b` is the model at the call:\n{payload}"
+
+    # Only the declaring scope's own rebinding counts; an enclosing function's
+    # local is still outranked by the declaration.
+    enclosing = (
+        "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+        "def outer():\n    b = model\n    def inner():\n        global b\n"
+        "        b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(enclosing), "an enclosing local does not reach a call declared global"
+    without = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    global b\n    b.eval(marshal.loads(BLOB))\n"
+    )
+    assert _high(without), "the declaration alone cancels nothing"

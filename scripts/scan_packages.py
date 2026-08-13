@@ -150,6 +150,7 @@ RE_BASE64 = re.compile(
 
 _EXEC_NAMES = frozenset(("exec", "eval"))
 _BUILTINS_NAMES = frozenset(("builtins", "__builtins__"))
+_BUILTINS_LEN = len("builtins")
 # The loader calls a receiver can be: `__import__(...)` is a builtin and
 # `import_module(...)` needs only `from importlib import import_module`.
 # `__import__` is a builtin, so it means the loader in any file without being
@@ -198,6 +199,16 @@ _MAX_WALRUS_VALUE = 32
 # read even though the plain word never appears in it.
 _RE_STRING_ESCAPE = re.compile(
     r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{)"
+)
+
+# `__import__('built' 'ins')` names the module without the word ever appearing,
+# because the compiler joins adjacent literals and folds `+` between two of
+# them. Only a run whose first fragment is a non-empty proper prefix of the name
+# can spell it, so the ordinary file that merely splits a long message across
+# two lines still skips the pass.
+_RE_SPLIT_BUILTINS = re.compile(
+    r"""['"](?:b|bu|bui|buil|built|builti|builtin)['"]"""
+    r"""(?:\s|\\|\+|\#[^\n]*\n)*[A-Za-z]{0,2}['"]"""
 )
 
 
@@ -374,6 +385,26 @@ def _with_suite_tail(stmt: list):
             if i + 1 < len(stmt):
                 yield stmt[i + 1 :]
             return
+
+
+def _header_end(stmt: list):
+    """The token the `def`/`class` header ends on: its first depth-0 colon.
+
+    `def f(): run = model` keeps the tail glued to the header, so the last
+    token is the tail's, not the header's. The body a scope governs starts
+    after the colon.
+    """
+    depth = 0
+    for tok in stmt:
+        if tok.type != tokenize.OP:
+            continue
+        if tok.string in _OPENERS:
+            depth += 1
+        elif tok.string in _CLOSERS:
+            depth -= 1
+        elif tok.string == ":" and depth == 0:
+            return tok
+    return stmt[-1]
 
 
 def _split_top(toks: list, sep: str = ",") -> list:
@@ -582,6 +613,33 @@ def _matching_opener(toks: list, close_at: int) -> "int | None":
     return None
 
 
+def _const_string(toks: list) -> "str | None":
+    """The value of a constant string expression, or None if it is not one.
+
+    The compiler joins adjacent literals and folds `+` between two of them, so
+    `__import__('built' 'ins')` loads exactly what `__import__('builtins')`
+    loads; reading only a lone STRING token let those spellings pass as an
+    unknown module and demoted a real builtins call to the non-blocking
+    obfuscation finding. Parentheses are stripped for the same reason. Anything
+    with a runtime part - a name, a call, a bytes or f-string literal - is not a
+    constant and returns None.
+    """
+    toks = _strip_parens(toks)
+    if not toks:
+        return None
+    out = []
+    for tok in toks:
+        if tok.type == tokenize.OP and tok.string == "+" and out:
+            continue
+        if tok.type != tokenize.STRING:
+            return None
+        body = _string_body(tok.string)
+        if body is None:
+            return None
+        out.append(body)
+    return "".join(out)
+
+
 def _loads_builtins(value: list, loaders: _Loaders) -> bool:
     """Whether `value` plainly evaluates to the `builtins` module.
 
@@ -604,10 +662,7 @@ def _loads_builtins(value: list, loaders: _Loaders) -> bool:
     if open_at is None:
         return False
     args = _split_top(value[open_at + 1 : -1])
-    first = args[0]
-    if len(first) != 1 or first[0].type != tokenize.STRING:
-        return False
-    if _string_body(first[0].string) != "builtins":
+    if _const_string(args[0]) != "builtins":
         return False
     call = value[:open_at]
     if len(call) == 1:
@@ -703,25 +758,38 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
         # `v = compute(0)`, and it allocates nothing either.
         return []
     marker = assign = False
+    # The bodies of the adjacent literals seen so far, since the compiler joins
+    # them: neither half of `'built' 'ins'` carries the module name, but the run
+    # does. Dropped once it outgrows the name it could spell, so a statement
+    # holding a long chain of literals still costs one comparison per token.
+    joined = ""
     for tok in stmt:
         ttype = tok.type
         if ttype == tokenize.NAME:
+            joined = ""
             if tok.string in _BUILTINS_NAMES:
                 if assign:
                     break
                 marker = True
         elif ttype == tokenize.OP:
+            if tok.string != "+":
+                joined = ""  # `+` between two literals folds; anything else ends the run
             if tok.string == "=":
                 if marker:
                     break
                 assign = True
-        elif ttype == tokenize.STRING and (
-            "builtins" in tok.string
-            or ("\\" in tok.string and _string_body(tok.string) == "builtins")
-        ):
-            if assign:
-                break
-            marker = True
+        elif ttype == tokenize.STRING:
+            body = _string_body(tok.string)
+            if joined is None or body is None or len(joined) + len(body) > _BUILTINS_LEN:
+                joined = None
+            else:
+                joined += body
+            if "builtins" in tok.string or joined == "builtins":
+                if assign:
+                    break
+                marker = True
+        else:
+            joined = ""
     else:
         return []
     groups = _split_top(stmt, "=")
@@ -1170,6 +1238,7 @@ class _Aliases:
         "cancel",
         "declared_global",
         "scoped_imports",
+        "local_shadows",
         "loader_modules",
         "safe_receivers",
         "safe_funcs",
@@ -1185,6 +1254,7 @@ class _Aliases:
         declared_global: "dict | None" = None,
         loader_modules: "set | None" = None,
         scoped_imports: "dict | None" = None,
+        local_shadows: "dict | None" = None,
     ):
         self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
         self.live_funcs = frozenset(funcs)
@@ -1194,6 +1264,10 @@ class _Aliases:
         # else in the file: `def a(): from builtins import exec as run` leaves
         # the `run(...)` in a sibling function its own name, not the builtin.
         self.scoped_imports = scoped_imports or {}
+        # An alias a function assigns is that function's local over its whole
+        # body: `def f(): run(BLOB); run = model` raises `UnboundLocalError`
+        # rather than reaching the module-level `run`.
+        self.local_shadows = local_shadows or {}
         self.safe_receivers = frozenset(self.live_receivers - set(cancel))
         self.safe_funcs = frozenset(self.live_funcs - set(cancel))
         # `__import__` is a builtin, so it means the loader in any file; the
@@ -1280,6 +1354,7 @@ def _close_scope(
     end: int,
     local_imports: "dict | None" = None,
     file_wide: "set | None" = None,
+    local_shadows: "dict | None" = None,
 ) -> None:
     """Record what a closing `def` or `class` body bound, as offset spans.
 
@@ -1288,9 +1363,20 @@ def _close_scope(
     span runs from the header to wherever the body ends, and an alias imported
     in the body is visible over exactly the same range - the function and the
     scopes nested in it, which are written inside it.
+
+    A name the body assigns is local to the whole function for the same reason,
+    and Python decides that by scanning the block rather than by running it, so
+    a call written *above* the assignment raises `UnboundLocalError` instead of
+    reaching the module-level alias. That span starts after the header, because
+    a default argument is evaluated in the enclosing scope where the alias does
+    still resolve.
     """
     names = scope[3]
     imported = scope[4] if len(scope) > 4 else None
+    shadowed = scope[6] if len(scope) > 6 else None
+    if shadowed and local_shadows is not None:
+        for name in shadowed:
+            local_shadows.setdefault(name, []).append((scope[5], end))
     if imported and local_imports is not None:
         for name in imported:
             if names and name in names:
@@ -1319,9 +1405,21 @@ def _in_scope(spans: list, start: int) -> bool:
     return False
 
 
-def _declares_global(spans: list, start: int) -> bool:
-    """Whether offset `start` sits in a scope that declared the name global."""
-    return _in_scope(spans, start)
+def _declares_global(spans: list, start: int) -> "tuple | None":
+    """The innermost scope containing `start` that declared the name global.
+
+    The span itself, not a flag, because the declaring scope is also the one
+    place whose rebindings still count: `global b` makes `b = model` write the
+    module-level name, so that assignment silences the calls below it exactly
+    as a module-level one would. Only an *enclosing* function's local is the
+    thing a declaration outranks. Innermost wins, since a nested `global` is
+    the declaration that governs the call.
+    """
+    found = None
+    for span in spans:
+        if span[0] <= start < span[1] and (found is None or span[0] > found[0]):
+            found = span
+    return found
 
 
 def _index_cancellations(cancel: dict) -> dict:
@@ -1351,20 +1449,25 @@ def _is_cancelled(
     indexed: list,
     start: int,
     col: int,
-    declared_global: bool = False,
+    global_scope: "tuple | None" = None,
 ) -> bool:
     for at_col, (ats, entries) in indexed:
         if at_col > col:
             break  # sorted by indent, so nothing deeper can reach this call
-        if declared_global and at_col > 0:
-            # The call is in a scope that declared the name `global`, so it
-            # resolves at module level whatever any enclosing function did to
-            # its own local of that name.
-            continue
         i = bisect.bisect_right(ats, start)
         if not i:
             continue
-        end = entries[i - 1][2]
+        entry = entries[i - 1]
+        if global_scope is not None and at_col > 0 and not (
+            global_scope[0] <= entry[0] < global_scope[1]
+        ):
+            # The call is in a scope that declared the name `global`, so it
+            # resolves at module level whatever any *enclosing* function did to
+            # its own local of that name. A rebinding written inside the
+            # declaring scope is not that: `global b` makes it write the
+            # module-level name, and the call below it reads the new value.
+            continue
+        end = entry[2]
         if end is None or start < end:
             return True
     return False
@@ -1478,7 +1581,8 @@ def _fstring_spans(
     base = offsets.of(*tok.start)
     live = None
     scoped = aliases.scoped_imports if positional else None
-    if cancel or scoped:
+    shadows = aliases.local_shadows if positional else None
+    if cancel or scoped or shadows:
 
         def live(name: str, at: int) -> bool:
             start = base + at
@@ -1486,13 +1590,16 @@ def _fstring_spans(
                 where = scoped.get(name)
                 if where is not None and not _in_scope(where, start):
                     return False  # imported in some other function
+            spans = aliases.declared_global.get(name)
+            declaring = _declares_global(spans, start) if spans else None
+            if shadows and declaring is None:
+                body = shadows.get(name)
+                if body is not None and _in_scope(body, start):
+                    return False  # the enclosing function assigns it: a local
             frontier = cancel.get(name) if cancel else None
             if frontier is None:
                 return True
-            spans = aliases.declared_global.get(name)
-            return not _is_cancelled(
-                frontier, start, col, bool(spans) and _declares_global(spans, start)
-            )
+            return not _is_cancelled(frontier, start, col, declaring)
 
     for span in _regex_spans(code, receivers, funcs, live, aliases.loaders, aliases.loader_modules):
         out.append(_Span(base + span.start(), base + span.end()))
@@ -1551,6 +1658,19 @@ def _statement_spans(
             where = aliases.scoped_imports.get(alias)
             if where is not None and not _in_scope(where, start):
                 continue
+        declaring = None
+        if alias is not None and (cancel or (positional and aliases.local_shadows)):
+            spans = aliases.declared_global.get(alias)
+            declaring = _declares_global(spans, start) if spans else None
+        if positional and alias is not None and aliases.local_shadows and declaring is None:
+            # The enclosing function assigns the alias, which makes it that
+            # function's local everywhere in the body - so a call written above
+            # the assignment raises `UnboundLocalError` instead of reaching the
+            # module-level name. A `global` declaration in the calling scope is
+            # what stops the assignment creating a local, so it opts back out.
+            body = aliases.local_shadows.get(alias)
+            if body is not None and _in_scope(body, start):
+                continue
         if cancel and alias is not None:
             frontier = cancel.get(alias)
             # `import builtins as m` ... `m = load_model()` ... `m.eval()`: past
@@ -1559,13 +1679,7 @@ def _statement_spans(
             # it, so a local `m = model` in some function above cannot silence a
             # module-level call.
             if frontier is not None:
-                spans = aliases.declared_global.get(alias)
-                if _is_cancelled(
-                    frontier,
-                    start,
-                    stmt[0].start[1],
-                    bool(spans) and _declares_global(spans, start),
-                ):
+                if _is_cancelled(frontier, start, stmt[0].start[1], declaring):
                     continue
         out.append(_Span(start, offsets.of(*nxt.end)))
 
@@ -1745,6 +1859,7 @@ class _ExecEvalMatcher:
         declared_global: "dict | None" = None,
         loader_modules: "set | None" = None,
         scoped_imports: "dict | None" = None,
+        local_shadows: "dict | None" = None,
     ):
         self.aliases = _Aliases(
             modules,
@@ -1754,6 +1869,7 @@ class _ExecEvalMatcher:
             declared_global,
             loader_modules,
             scoped_imports,
+            local_shadows,
         )
         self.receivers = self.aliases.live_receivers
         self.funcs = self.aliases.live_funcs
@@ -1906,6 +2022,11 @@ class _ExecEvalPattern:
         # Where an alias imported inside a function may be read, for the aliases
         # no module-level binding makes visible everywhere.
         scoped_imports: dict = {}
+        # Where an alias a function assigns is that function's local, as the
+        # offsets of the body that assigns it. Python decides this by scanning
+        # the block, so the whole body is shadowed - not just the lines below
+        # the assignment.
+        local_shadows: dict = {}
         loaders = _Loaders()
         # An escaped literal spells the module without the word appearing, so
         # that file has to be read too - but only when it also holds a call to
@@ -1916,7 +2037,10 @@ class _ExecEvalPattern:
             # `import_module(n).exec(...)` reaches the builtin without the word
             # `builtins` appearing anywhere.
             or "import_module" in content
-            or (("exec" in content or "eval" in content) and _RE_STRING_ESCAPE.search(content))
+            or (
+                ("exec" in content or "eval" in content)
+                and (_RE_STRING_ESCAPE.search(content) or _RE_SPLIT_BUILTINS.search(content))
+            )
         ):
             failed: list = []
             # The aliases bound by something other than an import. An import is
@@ -1966,8 +2090,9 @@ class _ExecEvalPattern:
                 levels: list = []
                 # The `def` and `class` headers the statement sits under, as
                 # [indent, is a class, header offset, names declared global,
-                # aliases imported here]. Only those two open a scope, so this
-                # is what says whether a binding is a class attribute.
+                # aliases imported here, header end offset, names this body
+                # assigns]. Only those two open a scope, so this is what says
+                # whether a binding is a class attribute.
                 scopes: list = []
                 # Where an alias imported inside a function is visible, as the
                 # offsets of the scope that imported it.
@@ -1980,7 +2105,14 @@ class _ExecEvalPattern:
                     if levels:
                         _cancel_close(opened, levels, at, col)
                     while scopes and scopes[-1][0] >= col:
-                        _close_scope(scopes.pop(), declared_global, at, local_imports, by_value)
+                        _close_scope(
+                            scopes.pop(),
+                            declared_global,
+                            at,
+                            local_imports,
+                            by_value,
+                            local_shadows,
+                        )
                     opens = _opens_scope(stmt)
                     # A class body is the one scope a name does not cross: the
                     # methods written in it do not see its bindings. Read before
@@ -1988,7 +2120,17 @@ class _ExecEvalPattern:
                     # header itself so a one-line `class C: b = model` counts.
                     in_class = (scopes and scopes[-1][1]) or opens == "class"
                     if opens is not None:
-                        scopes.append([col, opens == "class", at, None, None])
+                        scopes.append(
+                            [
+                                col,
+                                opens == "class",
+                                at,
+                                None,
+                                None,
+                                offsets.of(*_header_end(stmt).end),
+                                None,
+                            ]
+                        )
                     if head.type == tokenize.NAME and head.string == "global":
                         # `global b` in a nested function makes its `b` the
                         # module-level one, whatever the enclosing function did
@@ -2012,6 +2154,13 @@ class _ExecEvalPattern:
                             for name in bound:
                                 cancel.pop(name, None)
                                 opened.pop(name, None)
+                                for scope in scopes:
+                                    # The import re-arms the alias, so the body
+                                    # is no longer shadowing a name it only
+                                    # assigns; the calls under it read the
+                                    # module again.
+                                    if scope[6]:
+                                        scope[6].discard(name)
                             if scopes and not scopes[-1][1]:
                                 # An import inside a `def` binds a local: the
                                 # sibling function below it does not see the
@@ -2060,6 +2209,12 @@ class _ExecEvalPattern:
                         for name in aliased:
                             cancel.pop(name, None)
                             opened.pop(name, None)
+                            for scope in scopes:
+                                # The body puts the module back in the name, so
+                                # it is no longer shadowing an alias it only
+                                # assigns something else to.
+                                if scope[6]:
+                                    scope[6].discard(name)
                         rebound.clear()
                         continue
                     if in_class:
@@ -2075,13 +2230,39 @@ class _ExecEvalPattern:
                     # builtin and only then stops `b` being the module. Starting
                     # the span at the first token suppressed that call.
                     ends = offsets.of(*stmt[-1].end)
+                    if scopes and opens is None:
+                        # An assignment inside a `def` makes the name that
+                        # function's local for the whole body, so the alias is
+                        # unreachable above the assignment too - a call there is
+                        # an `UnboundLocalError`, not the builtin. A name the
+                        # scope declared `global` is exempt: that is what stops
+                        # the assignment creating a local at all.
+                        #
+                        # A statement that opens a scope is skipped: `def f()`
+                        # binds `f` in the enclosing scope, and the tail of a
+                        # one-line suite is re-yielded as its own statement,
+                        # where the body it really belongs to is the open one.
+                        declared = scopes[-1][3]
+                        shadow = rebound if declared is None else rebound - declared
+                        if shadow:
+                            names = scopes[-1][6]
+                            if names is None:
+                                names = scopes[-1][6] = set()
+                            names |= shadow
                     for name in rebound:
                         # Statements arrive in source order, so the first
                         # rebinding seen at a given indent is the earliest one.
                         _cancel_add(cancel, opened, levels, name, ends, col)
                     rebound.clear()
                 for scope in reversed(scopes):
-                    _close_scope(scope, declared_global, len(content), local_imports, by_value)
+                    _close_scope(
+                        scope,
+                        declared_global,
+                        len(content),
+                        local_imports,
+                        by_value,
+                        local_shadows,
+                    )
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or
                     # indent to compare against; cancel from the top of the file
@@ -2101,6 +2282,8 @@ class _ExecEvalPattern:
                         scoped_imports[name] = spans
                 for spans in declared_global.values():
                     spans.sort()
+                for spans in local_shadows.values():
+                    spans.sort()
         matcher = _ExecEvalMatcher(
             modules,
             funcs,
@@ -2110,6 +2293,7 @@ class _ExecEvalPattern:
             declared_global,
             loaders.modules,
             scoped_imports,
+            local_shadows,
         )
         self._cached = (content, matcher)
         return matcher
