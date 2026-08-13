@@ -3286,7 +3286,12 @@ $NoDatasetsMode = ($null -ne $env:UNSLOTH_NO_DATASETS) -and
 # again. The marker still answers on its own, which is its job -- it survives a pass
 # that died before the manifest was written. (Get-PersistedNoTorch is the same shape
 # for no-torch.)
-if (-not $NoDatasetsMode -and $ReusedSetupPython) {
+# Only when the variable is unset: any explicit value wins, as it does in
+# install_python_stack._infer_no_datasets(), so UNSLOTH_NO_DATASETS=0 can bring a
+# tier install back to the full set instead of being overruled by its own marker.
+$_noDatasetsRequested = ($null -ne $env:UNSLOTH_NO_DATASETS) -and
+    ("" -ne $env:UNSLOTH_NO_DATASETS.Trim())
+if (-not $NoDatasetsMode -and -not $_noDatasetsRequested -and $ReusedSetupPython) {
     try {
         # <venv>\Scripts\python.exe -> <venv>
         $_venvRoot = Split-Path -Parent (Split-Path -Parent $ReusedSetupPython)
@@ -3321,7 +3326,8 @@ if (-not $NoDatasetsMode -and $ReusedSetupPython) {
 # venv it is given; it cannot go and fetch an x64 interpreter the way install.ps1
 # can, so adopting the tier is the only outcome here that leaves a working Studio.
 # Said out loud, with the remedy, because it is a reduced install.
-if (-not $NoDatasetsMode -and (Get-HostMachineArch) -eq "arm64" -and $ReusedSetupPython) {
+if (-not $NoDatasetsMode -and -not $_noDatasetsRequested -and
+    (Get-HostMachineArch) -eq "arm64" -and $ReusedSetupPython) {
     if ((Get-PythonPlatformTag $ReusedSetupPython) -eq "win-arm64") {
         $NoDatasetsMode = $true
         $env:UNSLOTH_NO_DATASETS = "1"
@@ -3479,11 +3485,21 @@ if ($PythonOk) {
         winget install -e --id Python.Python.3.12 --source winget @_wingetArchArgs --accept-package-agreements --accept-source-agreements
         Refresh-Environment
     }
-    $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+    $_afterWinget = (Get-Command python -ErrorAction SilentlyContinue)
+    $HasPython = $null -ne $_afterWinget
     if (-not $HasPython) {
         Write-StudioLine "[ERROR] Python could not be installed automatically." -ForegroundColor Red
         Write-StudioLine "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
         Exit-SetupFailure "Python could not be installed automatically"
+    }
+    # The ARM64 branch above cleared $HasPython precisely because the python on PATH
+    # was native. If winget failed, or its x64 build is not first on PATH, that same
+    # interpreter answers here: without this the run continues on the build that was
+    # just rejected and dies later, deep in the dependency pass.
+    if (-not (Test-CompatibleSetupPythonArch $_afterWinget.Source)) {
+        Write-StudioLine "[ERROR] Python on PATH is a native ARM64 build, which has no wheels for the stack." -ForegroundColor Red
+        Write-StudioLine "        Install x64 Python 3.12 from https://python.org/downloads/windows/ (it runs emulated)." -ForegroundColor Yellow
+        Exit-SetupFailure "No x64 Python 3.11-3.13 was found"
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
