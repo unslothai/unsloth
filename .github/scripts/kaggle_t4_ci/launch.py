@@ -86,6 +86,11 @@ _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 PUSH_ATTEMPTS = 4
 PUSH_BACKOFF_SEC = 45
 
+# Ceiling on one `kaggle kernels push` subprocess. Named because the job
+# timeout in the workflow is derived from it, and because exceeding it is a
+# retryable, ambiguous outcome rather than an error -- see push().
+PUSH_SUBPROCESS_TIMEOUT_SEC = 600
+
 # What a throttled or briefly unavailable push looks like coming back. The
 # JSON-decode message is the common face: Kaggle answers 429 and 503 with an
 # HTML error page, the client decodes it as JSON regardless, and the
@@ -249,23 +254,39 @@ def push(
                 encoding = "utf-8",
             )
 
-            proc = subprocess.run(
-                [
-                    "kaggle",
-                    "kernels",
-                    "push",
-                    "-p",
-                    str(workdir),
-                    "--accelerator",
-                    accelerator,
-                    "-t",
-                    str(kernel_timeout_sec),
-                ],
-                capture_output = True,
-                text = True,
-                timeout = 600,
-            )
-            out = proc.stdout + proc.stderr
+            try:
+                proc = subprocess.run(
+                    [
+                        "kaggle",
+                        "kernels",
+                        "push",
+                        "-p",
+                        str(workdir),
+                        "--accelerator",
+                        accelerator,
+                        "-t",
+                        str(kernel_timeout_sec),
+                    ],
+                    capture_output = True,
+                    text = True,
+                    timeout = PUSH_SUBPROCESS_TIMEOUT_SEC,
+                )
+                out = proc.stdout + proc.stderr
+            except subprocess.TimeoutExpired:
+                # A push that ran out of wall clock is the MOST ambiguous
+                # outcome there is, not the least: the client was killed
+                # mid-call, so whether Kaggle accepted the kernel is
+                # unknowable from here. Letting the exception out loses the
+                # slug with it, and with the slug goes every chance of
+                # deleting the session it may have started.
+                #
+                # So it is recorded as a failed attempt like any other. The
+                # slug stays in `attempted`, the retry _discard()s it, and
+                # release() reconciles whatever is left at the end. "timed
+                # out" is in THROTTLED_PUSH because that is what it is --
+                # Kaggle under load -- so the retry below applies.
+                out = f"push subprocess exceeded {PUSH_SUBPROCESS_TIMEOUT_SEC}s and was killed; timed out"
+                _log(f"push timed out after {PUSH_SUBPROCESS_TIMEOUT_SEC}s ({attempted[-1]})")
             lowered = out.lower()
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
@@ -601,111 +622,139 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
-    # ONE deadline for the whole invocation, started BEFORE the first push.
+    # ANY unforeseen exception from here on still has to delete the kernels.
     #
-    # A kernel starts billing the moment Kaggle accepts it, so the clock that
-    # decides when it gets deleted has to include the time spent pushing the
-    # others. Started after the push loop instead, a throttled second push
-    # (PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus the
-    # backoffs, about 45 minutes) was added on top of --max-wait for the
-    # kernel that had already been accepted: 135 minutes of billing against a
-    # ceiling that reads as 90. Kaggle's own push-time timeout does not cover
-    # that gap either -- see this file's docstring for the kernel that ignored
-    # it for two hours -- so the deletion deadline is the only bound there is,
-    # and it now bounds the whole invocation.
-    deadline = time.time() + args.max_wait
+    # Everything below can have pushed a kernel already, and a kernel this
+    # process does not delete bills to its own ceiling with nobody reading it
+    # -- Kaggle's push-time timeout has been measured not to stop a wedged
+    # one, and nothing in the workflow cleans up after this script. Letting an
+    # exception out therefore costs GPU quota, not just a report, so the
+    # release path is not left to the happy exits.
+    try:
+        # ONE deadline for the whole invocation, started BEFORE the first push.
+        #
+        # A kernel starts billing the moment Kaggle accepts it, so the clock that
+        # decides when it gets deleted has to include the time spent pushing the
+        # others. Started after the push loop instead, a throttled second push
+        # (PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus the
+        # backoffs, about 45 minutes) was added on top of --max-wait for the
+        # kernel that had already been accepted: 135 minutes of billing against a
+        # ceiling that reads as 90. Kaggle's own push-time timeout does not cover
+        # that gap either -- see this file's docstring for the kernel that ignored
+        # it for two hours -- so the deletion deadline is the only bound there is,
+        # and it now bounds the whole invocation.
+        deadline = time.time() + args.max_wait
 
-    # Push everything first. See this file's docstring: waiting between
-    # pushes would serialise sessions Kaggle runs happily in parallel, and
-    # would put an hour between the control leg and the canary leg.
-    kernels: list[dict] = []
-    for notebook in args.notebook:
-        _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
-        pushed = push(Path(notebook), args.user, args.kernel_timeout_sec)
-        entry = {
-            "notebook": notebook,
-            "slug": pushed.get("slug"),
-            # Every slug the push filed, accepted or not. A push that
-            # reported an error may still have landed, and this is the only
-            # record of what to reconcile against the account afterwards.
-            "attempted": pushed.get("attempts") or [],
-            "state": None,
-            "push_error": None
-            if pushed["ok"]
-            else f"{pushed['reason']}: {pushed.get('detail', '')}",
-        }
-        kernels.append(entry)
-        if pushed["ok"]:
-            _log(f"pushed as {pushed['slug']}")
-        else:
-            _log(f"push failed for {notebook}: {entry['push_error']}")
-    result["kernels"] = kernels
+        # Push everything first. See this file's docstring: waiting between
+        # pushes would serialise sessions Kaggle runs happily in parallel, and
+        # would put an hour between the control leg and the canary leg.
+        kernels: list[dict] = []
+        # Published BEFORE the loop, not after it, and it is the same list object
+        # throughout. release() reads result["kernels"], so a push that dies
+        # part-way -- the subprocess timeout above is the one that used to -- must
+        # not leave the entries already filed invisible to the cleanup.
+        result["kernels"] = kernels
+        for notebook in args.notebook:
+            _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
+            pushed = push(Path(notebook), args.user, args.kernel_timeout_sec)
+            entry = {
+                "notebook": notebook,
+                "slug": pushed.get("slug"),
+                # Every slug the push filed, accepted or not. A push that
+                # reported an error may still have landed, and this is the only
+                # record of what to reconcile against the account afterwards.
+                "attempted": pushed.get("attempts") or [],
+                "state": None,
+                "push_error": None
+                if pushed["ok"]
+                else f"{pushed['reason']}: {pushed.get('detail', '')}",
+            }
+            kernels.append(entry)
+            if pushed["ok"]:
+                _log(f"pushed as {pushed['slug']}")
+            else:
+                _log(f"push failed for {notebook}: {entry['push_error']}")
 
-    live = [k for k in kernels if k["slug"]]
-    if not live:
-        result["reason"] = "; ".join(k["push_error"] for k in kernels if k["push_error"])
-        return finish()
-    # Kept for the summary and for anything reading the previous single-kernel
-    # shape of this file.
-    result["slug"] = live[0]["slug"]
+        live = [k for k in kernels if k["slug"]]
+        if not live:
+            result["reason"] = "; ".join(k["push_error"] for k in kernels if k["push_error"])
+            return finish()
+        # Kept for the summary and for anything reading the previous single-kernel
+        # shape of this file.
+        result["slug"] = live[0]["slug"]
 
-    # The deadline set above is shared, not one per kernel. They are running
-    # concurrently, so consuming the ceiling once per kernel would let a
-    # two-kernel run wait twice as long as its own stated bound.
-    for entry in live:
-        remaining = max(0, int(deadline - time.time()))
-        entry["state"] = wait(api, entry["slug"], args.poll_every, remaining)
-        _log(f"{entry['slug']} terminal state: {entry['state']}")
-    result["kernel_state"] = ",".join(k["state"] or "?" for k in live)
+        # The deadline set above is shared, not one per kernel. They are running
+        # concurrently, so consuming the ceiling once per kernel would let a
+        # two-kernel run wait twice as long as its own stated bound.
+        for entry in live:
+            remaining = max(0, int(deadline - time.time()))
+            entry["state"] = wait(api, entry["slug"], args.poll_every, remaining)
+            _log(f"{entry['slug']} terminal state: {entry['state']}")
+        result["kernel_state"] = ",".join(k["state"] or "?" for k in live)
 
-    for entry in live:
-        # Each kernel gets its own directory. Kaggle names the executed
-        # notebooks after the payloads, and two kernels of the same run
-        # would otherwise overwrite each other's kernel.log.
-        try:
-            entry["evidence"] = fetch_evidence(
-                entry["slug"], outdir / entry["slug"].rsplit("/", 1)[-1]
+        for entry in live:
+            # Each kernel gets its own directory. Kaggle names the executed
+            # notebooks after the payloads, and two kernels of the same run
+            # would otherwise overwrite each other's kernel.log.
+            try:
+                entry["evidence"] = fetch_evidence(
+                    entry["slug"], outdir / entry["slug"].rsplit("/", 1)[-1]
+                )
+                _log(f"collected {entry['slug']}: {entry['evidence']}")
+            except Exception as exc:  # noqa: BLE001
+                entry["evidence"] = None
+                entry["collect_error"] = type(exc).__name__
+                _log(f"could not collect {entry['slug']}: {type(exc).__name__}")
+
+        reports = extract_reports(outdir)
+        result["reports"] = reports
+        _log(f"extracted {len(reports)} payload report(s) of {args.expect} expected")
+
+        if not reports:
+            result["reason"] = (
+                f"kernel(s) ended {result['kernel_state']} but produced no payload "
+                f"report; nothing was learned about the code under test"
             )
-            _log(f"collected {entry['slug']}: {entry['evidence']}")
-        except Exception as exc:  # noqa: BLE001
-            entry["evidence"] = None
-            entry["collect_error"] = type(exc).__name__
-            _log(f"could not collect {entry['slug']}: {type(exc).__name__}")
+            return finish()
 
-    reports = extract_reports(outdir)
-    result["reports"] = reports
-    _log(f"extracted {len(reports)} payload report(s) of {args.expect} expected")
+        # A kernel that ended badly but still produced reports is worth reading:
+        # the payload deliberately does not propagate a nonzero exit, so ERROR
+        # here usually means the SESSION died (timeout, OOM of the box, Kaggle
+        # side), which is infra unless a report says otherwise.
+        failing = [r for r in reports if not r.get("passed")]
+        if failing:
+            result["verdict"] = "fail"
+            result["reason"] = (
+                f"{len(failing)} of {len(reports)} payload(s) failed their " f"assertions"
+            )
+        elif len(reports) < args.expect:
+            result["verdict"] = "partial"
+            result["reason"] = (
+                f"only {len(reports)} of {args.expect} payload(s) reported back "
+                f"(kernel state {result['kernel_state']}); the ones that did, "
+                f"passed"
+            )
+        else:
+            result["verdict"] = "pass"
+            result["reason"] = f"all {len(reports)} payload(s) passed"
 
-    if not reports:
-        result["reason"] = (
-            f"kernel(s) ended {result['kernel_state']} but produced no payload "
-            f"report; nothing was learned about the code under test"
-        )
+        # The kernels are released by finish(), on this path and on every other.
         return finish()
-
-    # A kernel that ended badly but still produced reports is worth reading:
-    # the payload deliberately does not propagate a nonzero exit, so ERROR
-    # here usually means the SESSION died (timeout, OOM of the box, Kaggle
-    # side), which is infra unless a report says otherwise.
-    failing = [r for r in reports if not r.get("passed")]
-    if failing:
-        result["verdict"] = "fail"
+    except BaseException as exc:  # noqa: BLE001
+        # An abort is infra by this file's contract: nothing was learned
+        # about the code under test, so it must not colour the pull request
+        # red. finish() deletes every slug filed so far and still writes
+        # launch_result.json, which is what the summary and the artifact read.
+        result["verdict"] = "infra"
         result["reason"] = (
-            f"{len(failing)} of {len(reports)} payload(s) failed their " f"assertions"
+            f"the launcher aborted: {type(exc).__name__}: {str(exc)[:300]}. "
+            f"Every kernel it had pushed was deleted on the way out"
         )
-    elif len(reports) < args.expect:
-        result["verdict"] = "partial"
-        result["reason"] = (
-            f"only {len(reports)} of {args.expect} payload(s) reported back "
-            f"(kernel state {result['kernel_state']}); the ones that did, "
-            f"passed"
-        )
-    else:
-        result["verdict"] = "pass"
-        result["reason"] = f"all {len(reports)} payload(s) passed"
-
-    # The kernels are released by finish(), on this path and on every other.
-    return finish()
+        _log(result["reason"])
+        code = finish()
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        return code
 
 
 if __name__ == "__main__":

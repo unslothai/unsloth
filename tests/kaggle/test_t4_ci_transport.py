@@ -586,3 +586,165 @@ def test_the_temp_dir_is_left_alone_when_the_log_is_not_json(tmp_path):
     kernel_dir.mkdir()
     (kernel_dir / "kernel.log").write_text(json.dumps({"log": "nothing here"}), encoding = "utf-8")
     assert launch.extract_reports(tmp_path) == []
+
+
+def test_a_push_that_runs_out_of_wall_clock_is_a_recorded_failure(monkeypatch):
+    """`subprocess.run(timeout=...)` RAISES; it does not return a bad result.
+
+    That exception used to leave `push()` entirely, taking the slugs it had
+    filed with it. Those are the most ambiguous slugs there are -- the client
+    was killed mid-call, so whether Kaggle accepted the kernel is unknowable
+    from here -- and losing them means nothing can ever delete the session
+    one of them may have started.
+    """
+    deleted: list[str] = []
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            deleted.append(cmd[3])
+            return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+        raise subprocess.TimeoutExpired(cmd, launch.PUSH_SUBPROCESS_TIMEOUT_SEC)
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+
+    pushed = launch.push(Path(__file__), "someuser", 3600)
+    assert pushed["ok"] is False
+    # A timeout is Kaggle under load, so it retries like any other throttle,
+    # and every slug it filed comes back for the caller to reconcile.
+    assert len(pushed["attempts"]) == launch.PUSH_ATTEMPTS
+    assert len(set(pushed["attempts"])) == launch.PUSH_ATTEMPTS
+    assert "timed out" in pushed["detail"]
+    # Each attempt discards the previous one before adding another session.
+    assert deleted == pushed["attempts"][:-1]
+
+
+def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(
+    monkeypatch, tmp_path
+):
+    """The case that costs quota: kernel 1 is up when kernel 2's push hangs.
+
+    Nothing caught that exception, so `main()` exited without `release()` and
+    without writing launch_result.json, and the workflow has no cleanup step
+    after this script. The accepted kernel then billed to its own ceiling
+    with nobody reading its result -- and Kaggle's push-time timeout has been
+    measured not to stop a wedged one.
+    """
+    deleted: list[str] = []
+    pushes = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            deleted.append(cmd[3])
+            return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+        pushes["n"] += 1
+        if pushes["n"] == 1:
+            return types.SimpleNamespace(
+                returncode = 0, stdout = "Kernel version 1 successfully pushed", stderr = ""
+            )
+        raise subprocess.TimeoutExpired(cmd, launch.PUSH_SUBPROCESS_TIMEOUT_SEC)
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
+    monkeypatch.setattr(
+        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+    )
+    monkeypatch.setattr(
+        launch,
+        "extract_reports",
+        lambda outdir: [{"label": "control", "model": "m", "passed": True}],
+    )
+    monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch.py",
+            "--notebook",
+            str(tmp_path / "k0.ipynb"),
+            "--notebook",
+            str(tmp_path / "k1.ipynb"),
+            "--user",
+            "someuser",
+            "--outdir",
+            str(tmp_path / "ev"),
+            "--expect",
+            "2",
+        ],
+    )
+    (tmp_path / "k0.ipynb").write_text("{}", encoding = "utf-8")
+    (tmp_path / "k1.ipynb").write_text("{}", encoding = "utf-8")
+
+    assert launch.main() == 0
+    result = json.loads((tmp_path / "ev" / "launch_result.json").read_text(encoding = "utf-8"))
+    accepted = result["kernels"][0]["slug"]
+    assert accepted and accepted in deleted
+    # Including every slug the timed-out push filed, since any of them may be
+    # the session Kaggle accepted and never told us about.
+    for slug in result["kernels"][1]["attempted"]:
+        assert slug in deleted, slug
+    assert all(k["released"] for k in result["kernels"])
+
+
+def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypatch, tmp_path):
+    """The outer guard, not the timeout specifically.
+
+    Every line after the first push can leave a kernel running if it raises,
+    and the runner is the only thing that would ever delete it. An abort is
+    also `infra` by this file's contract -- nothing was learned about the code
+    under test -- so it exits 0 rather than colouring a pull request red.
+    """
+
+    def boom(outdir):
+        raise MemoryError("the runner ran out")
+
+    deleted: list[str] = []
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            deleted.append(cmd[3])
+        return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(
+        launch,
+        "push",
+        lambda notebook, user, kernel_timeout_sec, accelerator = "NvidiaTeslaT4": {
+            "ok": True,
+            "slug": "someuser/unsloth-t4-ci-abcd",
+            "attempts": ["someuser/unsloth-t4-ci-abcd"],
+        },
+    )
+    monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
+    monkeypatch.setattr(
+        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+    )
+    monkeypatch.setattr(launch, "extract_reports", boom)
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch.py",
+            "--notebook",
+            "k0.ipynb",
+            "--user",
+            "someuser",
+            "--outdir",
+            str(tmp_path),
+            "--expect",
+            "1",
+        ],
+    )
+
+    assert launch.main() == 0
+    assert deleted == ["someuser/unsloth-t4-ci-abcd"]
+    result = json.loads((tmp_path / "launch_result.json").read_text(encoding = "utf-8"))
+    assert result["verdict"] == "infra"
+    assert "MemoryError" in result["reason"]
