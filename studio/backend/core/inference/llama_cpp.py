@@ -10351,14 +10351,21 @@ class LlamaCppBackend:
         # never about the GGUF or memory. llama.cpp prints two shapes, and the
         # difference matters to the reader: an unknown flag is a typo or a flag
         # this build does not have, while a rejected VALUE is the right flag used
-        # wrongly. Extra arguments are the only way a user-supplied flag gets here.
+        # wrongly. Both are otherwise diagnosed as an invalid GGUF or an OOM.
         unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", output or "", re.IGNORECASE)
         if unknown_arg:
+            # Both owners in one sentence, because nothing reaching here says which
+            # one it was: Unsloth emits its own flags conditionally on the capability
+            # probe, and a binary swapped underneath a cached probe rejects one of
+            # those just as readily as it rejects a typo from the box. Sending every
+            # reader to the extra arguments would point most of them at a box they
+            # never opened.
             return (
                 f"llama-server does not recognise the argument "
-                f"'{unknown_arg.group(1)}'. Check it against this build's flags "
-                f"in the extra arguments for this model."
+                f"'{unknown_arg.group(1)}'. Check it in this model's extra "
+                f"arguments, or reinstall llama.cpp if you did not set it."
             )
+
         bad_arg_value = re.search(
             r'error while handling argument "([^"]+)":\s*([^\r\n]*)',
             output or "",

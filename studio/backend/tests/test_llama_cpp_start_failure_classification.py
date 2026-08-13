@@ -1495,6 +1495,15 @@ class TestRejectedArguments:
         # The generic diagnosis must not survive: the file and the memory are fine.
         assert "memory" not in msg.lower()
 
+    def test_a_flag_unsloth_set_itself_is_covered_by_the_same_message(self):
+        # Nothing reaching the classifier says whose flag it was, and Unsloth emits
+        # its own conditionally on the capability probe, so a binary swapped under a
+        # cached probe lands here too. The message has to serve that reader as well
+        # as the one who mistyped something in the box.
+        msg = _classify("error: invalid argument: --flash-attn", "/models/x.gguf", "local/x", 1)
+        assert "--flash-attn" in msg
+        assert "reinstall llama.cpp" in msg
+
     def test_a_rejected_value_is_told_apart_from_an_unknown_flag(self):
         # Different fix for the reader: the flag is right, the value is not.
         msg = _classify(

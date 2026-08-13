@@ -195,14 +195,21 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // set is to ask. An empty box would read as "no flags" and the first edit would
   // submit a list that dropped them.
   assert.match(body, /fetchModelOverrides\(\)/);
-  assert.match(body, /overrides\[overrideKey\]\?\.llama_extra_args/);
+  assert.match(body, /overrides\[key\]\?\.llama_extra_args/);
+  // Most specific key first, then the bare repo id: the overrides route carries
+  // repo-level flags into the first per-quant save, so reading only the exact key
+  // shows an empty box for the entry that is about to be inherited.
+  assert.match(
+    pageSource.replace(/\s+/g, " "),
+    /overrideKeys=\{\[ modelOverrideKey\(configId, target\.ggufVariant\), configId, \]\}/,
+  );
   // Into the text only. Calling update here would make an untouched config look
   // edited, and then a save would pin flags the user never chose.
   const start = body.indexOf("fetchModelOverrides()");
-  const end = body.indexOf("}, [overrideKey", start);
+  const end = body.indexOf("}, [keyIdentity", start);
   assert.ok(
     end > start,
-    "expected the hydration effect to close on overrideKey",
+    "expected the hydration effect to close on the key identity",
   );
   assert.doesNotMatch(body.slice(start, end), /update\(/);
 });

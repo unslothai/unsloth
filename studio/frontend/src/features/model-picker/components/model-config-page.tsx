@@ -877,7 +877,7 @@ function GgufAdvancedSettings({
   gpuDevices,
   gpuLayersInputRef,
   moeLayersInputRef,
-  overrideKey,
+  overrideKeys,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -890,8 +890,8 @@ function GgufAdvancedSettings({
   gpuDevices: SystemGpuDevice[];
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
-  /** Which model's stored flags the extra-arguments row reads. */
-  overrideKey: string;
+  /** Which stored entries the extra-arguments row reads, most specific first. */
+  overrideKeys: readonly string[];
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1194,7 +1194,7 @@ function GgufAdvancedSettings({
         <ExtraArgsRow
           config={config}
           update={update}
-          overrideKey={overrideKey}
+          overrideKeys={overrideKeys}
         />
       )}
     </>
@@ -1213,11 +1213,11 @@ function GgufAdvancedSettings({
 function ExtraArgsRow({
   config,
   update,
-  overrideKey,
+  overrideKeys,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  overrideKey: string;
+  overrideKeys: readonly string[];
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
   // What is typed, which is not what is stored: the stored value is argv tokens, so
@@ -1250,28 +1250,33 @@ function ExtraArgsRow({
   // Into the text only, never through `update`: a config that has not been edited
   // must stay `undefined` so a save omits the field and the backend keeps its copy.
   const hydrated = useRef<string | null>(null);
+  // Joined because an array literal is a new value every render, and this is the
+  // effect's identity.
+  const keyIdentity = overrideKeys.join("\u0000");
   useEffect(() => {
     if (
       config.llamaExtraArgs !== undefined ||
-      hydrated.current === overrideKey
+      hydrated.current === keyIdentity
     ) {
       return;
     }
     let cancelled = false;
     // Marked before the request, not after it lands: this effect re-runs on every
     // keystroke, and one fetch per model is the point.
-    hydrated.current = overrideKey;
+    hydrated.current = keyIdentity;
     fetchModelOverrides()
       .then((overrides) => {
-        const stored = overrides[overrideKey]?.llama_extra_args;
+        // Most specific key first, then the bare repo id, mirroring what the
+        // overrides route itself does when this panel saves: flags stored under
+        // the repo are carried over to the first per-quant save. Reading only the
+        // exact key would show an empty box for the entry that is about to be
+        // inherited.
+        const stored = overrideKeys
+          .map((key) => overrides[key]?.llama_extra_args)
+          .find((value) => value !== undefined && value.length > 0);
         // Only while the box is still untouched, or a slow response would land on
         // top of what the user typed in the meantime.
-        if (
-          !cancelled &&
-          stored !== undefined &&
-          stored.length > 0 &&
-          text === ""
-        ) {
+        if (!cancelled && stored !== undefined && text === "") {
           setText(formatExtraArgs(stored));
         }
       })
@@ -1282,22 +1287,7 @@ function ExtraArgsRow({
     return () => {
       cancelled = true;
     };
-  }, [overrideKey, config.llamaExtraArgs, text]);
-
-  // Re-seed only when the stored tokens actually change (a different model, or a
-  // Reset), never on our own edits: comparing the rendered text to the box lets a
-  // user's unquoted spacing stand while still following a real change.
-  const storedText = formatExtraArgs(config.llamaExtraArgs);
-  const lastStored = useRef(storedText);
-  if (lastStored.current !== storedText) {
-    lastStored.current = storedText;
-    if (
-      parseExtraArgs(text).tokens.join("\u0000") !==
-      (config.llamaExtraArgs ?? []).join("\u0000")
-    ) {
-      setText(storedText);
-    }
-  }
+  }, [keyIdentity, overrideKeys, config.llamaExtraArgs, text]);
 
   const diagnostics = diagnoseExtraArgs(text, catalog);
   const tokenCount = parseExtraArgs(text).tokens.length;
@@ -1971,7 +1961,10 @@ export function ModelConfigPage({
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
-                overrideKey={modelOverrideKey(configId, target.ggufVariant)}
+                overrideKeys={[
+                  modelOverrideKey(configId, target.ggufVariant),
+                  configId,
+                ]}
               />
             )}
 
