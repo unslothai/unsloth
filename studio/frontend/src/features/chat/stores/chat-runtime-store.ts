@@ -1796,6 +1796,23 @@ function getHydratedPresetState(
   return nextState;
 }
 
+/**
+ * Whether the active checkpoint is an external model that cannot run deep
+ * research, matching the composer's own rule. An unresolved provider is left
+ * alone: the connection list may not have loaded, and refusing on that would
+ * drop a Codex user's stored preference.
+ */
+function externalCheckpointRefusesDeepResearch(
+  checkpoint: string | null | undefined,
+): boolean {
+  const parsed = parseExternalModelId(checkpoint);
+  if (!parsed) return false;
+  const provider = useExternalProvidersStore
+    .getState()
+    .providers.find((candidate) => candidate.id === parsed.providerId);
+  return provider != null && provider.providerType !== "openai_codex";
+}
+
 function getHydratedSettingsState(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
@@ -1824,13 +1841,12 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
-    // setCheckpoint clamps deep research off for an external model, and only a
-    // local model or an openai_codex provider can run it, so a stored true must
-    // not re-arm the pill behind that clamp.
+    // Only a local model or an openai_codex provider can run deep research, so a
+    // stored true must not arm the pill for any other external checkpoint.
     if (
       key === "deepResearchEnabled" &&
       value === true &&
-      isExternalModelId(state.params.checkpoint)
+      externalCheckpointRefusesDeepResearch(state.params.checkpoint)
     ) {
       continue;
     }
