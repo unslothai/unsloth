@@ -99,6 +99,7 @@ const BLOCK_MESSAGE_KEYS: Record<RemoteAccessBlockMessageId, TranslationKey> = {
   launchManaged: "settings.general.remoteAccess.blockLaunchManaged",
   colabManaged: "settings.general.remoteAccess.blockColabManaged",
   colab: "settings.general.remoteAccess.blockColab",
+  customNotConfigured: "settings.general.remoteAccess.blockCustomNotConfigured",
 };
 
 function localizedBlockMessage(
@@ -792,6 +793,19 @@ function CustomTunnelSetup({
                 <span className="block text-destructive" role="alert">
                   {requestError ?? localizedCustomError(status, t)}
                 </span>
+              ) : null}
+              {!requestError && status.customError === "dns_conflict" ? (
+                <Button
+                  asChild={true}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-2"
+                >
+                  <a href={CLOUDFLARE_DNS_URL} target="_blank" rel="noreferrer">
+                    {t("settings.general.remoteAccess.openCloudflareDns")}
+                  </a>
+                </Button>
               ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>

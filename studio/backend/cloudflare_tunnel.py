@@ -1432,7 +1432,7 @@ def _set_orphan(hostname: str, *, stranded: bool) -> None:
 def canonical_hostname(raw: str) -> str:
     """Normalize a hostname to lowercase A-label form without a trailing dot."""
     text = (raw or "").strip()
-    invalid = ProvisioningError("invalid_hostname", "Enter a hostname like studio.example.com.")
+    invalid = ProvisioningError("invalid_hostname", "Enter a hostname like unsloth.example.com.")
     try:
         host = urlsplit(text if "://" in text else "//" + text).hostname or ""
     except ValueError:

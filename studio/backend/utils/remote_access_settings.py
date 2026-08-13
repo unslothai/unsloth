@@ -411,6 +411,22 @@ def remote_access_status(app_state) -> dict:
     ):
         auto_start_block_reason = "custom_tunnel_not_configured"
 
+    # method_ready below removes Start for this, and reporting nothing left it the
+    # one blocked state that greyed the button out without saying why. Reported only
+    # where setting one up is what the user is missing: not while an operation is
+    # already doing it, which owns both the message and the reason a start refuses,
+    # and not while a tunnel is running under another method.
+    if (
+        block_reason is None
+        and method == "custom"
+        and not custom["custom_runnable"]
+        and custom["custom_state"] not in {"provisioning", "tearing_down"}
+        and state in {"off", "error"}
+        and not stopping
+        and not stop_pending
+    ):
+        block_reason = "custom_tunnel_not_configured"
+
     controllable = block_reason is None
     method_ready = method != "custom" or custom["custom_runnable"]
     can_start = (

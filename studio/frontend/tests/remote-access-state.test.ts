@@ -615,6 +615,7 @@ test("every block reason the backend can emit has a message", () => {
     "launch_managed",
     "colab_managed",
     "colab",
+    "custom_tunnel_not_configured",
   ];
   for (const reason of reasons) {
     for (const isDesktop of [true, false]) {

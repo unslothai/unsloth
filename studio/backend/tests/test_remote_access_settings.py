@@ -215,6 +215,45 @@ def test_remote_access_preference_updates_serialize_method_and_auto_start(monkey
 
 
 @pytest.mark.parametrize(
+    "tunnel_state,operation,expected_block",
+    [
+        ("off", "idle", "custom_tunnel_not_configured"),
+        # Start is removed in all three, but only the first is missing a setup:
+        # a running tunnel is not told to make one, and an operation already
+        # making one owns both the message and the reason a start refuses.
+        ("online", "idle", None),
+        ("off", "provisioning", None),
+        ("off", "tearing_down", None),
+    ],
+)
+def test_custom_without_a_tunnel_says_why_start_is_unavailable(
+    monkeypatch, tunnel_state, operation, expected_block
+):
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation", operation)
+    if operation != "idle":
+        monkeypatch.setattr(remote_access, "_custom_worker", SimpleNamespace(is_alive = lambda: True))
+    monkeypatch.setattr(remote_access, "_get_remote_access_preferences", lambda: ("custom", False))
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": tunnel_state,
+            "url": None,
+            "error": None,
+            "managed_by": "settings" if tunnel_state == "online" else None,
+        },
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+
+    status = remote_access.remote_access_status(_state(intent = "enabled"))
+    assert status["block_reason"] == expected_block
+    assert status["can_start"] is False
+
+
+@pytest.mark.parametrize(
     "launch_managed,expected_block,can_start",
     [(False, None, True), (True, "launch_managed", False)],
 )

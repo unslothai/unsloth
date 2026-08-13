@@ -41,7 +41,8 @@ export type RemoteAccessBlockMessageId =
   | "explicitlyDisabled"
   | "launchManaged"
   | "colabManaged"
-  | "colab";
+  | "colab"
+  | "customNotConfigured";
 export type RemoteAccessRequestMessageId =
   | RemoteAccessBlockMessageId
   | "invalidHostname"
@@ -526,6 +527,8 @@ export function remoteAccessBlockMessageId(
       return "colabManaged";
     case "colab":
       return "colab";
+    case "custom_tunnel_not_configured":
+      return "customNotConfigured";
     default:
       return null;
   }
