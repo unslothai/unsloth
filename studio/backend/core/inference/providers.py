@@ -680,7 +680,9 @@ def validate_provider_base_url(base_url: str) -> str:
     return raw.rstrip("/")
 
 
-def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any]]:
+def list_available_providers(
+    include_hidden: bool = False, include_oauth: bool = False
+) -> list[dict[str, Any]]:
     """Return registered providers (for the /registry endpoint).
 
     Hidden entries exist only for backend lookups and are surfaced by the UI via
@@ -693,10 +695,16 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     ``include_hidden`` is how a client that does know says so. The self-hosted
     presets are exactly the ones that run Studio's tools, so their capability
     has to reach a frontend that asks for it, and asking is opt-in.
+
+    OAuth providers are also opt-in because a legacy frontend renders every
+    visible registry row as an API-key form. An OAuth-aware frontend sends
+    ``include_oauth=true`` and handles the returned ``auth_kind`` contract.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
         if info.get("hidden") and not include_hidden:
+            continue
+        if info.get("auth_kind") == "chatgpt_oauth" and not include_oauth:
             continue
         result.append(
             {
