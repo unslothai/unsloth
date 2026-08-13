@@ -68,7 +68,7 @@ from utils.third_party_source import (
     import_sparktts_module,
 )
 
-from utils.models import is_vision_model, detect_audio_type
+from utils.models import is_vision_model, detect_audio_type_checked
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
@@ -194,6 +194,84 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     return {"subfolder": "LLM"}
 
 
+# Enough rows to see past a leading null or malformed value, few enough to stay cheap on a
+# streamed dataset, where each row is pulled over the network.
+_AUDIO_SNIFF_ROWS = 16
+
+# Kept in step with detect_multimodal_dataset, so the veto answers False only about the very
+# columns that set the flag it is vetoing.
+_AUDIO_COLUMN_KEYWORDS = ("audio", "speech", "wav", "waveform", "sound")
+
+
+def _dataset_has_audio_column(dataset) -> Optional[bool]:
+    """Whether `dataset` really carries audio. None when it cannot be told.
+
+    `is_dataset_audio` comes from the format check's `is_audio`, set by a column-NAME
+    keyword match that never inspects the value, so a text dataset with a column called
+    `audio` holding prose reports audio. Refusing such a run would take away a text path
+    that works today, so the dataset itself gets the last word.
+
+    An ``Audio`` feature is audio without reading a row. Otherwise look at the values: an
+    audio column loaded from JSON/CSV is a ``Value("string")`` of paths until the
+    preprocessor casts it (``_preprocess_snac_dataset`` does exactly that), so trusting the
+    schema would call a real audio dataset textual.
+
+    None for a DatasetDict, a schema-less iterable dataset, or an unreadable row: an
+    unreadable model probe is still the likelier explanation, so the caller keeps refusing
+    unless this says False outright.
+    """
+    try:
+        from datasets.features.audio import Audio
+    except Exception:  # noqa: BLE001 - datasets missing or too old to have the feature
+        return None
+
+    features = getattr(dataset, "features", None)
+    if not features:
+        return None
+    try:
+        if any(isinstance(f, Audio) for f in features.values()):
+            return True
+    except Exception:  # noqa: BLE001 - a mapping that is not a features dict
+        return None
+
+    # No Audio feature, so nothing decodes here and reading rows cannot hit the
+    # missing-FFmpeg path. Several rows, not one: a JSON/CSV audio dataset can carry a null
+    # or malformed first value and real paths after it, and the preprocessors skip such a
+    # row rather than fail, so row 0 alone would call it textual.
+    #
+    # Audio-like values count anywhere, but only an audio-NAMED column can answer False: a
+    # transcript is populated in every row of a path-backed audio dataset, so counting it
+    # would report "no audio here" on the strength of the text. No evidence stays None.
+    try:
+        from utils.datasets.format_detection import (
+            _AUDIO_EXTENSIONS,
+            _is_audio_value,
+            _keyword_in_column,
+        )
+
+        def looks_like_audio(value) -> bool:
+            if _is_audio_value(value):
+                return True
+            return isinstance(value, str) and value.lower().endswith(_AUDIO_EXTENSIONS)
+
+        saw_a_usable_value = False
+        for index, row in enumerate(dataset):
+            if index >= _AUDIO_SNIFF_ROWS:
+                break
+            for name, value in row.items():
+                if looks_like_audio(value):
+                    return True
+                if not any(_keyword_in_column(k, str(name)) for k in _AUDIO_COLUMN_KEYWORDS):
+                    continue
+                if isinstance(value, str):
+                    saw_a_usable_value = saw_a_usable_value or bool(value.strip())
+                elif value is not None:
+                    saw_a_usable_value = True
+    except Exception:  # noqa: BLE001 - unreadable row, empty dataset, odd row type
+        return None
+    return False if saw_a_usable_value else None
+
+
 class UnslothTrainer:
     """
     Unsloth Training Backend
@@ -221,6 +299,10 @@ class UnslothTrainer:
         self.is_audio = False
         self.is_audio_vlm = False  # e.g. Gemma 3N trained on audio
         self._audio_type = None  # 'csm', 'whisper', 'snac', 'bicodec', 'dac'
+        # True until a probe says otherwise, so a path that never probes cannot trip the
+        # inconclusive-detection guard.
+        self._audio_type_known = True
+        self._is_dataset_audio = False
         self._cuda_audio_used = False  # Set once after audio CUDA preprocessing; never cleared
         self._spark_tts_repo_dir = None  # Spark-TTS repo path, for BiCodecTokenizer
         self._spark_tts_code_dir = None
@@ -265,13 +347,17 @@ class UnslothTrainer:
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
 
-        # Detect audio type (config.json only, no VRAM)
-        self._audio_type = detect_audio_type(
+        # Detect audio type (config.json only, no VRAM). Checked, because an unreadable
+        # tokenizer_config.json (gated repo, offline, or a cache holding weights but not the
+        # tokenizer files) otherwise reads as "not an audio model" and sends a TTS run down
+        # the text path.
+        self._audio_type, self._audio_type_known = detect_audio_type_checked(
             lookup_name,
             hf_token,
             local_files_only = local_files_only,
             revision = model_revision,
         )
+        self._is_dataset_audio = is_dataset_audio
         if self._audio_type == "audio_vlm":
             self.is_audio = False
             self.is_audio_vlm = is_dataset_audio
@@ -305,31 +391,92 @@ class UnslothTrainer:
 
         # Load tokenizer/processor (CPU only, no VRAM)
         # Whisper needs AutoProcessor; others AutoTokenizer (CSM loads its own inline).
-        if self._audio_type == "whisper":
-            from transformers import AutoProcessor
-            self.tokenizer = AutoProcessor.from_pretrained(
+        def _load_tokenizer_for_detected_type():
+            if self._audio_type == "whisper":
+                from transformers import AutoProcessor
+                self.tokenizer = AutoProcessor.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+            else:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                    # Spark-TTS keeps its tokenizer under LLM/, the subfolder _load_model
+                    # loads weights from. Reading the root finds no vocab and fails blaming
+                    # a missing sentencepiece that is installed and irrelevant.
+                    **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+                )
+
+        # The probe and the tokenizer load are separate reads of the same repo, so a transient
+        # timeout or 5xx can leave the probe inconclusive while the read after it succeeds.
+        # Ask again rather than refuse the run later claiming tokenizer_config.json could not
+        # be read when it just was. detect_audio_type_checked caches only definitive results,
+        # so this costs a cache hit on the common path.
+        def _retry_audio_detection() -> bool:
+            """Re-probe an inconclusive type. True if the answer changed."""
+            if self._audio_type_known:
+                return False
+            previous_type = self._audio_type
+            retried_type, retried_known = detect_audio_type_checked(
                 lookup_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
+                hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
             )
-        else:
-            from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                lookup_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
-                local_files_only = local_files_only,
-                revision = model_revision,
-                # Spark-TTS keeps only BiCodec, config.yaml and the source tree at its repo
-                # root; the tokenizer lives under LLM/, the same subfolder _load_model loads
-                # weights from. Reading the root finds no vocab and fails to build a backend
-                # tokenizer, blaming a missing sentencepiece that is installed and irrelevant.
-                **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+            if not retried_known:
+                return False
+            self._audio_type, self._audio_type_known = retried_type, True
+            if self._audio_type == "audio_vlm":
+                self.is_audio = False
+                self.is_audio_vlm = is_dataset_audio
+                self._audio_type = None
+            else:
+                self.is_audio = self._audio_type is not None
+                self.is_audio_vlm = False
+            logger.info(
+                "pre_detect retry: audio_type=%s, is_audio=%s",
+                self._audio_type,
+                self.is_audio,
             )
+            return self._audio_type != previous_type
+
+        # An inconclusive probe leaves _audio_type None and the kwargs are chosen from it, so
+        # a Spark-TTS repo is read at its tokenizer-less root and raises here. Re-probe before
+        # giving up, or the retry below is unreachable for exactly the models whose layout the
+        # type decides.
+        try:
+            _load_tokenizer_for_detected_type()
+        except Exception:
+            if not _retry_audio_detection():
+                raise
+            logger.info(
+                "Retrying the tokenizer load for %s as %s after the first read failed",
+                model_name,
+                self._audio_type,
+            )
+            _load_tokenizer_for_detected_type()
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
+
+        # The loader and its kwargs are chosen from the type, so a retry that changes the
+        # answer has left the wrong object in self.tokenizer: whisper needs an AutoProcessor
+        # (_preprocess_whisper_dataset reads .feature_extractor and .tokenizer off it), and
+        # Spark-TTS its LLM/ subfolder.
+        if _retry_audio_detection():
+            _load_tokenizer_for_detected_type()
+            logger.info(
+                "Reloaded tokenizer for %s after detection changed to %s",
+                model_name,
+                self._audio_type,
+            )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         """Add callback for training progress updates"""
@@ -735,13 +882,16 @@ class UnslothTrainer:
 
             _preserve = ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
             clear_unsloth_compiled_cache(preserve_patterns = _preserve)
-            # Detect audio type (config.json + tokenizer)
-            self._audio_type = detect_audio_type(
+            # Detect audio type (config.json + tokenizer). Checked: this reassigns
+            # _audio_type, so an unchecked answer would leave the flag describing the
+            # previous probe.
+            self._audio_type, self._audio_type_known = detect_audio_type_checked(
                 lookup_name,
                 hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
             )
+            self._is_dataset_audio = is_dataset_audio
             # audio_vlm is detected as an audio_type now; handle separately
             if self._audio_type == "audio_vlm":
                 self.is_audio = False
@@ -2446,6 +2596,15 @@ class UnslothTrainer:
         except Exception:  # noqa: BLE001 - never let log tidying stop a run
             pass
 
+        # An Audio column decodes inside load_dataset() below, before the audio branches
+        # that already call this. This worker starts without the shim the API process
+        # installs, so the load raised `datasets`' own "please install 'torchcodec'".
+        # A False here is still reported by those branches, naming FFmpeg.
+        try:
+            ensure_audio_decoding()
+        except Exception:  # noqa: BLE001 - never let a broken librosa stop a text run
+            pass
+
         s3_download = None
         try:
             self.dataset_loaded_from_exact_snapshot = False
@@ -2863,6 +3022,30 @@ class UnslothTrainer:
                 return None
 
             # ========== AUDIO MODELS: custom preprocessing ==========
+            # An inconclusive probe must not read as "not an audio model": falling through
+            # with an audio dataset lands on the text path, which fails much later with
+            # "Could not auto-detect format mapping", a column-mapping complaint that says
+            # nothing about the repo read that actually failed.
+            # getattr, because this method is also driven against lightweight stand-ins; both
+            # defaults leave the guard closed.
+            # _is_dataset_audio arrives from the client and is true on a column-NAME match
+            # alone, so _dataset_has_audio_column is the tiebreaker: only a positive "no audio
+            # here" reopens the text path, unknown still refuses.
+            # raw/CPT is exempt: it reads the text column and ignores any audio one by design.
+            if (
+                not self._audio_type
+                and not getattr(self, "_audio_type_known", True)
+                and getattr(self, "_is_dataset_audio", False)
+                and not raw_text_mode
+                and _dataset_has_audio_column(dataset) is not False
+            ):
+                raise RuntimeError(
+                    "Could not determine whether this model is an audio model: its "
+                    "tokenizer_config.json could not be read (gated repo, offline, or a "
+                    "cache holding the weights but not the tokenizer files). The dataset "
+                    "has an audio column, so training cannot fall back to the text path. "
+                    "Re-download the model or provide a token, then retry."
+                )
             # Every audio branch below, and the VLM path, casts an Audio column and reads its array.
             if self._audio_type or self.is_audio_vlm:
                 if not ensure_audio_decoding():

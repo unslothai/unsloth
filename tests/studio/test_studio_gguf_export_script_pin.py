@@ -38,6 +38,19 @@ def _find_pin_try(tree: ast.AST):
     return None
 
 
+# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises
+# RuntimeError or AttributeError too. Anything that still catches an ImportError
+# counts, so widening the handler again does not break this test.
+_CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:  # bare except
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
+
+
 def test_warning_flag_defined_at_module_scope():
     flags = {
         name: value
@@ -85,9 +98,7 @@ def test_setdefault_inside_try_block():
 def test_warning_handler_gated_on_module_flag():
     try_node = _find_pin_try(TREE)
     assert try_node is not None
-    handlers = [
-        h for h in try_node.handlers if isinstance(h.type, ast.Name) and h.type.id == "ImportError"
-    ]
+    handlers = [h for h in try_node.handlers if _catches_import_error(h)]
     assert handlers
     handler = handlers[0]
     flag_reads = []

@@ -3081,6 +3081,124 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
 
 
+def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypatch, tmp_path):
+    # asset_repos stops the delete-cached guard dropping the H3 companion repos mid-load, and the
+    # preflight can spend minutes installing the sd-cli prebuilt. A delete admitted in that window
+    # is not revoked by claiming the repos later.
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+
+    seen: list[tuple[str, ...]] = []
+
+    def _ensure(**_kwargs):
+        # What the delete-cached guard would see while the install runs.
+        seen.append(backend._loading.asset_repos)
+        return "/existing/sd-cli"
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", _ensure)
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_binary_vets_for_h3", lambda _b: True)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("unsloth/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = "unsloth/MiniMax-H3-GGUF", base_repo = fam.base_repo
+    )
+    backend._load_token = 11
+
+    backend._run_load_h3_native(
+        fam = fam,
+        token = 11,
+        cancel_event = threading.Event(),
+        repo_id = "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO)]
+
+
+def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
+    fake_runtime, monkeypatch
+):
+    # begin_load returns as soon as the worker thread is scheduled, so a claim made in the worker
+    # leaves a window where the guard sees only repo_id and base_repo and admits a delete of a
+    # companion repo. Admitting it is the irreversible part, so the claim has to be published in
+    # the same locked section as _loading.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    # Never started: the window under test is before the load thread is scheduled.
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    backend.begin_load(
+        "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+
+    claimed = backend.loading_repo_ids()
+    assert H3_GGUF_REPO in claimed
+    assert H3_COMPONENT_REPO in claimed
+
+
+def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
+    # H3-native only: naming the companions on a pipeline load would block deletes of repos it
+    # never reads.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    backend.begin_load("Wan-AI/Wan2.2-TI2V-5B-Diffusers", family_override = "wan2.2-ti2v-5b")
+
+    claimed = backend.loading_repo_ids()
+    assert H3_GGUF_REPO not in claimed
+    assert H3_COMPONENT_REPO not in claimed
+
+
 def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch, tmp_path):
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
