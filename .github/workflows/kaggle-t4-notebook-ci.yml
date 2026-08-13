@@ -332,26 +332,37 @@ jobs:
     # ceiling (Kaggle's push-time timeout has been measured NOT to stop a wedged
     # one).
     #
-    # The launcher's worst case, from launch.py's own constants:
+    # The launcher's worst case, from launch.py's own constants. DELETING is
+    # what costs, and it is paid on two paths rather than one: push() discards
+    # the previous attempt's slug before each retry, and release() reconciles
+    # every slug every push filed. Each of those deletes is DELETE_ATTEMPTS
+    # tries at DELETE_SUBPROCESS_TIMEOUT_SEC plus its backoffs, not one call:
+    #   one delete           3 x 180s + backoffs 5 + 10       = 555s
     #   push, per notebook   PUSH_ATTEMPTS 4 x subprocess timeout 600s
     #                        + PUSH_BACKOFF_SEC backoffs 45 + 90 + 180
-    #                        = 2715s
-    #   two notebooks, pushed sequentially            5430s   (90.5 min)
+    #                        + 3 _discard()s at 555s
+    #                                                         = 4380s
+    #   two notebooks, pushed sequentially            8760s   (146 min)
     #   polling, which shares ONE deadline started before the first push,
     #   so it does not stack on top of them          <=5400s  (--max-wait
     #                                                  below, minus the
     #                                                  pushes)
     #   evidence download, two kernels                ~600s
     #   release(): every slug each push FILED, so up to PUSH_ATTEMPTS
-    #   deletions per kernel at 180s                 <=1440s
+    #   deletes per kernel at 555s                   <=4440s
     #   ----------------------------------------------------------------
-    #   total                        max(5430, 5400) + 2040 = ~7470s
-    #                                                        (~125 min)
+    #   total                       max(8760, 5400) + 5040 = ~13800s
+    #                                                        (~230 min)
     #
-    # 200 leaves ~75 min of headroom. A normal run is ~15 min, so this only
-    # fires if the launcher wedged; lower the launcher's wait or PUSH_ATTEMPTS
-    # before lowering it.
-    timeout-minutes: 200
+    # 260 leaves ~30 min for the steps before the launcher (checkout, the CPU
+    # wheel, the harness suite) and is not slack to trim: the previous 200
+    # counted one delete per slug and none of the discards, so a wedged run
+    # could be killed DURING release() and orphan the kernels this deadline
+    # exists to get deleted. A normal run is ~15 min, so this only fires if the
+    # launcher wedged; lower the launcher's wait, PUSH_ATTEMPTS or the delete
+    # ceilings before lowering it, and the harness suite recomputes the relation
+    # either way.
+    timeout-minutes: 260
     # Deliberately NOT keyed on the ref: the Kaggle account is one global
     # resource with a 2-kernel cap and this job takes both, so two runs on
     # different branches must not overlap. cancel-in-progress is false because a
@@ -416,7 +427,7 @@ jobs:
       # torch from the CPU index and transformers WITHOUT it: the payload modules
       # the suites import need both to import at all, and the CPU wheel is a
       # minute against a session that costs quota. Measured in a bare venv with
-      # exactly these three: 292 passed.
+      # exactly these three: 296 passed.
       - name: Test the harness
         run: |
           python -m pip install --quiet pytest transformers

@@ -42,8 +42,28 @@ import argparse
 import hashlib
 import json
 import os
+import socket
 import sys
+import time
 from datetime import datetime, timedelta, timezone
+
+# Ceiling on any single network call, set globally before the first one. The
+# Kaggle client takes no timeout of its own and Python's default is to block
+# FOREVER, so without this a stalled connection returns to nobody: the `try`
+# around each call never sees an exception, --soft-fail has nothing to convert
+# into a skip, and the job's own timeout-minutes kills the runner and reports a
+# red infrastructure failure on a workflow whose contract is that only a failed
+# assertion on a T4 is red. launch.py sets one for the same reason.
+SOCKET_TIMEOUT_SEC = 60
+
+# Wall clock the in-flight survey may spend, whatever the account holds. The
+# survey status-checks every kernel in a 13h window and pages up to
+# MAX_KERNEL_PAGES x KERNELS_PAGE_SIZE of them, so slow (not hung: those are
+# capped above) responses multiply. Running out of budget is NOT read as an idle
+# account: the walk stops with complete=False, which concurrency_verdict already
+# turns into a skip, so the gate answers within the job deadline rather than
+# being killed by it.
+SURVEY_BUDGET_SEC = 180
 
 # Kaggle's cap on simultaneous batch (committed) GPU kernels per account.
 # Measured, not documented: exceeding it fails the push with
@@ -209,6 +229,8 @@ def survey_kernels(
     lookback_hours: float = LOOKBACK_HOURS,
     page_size: int = KERNELS_PAGE_SIZE,
     max_pages: int = MAX_KERNEL_PAGES,
+    budget_sec: float = SURVEY_BUDGET_SEC,
+    clock = time.monotonic,
 ) -> dict:
     """Status-check every kernel that could still be in flight.
 
@@ -225,8 +247,13 @@ def survey_kernels(
         under and nothing else uses.
     ``complete``
         the walk ran off the end of the listing or reached an entry outside the
-        window. False means the page cap was hit first and some candidates were
-        never looked at.
+        window. False means the page cap or ``budget_sec`` stopped it first and
+        some candidates were never looked at.
+    ``out_of_budget``
+        the walk stopped because it ran out of wall clock. Slow responses over
+        hundreds of status calls are how the survey outlives the job's own
+        timeout, and being killed there costs the runner and reports red; giving
+        up inside the deadline reports an incomplete survey, which is a skip.
     ``surveyed`` / ``unreadable`` / ``gone``
         how many in-window kernels were status-checked; how many left their
         state genuinely unknown; and how many answered 404, a deleted kernel
@@ -245,8 +272,13 @@ def survey_kernels(
     unreadable = 0
     gone = 0
     complete = False
+    out_of_budget = False
+    deadline = clock() + budget_sec
 
     for page in range(1, max_pages + 1):
+        if clock() >= deadline:
+            out_of_budget = True
+            break
         kernels = (
             api.kernels_list(mine = True, page = page, page_size = page_size, sort_by = "dateRun") or []
         )
@@ -254,6 +286,9 @@ def survey_kernels(
             ref = getattr(kernel, "ref", None)
             if not ref:
                 continue
+            if clock() >= deadline:
+                out_of_budget = True
+                break
             last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
             # A missing timestamp says nothing about age, so it cannot end the
             # walk, but it can still be checked.
@@ -283,13 +318,19 @@ def survey_kernels(
                 # says nothing.
                 slug = ref.rsplit("/", 1)[-1]
                 (own if slug.startswith(OWN_KERNEL_PREFIX) else foreign).append(entry)
-        if complete:
+        if complete or out_of_budget:
             break
         if len(kernels) < page_size:
             # Ran off the end of the account's kernels, so nothing is left to
             # miss.
             complete = True
             break
+
+    if out_of_budget:
+        print(
+            f"[gate] survey gave up after {budget_sec}s with {surveyed} kernel(s) checked",
+            flush = True,
+        )
 
     return {
         "busy": busy,
@@ -298,7 +339,9 @@ def survey_kernels(
         "surveyed": surveyed,
         "unreadable": unreadable,
         "gone": gone,
-        "complete": complete,
+        # An abandoned walk is never complete, whatever it saw on the way.
+        "complete": complete and not out_of_budget,
+        "out_of_budget": out_of_budget,
         "window_hours": lookback_hours,
     }
 
@@ -347,11 +390,11 @@ def concurrency_verdict(
             f"as a pair."
         )
     if not survey["complete"]:
+        ran_out = "its wall-clock budget" if survey.get("out_of_budget") else f"{MAX_KERNEL_PAGES} pages"
         return False, (
             "the in-flight survey did not reach the end of its "
-            f"{survey['window_hours']}h window within {MAX_KERNEL_PAGES} "
-            "pages, so an older kernel of this account could still be "
-            "running unseen"
+            f"{survey['window_hours']}h window within {ran_out}, so an older "
+            "kernel of this account could still be running unseen"
         )
     # ANY unreadable candidate, not just all of them: the one in-window kernel
     # that could not be read may be the human session this job yields to, and
@@ -486,6 +529,13 @@ def main() -> int:
             "context (expected on a fork pull request, "
             "where secrets are withheld)",
         )
+
+    # Before the first network call, and globally: authenticate(), quota_view()
+    # and every status call below go through a client with no timeout of its
+    # own, and a stalled one would outlive this job's timeout-minutes. With it,
+    # a stall raises and the handlers below turn it into a skip. See
+    # SOCKET_TIMEOUT_SEC.
+    socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
 
     try:
         api = kaggle_client()

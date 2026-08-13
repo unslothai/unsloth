@@ -126,8 +126,16 @@ MAX_CONSECUTIVE_UNKNOWN = 10
 # Attempts at deleting ONE kernel, and the first gap between them. Deleting is
 # the budget control, so a refused delete is retried rather than written off,
 # against the same transient 5xx and reset connections push() retries.
+#
+# Named, like the push ceiling, because the job timeout is derived from them:
+# ONE delete costs DELETE_ATTEMPTS x DELETE_SUBPROCESS_TIMEOUT_SEC plus its
+# backoffs, and both push() (which discards the previous attempt's slug before
+# each retry) and release() (which reconciles every slug filed) pay it. The
+# harness suite recomputes the total from these three and asserts the workflow's
+# deadline sits above it.
 DELETE_ATTEMPTS = 3
 DELETE_BACKOFF_SEC = 5
+DELETE_SUBPROCESS_TIMEOUT_SEC = 180
 
 
 def _log(msg: str) -> None:
@@ -320,7 +328,7 @@ def delete_kernel(slug: str) -> bool:
                 ["kaggle", "kernels", "delete", slug, "-y"],
                 capture_output = True,
                 text = True,
-                timeout = 180,
+                timeout = DELETE_SUBPROCESS_TIMEOUT_SEC,
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"delete {slug} did not run: {type(exc).__name__}")

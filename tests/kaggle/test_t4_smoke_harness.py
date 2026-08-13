@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,14 @@ CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 
 sys.path.insert(0, str(SMOKE_DIR))
 sys.path.insert(0, str(CI_DIR))
+
+
+@pytest.fixture(autouse = True)
+def _keep_the_process_default_socket_timeout():
+    """gate.main() sets one process-wide; the rest of the suite must not get it."""
+    previous = socket.getdefaulttimeout()
+    yield
+    socket.setdefaulttimeout(previous)
 
 
 # ---------------------------------------------------------------- dataset
@@ -419,6 +428,51 @@ def test_an_idle_account_clears_both_kernels():
     assert concurrency_verdict(survey, MAX_CONCURRENT_GPU_KERNELS + 1)[0] is False
 
 
+def test_a_survey_that_ran_out_of_time_is_not_read_as_an_idle_account():
+    """The survey has to answer inside the job's deadline, not be killed by it.
+
+    Hundreds of status calls, each merely slow rather than hung, outlast the
+    gate job's timeout-minutes: the runner dies, the workflow reports red, and
+    nothing was learned about the code. Giving up on a wall-clock budget turns
+    that into the same incomplete-survey skip the page cap already produces --
+    and the kernels it did read being idle is NOT an answer about the ones it
+    never reached.
+    """
+    from gate import concurrency_verdict, survey_kernels
+
+    ticks = {"t": 0.0}
+
+    class _SlowApi(_FakeApi):
+        """Every status call answers, and takes 100s about it."""
+
+        def kernels_status(self, ref):
+            ticks["t"] += 100.0
+            return super().kernels_status(ref)
+
+    api = _SlowApi([_FakeKernel(f"u/k{i}", _ago(1)) for i in range(5)])
+    survey = survey_kernels(
+        api, now = _now(), budget_sec = 180, clock = lambda: ticks["t"]
+    )
+    assert survey["out_of_budget"] is True
+    assert survey["complete"] is False
+    # Two calls fit in the budget and the other three kernels were never
+    # reached, which is exactly why this cannot read as an idle account.
+    assert survey["surveyed"] == 2 and len(api.checked) == 2
+    clear, why = concurrency_verdict(survey)
+    assert clear is False
+    assert "wall-clock budget" in why and "unseen" in why
+
+
+def test_the_survey_budget_does_not_fire_on_a_normal_walk():
+    """The bound above must not stand the gate down on an account it can read."""
+    from gate import concurrency_verdict, survey_kernels
+
+    api = _FakeApi([_FakeKernel(f"u/k{i}", _ago(1)) for i in range(5)])
+    survey = survey_kernels(api, now = _now())
+    assert survey["out_of_budget"] is False and survey["complete"] is True
+    assert concurrency_verdict(survey) == (True, "")
+
+
 def test_an_account_with_no_kernels_at_all_is_clear():
     from gate import concurrency_verdict, survey_kernels
 
@@ -486,6 +540,50 @@ def test_a_gate_error_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     # The reason names the failure type but never the credential.
     assert "RuntimeError" in outputs["reason"]
     assert "not-a-real-token" not in (tmp_path / "out.txt").read_text()
+
+
+def test_the_gate_bounds_its_network_calls_before_it_makes_one(monkeypatch, tmp_path):
+    """A stalled Kaggle call has to raise, or --soft-fail has nothing to catch.
+
+    The client takes no timeout of its own and Python's default is to block
+    forever, so authenticate(), quota_view() or a status call meeting a dead
+    connection returns to nobody: the job's timeout-minutes kills the runner and
+    the pull request goes red on infrastructure, which this workflow's contract
+    says never happens. The deadline is asserted at the FIRST call, since one
+    set afterwards would leave authentication unbounded.
+    """
+    import gate
+
+    seen = {}
+
+    def _client():
+        seen["timeout"] = socket.getdefaulttimeout()
+        raise RuntimeError("boom")
+
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    monkeypatch.setattr(gate, "kaggle_client", _client)
+    code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
+    assert code == 0 and outputs["should_run"] == "false"
+    assert seen["timeout"] == gate.SOCKET_TIMEOUT_SEC
+
+
+def test_the_gate_job_deadline_exceeds_the_gates_own_bound():
+    """The gate must give its own answer, rather than be killed mid-question.
+
+    Its worst case is authentication and the quota read at the socket ceiling
+    each, plus the survey's wall-clock budget and the one call that can still be
+    in flight when the budget expires. The job deadline sits above that with
+    room for checkout and the pip install, or a slow Kaggle reports red.
+    """
+    import gate
+
+    worst = 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC
+    before_the_gate = 120
+    timeout_s = _workflow()["jobs"]["gate"]["timeout-minutes"] * 60
+    assert timeout_s >= worst + before_the_gate, (
+        f"the gate can take {worst}s, the steps before it up to "
+        f"{before_the_gate}s, and the job is killed at {timeout_s}s"
+    )
 
 
 def test_an_unsampled_invocation_is_a_skip_not_a_failure(monkeypatch, tmp_path):
@@ -2054,35 +2152,83 @@ def test_packaging_metadata_is_watched_by_both_triggers():
     assert "pyproject.toml" in on["push"]["paths"]
 
 
+def _launcher_constant(name: str) -> int:
+    """One of launch.py's named ceilings, or a failure saying it moved.
+
+    Read by regex rather than imported so the bound below is computed from the
+    source the workflow ships. A renamed constant fails here rather than
+    silently dropping a term out of the arithmetic.
+    """
+    launch = (CI_DIR / "launch.py").read_text(encoding = "utf-8")
+    match = re.search(rf"^{name} = (\d+)", launch, re.M)
+    assert match, f"launch.py no longer defines {name}, so the job deadline cannot be derived"
+    return int(match.group(1))
+
+
+def _one_delete_seconds() -> int:
+    """Wall clock ONE delete_kernel() call can take, retries and backoff in.
+
+    Not one subprocess: a refused delete is retried DELETE_ATTEMPTS times with
+    an exponential gap, because deletion is this workflow's budget control.
+    Counting a single call is what put the old bound at half the truth.
+    """
+    attempts = _launcher_constant("DELETE_ATTEMPTS")
+    backoff = _launcher_constant("DELETE_BACKOFF_SEC")
+    ceiling = _launcher_constant("DELETE_SUBPROCESS_TIMEOUT_SEC")
+    return attempts * ceiling + sum(backoff * 2**i for i in range(attempts - 1))
+
+
 def test_the_job_deadline_exceeds_the_launchers_worst_case():
     """A runner killed mid-run takes finish() -> release() with it.
 
-    The launcher's own constants bound how long it can take: two sequential
-    pushes of PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus
-    backoffs, the polling sharing one deadline with them, the evidence download,
-    then a deletion per slug each push filed. The job timeout has to sit above
-    that, or a pushed kernel is orphaned and bills to its own ceiling.
-    """
-    launch = (CI_DIR / "launch.py").read_text(encoding = "utf-8")
-    import re as _re
+    The launcher's own constants bound how long it can take, and EVERY deletion
+    path counts, both of them retried:
 
-    attempts = int(_re.search(r"^PUSH_ATTEMPTS = (\d+)", launch, _re.M).group(1))
-    backoff = int(_re.search(r"^PUSH_BACKOFF_SEC = (\d+)", launch, _re.M).group(1))
-    per_push = attempts * 600 + sum(backoff * 2**i for i in range(attempts - 1))
+    * push(), per notebook: PUSH_ATTEMPTS attempts at the subprocess ceiling,
+      the backoffs between them, and a _discard() of the previous attempt's slug
+      before each retry.
+    * the polling, which shares one deadline with the pushes rather than
+      stacking on them.
+    * the evidence download.
+    * release(), which deletes every slug every push FILED, not just the
+      accepted one.
+
+    The job timeout has to sit above the total with room for the steps that run
+    before the launcher, or the runner is killed mid-release() and the kernels
+    it pushed keep billing to their own ceiling -- the one outcome this deadline
+    exists to prevent.
+    """
+    push_attempts = _launcher_constant("PUSH_ATTEMPTS")
+    push_backoff = _launcher_constant("PUSH_BACKOFF_SEC")
+    push_ceiling = _launcher_constant("PUSH_SUBPROCESS_TIMEOUT_SEC")
+    one_delete = _one_delete_seconds()
+
+    # push() calls _discard() before every retry, so PUSH_ATTEMPTS - 1 deletes
+    # ride along with the pushes themselves.
+    per_push = (
+        push_attempts * push_ceiling
+        + sum(push_backoff * 2**i for i in range(push_attempts - 1))
+        + (push_attempts - 1) * one_delete
+    )
 
     source = WORKFLOW.read_text(encoding = "utf-8")
-    max_wait = int(_re.search(r"--max-wait (\d+)", source).group(1))
-    kernels = int(_re.search(r"--kernels (\d+)", source).group(1))
+    max_wait = int(re.search(r"--max-wait (\d+)", source).group(1))
+    kernels = int(re.search(r"--kernels (\d+)", source).group(1))
     evidence = kernels * 300
-    deletions = kernels * attempts * 180
+    # release() reconciles every slug filed: one per push attempt, per kernel.
+    deletions = kernels * push_attempts * one_delete
 
     # The polling deadline starts before the first push, so the two do not
     # stack; the longer of them is what the run spends.
     worst = max(kernels * per_push, max_wait) + evidence + deletions
+    # Checkout, the CPU torch wheel and the harness suite all run before the
+    # launcher does, and they come out of the same job deadline.
+    before_the_launcher = 900
     timeout_s = _workflow()["jobs"]["t4-smoke"]["timeout-minutes"] * 60
-    assert (
-        timeout_s > worst
-    ), f"the launcher can take {worst}s and the job is killed at {timeout_s}s"
+    assert timeout_s >= worst + before_the_launcher, (
+        f"the launcher can take {worst}s, the steps before it up to "
+        f"{before_the_launcher}s, and the job is killed at {timeout_s}s"
+    )
 
 
 def test_the_reserved_budget_covers_the_launchers_own_bound():
