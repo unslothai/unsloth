@@ -48,6 +48,13 @@ def _mutex_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            # Test-StudioPathEqual reports an unresolvable identity through this,
+            # and these scripts run under -ErrorActionPreference Stop, so leaving it
+            # out made the CATCH path throw CommandNotFound and every test that
+            # reaches it fail for a reason that has nothing to do with what it
+            # measures. Extracted rather than stubbed: it is self-contained, and a
+            # stub would keep passing if the real call ever went wrong.
+            "Write-StudioLine",
             "Enter-StudioNamedMutex",
             "Get-StudioFinalPath",
             "Get-StudioPathHash",
@@ -903,3 +910,39 @@ def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
     external_guard = body.index("block_external_conflict(&[]).await?")
     spawn = body.index("install::run_install")
     assert owned_guard < external_guard < spawn
+
+
+@pytest.mark.parametrize(
+    "helpers",
+    [_mutex_helpers, _process_helpers],
+    ids = ["mutex", "process"],
+)
+def test_the_extracted_helpers_can_call_everything_they_call(helpers):
+    """Every installer function these harnesses reach must be in the harness.
+
+    The scripts above run under -ErrorActionPreference Stop, so a helper that
+    calls an installer function nobody extracted dies with CommandNotFound, and
+    the test fails for a reason unrelated to what it measures. That is not
+    hypothetical: Test-StudioPathEqual reports an unresolvable path identity
+    through Write-StudioLine, which was missing, so both
+    test_path_identity_failure_is_reported_as_unknown cases failed on Windows
+    while passing nowhere they could be noticed.
+
+    Runs on every platform, unlike the scripts themselves, so the harness cannot
+    drift out of step again where only a Windows runner would see it.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    extracted = helpers(source)
+    # Every top-level installer function, i.e. everything the harness COULD be
+    # missing. A call to a cmdlet or to a function defined inside the scripts is
+    # not this test's business.
+    installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
+    provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
+    assert provided, "the helper extraction produced nothing"
+
+    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", extracted))
+    missing = sorted((called & installer_functions) - provided)
+    assert not missing, (
+        f"{helpers.__name__} extracts functions that call {missing}, which the "
+        "harness never defines; add them to the extraction list"
+    )
