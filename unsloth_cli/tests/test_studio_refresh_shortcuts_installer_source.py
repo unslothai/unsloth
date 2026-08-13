@@ -367,6 +367,9 @@ def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(mon
     checkout.mkdir()
     (checkout / "install.sh").write_text("#!/bin/sh\n")
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
+    # The tests run from a clone, so _PACKAGE_ROOT would otherwise supply a second
+    # usable installer and the network would never be the fallback under test.
+    monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
 
     seen = []
@@ -410,3 +413,42 @@ def test_building_the_opener_never_mutates_global_urllib(monkeypatch):
     ), "redirect validation was lost"
     assert site.parent is installed, "the installed opener's handler was hijacked"
     assert urllib.request._opener is installed
+
+
+def test_a_second_on_disk_installer_is_tried_before_the_network(monkeypatch, tmp_path):
+    """The old loop probed and launched in one pass, so an unlaunchable candidate left
+    the next one to try. Selecting only the first match would drop that second chance
+    and reach for the network while a usable installer sat on disk."""
+    studio = _studio()
+    local = tmp_path / "local"
+    pkg = tmp_path / "pkg"
+    for d in (local, pkg):
+        d.mkdir()
+        (d / "install.sh").write_text("#!/bin/sh\n")
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", str(local))
+    monkeypatch.setattr(studio, "_PACKAGE_ROOT", pkg)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+
+    seen = []
+
+    def _run(argv, **kwargs):
+        seen.append(list(argv))
+        if str(local / "install.sh") in argv:
+            raise OSError(11, "Resource temporarily unavailable")
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(studio.subprocess, "run", _run)
+    monkeypatch.setattr(
+        studio,
+        "_fetch_installer",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("a usable installer was on disk")),
+    )
+    studio._refresh_desktop_shortcuts()
+
+    assert len(seen) == 2, seen
+    assert str(local / "install.sh") in seen[0]
+    assert str(pkg / "install.sh") in seen[1]

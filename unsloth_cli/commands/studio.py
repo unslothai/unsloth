@@ -3522,14 +3522,21 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
     return candidates
 
 
-def _first_installer_on_disk(candidates: Sequence[Path]) -> Optional[Path]:
+def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
+    """Every candidate that exists, not just the first.
+
+    The pre-refactor loop probed and launched in one pass, so a candidate that could
+    not be launched left the next one to try before the network was reached. Returning
+    only the first match would quietly drop that second chance.
+    """
+    found: List[Path] = []
     for candidate in candidates:
         try:
             if candidate.is_file():
-                return candidate
+                found.append(candidate)
         except OSError:
             continue
-    return None
+    return found
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
@@ -3545,7 +3552,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     if verbose:
         args.append("--verbose")
 
-    checkout = _first_installer_on_disk(_installer_script_candidates(installer_name))
+    checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
 
     if is_windows:
         ps_argv: List[str] = ["powershell.exe"]
@@ -3555,14 +3562,16 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         if _should_hide_windows_subprocesses():
             ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
-        if checkout is not None and _run_installer_ps1(checkout, args, ps_argv, env):
+        # any() stops at the first candidate that actually launched, and only an
+        # unlaunchable one moves on, which is what the old loop did.
+        if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
             return
         fetched = _fetch_installer(installer_name, verbose = verbose)
         if fetched is not None:
             _run_fetched_installer_ps1(fetched, args, ps_argv, env)
         return
 
-    if checkout is not None and _run_installer_bash(checkout, args, env):
+    if any(_run_installer_bash(script, args, env) for script in checkouts):
         return
     fetched = _fetch_installer(installer_name, verbose = verbose)
     if fetched is not None:
