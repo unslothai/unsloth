@@ -7204,10 +7204,29 @@ _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
 )
 
 
+def _diagnosis_text(msg: str) -> str:
+    """``msg`` up to the startup-diagnostics block, which is not ours to read.
+
+    A llama-server failure now carries a tail of the child's own stdout and the
+    log path. That evidence is quoted verbatim from an untrusted process, so
+    matching a phrase inside it says nothing about the model: llama.cpp prints
+    lines like "device does not support 16-bit storage" for reasons that have
+    nothing to do with the checkpoint, and every phrase below would then rewrite
+    the diagnosis to "This model is not supported yet". Match on the part this
+    backend wrote. A message without the block is returned unchanged, so every
+    other error source behaves exactly as before.
+    """
+    for marker in ("\n\nllama-server output:", "\n\nFull log: "):
+        head, sep, _ = msg.partition(marker)
+        if sep:
+            msg = head
+    return msg
+
+
 def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     """Whether ``msg`` is the verbose MLX per-module metadata error emitted
     while loading an NVFP4 checkpoint."""
-    lower_msg = msg.lower()
+    lower_msg = _diagnosis_text(msg).lower()
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
 
 
@@ -7215,7 +7234,8 @@ def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
     message when it matches a known unsupported-model signature; otherwise
     return ``msg`` unchanged."""
-    if any(h.lower() in msg.lower() for h in _NOT_SUPPORTED_HINTS):
+    hay = _diagnosis_text(msg).lower()
+    if any(h.lower() in hay for h in _NOT_SUPPORTED_HINTS):
         return f"This model is not supported yet. Try a different model. (Original error: {msg})"
     return msg
 
