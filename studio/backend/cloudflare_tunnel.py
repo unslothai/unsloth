@@ -1266,6 +1266,8 @@ _ORPHANS = "orphans.json"
 _ABANDONED = "abandoned-tunnels.json"
 _CONNECTOR = "connector.json"
 
+_HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
 _NAME_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _NAME_RE = re.compile(r"^unsloth-[A-Z0-9]{6}$")
 
@@ -1409,7 +1411,11 @@ def canonical_hostname(raw: str) -> str:
     text = (raw or "").strip()
     invalid = ProvisioningError("invalid_hostname", "Enter a hostname like unsloth.example.com.")
     try:
-        host = urlsplit(text if "://" in text else "//" + text).hostname or ""
+        # Only a pasted URL is parsed as one. Splitting a bare string treats
+        # userinfo and ports as delimiters and returns the shorter name that
+        # survives them, so a mistyped "studio@example.com" would provision the
+        # apex domain instead of being refused.
+        host = (urlsplit(text).hostname or "") if "://" in text else text
     except ValueError:
         raise invalid from None
     labels = []
@@ -1417,10 +1423,17 @@ def canonical_hostname(raw: str) -> str:
         if not label:
             raise invalid
         try:
-            labels.append(label if label.isascii() else label.encode("idna").decode("ascii"))
+            ascii_label = label if label.isascii() else label.encode("idna").decode("ascii")
         except UnicodeError:
             raise invalid from None
-    return ".".join(labels)
+        ascii_label = ascii_label.lower()
+        if not _HOSTNAME_LABEL_RE.match(ascii_label):
+            raise invalid
+        labels.append(ascii_label)
+    name = ".".join(labels)
+    if len(labels) < 2 or len(name) > 253:
+        raise invalid
+    return name
 
 
 def _new_token() -> str:
@@ -1833,6 +1846,10 @@ def _route_hostname(record: dict, binary: str, name: str, hostname: str) -> None
         # name that disagrees is evidence; reporting none is not.
         created = _ROUTE_ADDED_RE.search(text)
         if created and created.group(1).rstrip(".").lower() != hostname.lower():
+            # The record that exists is the one cleanup has to name, and the
+            # hostname asked for was never created.
+            record["hostname"] = created.group(1).rstrip(".").lower()
+            _write(_RECORD, record)
             raise ProvisioningError("hostname_not_authorized", hostname)
         return
     lowered = text.lower()

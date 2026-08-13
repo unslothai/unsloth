@@ -1899,9 +1899,37 @@ def test_a_record_created_outside_the_requested_zone_is_refused(cf):
     assert ct.read_identity() is None
     # The route did succeed here, unlike the refusals cloudflared reports itself,
     # so the name it created has to stay accounted for rather than be forgotten.
-    assert ct.orphaned_hostnames() == [_HOST]
+    # The requested name was never created, so orphaning it would send the user
+    # looking for a record that does not exist.
+    assert ct.orphaned_hostnames() == [f"{_HOST}.example.net"]
     assert ct._read(ct._RECORD) is None
     assert len(cf.deleted) == 1
+
+
+@pytest.mark.parametrize(
+    "raw",
+    # Anything urlsplit would treat as a delimiter returns a shorter name than
+    # the one typed, and provisioning that name is worse than refusing it.
+    ["studio@example.com", "example.com:bad", "a b.example.com", "st#p.example.com", "example", ""],
+)
+def test_a_hostname_that_would_be_truncated_is_refused(raw):
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        ct.canonical_hostname(raw)
+    assert excinfo.value.code == "invalid_hostname"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Studio.Example.COM.", "studio.example.com"),
+        ("https://studio.example.com/path", "studio.example.com"),
+        ("  example.com  ", "example.com"),
+        ("bücher.example.com", "xn--bcher-kva.example.com"),
+        ("a-b.example.co.uk", "a-b.example.co.uk"),
+    ],
+)
+def test_a_hostname_a_user_would_enter_still_canonicalizes(raw, expected):
+    assert ct.canonical_hostname(raw) == expected
 
 
 @pytest.mark.parametrize(
