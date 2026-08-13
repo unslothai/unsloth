@@ -2899,7 +2899,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           if (!open) cancelH3TaskChoice();
         }}
       >
-        <DialogContent className="max-w-lg">
+        {/* Squarer than the shared dialog's rounded-4xl: at this width the default reads as a
+            lozenge rather than a panel. The option cards step down from it so the nesting holds. */}
+        <DialogContent className="max-w-lg rounded-2xl">
           <DialogHeader>
             <DialogTitle>Choose how MiniMax H3 should generate</DialogTitle>
             <DialogDescription>
@@ -2911,7 +2913,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             <Button
               type="button"
               variant="outline"
-              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              className="h-auto items-start justify-start whitespace-normal rounded-xl p-4 text-left"
               onClick={() => chooseH3Task("fl2va")}
             >
               <span className="grid gap-1">
@@ -2924,7 +2926,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             <Button
               type="button"
               variant="outline"
-              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              className="h-auto items-start justify-start whitespace-normal rounded-xl p-4 text-left"
               onClick={() => chooseH3Task("ref2va")}
             >
               <span className="grid gap-1">
