@@ -6,7 +6,8 @@
 Transformers reports no timings, so the chat UI showed a prompt and generation speed
 for GGUF and MLX but nothing for safetensors. These tests pin the measurement: the
 prefill boundary is stamped once (at the first logits-processor call, not at every
-decode step), the emitted object matches llama-server's ``timings`` shape, and an
+decode step), each stamp waits for the accelerator so it times compute rather than
+kernel dispatch, the emitted object matches llama-server's ``timings`` shape, and an
 unmeasurable rate is omitted rather than reported as zero.
 """
 
@@ -53,6 +54,33 @@ def test_prefill_boundary_stamps_once_so_decode_steps_do_not_move_it():
     for _ in range(5):
         timer.mark_prefill_end()
     assert timer.prefill_ended_at == boundary
+
+
+def test_both_stamps_wait_for_the_accelerator(monkeypatch):
+    """A queued forward pass has not run yet, so stamping on the callback alone times
+    dispatch, not prefill. Measured on an RTX 3080: a 2048-token prefill reads as 28ms
+    unsynchronized against 77ms synchronized, a 2.7x overstated prompt speed."""
+    synced = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: synced.append(device))
+
+    cuda = torch.device("cuda", 0)
+    timer = GenerationTimer()
+    timer.start()
+    timer.mark_prefill_end(cuda)
+    assert synced == [cuda]
+    timer.finish()  # reuses the latched device: no tensor is in scope by then
+    assert synced == [cuda, cuda]
+
+
+def test_a_cpu_run_has_nothing_to_wait_for(monkeypatch):
+    monkeypatch.setattr(
+        torch.cuda, "synchronize", lambda device = None: pytest.fail("cpu run synchronized")
+    )
+    timer = GenerationTimer()
+    timer.start()
+    timer.mark_prefill_end(torch.device("cpu"))
+    timer.finish()
+    assert timer.prompt_ms is not None
 
 
 def test_a_run_that_never_reached_prefill_reports_no_prompt_window():

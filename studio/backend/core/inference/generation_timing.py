@@ -8,12 +8,31 @@ chat UI reads off llama-server's ``timings`` object have to be measured here. Th
 split point is the first logits-processor call, which transformers makes once the
 prefill forward pass has produced its logits, before the first token is sampled.
 
-Kept in a dependency-light leaf module (transformers only, no unsloth / peft) so the
-arithmetic can be unit-tested without loading a model, matching
+Reaching that callback only means the kernels were queued, so each stamp waits for the
+device first. Without the wait a 2048-token prefill on an RTX 3080 reads as 28 ms
+instead of 77 ms, inflating prompt throughput 2.7x and charging the rest to decode.
+
+Kept in a dependency-light leaf module (torch + transformers only, no unsloth / peft)
+so the arithmetic can be unit-tested without loading a model, matching
 ``core.inference.presence_penalty``.
 """
 
 import time
+
+import torch
+
+
+def _wait_for_device(device):
+    """Drain queued work so a wall-clock stamp reflects finished compute, not dispatch."""
+    if device is None or device.type == "cpu":
+        return
+    synchronize = getattr(getattr(torch, device.type, None), "synchronize", None)
+    if synchronize is None:
+        return
+    try:
+        synchronize(device)
+    except TypeError:  # torch.mps.synchronize takes no device argument
+        synchronize()
 
 
 class GenerationTimer:
@@ -23,18 +42,25 @@ class GenerationTimer:
         self.started_at = None
         self.prefill_ended_at = None
         self.ended_at = None
+        self._device = None
 
     def start(self):
         self.started_at = time.monotonic()
 
-    def mark_prefill_end(self):
+    def mark_prefill_end(self, device = None):
         """Stamp the end of prefill; later decode steps must not move the boundary."""
-        if self.started_at is not None and self.prefill_ended_at is None:
-            self.prefill_ended_at = time.monotonic()
+        if self.started_at is None or self.prefill_ended_at is not None:
+            return
+        _wait_for_device(device)
+        # latched for finish(), which has no tensor of its own to read a device off
+        self._device = device
+        self.prefill_ended_at = time.monotonic()
 
     def finish(self):
-        if self.started_at is not None and self.ended_at is None:
-            self.ended_at = time.monotonic()
+        if self.started_at is None or self.ended_at is not None:
+            return
+        _wait_for_device(self._device)
+        self.ended_at = time.monotonic()
 
     @property
     def prompt_ms(self):
@@ -60,7 +86,8 @@ def with_prefill_boundary_processor(logits_processor, timer):
 
     class _PrefillBoundaryLogitsProcessor(LogitsProcessor):
         def __call__(self, input_ids, scores):
-            timer.mark_prefill_end()
+            # scores is the prefill output, so its device is the one to wait on
+            timer.mark_prefill_end(scores.device)
             return scores
 
     processors = LogitsProcessorList([_PrefillBoundaryLogitsProcessor()])
