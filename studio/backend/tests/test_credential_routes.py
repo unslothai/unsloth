@@ -221,23 +221,50 @@ def test_custom_max_output_tokens_requires_a_safe_integer(value):
         )
 
 
-def test_known_and_custom_preset_providers_reject_max_output_override():
+def test_known_and_custom_preset_providers_reject_a_non_null_max_output_override():
     for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
-        for value in (65536, None):
-            with pytest.raises(HTTPException) as error:
-                asyncio.run(
-                    providers_route.create_provider_config(
-                        ProviderCreate(
-                            provider_type = provider_type,
-                            display_name = provider_type,
-                            base_url = "https://example.com/v1",
-                            max_output_tokens = value,
-                        ),
-                        credential = ("alice", None),
-                        via_api_key = False,
-                    )
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                providers_route.create_provider_config(
+                    ProviderCreate(
+                        provider_type = provider_type,
+                        display_name = provider_type,
+                        base_url = "https://example.com/v1",
+                        max_output_tokens = 65536,
+                    ),
+                    credential = ("alice", None),
+                    via_api_key = False,
                 )
-            assert error.value.status_code == 400
+            )
+        assert error.value.status_code == 400
+
+
+def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_override():
+    """A blank Max Tokens limit field serialises as null, not as an omission.
+
+    The dialog renders that field from the UI provider type, which resolves to
+    "custom" for a connection STORED as `openai` once the user has renamed it or
+    pointed it at another base URL. Rejecting the null as well as a real value meant
+    every unrelated edit of such a connection -- a rename, a model change, a key
+    rotation -- failed with an error about a field the user never touched. Clearing
+    an override that cannot exist is a no-op, so the null is accepted everywhere and
+    only a non-null value is refused.
+    """
+    for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
+        created = asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = provider_type,
+                    display_name = provider_type,
+                    base_url = "https://example.com/v1",
+                    max_output_tokens = None,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert created.max_output_tokens is None
+        assert providers_db.get_provider(created.id)["max_output_tokens"] is None
 
 
 def test_known_provider_rejects_max_output_override_update():
@@ -258,6 +285,28 @@ def test_known_provider_rejects_max_output_override_update():
             )
         )
     assert error.value.status_code == 400
+
+
+def test_known_provider_accepts_a_null_max_output_override_update():
+    """The counterpart on the update path: a blank field must not block a rename."""
+    providers_db.create_provider(
+        id = "openai-1",
+        provider_type = "openai",
+        display_name = "OpenAI",
+        base_url = "https://api.openai.com/v1",
+    )
+
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            "openai-1",
+            ProviderUpdate(display_name = "Renamed", max_output_tokens = None),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert updated.display_name == "Renamed"
+    assert updated.max_output_tokens is None
+    assert providers_db.get_provider("openai-1")["max_output_tokens"] is None
 
 
 def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeypatch):

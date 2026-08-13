@@ -34,16 +34,36 @@ test("all max-output cap callers pass the selected connection override", () => {
 test("the generic Custom editor exposes a bounded optional cap and warning", () => {
   const dialog = source("chat-providers-dialog.tsx");
 
-  assert.match(dialog, /providerType === LEGACY_CUSTOM_PROVIDER_TYPE/);
+  // Gated on the extracted predicate, not on the UI provider type: line 136's
+  // `providerType === LEGACY_CUSTOM_PROVIDER_TYPE` is a display-name lookup and
+  // matching it here would pass even if the row lost its gate entirely.
+  assert.match(
+    dialog,
+    /const supportsMaxOutputTokens = supportsCustomMaxOutputTokens\(/,
+  );
+  assert.match(dialog, /\{supportsMaxOutputTokens \? \(/);
   assert.match(dialog, /Max Tokens limit/);
   assert.match(dialog, /Leave blank to use the 32,768-token default\./);
   assert.match(
     dialog,
     /If the upstream provider does not support this value,\s+requests may fail\./,
   );
-  assert.match(dialog, /min=\{CUSTOM_MAX_OUTPUT_TOKENS_MIN\}/);
+  // A TEXT input, not `type="number"`. The HTML value sanitization algorithm
+  // replaces anything a `number` input does not read as a valid floating-point
+  // number with the empty string, and empty means "no override" here, so a
+  // grouped entry like "131,072" would silently CLEAR the user's override on
+  // save. The bounds live in `parseMaxOutputTokens` instead of in DOM attributes.
+  assert.match(
+    dialog,
+    /id="provider-max-output-tokens"\s+type="text"\s+inputMode="numeric"/,
+  );
+  assert.doesNotMatch(
+    dialog,
+    /id="provider-max-output-tokens"\s+type="number"/,
+  );
+  assert.match(dialog, /value < CUSTOM_MAX_OUTPUT_TOKENS_MIN/);
   assert.match(dialog, /Number\.isSafeInteger\(value\)/);
-  assert.match(dialog, /max=\{Number\.MAX_SAFE_INTEGER\}/);
+  assert.match(dialog, /\/\^\\d\+\$\/\.test\(trimmed\)/);
 });
 
 test("preset application clamps live Max Tokens to the active external cap", () => {
@@ -66,8 +86,12 @@ test("preset application clamps live Max Tokens to the active external cap", () 
 test("lowering an active external cap immediately clamps live Max Tokens", () => {
   const settings = source("chat-settings-sheet.tsx");
 
+  // The decision itself lives in `resolveExternalMaxTokensClamp` (unit-tested in
+  // external-max-tokens-clamp.test.ts). What this asserts is that the effect still
+  // asks it, still passes the availability inputs rather than assuming them, and
+  // still writes the result back through the preset-source bookkeeping.
   assert.match(
     settings,
-    /useEffect\(\(\) => \{[\s\S]*?isExternalModel[\s\S]*?params\.maxTokens <= maxTokensMax[\s\S]*?maxTokens: maxTokensMax[\s\S]*?setActivePresetSource\(nextSource\)[\s\S]*?onParamsChange\(nextParams\)/,
+    /useEffect\(\(\) => \{\s*const clampedMaxTokens = resolveExternalMaxTokensClamp\(\{[\s\S]*?settingsHydrated,[\s\S]*?hasActiveExternalProvider: activeExternalProvider != null,[\s\S]*?isExternalModel,[\s\S]*?maxTokens: params\.maxTokens,[\s\S]*?maxTokensMax,[\s\S]*?\}\);[\s\S]*?if \(clampedMaxTokens == null\) \{[\s\S]*?maxTokens: clampedMaxTokens[\s\S]*?setActivePresetSource\(nextSource\)[\s\S]*?onParamsChange\(nextParams\)/,
   );
 });
