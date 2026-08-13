@@ -1942,8 +1942,16 @@ while [ "${_setup_gpucheck_pin%/}" != "$_setup_gpucheck_pin" ]; do
     _setup_gpucheck_pin="${_setup_gpucheck_pin%/}"
 done
 _setup_gpucheck_pin_leaf=$(printf '%s' "${_setup_gpucheck_pin##*/}" | tr '[:upper:]' '[:lower:]')
+#
+# install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it
+# deliberately sent to CPU -- non-x86_64, ROCm older than 6.0, an unreadable ROCm runtime --
+# arrives here as "cpu" with _setup_amd_detected still true (this file's AMD detection has no
+# uname or ROCm-version gate) and the CPU wheel it asked for. install.sh already explains that
+# fallback on screen, so reporting it again in red and asking for an issue is wrong. Only the
+# exact "cpu": unset is the normal standalone `studio update` state and must still be checked.
 if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } \
-    && [ "$_setup_gpucheck_pin_leaf" != "cpu" ]; then
+    && [ "$_setup_gpucheck_pin_leaf" != "cpu" ] \
+    && [ "${UNSLOTH_TORCH_BACKEND:-}" != "cpu" ]; then
     case "${UNSLOTH_SKIP_TORCH_GPU_CHECK:-}" in
         1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
         *) _setup_skip_torch_check=false ;;
@@ -2011,7 +2019,7 @@ if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } 
         substep "torch ${_setup_torch_ver:-unknown}, device_count ${_setup_torch_devices:-0}, torch.version.hip ${_setup_torch_hip:-none}" "$C_ERR"
         # Named so the report matches what the user is about to see, instead of
         # leaving them to discover it and file it as a second, separate bug.
-        substep "Training and torch GPU inference will run on CPU; chat and GGUF are unaffected." "$C_ERR"
+        substep "Training and GPU inference are unavailable; chat and GGUF still work." "$C_ERR"
         substep "If the Live monitor shows VRAM \"--\" and \"No visible GPU\", that is this, not a second bug." "$C_ERR"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then

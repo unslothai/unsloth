@@ -164,6 +164,7 @@ def _run_block(
     run_env.pop("UNSLOTH_SKIP_TORCH_GPU_CHECK", None)
     run_env.pop("UNSLOTH_TORCH_INDEX_URL", None)
     run_env.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+    run_env.pop("UNSLOTH_TORCH_BACKEND", None)
     run_env.update(env or {})
     run_env["PATH"] = (
         str(stub_bin) if not with_timeout else f"{stub_bin}{os.pathsep}{run_env.get('PATH', '')}"
@@ -212,10 +213,11 @@ def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
     # as a conditional: llama.cpp is a separate stack, and with the Vulkan bundle the backend
     # fills inference_gpu from get_vulkan_inference_gpu_info() and the monitor shows that card's
     # real VRAM, so promising a CPU-only Studio and a "--" readout would be false there.
-    assert (
-        "SUB|Training and torch GPU inference will run on CPU; chat and GGUF are unaffected.|ERR"
-        in out
-    )
+    assert "SUB|Training and GPU inference are unavailable; chat and GGUF still work.|ERR" in out
+    # Not "runs on CPU": hardware.py leaves CHAT_ONLY true on the fallback and disables
+    # Train/Export, so promising CPU training is the opposite of what happens. Same sentence
+    # the XPU-runtime-unavailable arm above already uses.
+    assert "will run on CPU" not in out
     assert (
         'SUB|If the Live monitor shows VRAM "--" and "No visible GPU", that is this, not a second bug.|ERR'
         in out
@@ -396,6 +398,42 @@ def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):
     wheel, so a torch that sees nothing under one is exactly the mismatch worth reporting."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_an_installer_resolved_cpu_backend_is_not_a_fault(block, tmp_path):
+    """install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it
+    deliberately sent to CPU (non-x86_64, ROCm older than 6.0, an unreadable ROCm runtime)
+    arrives with the CPU wheel it asked for and _setup_amd_detected still true, since this
+    file's AMD detection has no uname or ROCm-version gate. install.sh already explains that
+    fallback on screen; repeating it in red and asking for an issue is the false alarm."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx906",
+        env = {"UNSLOTH_TORCH_BACKEND": "cpu"},
+    )
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize("backend", ["rocm", "cuda", ""])
+def test_a_gpu_backend_or_no_backend_is_still_reconciled(block, tmp_path, backend):
+    """Only the exact "cpu". Unset is the normal standalone `studio update` state -- the run
+    this check exists for -- so treating "not a GPU backend" as CPU would disable the feature
+    for everyone who updates without re-running the installer."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"UNSLOTH_TORCH_BACKEND": backend},
+    )
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
 
 

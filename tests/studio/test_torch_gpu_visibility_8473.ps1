@@ -34,6 +34,7 @@ function Get-FunctionText {
 }
 
 $visFn = Get-FunctionText $setup "Get-TorchGpuVisibility"
+$leafFn = Get-FunctionText $setup "Get-TorchIndexLeaf"
 # An empty or wrong extraction would make every case below pass vacuously.
 Check "extraction kept the sentinel"  ($visFn -match 'UNSLOTHTORCHGPU')
 Check "extraction kept the interpreter call" ($visFn -match 'Invoke-BoundedPythonProbe')
@@ -140,9 +141,12 @@ Check "it names what the user will see"   ($report -match 'No visible GPU')
 # inference_gpu from get_vulkan_inference_gpu_info() and the monitor shows that card's real
 # VRAM, so promising "--" and a CPU-only Studio would be a false prediction there.
 Check "it does not promise a CPU-only Studio" (-not ($report -match 'Studio will run CPU-only'))
-Check "it claims only what torch answered" ($report -match 'Training and torch GPU inference will run on CPU')
+# hardware.py leaves CHAT_ONLY true on the CPU fallback and disables Train/Export, so
+# "training will run on CPU" was the opposite of what happens. Same wording as the XPU arm.
+Check "it claims only what torch answered" ($report -match 'Training and GPU inference are unavailable; chat and GGUF still work')
+Check "it does not promise CPU training" (-not ($report -match 'will run on CPU'))
 Check "the monitor line is conditional"   ($report -match 'If the Live monitor shows VRAM')
-Check "chat and GGUF are exempted"        ($report -match 'chat and GGUF are unaffected')
+Check "chat and GGUF are exempted"        ($report -match 'chat and GGUF still work')
 Check "it says where to report it"        ($report -match 'github\.com/unslothai/unsloth/issues')
 # A CPU-only Studio still chats. Failing the install over a diagnostic would be a regression.
 Check "it never fails the setup"          (-not ($report -match 'Exit-SetupFailure|exit 1|\$stackExit'))
@@ -221,6 +225,7 @@ function Write-StudioLine { param(`$a, `$b, `$c) }
 `$ROCmGpuLabel = `$V['ROCmGpuLabel']
 `$HipSdkInstalled = [bool]`$V['HipSdkInstalled']
 `$AmdHasGpuWheels = [bool]`$V['AmdHasGpuWheels']
+`$_amdPinIsGpu = [bool]`$V['AmdPinIsGpu']
 `$script:ROCmGfxArch = `$V['ROCmGfxArch']
 `$script:ROCmVersionFull = `$V['ROCmVersionFull']
 $summary
@@ -261,6 +266,41 @@ $sVegaSdk = Invoke-Summary @{ HipSdkInstalled = $true; ROCmGpuLabel = "AMD Radeo
 Check "an unmapped arch on the HIP SDK arm is not accused" ($null -eq $sVegaSdk.Announced)
 $sVegaBundled = Invoke-Summary @{ ROCmGfxArch = "gfx1010" }
 Check "an unmapped arch on the bundled-wheel arm is not accused" ($null -eq $sVegaBundled.Announced)
+
+# ...unless a pin overrides the arch decision. The pinned ROCm path routes a gfx*/rocm* leaf
+# through the GPU index whatever the arch and skips the CPU fallback, so that host really does
+# get a GPU wheel and a torch that cannot open it is worth reporting.
+$sPinned = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx1010)"; ROCmGfxArch = "gfx1010"; AmdPinIsGpu = $true }
+Check "a pinned unmapped arch is reconciled" ($sPinned.Announced -eq "AMD GPU (gfx1010)")
+$sPinnedSdk = Invoke-Summary @{ HipSdkInstalled = $true; ROCmGpuLabel = "AMD Radeon VII"; ROCmGfxArch = "gfx906"; AmdPinIsGpu = $true }
+Check "the HIP SDK arm honours a pin too"   ($sPinnedSdk.Announced -eq "AMD GPU (gfx906)")
+$sPinnedBundled = Invoke-Summary @{ ROCmGfxArch = "gfx942"; AmdPinIsGpu = $true }
+Check "the bundled-wheel arm honours a pin too" ($sPinnedBundled.Announced -eq "AMD GPU (gfx942)")
+# The arch-unknown arm has no gfx to name, but a pin still installs a GPU wheel there.
+$sPinnedNoArch = Invoke-Summary @{ ROCmGpuLabel = "AMD Radeon 780M"; AmdPinIsGpu = $true }
+Check "an arch-less pinned host is reconciled" ($sPinnedNoArch.Announced -eq "AMD GPU")
+Check "and it is not named 'AMD GPU ()'"    (-not ($sPinnedNoArch.Announced -match '\(\)'))
+# The pin predicate itself is run, not read: `$null -ne "cpu"` is TRUE in PowerShell, so the
+# emptiness half is what stops every unpinned host announcing again.
+$pinPat = '(?ms)^\$_amdPinLeaf = Get-TorchIndexLeaf.*?\n\$_amdPinIsGpu = .*?$'
+$pinExpr = if ($setupText -match $pinPat) { $Matches[0] } else { "" }
+Check "the pin predicate was found"       ($pinExpr -ne "")
+function Test-AmdPinIsGpu {
+    param([string] $Url)
+    $sb = [scriptblock]::Create(@"
+param(`$Url)
+function Get-PinnedTorchIndexUrl { if ([string]::IsNullOrWhiteSpace(`$Url)) { return `$null } return `$Url }
+$leafFn
+$pinExpr
+`$_amdPinIsGpu
+"@)
+    return (& $sb $Url)
+}
+Check "no pin is not a GPU pin"           (-not (Test-AmdPinIsGpu ""))
+Check "a cpu pin is not a GPU pin"        (-not (Test-AmdPinIsGpu "https://download.pytorch.org/whl/cpu"))
+Check "a gfx pin is a GPU pin"            (Test-AmdPinIsGpu "https://repo.amd.com/rocm/whl/gfx1010/")
+Check "a rocm pin is a GPU pin"           (Test-AmdPinIsGpu "https://download.pytorch.org/whl/rocm7.1")
+Check "a cuda pin is a GPU pin"           (Test-AmdPinIsGpu "https://download.pytorch.org/whl/cu128")
 
 # A hybrid Intel/NVIDIA host on the XPU wheel answers SeesGpu=False and still runs on the
 # GPU, because _detect_hardware_locked falls through from CUDA to XPU. Accusing that host of
