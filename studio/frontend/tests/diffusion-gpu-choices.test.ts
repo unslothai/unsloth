@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The rule behind the Images / Video Advanced GPU control: which cards an image or video load may
-// be pinned to. It is a different question from the chat picker's, because the two runtimes are
-// different -- a Vulkan llama-server says nothing about the CUDA devices a torch diffusion load
-// can use -- and because neither diffusion engine shards a checkpoint, so the control is a single
-// choice and only appears when there is genuinely something to choose between.
+// The rule behind the Images / Video Advanced GPU control: which cards a load may be pinned to.
+// A different question from the chat picker's, since a Vulkan llama-server says nothing about the
+// CUDA devices a torch diffusion load can use, and since neither engine shards a checkpoint, so
+// this is a single choice that appears only when there is something to choose between.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -52,8 +51,8 @@ test("two pinnable cards are offered, in inventory order", () => {
 });
 
 test("a masked host offers the physical ids it actually sees, not 0..n", () => {
-  // Under CUDA_VISIBLE_DEVICES=4,5 the backend reports physical 4 and 5; the routes translate
-  // those to torch ordinals themselves, so the control must send the physical ones through.
+  // Under CUDA_VISIBLE_DEVICES=4,5 the backend reports physical 4 and 5 and the routes do the
+  // translation, so the control sends the physical ids through.
   const offered = choices([device(4), device(5)]);
   assert.deepEqual(
     offered.map((d) => d.index),
@@ -76,8 +75,7 @@ test("cards the diffusion runner cannot address are not offered", () => {
 });
 
 test("the chat picker and the diffusion control answer independently", () => {
-  // A Vulkan chat build with CUDA torch devices: chat pins ggml ordinals, diffusion pins physical
-  // ids, and neither list is a substitute for the other.
+  // A Vulkan chat build with CUDA torch devices: chat pins ggml ordinals, diffusion physical ids.
   const devices = [
     device(0, { indexKind: "vulkan", pinnable: true, diffusionPinnable: false }),
     device(1, { indexKind: "vulkan", pinnable: true, diffusionPinnable: false }),
@@ -96,8 +94,8 @@ test("mixed index namespaces are never offered as one pool", () => {
 });
 
 test("a pick whose card has gone falls back to automatic rather than a refusal", () => {
-  // What the pages do with a remembered selection: an index no longer in the inventory (a driver
-  // reset, an eGPU unplugged) is dropped, so the load runs automatically instead of 400ing.
+  // A remembered index no longer in the inventory (driver reset, eGPU unplugged) is dropped, so
+  // the load runs automatically instead of 400ing.
   const offered = choices([device(0), device(1)]);
   const send = (selected: string) =>
     selected !== "auto" && offered.some((d) => String(d.index) === selected)

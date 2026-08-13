@@ -1606,8 +1606,8 @@ def test_the_video_gate_leaves_a_measured_memory_mode_alone(monkeypatch):
 
 
 def test_video_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypatch):
-    # The H3 planner decides its denoiser partition and memory policy from device capacity, so a
-    # plan sized against the default card stages the wrong weights for the card the load uses.
+    # The H3 planner sets its denoiser partition and memory policy from device capacity, so a
+    # plan sized against the default card stages the wrong weights.
     import types
 
     import core.inference.diffusion_device as devmod
@@ -1681,8 +1681,8 @@ def test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have(client,
 def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(
     client, monkeypatch
 ):
-    # Same rule as the image twin: the training guard bars the free-VRAM ranking, not the
-    # validation, which reads the environment mask and nvidia-smi and opens no CUDA context.
+    # Same rule as the image twin: the training guard bars the ranking, not the validation,
+    # which reads the mask and nvidia-smi and opens no CUDA context.
     import types
 
     import core.inference.diffusion_device as devmod

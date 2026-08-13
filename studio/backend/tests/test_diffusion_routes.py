@@ -2226,9 +2226,8 @@ def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
 
 
 def test_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypatch):
-    # The plan preflights precision and picks the dense/prequant file set against a card's
-    # capability and free VRAM, so a plan built for the default GPU can stage the wrong files for
-    # the load that follows. One ranking per request, reused by both.
+    # The plan sizes the dense/prequant file set against a card's capability and free VRAM, so a
+    # plan built for the default GPU stages the wrong files. One ranking per request, reused.
     import types as _types
 
     from core.inference import diffusion_device as devmod
@@ -2266,14 +2265,13 @@ def test_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypa
     assert resp.status_code == 200
     assert seen["gpu_ordinal"] == 1
     assert backend.last_precision_kwargs["gpu_ordinal"] == 1
-    # ONE ranking: the preflight's smoke probe allocates on the card it tests, so a second one
-    # could legitimately answer with a different card than the plan was sized for.
+    # ONE ranking: the preflight's smoke probe allocates on the card it tests, so a second could
+    # answer with a different card than the plan was sized for.
     assert ranked == [[0, 1]]
 
 
 def test_download_plan_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
-    # A bad pick is the user's 400, not a 500: the plan route has its own try/except, and this call
-    # sits inside it.
+    # A bad pick is a 400, not a 500: this call sits inside the plan route's own try/except.
     import types as _types
 
     from core.inference import diffusion_device as devmod
@@ -2342,9 +2340,9 @@ def test_download_plan_ignores_a_gpu_selection_off_cuda(client, monkeypatch):
 
 
 def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(client, monkeypatch):
-    # The training guard is about not opening a CUDA context, which only the free-VRAM ranking
-    # does. Skipping the whole resolution let the plan answer 200 for a GPU the load then refuses,
-    # and size its file set for the default card, after tens of gigabytes had been staged.
+    # The training guard is about not opening a CUDA context, which only the ranking does.
+    # Skipping the whole resolution let the plan answer 200 for a GPU the load then refuses, and
+    # size its files for the default card, after tens of gigabytes had been staged.
     import types as _types
 
     from core.inference import diffusion_device as devmod

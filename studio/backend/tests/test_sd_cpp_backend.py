@@ -1221,8 +1221,8 @@ def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
 
 
 def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch):
-    # The pin has to be rebuilt per binary: a deferred accelerator install replaces the build
-    # after the offload policy is computed, and the ggml device names come from whichever one runs.
+    # Rebuilt per binary: a deferred accelerator install replaces the build after the offload
+    # policy is computed, and the ggml names come from whichever one runs.
     seen: list = []
 
     def _probe(binary, *_args):
@@ -2286,9 +2286,9 @@ def _pinned_state(
 
 
 def test_a_card_pick_is_not_reported_as_an_offload():
-    # `fast` asks for no offload at all, so its flag list is empty and both status() and the saved
-    # recipe derive "nothing was offloaded" from that emptiness. Pinning the load to a card adds
-    # --backend to the same tuple, which said the user had turned CPU offload on by picking a GPU.
+    # `fast` asks for no offload, so its flag list is empty and status() and the saved recipe
+    # read "nothing was offloaded" off that. The pin lands in the same tuple, which made picking
+    # a GPU look like turning CPU offload on.
     b = _loaded_backend()
     b._state = _pinned_state(b, policy_flags = ())
     assert b._state.offload_flags, "the fixture must actually carry the pin"
@@ -2308,10 +2308,9 @@ def test_a_real_offload_still_reports_itself_when_a_card_is_pinned():
 
 
 def test_the_cpu_backend_restart_drops_the_device_pin(monkeypatch):
-    # sd.cpp CONCATENATES repeated --backend values into one spec (the option is declared with
-    # concat = ',') and an explicit per-module entry outranks the bare `cpu` default, so restarting
-    # with the pin still in the argv leaves the denoiser on the card that just aborted and the
-    # recovery becomes a silent no-op: the same GGML_ABORT, immediately.
+    # sd.cpp CONCATENATES repeated --backend values (declared with concat = ',') and a per-module
+    # entry outranks the bare `cpu` default, so restarting with the pin still in argv leaves the
+    # denoiser on the card that just aborted: the recovery is a no-op, the same GGML_ABORT.
     started: dict = {}
 
     class _FakeServer:
@@ -2345,9 +2344,8 @@ def test_the_cpu_backend_restart_drops_the_device_pin(monkeypatch):
 
 
 def test_the_native_engine_resolves_a_bare_gpu_selection_itself(monkeypatch):
-    # The routes rank the selection and hand over the winner, but a direct caller (an MCP client,
-    # a plugin) passes gpu_ids alone. The diffusers and video backends re-rank in that case; the
-    # native one used to drop the pick on the floor.
+    # The routes hand over the ranked winner, but a direct caller (MCP client, plugin) passes
+    # gpu_ids alone. diffusers and video re-rank in that case; native used to drop the pick.
     import core.inference.sd_cpp_backend as backend_module
 
     seen: dict = {}
@@ -2384,10 +2382,10 @@ def test_the_native_engine_resolves_a_bare_gpu_selection_itself(monkeypatch):
 
 
 def test_an_unresolvable_device_pin_says_so_and_still_loads(tmp_path, capsys):
-    # Refusing the load here would take an unhonoured selection to an unloadable model on any
-    # build older than the one that added --list-devices, including a user's own SD_CLI_PATH copy,
-    # since sd.cpp treats an unknown argument as fatal. It runs on the build's own device, as it
-    # does today for every native load, and says so rather than dropping the pick in silence.
+    # Refusing here would turn an unhonoured selection into an unloadable model on any build
+    # predating --list-devices, including a user's own SD_CLI_PATH copy (sd.cpp treats an unknown
+    # argument as fatal). It runs on the build's own device, as every native load does today, and
+    # says so rather than dropping the pick in silence.
     binary = tmp_path / "sd-cli-old"
     binary.write_text("#!/usr/bin/env bash\nexit 1\n")
     binary.chmod(0o755)

@@ -1816,9 +1816,8 @@ def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
 
 def test_cpu_offload_hooks_take_the_indexed_card_not_a_bare_cuda():
     # diffusers reads the index off this device and, finding none, falls back to _offload_gpu_id 0
-    # and installs hooks that onload to cuda:0 (pipeline_utils.py, 0.39). A load pinned to another
-    # card generates there, so the modules would be paged onto the wrong GPU: either a cross-device
-    # failure or the smaller card filling up, which is the case the selection exists to avoid.
+    # and onloads to cuda:0 (pipeline_utils.py, 0.39). A load pinned elsewhere generates there, so
+    # the modules would page onto the wrong GPU: a cross-device failure, or the small card filling.
     for build, policy, call in (
         (_plan, OFFLOAD_MODEL, "model_offload"),
         (_manual_plan, OFFLOAD_SEQUENTIAL, "sequential_offload"),
@@ -1840,8 +1839,8 @@ def test_the_resident_placement_follows_the_selected_card_too():
 
 
 def test_an_automatic_load_still_hands_over_a_bare_device():
-    # No selection: the string every one of these calls receives is exactly what it was before, so
-    # torch resolves it against the current device as it always did.
+    # No selection: every call receives exactly the string it did before, resolved against the
+    # current device as always.
     for policy, expected in (
         (OFFLOAD_NONE, ["to:cuda"]),
         (OFFLOAD_MODEL, ["model_offload"]),

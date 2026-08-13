@@ -2137,9 +2137,9 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The Vulkan inventory is authoritative even while its probe is temporarily
     # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
     # picker and make DiffusionGemma offer a selection the route rejects.
-    # Scoped to the GGUF picker. An image or video load runs on torch, not llama-server, so it
-    # reads the torch inventory even here: the two runtimes are independent, and a Vulkan chat
-    # build says nothing about the CUDA / ROCm devices a diffusion load can be pinned to.
+    # Scoped to the GGUF picker: an image or video load runs on torch, not llama-server, so it
+    # reads the torch inventory even here. A Vulkan chat build says nothing about the CUDA / ROCm
+    # devices a diffusion load can be pinned to.
     vulkan_gate = (
         "const inference = data?.inference_gpu; "
         'if (!forDiffusion && inference?.backend === "vulkan") {'
@@ -3574,8 +3574,7 @@ def test_the_media_gpu_pick_survives_a_reload():
     ):
         src = " ".join(_read(page).split())
         assert f'usePersistedChoice( "{key}", "auto", )' in src, page
-        # And a stored id is still only a hint: a card that has gone falls back to automatic
-        # rather than being sent to a backend that would refuse it.
+        # A stored id is only a hint: a card that has gone falls back to automatic.
         assert "gpuChoices.some((d) => String(d.index) === selectedGpu)" in src or (
             "controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)" in src
         ), page

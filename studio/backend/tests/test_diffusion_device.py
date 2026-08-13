@@ -784,8 +784,8 @@ def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
     assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
     assert seen == [1]
 
-    # No selection must keep probing with NO argument: torch's own default is the current device,
-    # and a stub or older build that takes none would otherwise raise into the fp16 fallback.
+    # No selection probes with NO argument: a stub or older build that takes none would
+    # otherwise raise into the fp16 fallback.
     seen.clear()
     assert dd.resolve_diffusion_device_target().dtype == FP16
     assert seen == [_NOTHING]
@@ -808,8 +808,8 @@ def test_a_selection_is_ignored_where_physical_indices_mean_nothing(monkeypatch)
 
 
 def test_the_device_scope_restores_the_previous_card(monkeypatch):
-    # Route preflights run on a pooled asyncio.to_thread executor, so a pin taken there and left
-    # set is inherited by the NEXT request on that thread, including an automatic one.
+    # Route preflights run on a pooled executor, so a pin left set there is inherited by the
+    # NEXT request on that thread, including an automatic one.
     calls: list = []
     torch = _make_torch(cuda_available = True, device_count = 2, set_device_calls = calls)
 
@@ -838,9 +838,8 @@ def test_the_device_scope_restores_the_previous_card(monkeypatch):
 
 
 def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
-    # is_bf16_supported() takes no device argument, so the only way to ask about the selected card
-    # is to make it current for the probe. Without that, a bf16-capable pick behind an older
-    # default is needlessly promoted to fp32.
+    # is_bf16_supported() takes no device argument, so asking about the selected card means
+    # making it current; otherwise a bf16-capable pick behind an older default goes to fp32.
     torch = _make_torch(cuda_available = True, hip = "6.0", device_count = 2)
     scoped: list = []
 
@@ -863,7 +862,7 @@ def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
 
 def test_the_device_scope_lets_the_body_exception_through(monkeypatch):
     # Catching around the yield made contextlib raise "generator didn't stop after throw()",
-    # replacing a precision refusal with a meaningless error the route maps to the wrong status.
+    # replacing a precision refusal with an error the route maps to the wrong status.
     torch = _make_torch(cuda_available = True, device_count = 2)
 
     class _Scope:
@@ -899,9 +898,9 @@ def test_the_device_scope_still_runs_the_body_on_an_unusable_index(monkeypatch):
 
 
 def test_the_placed_ordinal_records_the_card_an_automatic_load_used(monkeypatch):
-    # /images/generate runs on a pooled asyncio.to_thread worker, so a pinned load leaves that
-    # thread on its card for good. An automatic load after it has no ordinal to re-pin with, so
-    # the card it actually landed on is recorded separately and used to put the worker back.
+    # /images/generate runs on a pooled worker, so a pinned load leaves that thread on its card
+    # for good and a later automatic load has no ordinal to re-pin with. The card it landed on is
+    # recorded separately and puts the worker back.
     current = [3]
     torch = _make_torch(cuda_available = True, device_count = 4)
     torch.cuda.current_device = lambda: current[0]
@@ -943,9 +942,8 @@ def test_pinning_an_automatic_load_puts_a_shared_worker_back(monkeypatch):
 
 
 def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
-    # The download-plan routes must not open a CUDA context while a trainer holds the cards, but
-    # validating and translating the ids costs none, so that still happens: a bad pick is refused
-    # at the plan, and the single-card selection the UI sends still resolves.
+    # The plan routes must not open a CUDA context while a trainer holds the cards; validating
+    # and translating the ids costs none, so a bad pick is still refused at the plan.
     torch = _make_torch(cuda_available = True, device_count = 4, free_vram_by_index = {0: 1, 1: 2})
     probed: list = []
     torch.cuda.mem_get_info = lambda index = None: (probed.append(index), (1, 2))[1]
