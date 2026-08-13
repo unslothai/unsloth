@@ -1924,7 +1924,14 @@ _setup_gpucheck_pin="${_setup_gpucheck_pin%%\?*}"
 while [ "${_setup_gpucheck_pin%/}" != "$_setup_gpucheck_pin" ]; do
     _setup_gpucheck_pin="${_setup_gpucheck_pin%/}"
 done
-_setup_gpucheck_pin_leaf=$(printf '%s' "${_setup_gpucheck_pin##*/}" | tr '[:upper:]' '[:lower:]')
+_setup_gpucheck_pin_leaf="${_setup_gpucheck_pin##*/}"
+# Shell expansion only, for the same reason as the arch below: coreutils is what the minimal
+# images this probe is bounded for lack, and a failed `tr` pipe would empty the leaf, so a cpu
+# pin would stop excluding the host and we would accuse it. Only "cpu" is compared, so folding
+# that one spelling is enough.
+case "$_setup_gpucheck_pin_leaf" in
+    [Cc][Pp][Uu]) _setup_gpucheck_pin_leaf=cpu ;;
+esac
 # install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it deliberately
 # sent to CPU (non-x86_64, ROCm below 6.0, an unreadable ROCm runtime) arrives as "cpu" with the CPU
 # wheel it asked for and _setup_amd_detected still true, and install.sh already explained it on
