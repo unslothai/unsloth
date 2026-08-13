@@ -12,9 +12,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
 
-CLEAN_MACHINE_WORKFLOW = (
-    REPO_ROOT / ".github" / "workflows" / "desktop-app-clean-machine-ci.yml"
-)
+CLEAN_MACHINE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "desktop-app-clean-machine-ci.yml"
 VERIFIER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "verify-complete-appimage.sh"
 
 
@@ -23,9 +21,7 @@ def _workflow():
 
 
 def _step(name: str):
-    return next(
-        step for step in _workflow()["jobs"]["build"]["steps"] if step.get("name") == name
-    )
+    return next(step for step in _workflow()["jobs"]["build"]["steps"] if step.get("name") == name)
 
 
 def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
@@ -35,9 +31,7 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert "appimage" in config["bundle"]["targets"]
     appimage = config["bundle"]["linux"]["appimage"]
     assert appimage["bundleMediaFramework"] is False
-    assert appimage["files"]["/usr/lib/libappindicator3.so.1"].endswith(
-        "/libappindicator3.so.1"
-    )
+    assert appimage["files"]["/usr/lib/libappindicator3.so.1"].endswith("/libappindicator3.so.1")
 
     build = _step("Build Linux bundles")
     verify = _step("Verify complete Linux AppImage")
@@ -46,9 +40,7 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert build["env"]["XDG_CACHE_HOME"] == "${{ runner.temp }}/tauri-tools-cache"
     assert "TAURI_SIGNING_PRIVATE_KEY" in build["env"]
     assert "verify-complete-appimage.sh" in verify["run"]
-    assert stage["env"]["ARTIFACT_PATHS"].startswith(
-        "${{ steps.build_linux.outputs.artifactPaths"
-    )
+    assert stage["env"]["ARTIFACT_PATHS"].startswith("${{ steps.build_linux.outputs.artifactPaths")
 
     clean_machine = yaml.safe_load(CLEAN_MACHINE_WORKFLOW.read_text(encoding = "utf-8"))
     e2e = clean_machine["jobs"]["appimage-model-download"]
@@ -185,9 +177,7 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     apprun.chmod(0o755)
     hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
     hook.parent.mkdir()
-    hook.write_text(
-        'export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n', encoding = "utf-8"
-    )
+    hook.write_text('export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n', encoding = "utf-8")
     runtime = appdir / "usr/lib"
     runtime.mkdir(parents = True)
     for name in (

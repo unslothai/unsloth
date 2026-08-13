@@ -101,9 +101,7 @@ def _wait_for(
 
 
 def _minimum_backend_version() -> str:
-    source = (REPO_ROOT / "studio/src-tauri/src/preflight/version.rs").read_text(
-        encoding = "utf-8"
-    )
+    source = (REPO_ROOT / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
     match = re.search(r'MIN_DESKTOP_BACKEND_VERSION: &str = "([^"]+)"', source)
     if not match:
         raise RuntimeError("Could not read MIN_DESKTOP_BACKEND_VERSION")
@@ -338,7 +336,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                   "supports_desktop_backend_ownership": True,
                   "studio_install_ok": True,
                   "version": _minimum_backend_version(),
-              }, separators=(",", ":"))}'
+              }, separators = (",", ":"))}'
               exit 0
             fi
             if [[ "$*" == *"provision-desktop-auth"* ]]; then
@@ -551,9 +549,9 @@ def main() -> None:
             request_log, "/api/hub/download"
         ):
             time.sleep(0.25)
-        assert _request_log_contains(request_log, "/api/hub/download"), (
-            "The packaged webview never sent POST /api/hub/download"
-        )
+        assert _request_log_contains(
+            request_log, "/api/hub/download"
+        ), "The packaged webview never sent POST /api/hub/download"
 
         _wait_for(
             base,
@@ -573,9 +571,9 @@ def main() -> None:
             request_log, "/api/hub/download/cancel"
         ):
             time.sleep(0.25)
-        assert _request_log_contains(request_log, "/api/hub/download/cancel"), (
-            "The packaged webview never sent POST /api/hub/download/cancel"
-        )
+        assert _request_log_contains(
+            request_log, "/api/hub/download/cancel"
+        ), "The packaged webview never sent POST /api/hub/download/cancel"
 
         _wait_for(
             base,
@@ -596,9 +594,7 @@ def main() -> None:
             home / ".unsloth/studio/tauri.log",
         )
 
-        print(
-            "PASS packaged AppImage model picker sent download, rendered progress, and cancelled"
-        )
+        print("PASS packaged AppImage model picker sent download, rendered progress, and cancelled")
     except Exception:
         if session_id:
             try:

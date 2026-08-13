@@ -21,8 +21,10 @@ def assert_no_loader_errors(*logs: Path) -> None:
     for log in logs:
         if not log.is_file():
             continue
-        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in log.read_text(encoding = "utf-8", errors = "replace").splitlines():
             if any(marker in line for marker in LOADER_ERROR_MARKERS):
                 failures.append(f"{log.name}: {line}")
     if failures:
-        raise RuntimeError("AppImage mixed host and bundled runtime libraries:\n" + "\n".join(failures))
+        raise RuntimeError(
+            "AppImage mixed host and bundled runtime libraries:\n" + "\n".join(failures)
+        )

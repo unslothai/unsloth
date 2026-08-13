@@ -29,9 +29,7 @@ DESKTOP_SECRET = "appimage-portability-secret"
 
 
 def _minimum_backend_version(repo_root: Path) -> str:
-    source = (repo_root / "studio/src-tauri/src/preflight/version.rs").read_text(
-        encoding = "utf-8"
-    )
+    source = (repo_root / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
     marker = 'MIN_DESKTOP_BACKEND_VERSION: &str = "'
     start = source.find(marker)
     if start < 0:
@@ -142,7 +140,7 @@ def _write_fixture(art_dir: Path, home: Path, version: str) -> Path:
                   "supports_desktop_backend_ownership": True,
                   "studio_install_ok": True,
                   "version": version,
-              }, separators=(",", ":"))}'
+              }, separators = (",", ":"))}'
               exit 0
             fi
             if [[ "$*" == *"provision-desktop-auth"* ]]; then
@@ -183,9 +181,7 @@ def main() -> None:
     if not shutil.which(display_tool):
         raise SystemExit(f"{display_tool} is required for {display_backend} smoke")
 
-    art_dir = Path(
-        os.environ.get("APPIMAGE_SMOKE_ART_DIR", "logs/appimage-portability")
-    ).resolve()
+    art_dir = Path(os.environ.get("APPIMAGE_SMOKE_ART_DIR", "logs/appimage-portability")).resolve()
     if art_dir.exists():
         shutil.rmtree(art_dir)
     art_dir.mkdir(parents = True)
@@ -201,9 +197,7 @@ def main() -> None:
     install_id = home / ".unsloth/studio/share/studio_install_id"
     install_id.parent.mkdir(parents = True)
     install_id.write_text(ROOT_ID, encoding = "utf-8")
-    request_log = _write_fixture(
-        art_dir, home, _minimum_backend_version(repo_root)
-    )
+    request_log = _write_fixture(art_dir, home, _minimum_backend_version(repo_root))
 
     env = {
         **os.environ,
@@ -227,12 +221,10 @@ def main() -> None:
         weston_log = (art_dir / "weston.log").open("wb")
 
         weston_help = subprocess.run(
-            ["weston", "--help"], capture_output=True, check=False, text=True
+            ["weston", "--help"], capture_output = True, check = False, text = True
         )
         help_text = weston_help.stdout + weston_help.stderr
-        software_renderer = (
-            "--renderer=pixman" if "--renderer" in help_text else "--use-pixman"
-        )
+        software_renderer = "--renderer=pixman" if "--renderer" in help_text else "--use-pixman"
         weston = subprocess.Popen(
             [
                 "weston",
@@ -241,10 +233,10 @@ def main() -> None:
                 "--socket=wayland-ci",
                 "--idle-time=0",
             ],
-            stdout=weston_log,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
+            stdout = weston_log,
+            stderr = subprocess.STDOUT,
+            env = env,
+            start_new_session = True,
         )
         socket = runtime / "wayland-ci"
         deadline = time.monotonic() + 15
@@ -265,10 +257,10 @@ def main() -> None:
         ]
     process = subprocess.Popen(
         command,
-        stdout=stdout,
-        stderr=subprocess.STDOUT,
-        env=env,
-        start_new_session=True,
+        stdout = stdout,
+        stderr = subprocess.STDOUT,
+        env = env,
+        start_new_session = True,
     )
     try:
         deadline = time.monotonic() + 45
@@ -303,10 +295,10 @@ def main() -> None:
         if weston is not None and weston.poll() is None:
             os.killpg(weston.pid, signal.SIGTERM)
             try:
-                weston.wait(timeout=5)
+                weston.wait(timeout = 5)
             except subprocess.TimeoutExpired:
                 os.killpg(weston.pid, signal.SIGKILL)
-                weston.wait(timeout=5)
+                weston.wait(timeout = 5)
         if weston_log is not None:
             weston_log.close()
         tauri_log = home / ".unsloth/studio/tauri.log"
