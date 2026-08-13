@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { getPlatformBackendConfig, resolvePlatformUrl } from "../config";
+import {
+  getPlatformAuthConfig,
+  getPlatformBackendConfig,
+  resolvePlatformUrl,
+} from "../config";
 
 describe("Rag Platform config", () => {
   it("uses a relative /api/v1 base by default", () => {
@@ -45,5 +49,24 @@ describe("Rag Platform config", () => {
     expect(() =>
       resolvePlatformUrl("//attacker.example/api", "api", config),
     ).toThrow(TypeError);
+  });
+
+  it("decodes the non-secret deployment public key and honors explicit rollout flags", () => {
+    const config = getPlatformAuthConfig({
+      VITE_RAG_PLATFORM_ENABLED: "true",
+      VITE_RAG_PLATFORM_AUTH_ENABLED: "true",
+      VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY_B64: btoa("PUBLIC-KEY"),
+      VITE_RAG_PLATFORM_REGISTRATION_ENABLED: "false",
+      VITE_RAG_PLATFORM_PASSWORD_RECOVERY_ENABLED: "true",
+      VITE_RAG_PLATFORM_OAUTH_ENABLED: "false",
+    });
+
+    expect(config).toEqual({
+      enabled: true,
+      oauthEnabled: false,
+      passwordRecoveryEnabled: true,
+      publicKeyPem: "PUBLIC-KEY",
+      registrationEnabled: false,
+    });
   });
 });

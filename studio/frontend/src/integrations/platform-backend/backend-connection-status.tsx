@@ -45,11 +45,14 @@ export function PlatformBackendConnectionStatus({
   );
 
   useEffect(() => {
-    if (!enabled) return;
+    // The store survives Settings tab remounts. Probe once per app session and
+    // leave explicit refreshes to the button instead of repeatedly hitting all
+    // three readiness endpoints whenever the tab is reopened.
+    if (!enabled || lastCheckedAt) return;
     const controller = new AbortController();
     void checkConnection(controller.signal);
     return () => controller.abort();
-  }, [checkConnection, enabled]);
+  }, [checkConnection, enabled, lastCheckedAt]);
 
   const visibleStatus = enabled ? status : "idle";
 

@@ -1,13 +1,17 @@
 import { apiUrl, isTauri } from "@/lib/api-base";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend/config";
 import { useEffect, useState } from "react";
 
 const MAX_READINESS_POLLS = 720;
 
 export function useNativePathLeasesSupported(): boolean {
   const [supported, setSupported] = useState(false);
+  const platformAuthEnabled = isPlatformAuthEnabled();
 
   useEffect(() => {
-    if (!isTauri) return;
+    // Native path leases belong to the legacy Studio /api/health contract.
+    // Rag Platform does not consume them, so polling can never become useful.
+    if (!isTauri || platformAuthEnabled) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
@@ -40,7 +44,7 @@ export function useNativePathLeasesSupported(): boolean {
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, []);
+  }, [platformAuthEnabled]);
 
   return supported;
 }

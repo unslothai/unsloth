@@ -212,11 +212,15 @@ so the platform key is additive.
 **5. Password encryption is implemented exactly as the backend requires, and
 documented as non-protective.** The client performs
 `base64(RSA_PKCS1v1_5(base64(password)))` with the public key, because the
-backend will not accept anything else. The public key is a build-time constant in
-our code — there is no route to fetch it, and it is already public in two places
-upstream. This is written down here so nobody later mistakes it for a security
-control: **the platform must be reached over TLS in any non-local deployment**,
-and that is the actual mitigation.
+backend will not accept anything else. There is no route to fetch the key. Faz 2
+therefore injects the active deployment's non-secret public half at build time
+through `VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY_B64` (or a PEM through
+`VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY`). It is not a repository constant: Faz 0
+generates a unique key pair in the owned key-material volume. Build and smoke
+validation compare the injected public half with `/ragflow/conf/public.pem` and
+the private-key-derived public half. This is written down so nobody mistakes it
+for a security control: **the platform must be reached over TLS in any non-local
+deployment**, and that is the actual mitigation.
 
 **6. Password, plaintext or encrypted, is never logged, never stored, and never
 persisted.** It lives in a local variable for the duration of the login call.
@@ -297,3 +301,7 @@ or synthesised client-side.
 * Because the token never expires and revocation is by database column, a token
   copied out of `localStorage` stays valid until an explicit logout. That is the
   backend's model; the frontend's contribution is to always call logout.
+* Faz 2 stores only `rag-platform.auth-token`. This matches the backend web
+  contract but inherits the usual XSS exposure of `localStorage`. CSP,
+  same-origin TLS and dependency hardening remain mandatory at the Faz 15
+  release gate; no password, provider key or refresh credential is persisted.

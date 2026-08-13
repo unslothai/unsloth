@@ -1,9 +1,12 @@
 # Rag Platform frontend transport
 
-The browser client uses relative `/api/v1` URLs by default. Development routes
-that prefix through Vite read their destination from
-`VITE_RAG_PLATFORM_PROXY_TARGET`; copy `studio/frontend/.env.example` to a local
-`.env` when running the frontend directly.
+The browser client uses relative `/api/v1` URLs by default. While platform auth
+is enabled, Vite sends that prefix to the owned method-aware hybrid nginx entry
+point at `http://127.0.0.1` by default. `VITE_RAG_PLATFORM_PROXY_TARGET` may
+override it. The default must not be Python port 9380: doing so bypasses active
+Go routes such as login channels and OAuth callbacks. A local env file is still
+required for `VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY_B64`; it must contain the public
+half mounted in the active backend container.
 
 Production should keep the same relative URL and provide a same-origin reverse
 proxy to the owned hybrid backend. This avoids cross-origin bearer-token

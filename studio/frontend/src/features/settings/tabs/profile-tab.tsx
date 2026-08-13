@@ -1,6 +1,3 @@
-
-
-
 import {
   ProfilePersonalizationPanel,
   ProfileStatsPanel,

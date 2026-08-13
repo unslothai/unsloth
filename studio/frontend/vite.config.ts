@@ -7,9 +7,15 @@ import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const proxy: Record<string, ProxyOptions> = {};
-  if (env.VITE_RAG_PLATFORM_PROXY_TARGET) {
+  if (env.VITE_RAG_PLATFORM_ENABLED?.trim().toLowerCase() !== "false") {
     proxy["/api/v1"] = {
-      target: env.VITE_RAG_PLATFORM_PROXY_TARGET,
+      // The owned runtime exposes its method-aware Python/Go hybrid map through
+      // nginx on port 80. Keeping this default prevents `/api/v1` from falling
+      // through to the legacy `/api` proxy when a developer has not copied the
+      // example env file yet.
+      target:
+        env.VITE_RAG_PLATFORM_PROXY_TARGET?.trim() ||
+        "http://127.0.0.1",
       changeOrigin: true,
     };
   }

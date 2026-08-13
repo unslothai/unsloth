@@ -13,10 +13,43 @@ interface PlatformBackendEnv {
   VITE_RAG_PLATFORM_API_PREFIX?: string;
   VITE_RAG_PLATFORM_ENABLED?: string;
   VITE_RAG_PLATFORM_PROXY_TARGET?: string;
+  VITE_RAG_PLATFORM_AUTH_ENABLED?: string;
+  VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY?: string;
+  VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY_B64?: string;
+  VITE_RAG_PLATFORM_REGISTRATION_ENABLED?: string;
+  VITE_RAG_PLATFORM_PASSWORD_RECOVERY_ENABLED?: string;
+  VITE_RAG_PLATFORM_OAUTH_ENABLED?: string;
+}
+
+export interface PlatformAuthConfig {
+  enabled: boolean;
+  oauthEnabled: boolean;
+  passwordRecoveryEnabled: boolean;
+  publicKeyPem: string;
+  registrationEnabled: boolean;
 }
 
 const DEFAULT_API_PREFIX = "/api/v1";
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+function enabledUnlessFalse(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() !== "false";
+}
+
+function decodePublicKey(
+  plain: string | undefined,
+  encoded: string | undefined,
+): string {
+  const direct = plain?.trim().replaceAll("\\n", "\n");
+  if (direct) return direct;
+  const base64 = encoded?.trim();
+  if (!base64) return "";
+  try {
+    return atob(base64);
+  } catch {
+    return "";
+  }
+}
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -40,6 +73,31 @@ export function getPlatformBackendConfig(
     ),
     requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
   };
+}
+
+export function getPlatformAuthConfig(
+  env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
+): PlatformAuthConfig {
+  const platformEnabled = enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED);
+  return {
+    enabled:
+      platformEnabled && enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED),
+    registrationEnabled: enabledUnlessFalse(
+      env.VITE_RAG_PLATFORM_REGISTRATION_ENABLED,
+    ),
+    passwordRecoveryEnabled: enabledUnlessFalse(
+      env.VITE_RAG_PLATFORM_PASSWORD_RECOVERY_ENABLED,
+    ),
+    oauthEnabled: enabledUnlessFalse(env.VITE_RAG_PLATFORM_OAUTH_ENABLED),
+    publicKeyPem: decodePublicKey(
+      env.VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY,
+      env.VITE_RAG_PLATFORM_AUTH_PUBLIC_KEY_B64,
+    ),
+  };
+}
+
+export function isPlatformAuthEnabled(): boolean {
+  return getPlatformAuthConfig().enabled;
 }
 
 function assertRelativeEndpoint(endpoint: string): string {

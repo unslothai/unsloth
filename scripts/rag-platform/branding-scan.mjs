@@ -63,6 +63,15 @@ const ALLOWLIST = [
         file.endsWith("/i18n/locales/en.ts")) &&
       /^unsloth$/i.test(value.trim()),
   },
+  {
+    reason: "fixed OAuth handoff cookie identifier documented by ADR 0002",
+    test: (value, file) =>
+      (file.endsWith("/integrations/platform-backend/auth-api.ts") ||
+        file.endsWith("/integrations/platform-backend/__tests__/oauth.test.ts")) &&
+      /^ragflow_auth(?:=; Path=\/; Max-Age=0|=opaque-cookie-token; Path=\/; SameSite=Lax)?$/i.test(
+        value.trim(),
+      ),
+  },
 ];
 
 function walk(dir) {

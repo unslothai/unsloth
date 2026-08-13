@@ -345,12 +345,33 @@ const CLASS_RULES = [
 
   // -- 1. Records the deployment cannot serve -------------------------------
   {
-    id: "go-unreachable",
-    when: { service: /^go-/ },
+    id: "source-only-stub",
+    when: { notes: /backend worktree-only/, runtimeEnabled: false },
+    class: UNSUPPORTED,
+    consumer: "none (route absent from deployed source and handler is a stub)",
+    justification:
+      "Declared only in the newer backend worktree, absent from the pinned v0.26.4 runtime image, and its current handler returns CodeNotImplemented. Source, proxy destination and live 404 evidence are recorded in runtime-disabled.md and the Faz 2 auth contract; no false UI control is rendered.",
+  },
+  {
+    id: "runtime-unreachable",
+    when: { runtimeEnabled: false },
     class: UNSUPPORTED,
     consumer: "none (route closed at runtime)",
     justification:
-      "Go server binary absent from every published image, so the route cannot be served; recorded with source, proxy and port-probe evidence in runtime-disabled.md. Decision: ADR 0005.",
+      "The active hybrid nginx location does not forward this implementation; recorded with source, generated-proxy and live port/proxy evidence in runtime-disabled.md. The owned image runs all four services, so a same-path alternate may remain reachable on the selected target. Decision: ADR 0005.",
+  },
+
+  // Active v0.26.4 Go compatibility endpoints remain externally callable,
+  // but the product uses the canonical /api/v1 Python contracts. Keeping them
+  // api-only avoids a second frontend state machine while preserving contract
+  // and auth/security coverage.
+  {
+    id: "legacy-user-compat",
+    when: { path: /^\/v1\/user\//, service: /^go-api$/, runtimeEnabled: true },
+    class: API_ONLY,
+    consumer: "legacy API client",
+    justification:
+      "Active v0.26.4 compatibility surface. Rag Platform UI uses the canonical /api/v1 auth/users routes; source-equivalence and auth contract tests cover this duplicate without exposing a second UI path.",
   },
 
   // -- 2. Deprecated compatibility shims -----------------------------------
@@ -438,6 +459,14 @@ const CLASS_RULES = [
     consumer: FRONTEND,
     justification:
       "Login, logout, login-channel discovery and password recovery are actions invoked from the auth screens (plan §4, phase 2).",
+  },
+  {
+    id: "tenant-model-selection-placement-deferred",
+    when: { path: /^\/api\/v1\/users\/me\/models$/ },
+    class: API_ONLY,
+    consumer: "future workspace/model placement",
+    justification:
+      "Typed tenant-model selection contract retained without a current UI consumer. The product owner explicitly accepted deferring its visual placement after removing it from Profile; contract and negative Profile-render tests prevent accidental loss or reintroduction.",
   },
   {
     id: "user-self",
@@ -553,6 +582,14 @@ const CLASS_RULES = [
     consumer: FRONTEND,
     justification:
       "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
+  },
+  {
+    id: "go-ui-action",
+    when: { service: /^go-(api|admin)$/, runtimeEnabled: true },
+    class: ACTION,
+    consumer: FRONTEND,
+    justification:
+      "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
   },
 ];
 
@@ -869,6 +906,182 @@ const SMOKE_EVIDENCE = {
 };
 
 const PHASE_IMPLEMENTATION_EVIDENCE = {
+  "python-api|GET /api/v1/system/config": {
+    status: "implemented",
+    uiPath: "Login → runtime registration/password-login capability probe",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#getPlatformAuthCapabilities`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx`",
+    ],
+  },
+  "python-api|POST /api/v1/auth/login": {
+    status: "implemented",
+    uiPath: "Login → email and password → Giriş yap",
+    typedService: "`src/integrations/platform-backend/auth-api.ts#loginPlatformUser`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/auth-crypto.test.ts`",
+      "`src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx`",
+    ],
+  },
+  "python-api|POST /api/v1/auth/logout": {
+    status: "implemented",
+    uiPath: "Account menu → Logout",
+    typedService: "`src/integrations/platform-backend/auth-api.ts#logoutPlatformUser`",
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+  },
+  "python-api|POST /api/v1/auth/password/forgot/captcha": {
+    status: "implemented",
+    uiPath: "Login → Parolamı unuttum → Güvenlik kodunu getir",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#requestForgotPasswordCaptcha`",
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+  },
+  "python-api|POST /api/v1/auth/password/forgot/otp": {
+    status: "implemented",
+    uiPath: "Login → Parolamı unuttum → Doğrulama kodu gönder",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#sendForgotPasswordOtp`",
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+  },
+  "python-api|POST /api/v1/auth/password/forgot/otp/verify": {
+    status: "implemented",
+    uiPath: "Login → Parolamı unuttum → Kodu doğrula",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#verifyForgotPasswordOtp`",
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+  },
+  "python-api|POST /api/v1/auth/password/reset": {
+    status: "implemented",
+    uiPath: "Login → Parolamı unuttum → Parolayı yenile",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#resetForgottenPlatformPassword`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/auth-crypto.test.ts`",
+    ],
+  },
+  "go-api|GET /api/v1/auth/login/channels": {
+    status: "implemented",
+    uiPath: "Login → runtime-probed Kurumsal giriş buttons",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#getPlatformAuthCapabilities`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx`",
+    ],
+  },
+  "go-api|GET /api/v1/auth/login/{p}": {
+    status: "implemented",
+    uiPath: "Login → returned OAuth channel → provider redirect",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#getPlatformOAuthLoginUrl`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/oauth.test.ts`",
+      "`src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx`",
+    ],
+  },
+  "go-api|GET /api/v1/auth/oauth/{p}/callback": {
+    status: "implemented",
+    uiPath: "OAuth provider → backend callback → fixed app root → /chat or /login",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#consumePlatformOAuthRedirect`",
+    evidence: ["`src/integrations/platform-backend/__tests__/oauth.test.ts`"],
+  },
+  "python-api|POST /api/v1/users": {
+    status: "implemented",
+    uiPath: "Login → Hesap oluştur",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#registerPlatformUser`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/platform-auth-errors.test.ts`",
+      "`src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx`",
+    ],
+  },
+  "python-api|GET /api/v1/users/me": {
+    status: "implemented",
+    uiPath: "Protected route hydration and Settings → Profile → profile identity",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#getCurrentPlatformUser`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/auth-guards.test.ts`",
+      "`src/features/settings/tabs/profile-tab.test.tsx`",
+      "`src/features/profile/hooks/use-platform-profile-sync.test.tsx`",
+      "`src/features/profile/components/profile-personalization-panel.test.tsx`",
+    ],
+  },
+  "python-api|PATCH /api/v1/users/me": {
+    status: "implemented",
+    uiPath: "Settings → Profile → profile identity / Settings → General → Change password",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#updatePlatformProfile,changePlatformPassword`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/auth-crypto.test.ts`",
+      "`src/features/settings/tabs/profile-tab.test.tsx`",
+      "`src/features/profile/components/profile-personalization-panel.test.tsx`",
+    ],
+  },
+  "python-api|GET /api/v1/users/me/models": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#getCurrentPlatformTenantModels`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/features/profile/components/profile-personalization-panel.test.tsx` (Profile exclusion)",
+    ],
+  },
+  "python-api|PATCH /api/v1/users/me/models": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#updateCurrentPlatformTenantModels`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+      "`src/features/profile/components/profile-personalization-panel.test.tsx` (Profile exclusion)",
+    ],
+  },
+  "go-api|GET /v1/user/info": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+  },
+  "go-api|GET /v1/user/logout": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: ["`docs/rag-platform/phase-2-auth-contract.md` (legacy compatibility classification)"],
+  },
+  "go-api|POST /v1/user/setting": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+  },
+  "go-api|POST /v1/user/setting/password": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+  },
+  "go-api|GET /v1/user/tenant_info": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+  },
+  "go-api|POST /v1/user/set_tenant_info": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+  },
   "python-api|GET /api/v1/system/ping": {
     status: "implemented",
     uiPath: "Settings → Connections → Rag Platform backend connection card",
@@ -1045,7 +1258,9 @@ function buildRecord(route, parent) {
 
   const isFrontend = classification.class === SCREEN || classification.class === ACTION;
   const uiPath =
-    implementation?.uiPath ?? (isFrontend ? `pending (Faz ${phase})` : "—");
+    route.runtime_enabled === false
+      ? "—"
+      : implementation?.uiPath ?? (isFrontend ? `pending (Faz ${phase})` : "—");
   const typedService = implementation?.typedService ?? null;
 
   // A closed route is only a lost capability if nothing reachable serves the

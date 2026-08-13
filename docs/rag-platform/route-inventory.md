@@ -3,8 +3,9 @@
 <!-- GENERATED FILE. Do not edit by hand.
      Regenerate: node scripts/rag-platform/route-inventory.mjs -->
 
-- Backend source: `../rag-backend` at `v0.26.4` (`cb93883f3f8c975eecb2fed81210effeb3bdb06f`)
+- Backend source: `/Users/baran/Desktop/rag-backend` at `v0.26.4` (`cb93883f3f8c975eecb2fed81210effeb3bdb06f`)
 - Source image: `infiniflow/ragflow:v0.26.4` (API version `v1`)
+- Forward source audit: backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`; 9 source-only runtime-disabled route(s)
 - Active proxy scheme: `hybrid` (from infra/rag-platform/.env.rag-platform)
 - Proxy config: `infra/rag-platform/rag-platform.hybrid.conf`
 
@@ -12,14 +13,15 @@
 
 | Metric | Count |
 | --- | --- |
-| routes | 700 |
+| routes | 709 |
 | go-admin (port 9383) | 114 |
 | python-admin (port 9381) | 34 |
 | python-api (port 9380) | 304 |
-| go-api (port 9384) | 243 |
+| go-api (port 9384) | 252 |
 | mcp (port 9382) | 5 |
 | runtime-enabled | 516 |
-| runtime-disabled | 179 |
+| runtime-disabled | 188 |
+| — source-only forward auth declarations | 9 |
 | not proxied by nginx | 5 |
 | method+path with alternate implementations | 110 |
 
@@ -637,6 +639,9 @@
 | GET | `/api/v1/all-models/:model_name` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:551` | — | — |
 | POST | `/api/v1/audio/speech` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:532` | — | — |
 | POST | `/api/v1/audio/transcriptions` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:531` | — | — |
+| GET | `/api/v1/auth/azure/callback` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:35` | — | backend worktree-only at a0e091e75051; AzureAuthCallback is CodeNotImplemented at internal/handler/user_auth_ee.go:41 |
+| GET | `/api/v1/auth/azure/login` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:36` | — | backend worktree-only at a0e091e75051; AzureAuthLogin is CodeNotImplemented at internal/handler/user_auth_ee.go:45 |
+| GET | `/api/v1/auth/icbc/callback` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:34` | — | backend worktree-only at a0e091e75051; ICBCAuthCallback is CodeNotImplemented at internal/handler/user_auth_ee.go:37 |
 | POST | `/api/v1/auth/login` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/user_api.py:61` | go-api@9384 (`internal/router/router.go:167`) | — |
 | GET | `/api/v1/auth/login/:channel` | go-api | 9384 | hybrid | 127.0.0.1:9384 | public | enabled | `internal/router/router.go:173` | — | — |
 | GET | `/api/v1/auth/login/<channel>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | public | **runtime-disabled** | `api/apps/restful_apis/user_api.py:165` | — | — |
@@ -644,10 +649,16 @@
 | POST | `/api/v1/auth/logout` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/user_api.py:274` | go-api@9384 (`internal/router/router.go:250`) | — |
 | GET | `/api/v1/auth/oauth/:channel/callback` | go-api | 9384 | hybrid | 127.0.0.1:9384 | public | enabled | `internal/router/router.go:174` | — | — |
 | GET | `/api/v1/auth/oauth/<channel>/callback` | python-api | 9380 | hybrid | 127.0.0.1:9384 | public | **runtime-disabled** | `api/apps/restful_apis/user_api.py:179` | — | — |
+| GET | `/api/v1/auth/oauth/callback` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:31` | — | backend worktree-only at a0e091e75051; OAuthCallback is CodeNotImplemented at internal/handler/user_auth_ee.go:25 |
+| GET | `/api/v1/auth/oauth/github/callback` | go-api | 9384 | hybrid | 127.0.0.1:9384 | public | **runtime-disabled** | `internal/router/router_ee.go:32` | — | backend worktree-only at a0e091e75051; GitHubAuthCallback is CodeNotImplemented at internal/handler/user_auth_ee.go:29 |
+| GET | `/api/v1/auth/oauth/lark/callback` | go-api | 9384 | hybrid | 127.0.0.1:9384 | public | **runtime-disabled** | `internal/router/router_ee.go:33` | — | backend worktree-only at a0e091e75051; LarkAuthCallback is CodeNotImplemented at internal/handler/user_auth_ee.go:33 |
 | POST | `/api/v1/auth/password/forgot/captcha` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/user_api.py:654` | go-api@9384 (`internal/router/router.go:187`) | — |
 | POST | `/api/v1/auth/password/forgot/otp` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/user_api.py:683` | go-api@9384 (`internal/router/router.go:188`) | — |
 | POST | `/api/v1/auth/password/forgot/otp/verify` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/user_api.py:753` | go-api@9384 (`internal/router/router.go:189`) | — |
 | POST | `/api/v1/auth/password/reset` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/user_api.py:814` | go-api@9384 (`internal/router/router.go:190`) | — |
+| POST | `/api/v1/auth/register/captcha` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:37` | — | backend worktree-only at a0e091e75051; Captcha is CodeNotImplemented at internal/handler/user_auth_ee.go:49 |
+| POST | `/api/v1/auth/register/otp` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:38` | — | backend worktree-only at a0e091e75051; SendOTP is CodeNotImplemented at internal/handler/user_auth_ee.go:53 |
+| POST | `/api/v1/auth/register/otp/verify` | go-api | 9384 | hybrid | 127.0.0.1:9380 | public | **runtime-disabled** | `internal/router/router_ee.go:39` | — | backend worktree-only at a0e091e75051; VerifyOTP is CodeNotImplemented at internal/handler/user_auth_ee.go:57 |
 | GET | `/api/v1/chat-channels` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/chat_channel_api.py:49` | go-api@9384 (`internal/router/router.go:676`) | — |
 | POST | `/api/v1/chat-channels` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/chat_channel_api.py:34` | go-api@9384 (`internal/router/router.go:675`) | — |
 | DELETE | `/api/v1/chat-channels/:channel_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:679` | — | — |

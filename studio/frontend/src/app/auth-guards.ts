@@ -7,6 +7,13 @@ import {
   setMustChangePassword,
 } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
+import {
+  clearPlatformSession,
+  hasPlatformSessionToken,
+  hydratePlatformSession,
+  isPlatformApiError,
+} from "@/integrations/platform-backend";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend/config";
 import { redirect } from "@tanstack/react-router";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -69,6 +76,21 @@ function authRedirect(to: "/login" | "/change-password"): never {
 }
 
 export async function requireAuth(): Promise<void> {
+  if (isPlatformAuthEnabled()) {
+    if (!hasPlatformSessionToken()) authRedirect("/login");
+    try {
+      await hydratePlatformSession();
+    } catch (error) {
+      if (isPlatformApiError(error) && error.httpStatus === 401) {
+        clearPlatformSession();
+        authRedirect("/login");
+      }
+      // A network/timeout failure is not proof that the opaque token is
+      // invalid. The protected API calls remain server-authorized and surface
+      // their own disconnected state instead of creating a login loop.
+    }
+    return;
+  }
   // TEMP (local dev, backend not attached): auth gating disabled so protected
   // routes open directly instead of redirecting to /login. Uncomment the block
   // below to restore the real guard.
@@ -99,6 +121,19 @@ export async function requireAuth(): Promise<void> {
 }
 
 export async function requireGuest(): Promise<void> {
+  if (isPlatformAuthEnabled()) {
+    if (!hasPlatformSessionToken()) return;
+    try {
+      await hydratePlatformSession();
+    } catch (error) {
+      if (isPlatformApiError(error) && error.httpStatus === 401) {
+        clearPlatformSession();
+        return;
+      }
+      return;
+    }
+    throw redirect({ to: "/chat" });
+  }
   if (isTauri) {
     throw redirect({ to: "/chat" });
   }
@@ -109,6 +144,13 @@ export async function requireGuest(): Promise<void> {
 }
 
 export async function requirePasswordChangeFlow(): Promise<void> {
+  if (isPlatformAuthEnabled()) {
+    // The platform has no forced-first-password contract. Password changes are
+    // available to authenticated users in Settings; this legacy route never
+    // becomes a second platform auth state machine.
+    if (hasPlatformSessionToken()) throw redirect({ to: "/chat" });
+    throw redirect({ to: "/login" });
+  }
   if (isTauri) {
     throw redirect({ to: "/chat" });
   }

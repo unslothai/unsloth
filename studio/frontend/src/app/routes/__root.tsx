@@ -11,6 +11,10 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { hasAuthToken } from "@/features/auth";
 import {
+  consumePlatformOAuthRedirect,
+  isPlatformAuthEnabled,
+} from "@/integrations/platform-backend";
+import {
   ChatPage,
   type ChatSearch,
   StopRunningChatsDialog,
@@ -20,7 +24,10 @@ import {
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
-import { usePersonalizationSync } from "@/features/profile";
+import {
+  usePersonalizationSync,
+  usePlatformProfileSync,
+} from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
@@ -76,7 +83,9 @@ const VideoPage = lazy(() =>
 );
 
 function PersonalizationSyncMount() {
-  usePersonalizationSync(hasAuthToken());
+  const platformProfileEnabled = isPlatformAuthEnabled();
+  usePersonalizationSync(hasAuthToken() && !platformProfileEnabled);
+  usePlatformProfileSync(platformProfileEnabled);
   return null;
 }
 
@@ -125,6 +134,12 @@ function isChatOnlyAllowed(pathname: string): boolean {
 
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
+    if (isPlatformAuthEnabled() && location.pathname === "/") {
+      const oauth = consumePlatformOAuthRedirect();
+      if (oauth.handled) {
+        throw redirect({ to: oauth.status === "success" ? "/chat" : "/login" });
+      }
+    }
     // Fetch platform info before the chat-only guard. fetchDeviceType caches,
     // so later navigations are instant.
     await fetchDeviceType();
@@ -162,8 +177,7 @@ function RootLayout() {
   // generation survives leaving the tab: it mounts lazily on first /chat visit, then
   // stays mounted, its search frozen to the last /chat value while off-route.
   const rawSearch = useRouterState({ select: (s) => s.location.search }) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const rawThread =
     typeof rawSearch?.thread === "string" ? rawSearch.thread : undefined;
   const rawCompare =

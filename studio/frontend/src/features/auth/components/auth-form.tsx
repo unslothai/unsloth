@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend/config";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { refreshSession } from "../api";
+import { PlatformAuthForm } from "./platform-auth-form";
 
 // Bootstrap credentials injected into index.html by the backend (only present
 // while default admin must_change_password is true)
@@ -75,7 +77,7 @@ type AuthFormProps = {
 
 const HIDDEN_LOGIN_USERNAME = "unsloth";
 
-export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
+function LegacyAuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
@@ -480,4 +482,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       )}
     </div>
   );
+}
+
+export function AuthForm(props: AuthFormProps): ReactElement | null {
+  if (isPlatformAuthEnabled()) return <PlatformAuthForm />;
+  return <LegacyAuthForm {...props} />;
 }

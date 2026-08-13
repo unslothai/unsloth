@@ -1,6 +1,3 @@
-
-
-
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,6 +28,7 @@ import {
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -606,7 +604,7 @@ export function GeneralTab() {
         {/* The desktop app authenticates via desktop auto-auth with a generated
             secret, so this password only governs remote browsers and is managed
             in Remote access instead. Web only. */}
-        {isTauri ? null : (
+        {isTauri && !isPlatformAuthEnabled() ? null : (
           <SettingsRow
             label={t("settings.general.password")}
             description={t("settings.general.passwordDescription")}

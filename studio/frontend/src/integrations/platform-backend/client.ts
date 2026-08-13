@@ -11,6 +11,10 @@ import type {
   PlatformQuery,
   PlatformResponseType,
 } from "./types";
+import {
+  clearPlatformSessionAndRedirectToLogin,
+  getPlatformSessionToken,
+} from "./auth-session";
 
 export interface PlatformRequestOptions {
   method?: string;
@@ -26,6 +30,8 @@ export interface PlatformRequestOptions {
   getRetries?: number;
   credentials?: RequestCredentials;
   config?: PlatformBackendConfig;
+  onResponse?: (response: Response) => void;
+  redirectOnUnauthorized?: boolean;
 }
 
 const RETRYABLE_HTTP_STATUSES = new Set([502, 503, 504]);
@@ -159,11 +165,17 @@ async function executeRequest<TData>(
       signal: abortContext.signal,
       credentials: options.credentials ?? "same-origin",
     });
+    options.onResponse?.(response);
     const requestId = requestIdFrom(response);
 
     if (response.status === 204) return undefined as TData;
 
-    if (responseType === "blob" && response.ok) {
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (
+      responseType === "blob" &&
+      response.ok &&
+      !contentType.includes("application/json")
+    ) {
       return (await response.blob()) as TData;
     }
 
@@ -246,7 +258,9 @@ export async function platformRequest<TData>(
   const headers = new Headers(options.headers);
   let body = options.body;
 
-  if (options.token) headers.set("Authorization", `Bearer ${options.token}`);
+  const token =
+    options.token === undefined ? getPlatformSessionToken() : options.token;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.json !== undefined) {
     headers.set("Content-Type", "application/json");
     body = JSON.stringify(options.json);
@@ -272,6 +286,14 @@ export async function platformRequest<TData>(
         timeoutMs,
       );
     } catch (error) {
+      if (
+        token &&
+        options.redirectOnUnauthorized !== false &&
+        isPlatformApiError(error) &&
+        error.httpStatus === 401
+      ) {
+        clearPlatformSessionAndRedirectToLogin();
+      }
       const canRetry =
         attempt < retries &&
         isPlatformApiError(error) &&

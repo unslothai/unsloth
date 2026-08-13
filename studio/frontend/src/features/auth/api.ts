@@ -8,6 +8,10 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";
+import {
+  isPlatformAuthEnabled,
+  logoutPlatformUser,
+} from "@/integrations/platform-backend";
 
 /**
  * Message for "the local Studio server did not answer at all".
@@ -293,6 +297,10 @@ async function postLogout(accessToken: string | null): Promise<Response | null> 
 }
 
 export async function logout(): Promise<void> {
+  if (isPlatformAuthEnabled()) {
+    await logoutPlatformUser();
+    return;
+  }
   // Server-side revoke. If the access token is expired the 401 fires before revoke runs, so
   // rotate via the refresh token and retry to revoke the family. The finally generation bump
   // invalidates in-flight refreshes.

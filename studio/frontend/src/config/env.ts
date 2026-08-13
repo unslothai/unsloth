@@ -7,6 +7,7 @@ import {
   isProvisionalVerdict,
   resolveVerdict,
 } from "@/config/hardware-verdict";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend/config";
 import { create } from "zustand";
 
 export const env = {
@@ -101,6 +102,23 @@ let hardwareWaitSpent = false;
 export async function fetchDeviceType(options?: {
   force?: boolean;
 }): Promise<DeviceType> {
+  // Rag Platform does not expose the legacy Studio hardware-capability contract,
+  // and all capability-gated pages are disabled during this rollout. Mark the
+  // verdict settled locally so AppSidebar never starts its 3-second /api/health
+  // recovery poll. Platform readiness has its own /api/v1 system probes.
+  if (isPlatformAuthEnabled()) {
+    const current = usePlatformStore.getState();
+    if (!current.fetched || current.chatOnly || current.detectionDeferred) {
+      usePlatformStore.setState({
+        chatOnly: false,
+        chatOnlyReason: null,
+        fetched: true,
+        detectionDeferred: false,
+      });
+    }
+    return current.deviceType;
+  }
+
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
 

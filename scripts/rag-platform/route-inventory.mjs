@@ -690,6 +690,81 @@ const rawRoutes = [
 ];
 
 /**
+ * The deployed contract is pinned to v0.26.4, but the local backend worktree is
+ * also normative for forward source discovery. Enterprise auth declarations
+ * added after the pinned ref must not disappear merely because the runtime
+ * image cannot contain them. Parse the current worktree's EE router, keep only
+ * method+paths absent from the pinned scan, and record them as source-only
+ * runtime-disabled. Their handler bodies are verified as not-implemented stubs
+ * rather than inferred from route names.
+ */
+function scanForwardAuthSourceOnly() {
+  if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
+  const routerPath = join(BACKEND_REPO_ROOT, "internal", "router", "router_ee.go");
+  const handlerPath = join(BACKEND_REPO_ROOT, "internal", "handler", "user_auth_ee.go");
+  if (!existsSync(routerPath) || !existsSync(handlerPath)) {
+    return { commit: "unavailable", routes: [] };
+  }
+  const commit = execFileSync(
+    "git",
+    ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
+  const known = new Set(rawRoutes.map((route) => `${route.method} ${route.path}`));
+  const handlerLines = readFileSync(handlerPath, "utf8").split("\n");
+  const routes = [];
+  readFileSync(routerPath, "utf8")
+    .split("\n")
+    .forEach((line, index) => {
+      const match = line.match(
+        /apiNoAuth\.(GET|POST|PUT|PATCH|DELETE)\("([^"]+)",\s*r\.userHandler\.([A-Za-z0-9_]+)\)/,
+      );
+      if (!match) return;
+      const method = match[1];
+      const path = `/api/v1${match[2]}`;
+      if (known.has(`${method} ${path}`)) return;
+      const handler = match[3];
+      const handlerStart = handlerLines.findIndex((candidate) =>
+        new RegExp(`^func \\(h \\*UserHandler\\) ${handler}\\(`).test(candidate),
+      );
+      const handlerBody =
+        handlerStart < 0 ? "" : handlerLines.slice(handlerStart, handlerStart + 5).join("\n");
+      if (!handlerBody.includes("CodeNotImplemented")) {
+        throw new Error(
+          `forward auth route ${method} ${path} is not a verified CodeNotImplemented stub`,
+        );
+      }
+      const base = {
+        method,
+        path,
+        service: "go-api",
+        auth: "public",
+        source: `internal/router/router_ee.go:${index + 1}`,
+        notes:
+          `backend worktree-only at ${commit.slice(0, 12)}; ${handler} is ` +
+          `CodeNotImplemented at internal/handler/user_auth_ee.go:${handlerStart + 1}`,
+      };
+      const proxy = resolveProxy(base);
+      routes.push({
+        ...base,
+        service_port: SERVICES[base.service].port,
+        service_started: serviceStarted(base.service),
+        ...proxy,
+        runtime_enabled: false,
+        runtime_disabled_reason:
+          `declared only in backend worktree ${commit.slice(0, 12)}; absent from deployed ` +
+          `${BACKEND_REF} (${BACKEND_COMMIT.slice(0, 12)}); handler ${handler} returns CodeNotImplemented`,
+        source_scope: "backend-worktree-only",
+        source_commit: commit,
+        alternates: [],
+      });
+    });
+  return { commit, routes };
+}
+
+const forwardAuthSource = scanForwardAuthSourceOnly();
+
+/**
  * Collapse by method+path. Multiple services implementing the same method+path
  * are NOT overwritten: the implementation the active proxy actually reaches wins
  * the primary record, the others are listed in `alternates`.
@@ -718,7 +793,7 @@ for (const route of rawRoutes) {
   }
 }
 
-const routes = [...byKey.values()].sort((a, b) =>
+const routes = [...byKey.values(), ...forwardAuthSource.routes].sort((a, b) =>
   a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path),
 );
 
@@ -737,25 +812,39 @@ function canonicalPath(path) {
   return canon || "/";
 }
 
+/**
+ * A source-only static route can still be served by a reachable parameterised
+ * route. Gin's `/oauth/:channel/callback`, for example, handles the concrete
+ * `/oauth/github/callback` request even though the EE worktree also declares a
+ * static stub for it. This check models request reachability, not just textual
+ * route-shape equality.
+ */
+function parameterRouteServesConcrete(pattern, concrete) {
+  if (/[<:*]/.test(concrete)) return false;
+  const patternSegments = pattern.split("/").filter(Boolean);
+  const concreteSegments = concrete.split("/").filter(Boolean);
+  for (let index = 0; index < patternSegments.length; index += 1) {
+    const segment = patternSegments[index];
+    if (segment.startsWith("*")) return index < concreteSegments.length;
+    if (index >= concreteSegments.length) return false;
+    if (segment.startsWith(":") || /^<[^>]+>$/.test(segment)) continue;
+    if (segment !== concreteSegments[index]) return false;
+  }
+  return patternSegments.length === concreteSegments.length;
+}
+
 // A runtime-disabled route matters much more when nothing else serves its
 // method+path. Record which of the two cases each one is, so the report can
 // separate "lost capability" from "same capability, different implementation".
-const reachableKeys = new Set(
-  routes
-    .filter((route) => route.runtime_enabled === true)
-    .map((route) => `${route.method} ${canonicalPath(route.path)}`),
-);
 for (const route of routes) {
   if (route.runtime_enabled !== false) continue;
-  const key = `${route.method} ${canonicalPath(route.path)}`;
-  const equivalent = reachableKeys.has(key)
-    ? routes.find(
-        (other) =>
-          other.runtime_enabled === true &&
-          other.method === route.method &&
-          canonicalPath(other.path) === canonicalPath(route.path),
-      )
-    : null;
+  const equivalent = routes.find(
+    (other) =>
+      other.runtime_enabled === true &&
+      other.method === route.method &&
+      (canonicalPath(other.path) === canonicalPath(route.path) ||
+        parameterRouteServesConcrete(other.path, route.path)),
+  );
   route.equivalent_reachable_route = equivalent
     ? { method: equivalent.method, path: equivalent.path, service: equivalent.service }
     : null;
@@ -777,6 +866,7 @@ const inventory = {
     source_commit: BACKEND_COMMIT,
     source_image: readEnvValue(join(BACKEND_ROOT, "docker", ".env"), "RAGFLOW_IMAGE") || "unknown",
     api_version: "v1",
+    forward_source_commit: forwardAuthSource.commit,
   },
   proxy: {
     scheme: PROXY_SCHEME,
@@ -801,6 +891,7 @@ const inventory = {
     by_service: byService,
     runtime_enabled: routes.filter((r) => r.runtime_enabled === true).length,
     runtime_disabled: disabledRoutes.length,
+    source_only_runtime_disabled: forwardAuthSource.routes.length,
     not_proxied: routes.filter((r) => r.runtime_enabled === null).length,
     with_alternates: routes.filter((r) => r.alternates.length > 0).length,
     runtime_disabled_breakdown: {
@@ -825,6 +916,10 @@ function renderMarkdown(data) {
   lines.push(
     `- Source image: \`${data.backend.source_image}\` (API version \`${data.backend.api_version}\`)`,
   );
+  lines.push(
+    `- Forward source audit: backend worktree \`${data.backend.forward_source_commit}\`; ` +
+      `${data.totals.source_only_runtime_disabled} source-only runtime-disabled route(s)`,
+  );
   lines.push(`- Active proxy scheme: \`${data.proxy.scheme}\` (from ${data.proxy.scheme_source})`);
   lines.push(`- Proxy config: \`${data.proxy.nginx_config}\``);
   lines.push("");
@@ -838,6 +933,7 @@ function renderMarkdown(data) {
   }
   lines.push(`| runtime-enabled | ${data.totals.runtime_enabled} |`);
   lines.push(`| runtime-disabled | ${data.totals.runtime_disabled} |`);
+  lines.push(`| — source-only forward auth declarations | ${data.totals.source_only_runtime_disabled} |`);
   lines.push(`| not proxied by nginx | ${data.totals.not_proxied} |`);
   lines.push(`| method+path with alternate implementations | ${data.totals.with_alternates} |`);
   lines.push("");
@@ -929,7 +1025,7 @@ function renderRuntimeDisabled(data) {
   lines.push(`| reachable | ${data.totals.runtime_enabled} |`);
   lines.push(`| runtime-disabled | ${disabled.length} |`);
   lines.push(`| — no reachable equivalent (capability lost) | ${exclusive.length} |`);
-  lines.push(`| — same method+path served elsewhere (no capability lost) | ${shadowed.length} |`);
+  lines.push(`| — same concrete request served elsewhere (no capability lost) | ${shadowed.length} |`);
   lines.push(`| not proxied by nginx | ${data.totals.not_proxied} |`);
   lines.push("");
   lines.push("## Why these routes are closed");
@@ -943,6 +1039,17 @@ function renderRuntimeDisabled(data) {
     "four direct service smoke probes are recorded in ADR 0005 and the Faz 0",
     "result report.",
   );
+  if (data.totals.source_only_runtime_disabled > 0) {
+    lines.push("");
+    lines.push(
+      `${data.totals.source_only_runtime_disabled} auth route(s) are a separate forward-source case: ` +
+        `they are declared only at backend worktree \`${data.backend.forward_source_commit}\`, ` +
+        `are absent from deployed \`${data.backend.source_ref}\`, and their worktree handlers return ` +
+        "`CodeNotImplemented`. Live hybrid smoke returns HTTP 404 for seven concrete paths; " +
+        "GitHub and Lark callback URLs return 302 through the active parameterised callback. " +
+        "The UI therefore uses live channels and exposes direct registration without a false captcha/OTP step.",
+    );
+  }
   lines.push("");
   lines.push("## Capability lost — no reachable route serves this method and path");
   lines.push("");
@@ -968,8 +1075,9 @@ function renderRuntimeDisabled(data) {
   lines.push("## No capability lost — same method and path is served by a reachable route");
   lines.push("");
   lines.push(
-    "Duplicate implementations of one contract. The proxy selects the serving",
-    "implementation shown below, so the surface itself stays available.",
+    "Duplicate implementations of one contract, or a static source-only route",
+    "whose concrete request is handled by a reachable parameterised route. The",
+    "serving implementation shown below keeps the surface available.",
   );
   lines.push("");
   lines.push("| Method | Path | Unreachable | Serving instead | Source |");

@@ -1,6 +1,3 @@
-
-
-
 import { publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +9,12 @@ import {
 } from "@/components/ui/popover";
 import { PRODUCT_NAME } from "@/config/branding";
 import { getAuthToken } from "@/features/auth";
+import { platformAuthErrorMessage } from "@/features/auth/platform-auth-errors";
+import {
+  isPlatformAuthEnabled,
+  updatePlatformProfile,
+  usePlatformSessionStore,
+} from "@/integrations/platform-backend";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
@@ -35,6 +38,25 @@ import { UserAvatar } from "./user-avatar";
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
 const SLOTH_NAME = /^large\s+/i;
 const PNG_SUFFIX = /\.png$/i;
+
+const compactDateFormatter = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+
+function ProfileDate({ value }: { value: number | null }) {
+  if (value === null) {
+    return <span>—</span>;
+  }
+
+  const date = new Date(value);
+  return (
+    <time dateTime={date.toISOString()} title={date.toLocaleString()}>
+      {compactDateFormatter.format(date)}
+    </time>
+  );
+}
 
 function readPersistedProfile(): {
   displayName: string;
@@ -71,6 +93,8 @@ function readPersistedProfile(): {
 
 export function ProfilePersonalizationPanel() {
   const t = useT();
+  const platformProfileEnabled = isPlatformAuthEnabled();
+  const platformUser = usePlatformSessionStore((state) => state.user);
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
@@ -81,12 +105,16 @@ export function ProfilePersonalizationPanel() {
   const setAvatarShape = useUserProfileStore((s) => s.setAvatarShape);
 
   const [imageError, setImageError] = useState<string | null>(null);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+  const [savingName, setSavingName] = useState(false);
   const [draftName, setDraftName] = useState(displayName);
   const [draftNickname, setDraftNickname] = useState(nickname);
   const [pickerOpen, setPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastDisplayNameRef = useRef(displayName);
   const lastNicknameRef = useRef(nickname);
+  const avatarRequestRef = useRef<AbortController | null>(null);
+  const nameRequestRef = useRef<AbortController | null>(null);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
   const previewName = draftName.trim() || sessionSub || PRODUCT_NAME;
@@ -105,9 +133,41 @@ export function ProfilePersonalizationPanel() {
 
   // Committed on blur and on Enter rather than behind a Save button, so each
   // field is a single row like the rest of Settings.
-  const saveName = () => {
+  const saveName = async () => {
     const trimmed = draftName.trim();
     if (trimmed !== draftName) setDraftName(trimmed);
+    if (trimmed === displayName || !trimmed) return;
+
+    if (platformProfileEnabled) {
+      nameRequestRef.current?.abort();
+      const controller = new AbortController();
+      nameRequestRef.current = controller;
+      setSavingName(true);
+      try {
+        const next = await updatePlatformProfile(
+          { nickname: trimmed },
+          controller.signal,
+        );
+        setDisplayName(next.nickname);
+        setNickname(next.nickname);
+        setDraftName(next.nickname);
+        toastSuccess(t("settings.profile.nameSaved"));
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          toastError(
+            t("settings.profile.namePersistErrorTitle"),
+            platformAuthErrorMessage(error),
+          );
+        }
+      } finally {
+        if (nameRequestRef.current === controller) {
+          nameRequestRef.current = null;
+          setSavingName(false);
+        }
+      }
+      return;
+    }
+
     if (trimmed !== displayName) {
       setDisplayName(trimmed);
       const persisted = readPersistedProfile();
@@ -145,13 +205,51 @@ export function ProfilePersonalizationPanel() {
   const flushDrafts = useRef<() => void>(() => {});
   useEffect(() => {
     flushDrafts.current = () => {
-      saveName();
-      saveNickname();
+      if (!platformProfileEnabled) {
+        void saveName();
+        saveNickname();
+      }
     };
   });
   useEffect(() => () => flushDrafts.current(), []);
 
-  const applyAvatar = (value: string | null) => {
+  useEffect(
+    () => () => {
+      avatarRequestRef.current?.abort();
+      nameRequestRef.current?.abort();
+    },
+    [],
+  );
+
+  const applyAvatar = async (value: string | null) => {
+    if (platformProfileEnabled) {
+      avatarRequestRef.current?.abort();
+      const controller = new AbortController();
+      avatarRequestRef.current = controller;
+      setSavingAvatar(true);
+      try {
+        const next = await updatePlatformProfile(
+          { avatar: value },
+          controller.signal,
+        );
+        setAvatarDataUrl(next.avatar);
+        toastSuccess(t("settings.profile.photoUpdated"));
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          const message = platformAuthErrorMessage(error);
+          setImageError(message);
+          toastError(t("settings.profile.photoUpdateErrorTitle"), message);
+        }
+      } finally {
+        if (avatarRequestRef.current === controller) {
+          avatarRequestRef.current = null;
+          setSavingAvatar(false);
+          setPendingAvatar(null);
+        }
+      }
+      return;
+    }
+
     setAvatarDataUrl(value);
     const persisted = readPersistedProfile();
     if (persisted && persisted.avatarDataUrl === value) {
@@ -168,7 +266,7 @@ export function ProfilePersonalizationPanel() {
     if (!file) return;
     setImageError(null);
     try {
-      applyAvatar(await resizeImageFileToDataUrl(file));
+      await applyAvatar(await resizeImageFileToDataUrl(file));
     } catch (e) {
       const message =
         e instanceof Error ? e.message : t("settings.profile.imageUseError");
@@ -195,7 +293,7 @@ export function ProfilePersonalizationPanel() {
   const pickAvatarValue = (value: string | null) => {
     setImageError(null);
     setPendingAvatar({ value });
-    requestAnimationFrame(() => applyAvatar(value));
+    requestAnimationFrame(() => void applyAvatar(value));
   };
 
   return (
@@ -218,6 +316,7 @@ export function ProfilePersonalizationPanel() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            disabled={savingAvatar}
             aria-label={t("settings.profile.changePicture")}
             className="group relative block rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -376,6 +475,7 @@ export function ProfilePersonalizationPanel() {
               id="profile-display-name"
               type="text"
               value={draftName}
+              disabled={savingName}
               maxLength={PROFILE_TEXT_MAX_LENGTH}
               onChange={(e) => setDraftName(e.target.value)}
               onBlur={saveName}
@@ -391,34 +491,68 @@ export function ProfilePersonalizationPanel() {
             />
           </div>
 
-          <div
-            data-settings-label={t("settings.profile.nickname")}
-            className="flex min-w-0 flex-col gap-1.5"
-          >
-            <Label
-              htmlFor="profile-nickname"
-              className="text-xs font-medium text-muted-foreground"
+          {platformProfileEnabled && platformUser ? (
+            <div
+              data-settings-label="E-posta"
+              className="flex min-w-0 flex-col gap-1.5"
             >
-              {t("settings.profile.nickname")}
-            </Label>
-            <Input
-              id="profile-nickname"
-              type="text"
-              value={draftNickname}
-              maxLength={PROFILE_TEXT_MAX_LENGTH}
-              onChange={(e) => setDraftNickname(e.target.value)}
-              onBlur={saveNickname}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                }
-              }}
-              autoComplete="off"
-              placeholder={t("settings.profile.nicknamePlaceholder")}
-              className="h-9 w-full rounded-full text-sm"
-            />
-          </div>
+              <Label
+                htmlFor="profile-email"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                E-posta
+              </Label>
+              <Input
+                id="profile-email"
+                type="email"
+                value={platformUser.email}
+                readOnly
+                aria-readonly="true"
+                autoComplete="email"
+                className="h-9 w-full cursor-text rounded-full bg-muted/35 text-sm text-muted-foreground"
+              />
+              <p className="flex flex-wrap items-center gap-x-1.5 px-1 text-ui-11 text-muted-foreground/65 tabular-nums">
+                <span className="whitespace-nowrap">
+                  Oluşturuldu <ProfileDate value={platformUser.createdAt} />
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="whitespace-nowrap">
+                  Güncellendi <ProfileDate value={platformUser.updatedAt} />
+                </span>
+              </p>
+            </div>
+          ) : null}
+
+          {platformProfileEnabled ? null : (
+            <div
+              data-settings-label={t("settings.profile.nickname")}
+              className="flex min-w-0 flex-col gap-1.5"
+            >
+              <Label
+                htmlFor="profile-nickname"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                {t("settings.profile.nickname")}
+              </Label>
+              <Input
+                id="profile-nickname"
+                type="text"
+                value={draftNickname}
+                maxLength={PROFILE_TEXT_MAX_LENGTH}
+                onChange={(e) => setDraftNickname(e.target.value)}
+                onBlur={saveNickname}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                }}
+                autoComplete="off"
+                placeholder={t("settings.profile.nicknamePlaceholder")}
+                className="h-9 w-full rounded-full text-sm"
+              />
+            </div>
+          )}
         </div>
       </div>
 

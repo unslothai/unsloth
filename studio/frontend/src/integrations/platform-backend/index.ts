@@ -6,4 +6,8 @@ export * from "./envelope";
 export * from "./errors";
 export * from "./sse";
 export * from "./system-api";
+export * from "./auth-api";
+export * from "./auth-crypto";
+export * from "./auth-session";
+export * from "./auth-types";
 export * from "./types";

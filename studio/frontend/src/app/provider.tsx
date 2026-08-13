@@ -32,6 +32,7 @@ import { SttDownloadPrompt } from "@/features/settings/components/stt-download-p
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend";
 import { isTauri } from "@/lib/api-base";
 import { useRouterState } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
@@ -620,6 +621,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     if (status !== "running") {
       setDesktopAuthReady(false);
       setDesktopAuthRetry(0);
+      return;
+    }
+    // The desktop bootstrap issues the legacy Studio access+refresh pair. It
+    // cannot authenticate platformRequest's single opaque bearer session, so
+    // native platform auth shows its normal login UI after backend startup.
+    // Operators can explicitly retain the legacy desktop flow by disabling
+    // VITE_RAG_PLATFORM_AUTH_ENABLED for that build.
+    if (isPlatformAuthEnabled()) {
+      setDesktopAuthReady(true);
       return;
     }
 

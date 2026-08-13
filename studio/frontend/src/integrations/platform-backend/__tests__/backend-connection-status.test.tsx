@@ -10,23 +10,30 @@ afterEach(() => usePlatformConnectionStore.getState().reset());
 
 describe("PlatformBackendConnectionStatus", () => {
   it("provides a real Settings UI path for connection readiness", async () => {
+    let healthRequests = 0;
     platformTestServer.use(
       http.get("/api/v1/system/ping", () => new HttpResponse("pong")),
       http.get("/api/v1/system/version", () =>
         HttpResponse.json({ code: 0, data: "v0.26.4", message: "success" }),
       ),
-      http.get("/api/v1/system/healthz", () =>
-        HttpResponse.json({ status: "ok", db: "ok", redis: "ok" }),
-      ),
+      http.get("/api/v1/system/healthz", () => {
+        healthRequests += 1;
+        return HttpResponse.json({ status: "ok", db: "ok", redis: "ok" });
+      }),
     );
 
-    render(<PlatformBackendConnectionStatus enabled />);
+    const firstRender = render(<PlatformBackendConnectionStatus enabled />);
 
     expect(
       screen.getByRole("heading", { name: "Rag Platform backend" }),
     ).toBeVisible();
     expect(await screen.findByText("Connected")).toBeVisible();
     expect(screen.getByText("Version v0.26.4")).toBeVisible();
+
+    firstRender.unmount();
+    render(<PlatformBackendConnectionStatus enabled />);
+    expect(screen.getByText("Connected")).toBeVisible();
+    expect(healthRequests).toBe(1);
   });
 
   it("shows the rollout-disabled empty state without a network call", () => {

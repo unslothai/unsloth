@@ -17,11 +17,11 @@ running in the active scheme.
 
 | Metric | Count |
 | --- | --- |
-| routes discovered | 700 |
+| routes discovered | 709 |
 | reachable | 516 |
-| runtime-disabled | 179 |
-| — no reachable equivalent (capability lost) | 0 |
-| — same method+path served elsewhere (no capability lost) | 179 |
+| runtime-disabled | 188 |
+| — no reachable equivalent (capability lost) | 7 |
+| — same concrete request served elsewhere (no capability lost) | 181 |
 | not proxied by nginx | 5 |
 
 ## Why these routes are closed
@@ -34,16 +34,31 @@ deduplication, not a lost capability. The Go executable provenance and the
 four direct service smoke probes are recorded in ADR 0005 and the Faz 0
 result report.
 
+9 auth route(s) are a separate forward-source case: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, are absent from deployed `v0.26.4`, and their worktree handlers return `CodeNotImplemented`. Live hybrid smoke returns HTTP 404 for seven concrete paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The UI therefore uses live channels and exposes direct registration without a false captcha/OTP step.
+
 ## Capability lost — no reachable route serves this method and path
 
 Compared after canonicalising parameter syntax (`<id>`, `:id`, `*path` all
 normalise to `{p}`), so a Go route is only listed here when no Python route
 provides the same method and path shape.
 
+### `auth` (7)
+
+| Method | Path | Service | Source | Proxy result |
+| --- | --- | --- | --- | --- |
+| GET | `/api/v1/auth/azure/callback` | go-api@9384 | `internal/router/router_ee.go:35` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler AzureAuthCallback returns CodeNotImplemented |
+| GET | `/api/v1/auth/azure/login` | go-api@9384 | `internal/router/router_ee.go:36` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler AzureAuthLogin returns CodeNotImplemented |
+| GET | `/api/v1/auth/icbc/callback` | go-api@9384 | `internal/router/router_ee.go:34` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler ICBCAuthCallback returns CodeNotImplemented |
+| GET | `/api/v1/auth/oauth/callback` | go-api@9384 | `internal/router/router_ee.go:31` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler OAuthCallback returns CodeNotImplemented |
+| POST | `/api/v1/auth/register/captcha` | go-api@9384 | `internal/router/router_ee.go:37` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler Captcha returns CodeNotImplemented |
+| POST | `/api/v1/auth/register/otp` | go-api@9384 | `internal/router/router_ee.go:38` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler SendOTP returns CodeNotImplemented |
+| POST | `/api/v1/auth/register/otp/verify` | go-api@9384 | `internal/router/router_ee.go:39` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler VerifyOTP returns CodeNotImplemented |
+
 ## No capability lost — same method and path is served by a reachable route
 
-Duplicate implementations of one contract. The proxy selects the serving
-implementation shown below, so the surface itself stays available.
+Duplicate implementations of one contract, or a static source-only route
+whose concrete request is handled by a reachable parameterised route. The
+serving implementation shown below keeps the surface available.
 
 | Method | Path | Unreachable | Serving instead | Source |
 | --- | --- | --- | --- | --- |
@@ -103,6 +118,8 @@ implementation shown below, so the surface itself stays available.
 | GET | `/api/v1/agents/attachments/<attachment_id>/preview` | python-api@9380 | go-api (`/api/v1/agents/attachments/:attachment_id/preview`) | `api/apps/restful_apis/agent_api.py:2505` |
 | GET | `/api/v1/auth/login/<channel>` | python-api@9380 | go-api (`/api/v1/auth/login/:channel`) | `api/apps/restful_apis/user_api.py:165` |
 | GET | `/api/v1/auth/oauth/<channel>/callback` | python-api@9380 | go-api (`/api/v1/auth/oauth/:channel/callback`) | `api/apps/restful_apis/user_api.py:179` |
+| GET | `/api/v1/auth/oauth/github/callback` | go-api@9384 | go-api (`/api/v1/auth/oauth/:channel/callback`) | `internal/router/router_ee.go:32` |
+| GET | `/api/v1/auth/oauth/lark/callback` | go-api@9384 | go-api (`/api/v1/auth/oauth/:channel/callback`) | `internal/router/router_ee.go:33` |
 | DELETE | `/api/v1/chat-channels/<channel_id>` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id`) | `api/apps/restful_apis/chat_channel_api.py:102` |
 | GET | `/api/v1/chat-channels/<channel_id>` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id`) | `api/apps/restful_apis/chat_channel_api.py:56` |
 | PATCH | `/api/v1/chat-channels/<channel_id>` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id`) | `api/apps/restful_apis/chat_channel_api.py:69` |

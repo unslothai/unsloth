@@ -50,6 +50,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/config/branding";
 import {
   FEATURE_API_MONITOR,
   FEATURE_EXPORT,
@@ -2006,13 +2007,9 @@ export function AppSidebar() {
                   aria-disabled={chatDisabled}
                   tabIndex={chatDisabled ? -1 : undefined}
                 >
-                  {/* Logo lockup follows the UI font size at half rate:
-                      base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
-                  <img
-                    src="https://www.medyasoft.com.tr/media/Logo/logo-colored@2x.png"
-                    alt="Medyasoft"
-                    className="relative top-px h-[calc(30px+1.5rem*var(--ui-font-scale,1))] w-[calc(17px+7.5rem*var(--ui-font-scale,1))] shrink-0 object-cover"
-                  />
+                  <span className="relative -top-px min-w-0 truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold leading-tight tracking-[0em] text-black dark:text-white dark:tracking-[0.02em]">
+                    {PRODUCT_NAME}
+                  </span>
                   <span className="nav-badge ml-0.5 inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>

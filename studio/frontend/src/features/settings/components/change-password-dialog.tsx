@@ -19,9 +19,16 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "@/features/auth";
+import { platformAuthErrorMessage } from "@/features/auth/platform-auth-errors";
 import { useT } from "@/i18n";
+import {
+  changePlatformPassword,
+  getPlatformAuthConfig,
+  isPlatformAuthEnabled,
+} from "@/integrations/platform-backend";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
+import { useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -206,6 +213,8 @@ export function ChangePasswordDialog({
   onDone?: () => void;
 }) {
   const t = useT();
+  const navigate = useNavigate();
+  const platformAuth = isPlatformAuthEnabled() && !initial;
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -241,6 +250,17 @@ export function ChangePasswordDialog({
     }
     setSubmitting(true);
     try {
+      if (platformAuth) {
+        await changePlatformPassword(current, next, {
+          publicKeyPem: getPlatformAuthConfig().publicKeyPem,
+        });
+        toast.success("Parolanız güncellendi. Yeniden giriş yapın.");
+        reset();
+        setOpen(false);
+        onDone?.();
+        await navigate({ to: "/login", replace: true });
+        return;
+      }
       const data = await requestPasswordChange(initial, current, next);
       const accessToken = stringField(data, "access_token");
       const refreshToken = stringField(data, "refresh_token");
@@ -256,7 +276,9 @@ export function ChangePasswordDialog({
       onDone?.();
     } catch (err) {
       toast.error(
-        err instanceof Error && err.message
+        platformAuth
+          ? platformAuthErrorMessage(err)
+          : err instanceof Error && err.message
           ? err.message
           : t("settings.general.passwordDialog.updateFailed"),
       );
