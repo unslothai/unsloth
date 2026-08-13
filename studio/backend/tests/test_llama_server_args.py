@@ -119,9 +119,16 @@ def test_managed_long_flag_underscore_alias_is_rejected():
         validate_extra_args(["--slot_save_path", "/tmp/slots"])
 
 
-def test_non_flag_token_passes_through():
-    # Bare positionals are passed through; llama-server can reject them.
-    assert validate_extra_args(["foo"]) == ["foo"]
+def test_a_bare_positional_is_rejected():
+    # This used to pass through on the grounds that llama-server can reject it, and
+    # it does: "error: invalid argument: foo", so the launch fails instead of the
+    # request. Refused here now that a textbox can produce one, because a build that
+    # DID accept a positional would read it as the model path, which is exactly what
+    # denying -m / --model prevents.
+    with pytest.raises(ValueError, match = "bare value"):
+        validate_extra_args(["foo"])
+    # A value that follows its flag is untouched.
+    assert validate_extra_args(["--numa", "distribute"]) == ["--numa", "distribute"]
 
 
 # ── Denylist (rejected) ──────────────────────────────────────────────
@@ -1022,8 +1029,9 @@ def test_control_characters_are_rejected(token):
 
 @pytest.mark.parametrize("token", ["line\nbreak", "tab\there"])
 def test_tab_and_newline_survive(token):
-    # A chat template or grammar passed inline carries both.
-    assert validate_extra_args([token]) == [token]
+    # A chat template or grammar passed inline carries both. As its flag's value,
+    # which is where such a string actually arrives: a bare one is refused now.
+    assert validate_extra_args(["--grammar", token]) == ["--grammar", token]
 
 
 # --- environment twins ------------------------------------------------------
