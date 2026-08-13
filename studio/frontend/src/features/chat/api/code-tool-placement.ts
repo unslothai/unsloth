@@ -47,3 +47,28 @@ export function selectCodeToolNames(input: CodeToolPlacementInput): CodeToolName
   if (input.providerHostsCodeExecution) return { local: [], hosted: [] };
   return { local: ["python", "terminal"], hosted: [] };
 }
+
+/**
+ * Whether the Code pill can do anything on this connection, so the composer can
+ * offer it and a stored preference can be restored.
+ *
+ * Read out of the placement itself rather than restated, because the two must
+ * not drift: a pill offered where the placement runs nothing is a toggle the
+ * user turns on to no effect and no explanation. That is the case for a model
+ * on a sandbox-owning provider that cannot use it, where the rule above
+ * deliberately refuses to relocate the work onto the user's machine.
+ */
+export function codeToolCanRun(input: {
+  hostedCodeExecutionForThisTurn: boolean;
+  providerHostsCodeExecution: boolean;
+  /** This provider AND model can run Studio's own tools through the loop. */
+  supportsStudioTools: boolean;
+}): boolean {
+  const names = selectCodeToolNames({
+    codeToolsEnabled: true,
+    hostedCodeExecutionForThisTurn: input.hostedCodeExecutionForThisTurn,
+    providerHostsCodeExecution: input.providerHostsCodeExecution,
+  });
+  if (names.hosted.length > 0) return true;
+  return names.local.length > 0 && input.supportsStudioTools;
+}

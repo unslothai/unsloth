@@ -21,7 +21,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { selectCodeToolNames } from "../src/features/chat/api/code-tool-placement.ts";
+import {
+  codeToolCanRun,
+  selectCodeToolNames,
+} from "../src/features/chat/api/code-tool-placement.ts";
 
 const SOURCE = readFileSync(
   fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
@@ -127,4 +130,78 @@ test("the branch is only taken when a tool Studio itself can run is on", () => {
     "a bare codeToolsEnabled sends the Studio body for a hosted-only turn",
   );
   assert.match(gate, /studioLocalCodeTools\.length > 0/);
+});
+
+// ── Whether the pill is offered at all ─────────────────────────────
+
+// Until Studio's loop reached the general external providers, the composer
+// keyed the Code pill on the hosted flag alone, so a model without the hosted
+// sandbox simply did not offer it. Keying it on the Studio-tools flag instead
+// offered it everywhere, including where the rule above deliberately runs
+// nothing, and the user got a lit toggle that sent enable_tools: false.
+
+test("a model with its provider's sandbox can run code", () => {
+  assert.equal(
+    codeToolCanRun({
+      hostedCodeExecutionForThisTurn: true,
+      providerHostsCodeExecution: true,
+      supportsStudioTools: true,
+    }),
+    true,
+  );
+});
+
+test("a model that cannot use its provider's sandbox offers nothing", () => {
+  assert.equal(
+    codeToolCanRun({
+      hostedCodeExecutionForThisTurn: false,
+      providerHostsCodeExecution: true,
+      supportsStudioTools: true,
+    }),
+    false,
+  );
+});
+
+test("a connection with no sandbox of its own runs Studio's tools", () => {
+  assert.equal(
+    codeToolCanRun({
+      hostedCodeExecutionForThisTurn: false,
+      providerHostsCodeExecution: false,
+      supportsStudioTools: true,
+    }),
+    true,
+  );
+});
+
+test("and not when the loop cannot run them either", () => {
+  assert.equal(
+    codeToolCanRun({
+      hostedCodeExecutionForThisTurn: false,
+      providerHostsCodeExecution: false,
+      supportsStudioTools: false,
+    }),
+    false,
+  );
+});
+
+test("the pill is offered exactly when the placement sends something", () => {
+  for (const hostedCodeExecutionForThisTurn of [true, false]) {
+    for (const providerHostsCodeExecution of [true, false]) {
+      const names = selectCodeToolNames({
+        codeToolsEnabled: true,
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution,
+      });
+      const sendsSomething = names.hosted.length > 0 || names.local.length > 0;
+      assert.equal(
+        codeToolCanRun({
+          hostedCodeExecutionForThisTurn,
+          providerHostsCodeExecution,
+          supportsStudioTools: true,
+        }),
+        sendsSomething,
+        `hosted=${hostedCodeExecutionForThisTurn} sandbox=${providerHostsCodeExecution}`,
+      );
+    }
+  }
 });
