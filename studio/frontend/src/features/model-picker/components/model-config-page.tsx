@@ -360,6 +360,8 @@ function VramBudgetRow() {
   const [percent, setPercent] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const adviceId = useId();
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const wasModelLoading = useRef(false);
 
   // Adopt what the last save or read published: the row's own GET races the PUT a
   // previous unmount fired, so reopening Advanced straight after a drag could show
@@ -396,6 +398,29 @@ function VramBudgetRow() {
     };
     // deviceType settles once /api/health answers, so re-run if the seed guess flips.
   }, [isMac]);
+
+  // reloadRequired describes the running child, so it goes stale the moment a load
+  // finishes. In the sidebar editor nothing remounts this row on a reload, so the
+  // notice below would keep telling the user to reload a model already sized with
+  // this budget. Only the falling edge: the read during a load answers about the
+  // child being replaced.
+  useEffect(() => {
+    const finished = wasModelLoading.current && !modelLoading;
+    wasModelLoading.current = modelLoading;
+    if (isMac || !finished) {
+      return;
+    }
+    let cancelled = false;
+    loadVramBudgetSettings().then((loaded) => {
+      if (cancelled || !loaded) {
+        return;
+      }
+      setSettings(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isMac, modelLoading]);
 
   // Flush, don't drop: the timer is cleared so nothing fires against a torn-down
   // view, but the fraction is still sent. It is held nowhere else, so a drag
@@ -1308,6 +1333,9 @@ export function ModelConfigPage({
     resolvedIsDiffusion,
     gpuDevices,
   );
+  // Held for the window where Run is waiting on a budget PUT rather than on the
+  // load it looks like it started.
+  const [budgetSettling, setBudgetSettling] = useState(false);
   const stagedMetadataPending =
     contextFetchKey != null &&
     stagedDims == null &&
@@ -1409,6 +1437,9 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
+    if (budgetSettling) {
+      return;
+    }
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value. Commit every
     // numeric input imperatively so the staged load honors what was typed, not just Context.
@@ -1545,15 +1576,26 @@ export function ModelConfigPage({
     // not swallow the load, hence finally; nothing staged stays synchronous.
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
+      // The click is answered by a network round trip now, so the button stays live
+      // for as long as that takes. A second click in that window would settle the
+      // same chain again and run onRun twice, i.e. two loads from one intent.
+      setBudgetSettling(true);
       // Caught, not voided: finally alone re-rejects into an unhandled rejection,
       // and the load would proceed on the old fraction with nothing said.
       void stagedBudget
         .catch((error: unknown) => {
+          // Dropped rather than left for the next flush: the picker teardown that
+          // onRun triggers flushes it, and that PUT would then race the load
+          // request this click is about to send. Either fraction could win, which
+          // is the one thing this control promises cannot happen. The toast says
+          // the budget did not change, and the slider is still there to retry.
+          stageVramBudgetSave(null);
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
           );
         })
         .finally(() => {
+          setBudgetSettling(false);
           onRun(effectiveLoadConfig, classifiedIsDiffusion);
         });
       return;
@@ -1745,6 +1787,7 @@ export function ModelConfigPage({
             className="h-8"
             disabled={
               stagedMetadataPending ||
+              budgetSettling ||
               (isActiveModel && atBaseline && !rememberChanged)
             }
             onClick={handleRun}

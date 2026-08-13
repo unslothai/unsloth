@@ -34,8 +34,9 @@ test("percent and fraction round-trip exactly across the whole range", () => {
   );
   for (let i = 0; i <= steps; i += 1) {
     const percent =
-      Math.round((VRAM_BUDGET_PERCENT_MIN + i * VRAM_BUDGET_PERCENT_STEP) * 10) /
-      10;
+      Math.round(
+        (VRAM_BUDGET_PERCENT_MIN + i * VRAM_BUDGET_PERCENT_STEP) * 10,
+      ) / 10;
     assert.equal(
       vramFractionToPercent(vramPercentToFraction(percent)),
       percent,
@@ -229,9 +230,14 @@ test("Run also waits for a save the debounce already sent", () => {
   );
   // Pause past the 400 ms debounce, then click Load: nothing is staged any more,
   // but the PUT is still open and the load would use the fraction it replaces.
-  const settle = client.slice(client.indexOf("export function settleVramBudgetSave"));
+  const settle = client.slice(
+    client.indexOf("export function settleVramBudgetSave"),
+  );
   assert.match(settle, /flushVramBudgetSave\(\) \?\?/);
-  assert.match(settle, /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain : null/);
+  assert.match(
+    settle,
+    /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain : null/,
+  );
   // The counter has to come back down however the write ends.
   assert.match(client, /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/);
 });
@@ -250,7 +256,8 @@ test("a read waits behind an open write", () => {
   );
   assert.match(read, /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain/);
   assert.ok(
-    read.indexOf("pendingWrites") < read.indexOf(".then(fetchVramBudgetSettings)"),
+    read.indexOf("pendingWrites") <
+      read.indexOf(".then(fetchVramBudgetSettings)"),
     "the fetch must be chained behind the open writes, not raced with them",
   );
 });
@@ -292,4 +299,47 @@ test("a failed save is re-staged, but never over a newer edit", () => {
   assert.match(rejection, /stagedVramBudgetFraction = fraction;/);
   // Still rejects, so the caller can report it.
   assert.match(rejection, /throw error;/);
+});
+
+test("the reload notice is refreshed once a load finishes", () => {
+  const row = vramBudgetRowSource().replace(/\s+/g, " ");
+  // reloadRequired describes the running child. In the sidebar editor nothing
+  // remounts this row on a reload, so without a refetch the notice kept asking for
+  // a reload the user had just done.
+  assert.match(
+    row,
+    /const modelLoading = useChatRuntimeStore\(\(s\) => s\.modelLoading\)/,
+  );
+  // Falling edge only: a read taken during the load answers about the child being
+  // replaced, and would re-arm the very notice it is meant to clear.
+  assert.match(
+    row,
+    /const finished = wasModelLoading\.current && !modelLoading; wasModelLoading\.current = modelLoading;/,
+  );
+  assert.match(row, /\}, \[isMac, modelLoading\]\)/);
+});
+
+test("Run waits out the budget save without starting two loads", () => {
+  const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
+  const body = run.slice(0, run.indexOf("\n  return (")).replace(/\s+/g, " ");
+  // The click is answered by a PUT, so the button stays live for a round trip. A
+  // second click would settle the same chain again and call onRun twice.
+  assert.match(body, /if \(budgetSettling\) \{ return; \}/);
+  assert.match(body, /setBudgetSettling\(true\);/);
+  assert.match(body, /setBudgetSettling\(false\); onRun\(/);
+  const disabled = pageSource
+    .slice(pageSource.indexOf("onClick={handleRun}") - 400)
+    .replace(/\s+/g, " ");
+  assert.match(disabled, /budgetSettling \|\|/);
+});
+
+test("a save that fails during Run is dropped, not left to race the load", () => {
+  const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
+  const rejection = run
+    .slice(run.indexOf("void stagedBudget"))
+    .replace(/\s+/g, " ");
+  // onRun tears the picker down, and that unmount flushes whatever is staged. A
+  // re-staged retry would therefore PUT alongside the load request this click is
+  // sending, and either fraction could size the child.
+  assert.match(rejection, /stageVramBudgetSave\(null\); toast\.error\(/);
 });
