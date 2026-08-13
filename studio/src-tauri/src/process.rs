@@ -1425,6 +1425,15 @@ fn relative_override_pins_from(
     skipped: &[&str],
     windows: bool,
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
+    // Written out, so the reader that expands %VAR% and the reader that does not
+    // land in the same folder. Only for the names that have both.
+    let expanded = |name: &str, value: &str| -> String {
+        if EXPANDED_ENV.contains(&name) {
+            expand_windows_vars(value, &lookup)
+        } else {
+            value.to_string()
+        }
+    };
     let Some(cwd) = cwd else {
         // The directory being left is unknown, so nothing can be anchored to it.
         // Moving anyway would quietly retarget every relative value at the new
@@ -1453,11 +1462,19 @@ fn relative_override_pins_from(
                     }
                     continue;
                 }
+                // Judged the same way the moving path judges it, or a setting
+                // that decides nothing here (an expanded %LOCALAPPDATA%, inline
+                // JSON, a 0/1 toggle) would be read as relative and refuse
+                // every spawn over a value no directory ever decided.
+                let entry = expanded(name, entry);
                 let entry = match home {
-                    Some(home) => expand_windows_user(entry, home),
-                    None => entry.to_string(),
+                    Some(home) => expand_windows_user(&entry, home),
+                    None => entry,
                 };
                 if is_cwd_independent(&entry, windows) {
+                    continue;
+                }
+                if !names_a_path(name, &entry) {
                     continue;
                 }
                 return Err(format!(
@@ -1483,15 +1500,6 @@ fn relative_override_pins_from(
             absolute(value).ok_or_else(|| format!("Could not resolve the path in {value}"))
         } else {
             Ok(cwd.join(value))
-        }
-    };
-    // Written out, so the reader that expands %VAR% and the reader that does not
-    // land in the same folder. Only for the names that have both.
-    let expanded = |name: &str, value: &str| -> String {
-        if EXPANDED_ENV.contains(&name) {
-            expand_windows_vars(value, &lookup)
-        } else {
-            value.to_string()
         }
     };
     let mut pins = Vec::new();
@@ -3149,6 +3157,52 @@ mod managed_cli_working_dir_tests {
             relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_lost_directory_still_reads_a_setting_that_never_depended_on_it() {
+        // %LOCALAPPDATA%\hf, inline JSON and a toggle are the same three shapes
+        // the moving path exempts. Judging them raw here refused every managed
+        // spawn over values no directory ever decided.
+        let work_dir = std::path::PathBuf::from("C:\\Users\\me\\.unsloth");
+        let env = |name: &str| match name {
+            "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
+            "HF_HOME" => Some("%LOCALAPPDATA%\\hf".to_string()),
+            "MLX_HOSTFILE" => Some("[\"127.0.0.1\"]".to_string()),
+            "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1".to_string()),
+            _ => None,
+        };
+        let absolute = |_: &str| None;
+        assert!(
+            relative_override_pins_from(
+                None,
+                &work_dir,
+                env,
+                absolute,
+                Some(std::path::Path::new("C:\\Users\\me")),
+                MANAGED_CHILD_SCRUBBED_ENV,
+                true
+            )
+            .unwrap()
+            .is_empty()
+        );
+        // A genuinely relative folder in the same list is still refused.
+        let with_relative = |name: &str| match name {
+            "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1;models".to_string()),
+            _ => None,
+        };
+        assert!(
+            relative_override_pins_from(
+                None,
+                &work_dir,
+                with_relative,
+                absolute,
+                Some(std::path::Path::new("C:\\Users\\me")),
+                MANAGED_CHILD_SCRUBBED_ENV,
+                true
+            )
+            .is_err()
         );
     }
 
