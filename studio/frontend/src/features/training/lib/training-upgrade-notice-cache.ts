@@ -42,7 +42,19 @@ export function upgradeNoticeCacheKey(
 
 // Entries from a superseded generation can never be read again, so drop them rather
 // than let an install-per-session leak the whole map.
-function activeCache(sidecarGeneration: number): typeof cache {
+//
+// The generation only ever counts up (the store increments it per completed install and
+// never resets), so an older one is always a straggler, never a new world: a check fired
+// before the install can still be in flight when it lands, and resolves after the
+// post-install check has already answered. Letting that write rewind the generation would
+// clear the fresh entry and store the pre-install answer in its place -- and since the
+// effect that fired it was cleaned up, nothing re-renders and nothing re-asks, so the
+// preview would keep showing no notice for the rest of the session. Superseded reads and
+// writes are therefore ignored outright: null, never the whole map.
+function activeCache(sidecarGeneration: number): typeof cache | null {
+  if (sidecarGeneration < cachedGeneration) {
+    return null;
+  }
   if (sidecarGeneration !== cachedGeneration) {
     cachedGeneration = sidecarGeneration;
     cache.clear();
@@ -54,14 +66,14 @@ export function readUpgradeNoticeCache(
   sidecarGeneration: number,
   key: string,
 ): TransformersUpgradeCheck | null {
-  return activeCache(sidecarGeneration).get(key) ?? null;
+  return activeCache(sidecarGeneration)?.get(key) ?? null;
 }
 
 export function hasUpgradeNoticeCache(
   sidecarGeneration: number,
   key: string,
 ): boolean {
-  return activeCache(sidecarGeneration).has(key);
+  return activeCache(sidecarGeneration)?.has(key) ?? false;
 }
 
 export function writeUpgradeNoticeCache(
@@ -69,5 +81,5 @@ export function writeUpgradeNoticeCache(
   key: string,
   check: TransformersUpgradeCheck,
 ): void {
-  activeCache(sidecarGeneration).set(key, check);
+  activeCache(sidecarGeneration)?.set(key, check);
 }

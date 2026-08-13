@@ -116,6 +116,26 @@ test("the Configure preview re-asks the check after an install", () => {
   );
 });
 
+test("the consent dialog offers the custom-code way out before an install fails", () => {
+  // Training raises this dialog before a run starts, so what it offers first decides
+  // what a run can be. For a model that ships its own modeling code, the install is not
+  // the only way forward and is the more expensive one: it activates the latest sidecar,
+  // which trains 16-bit. Gating the fallback on the error phase left a QLoRA run with
+  // Install or Cancel, neither of which starts the 4-bit run the user asked for.
+  const dialog = read(
+    "../src/features/transformers-upgrade/components/transformers-upgrade-dialog.tsx",
+  );
+  assert.ok(
+    dialog.includes("upgradeDialogActions"),
+    "the dialog must take its actions from the shared decision, not re-derive them",
+  );
+  assert.doesNotMatch(
+    dialog,
+    /phase === "error" && trustRemoteCodeFallback/,
+    "the custom-code fallback must not wait for an install to fail first",
+  );
+});
+
 test("both start paths carry the upgrade gate's custom-code verdict forward", () => {
   // confirmRemoteCodeIfNeeded falls back to the caller's requiresTrustRemoteCode when the
   // scan request fails, and the stored flag is false on a fresh run. The upgrade check

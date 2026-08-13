@@ -97,6 +97,11 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
+  // Only a released version is ever installed; a dev-only upgrade has no Install action
+  // at all, so every branch that talks about installing has to check this first.
+  const installable = Boolean(
+    check.upgrade.supported_in_pypi && check.upgrade.pypi_version,
+  );
   if (check.installBreaksExactResume) {
     // This resume is attested against a 4-bit model load the latest sidecar refuses,
     // and that sidecar is a persistent overlay: consenting here would strand the
@@ -112,18 +117,24 @@ export async function confirmTrainingTransformersUpgrade({
         requiresTrustRemoteCode,
       };
     }
-    // No fallback either, and the install is not the way out it looks like: it activates
-    // the latest tier, after which effective_training_load_in_4bit RAISES for exactly
-    // this config (provenance.py gates on the same disjunction the backend answered
-    // install_breaks_exact_resume with). The resume fails whether or not the user
-    // consents, so the only thing consent buys is an irreversible overlay. Say so
-    // instead of offering it.
-    return {
-      proceed: false,
-      error: getTrainingResumeUpgradeWouldStrandMessage(modelName),
-      forces16Bit: false,
-      requiresTrustRemoteCode,
-    };
+    if (installable) {
+      // No fallback either, and the install is not the way out it looks like: it
+      // activates the latest tier, after which effective_training_load_in_4bit RAISES
+      // for exactly this config (provenance.py gates on the same disjunction the backend
+      // answered install_breaks_exact_resume with). The resume fails whether or not the
+      // user consents, so the only thing consent buys is an irreversible overlay. Say so
+      // instead of offering it.
+      return {
+        proceed: false,
+        error: getTrainingResumeUpgradeWouldStrandMessage(modelName),
+        forces16Bit: false,
+        requiresTrustRemoteCode,
+      };
+    }
+    // Dev-only: there is no release to install, so nothing can strand anything, and
+    // "start a new run instead" would be advice that cannot work either -- a fresh run
+    // on this architecture cannot load on any installed transformers. Fall through to
+    // the dev-only path, which says the true thing: wait for the next release.
   }
 
   const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -151,9 +162,6 @@ export async function confirmTrainingTransformersUpgrade({
     // "Start again to install it" only means something when there is something to
     // install. A dev-only upgrade gives the dialog no Install action, so the same text
     // would send the user round a loop that can never end.
-    const installable = Boolean(
-      check.upgrade.supported_in_pypi && check.upgrade.pypi_version,
-    );
     return {
       proceed: false,
       error: installable

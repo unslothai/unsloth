@@ -847,6 +847,21 @@ def test_get_snapshot_waits_for_inflight_fetch(monkeypatch):
     tl.clear_caches()
 
 
+def test_inflight_wait_covers_a_whole_refresh():
+    """The wait a loser makes must outlast the fetch it is waiting for.
+
+    A refresh is five sequential URLs (PyPI, then both auto files at the release tag and
+    at main), each allowed one retry at the fetch timeout, so it can legitimately run for
+    the full product of those three numbers. A wait shorter than that expires while the
+    winner is still working, and the None it then answers is read as "no upgrade needed"
+    by the Start button -- the run launches on the architecture this gate exists to stop.
+    """
+    urls = 1 + 2 * len(tl._AUTO_FILES)
+    assert tl._REFRESH_URL_COUNT == urls
+    worst_case = urls * (1 + tl._FETCH_RETRIES) * tl._FETCH_TIMEOUT_SECONDS
+    assert tl._INFLIGHT_WAIT_SECONDS >= worst_case
+
+
 def test_get_snapshot_dedupes_concurrent_fetch(monkeypatch):
     """A caller that finds a fetch in flight never starts a second one."""
     with tl._lock:

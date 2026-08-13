@@ -84,10 +84,17 @@ _is_fetching: bool = False
 # fetch's answer instead of reporting "no answer" (see _get_snapshot).
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
-# Bounds that wait. A refresh is itself bounded (5 URLs, one retry each, 5s per attempt),
-# but a caller must never sit there for the worst case: past this it falls through to the
-# old graceful answer, which is what a failed refresh would have given anyway.
-_INFLIGHT_WAIT_SECONDS = 20.0
+# Bounds that wait, and the bound is the refresh's OWN worst case: the PyPI version plus
+# both auto files at each of the two refs, every one of them allowed its retry. Giving up
+# earlier is not a graceful fallback here -- the answer it falls through to reads as "no
+# upgrade needed" all the way up to the Start button, so a wait that expires while the
+# fetch is still legitimately running launches the run on the architecture this gate
+# exists to stop. Derived, not a literal, so tuning a timeout or a retry cannot silently
+# reopen that gap.
+_REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
+_INFLIGHT_WAIT_SECONDS = (
+    _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_TIMEOUT_SECONDS + 5.0
+)
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 

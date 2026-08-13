@@ -41,6 +41,16 @@ const BEFORE_INSTALL: TransformersUpgradeCheck = {
   installBreaksExactResume: false,
 };
 
+// What it says once the install has landed: nothing left to offer, and the sidecar that
+// now routes this model trains it in 16-bit.
+const AFTER_INSTALL: TransformersUpgradeCheck = {
+  upgrade: null,
+  requiresTrustRemoteCode: true,
+  latestTierActive: true,
+  forces16Bit: true,
+  installBreaksExactResume: false,
+};
+
 test("an answer is reused for the same model, copy and token", () => {
   const key = upgradeNoticeCacheKey(0, MODEL, false, null, "");
   writeUpgradeNoticeCache(0, key, BEFORE_INSTALL);
@@ -98,4 +108,23 @@ test("a different copy or token is still a different answer", () => {
     false,
   );
   assert.equal(readUpgradeNoticeCache(3, key), BEFORE_INSTALL);
+});
+
+test("a check still in flight across the install cannot rewind the cache", () => {
+  // The pre-install check is a network round trip, and the install it raced takes a
+  // minute, so it can resolve after the post-install check has already answered. Its
+  // write must be dropped: rewinding the generation would clear the post-install entry
+  // and leave the stale one, and because the effect that fired it is already cleaned up,
+  // nothing re-renders and nothing re-asks -- Configure would show no notice at all for
+  // the rest of the session.
+  const stale = upgradeNoticeCacheKey(4, MODEL, false, null, "");
+  const fresh = upgradeNoticeCacheKey(5, MODEL, false, null, "");
+  writeUpgradeNoticeCache(5, fresh, AFTER_INSTALL);
+
+  writeUpgradeNoticeCache(4, stale, BEFORE_INSTALL);
+
+  assert.equal(hasUpgradeNoticeCache(5, fresh), true);
+  assert.equal(readUpgradeNoticeCache(5, fresh), AFTER_INSTALL);
+  assert.equal(hasUpgradeNoticeCache(4, stale), false);
+  assert.equal(readUpgradeNoticeCache(4, stale), null);
 });

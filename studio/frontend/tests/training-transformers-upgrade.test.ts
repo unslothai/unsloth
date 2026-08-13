@@ -222,6 +222,34 @@ test("a resume with no custom-code way out is not offered a doomed install", asy
   );
 });
 
+test("a resume with nothing to install is told the truth about why", async () => {
+  // installBreaksExactResume answers "would the install strand this checkpoint", and the
+  // backend answers it from the run's own provenance, without regard to whether a
+  // release exists to install. For a dev-only architecture there is none, so "installing
+  // would strand it, start a new run instead" is wrong twice over: nothing can be
+  // installed, and a new run on the same architecture cannot load either. The dev-only
+  // explanation is the accurate one.
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: { ...UPGRADE, supported_in_pypi: false },
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: false,
+    installBreaksExactResume: true,
+  };
+  stub.state.consentResult = false;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+    resumeRunId: "run-42",
+  });
+
+  assert.equal(outcome.proceed, false);
+  assert.doesNotMatch(String(outcome.error), /Start a new run/);
+  assert.match(String(outcome.error), /development branch/);
+  assert.match(String(outcome.error), /next transformers release/);
+});
+
 test("declining a dev-only upgrade is not told to start again and install it", async () => {
   // Nothing to install: the architecture is only on transformers main, so the dialog
   // shows no Install action at all. Reusing the installable wording would send the user

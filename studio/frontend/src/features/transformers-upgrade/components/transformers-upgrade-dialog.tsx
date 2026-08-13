@@ -15,6 +15,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { upgradeDialogActions } from "../lib/upgrade-dialog-actions";
 import { useTransformersUpgradeDialogStore } from "../stores/transformers-upgrade-dialog-store";
 
 function modelDisplayName(modelName: string | null): string {
@@ -40,8 +41,11 @@ export function TransformersUpgradeDialog() {
   const modelType = upgrade?.model_type ?? "unknown";
   const version = upgrade?.pypi_version ?? null;
   // Only released PyPI versions are installable; dev (main) builds are never offered.
-  const installable = Boolean(upgrade?.supported_in_pypi && version);
-  const devOnly = !installable && Boolean(upgrade?.supported_in_main);
+  const { installable, devOnly, customCode } = upgradeDialogActions({
+    upgrade,
+    phase,
+    trustRemoteCodeFallback,
+  });
   const installing = phase === "installing";
 
   return (
@@ -75,8 +79,8 @@ export function TransformersUpgradeDialog() {
                       <span className="font-medium text-foreground">
                         {version}
                       </span>{" "}
-                      from PyPI to load it. The install runs once and can take
-                      a minute; loading continues automatically afterwards.
+                      from PyPI to load it. The install runs once and can take a
+                      minute; loading continues automatically afterwards.
                     </>
                   ) : devOnly ? (
                     <>
@@ -92,11 +96,12 @@ export function TransformersUpgradeDialog() {
                       cannot be loaded.
                     </>
                   )}
-                  {!installable && trustRemoteCodeFallback ? (
+                  {customCode ? (
                     <>
                       {" "}
                       This model also ships its own modeling code; you can
-                      continue and review enabling that custom code instead.
+                      continue and review enabling that custom code instead,
+                      which loads it on the transformers you already have.
                     </>
                   ) : null}
                 </AlertDialogDescription>
@@ -122,9 +127,12 @@ export function TransformersUpgradeDialog() {
           <AlertDialogCancel disabled={installing}>Cancel</AlertDialogCancel>
           {installable ? (
             <>
-              {phase === "error" && trustRemoteCodeFallback ? (
-                // Install failed but the model ships custom code: offer the
-                // caller's trust_remote_code gate instead of forcing a retry.
+              {customCode ? (
+                // The model ships custom code, so the caller's trust_remote_code gate
+                // loads it on the transformers already installed. Offered next to
+                // Install, not only after one fails: installing activates the latest
+                // sidecar, which trains 16-bit, so this is the only way a 4-bit run on
+                // this model can start at all.
                 <AlertDialogAction
                   className="bg-transparent text-foreground hover:bg-accent"
                   onClick={() => resolve(true)}
@@ -153,7 +161,7 @@ export function TransformersUpgradeDialog() {
                 )}
               </AlertDialogAction>
             </>
-          ) : trustRemoteCodeFallback ? (
+          ) : customCode ? (
             // No installable release but the model ships custom code: continue
             // into the caller's trust_remote_code gate as the last resort.
             <AlertDialogAction onClick={() => resolve(true)}>
