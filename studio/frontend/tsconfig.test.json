@@ -26,5 +26,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["tests"]
+  // The ambient Web Speech types alongside "tests", so a test that transitively reaches the
+  // dictation adapter typechecks here the way it does in the app project.
+  "include": ["tests", "src/speech-recognition.d.ts"]
 }

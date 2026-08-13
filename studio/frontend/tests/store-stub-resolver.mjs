@@ -7,6 +7,7 @@ import { resolve as resolveBundler } from "./bundler-resolver.mjs";
 const STUBS = new Map([
   ["@/features/auth", "./helpers/store-stubs/auth.ts"],
   ["@/features/hub", "./helpers/store-stubs/hub.ts"],
+  ["@/features/hf-auth", "./helpers/store-stubs/hf-auth.ts"],
   ["@/config/env", "./helpers/store-stubs/env.ts"],
   ["@/lib/toast", "./helpers/store-stubs/toast.ts"],
 ]);
