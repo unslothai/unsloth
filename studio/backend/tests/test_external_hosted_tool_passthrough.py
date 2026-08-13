@@ -210,11 +210,10 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
     """Shape 3: one Studio-only name (or MCP) is unambiguous, so the feature
     works on hosted providers too."""
-    # ``routes.inference`` imports this inside ``_select_request_tools``, so it is never
-    # an attribute of the route module and patching it there set a name nobody reads.
-    # Patch it where the function-local import resolves it from, and leave ``raising`` at
-    # its default so a future move breaks this outright instead of silently letting the
-    # ``mcp_enabled`` case spawn stdio servers.
+    # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
+    # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
+    # name, and ``raising = False`` hid that while the real function spawned stdio MCP servers
+    # and wrote discovery cache and cool-off state. Default ``raising`` catches a future move.
     monkeypatch.setattr(
         "core.inference.tools.get_enabled_mcp_tools",
         lambda: _noop_mcp(),

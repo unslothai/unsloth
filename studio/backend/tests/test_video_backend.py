@@ -540,10 +540,9 @@ def _stub_apply_memory_plan(
 ) -> list:
     """Stand in for ``apply_memory_plan``, recording the placement kwargs of every call.
 
-    The keywords are spelled out rather than collected into ``**kwargs`` on purpose. A
-    double that swallows the signature keeps passing after the load starts handing over an
-    argument it never reads, which is exactly how ``placement_device`` (#8645) turned into a
-    TypeError on CI: the real function grew the keyword, the doubles here did not.
+    The keywords are spelled out rather than ``**kwargs`` on purpose: a double that swallows the
+    signature keeps passing once the load hands over an argument it never reads, which is how
+    ``placement_device`` (#8645) became a TypeError on CI.
     """
     calls = []
 
@@ -1850,10 +1849,10 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
 
 
 def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runtime, monkeypatch):
-    # The other half of #8645, at the video seam: apply_memory_plan hands `placement_device`
-    # to every diffusers placement call, and a bare device sends the CPU-offload hooks to
-    # ordinal 0 whatever was selected. So the load has to pass the INDEXED string while the
-    # policy argument stays bare, and the two must not be swapped.
+    # #8645 at the video seam: ``enable_model_cpu_offload`` reads the ordinal off the device and
+    # falls back to ``_offload_gpu_id = 0`` without one, so the load passes the INDEXED string as
+    # ``placement_device``; ``device`` stays bare because the memory/speed/attention policies
+    # compare it against "cuda". The two must not be swapped.
     import dataclasses
 
     import core.inference.video as video_mod

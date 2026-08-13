@@ -894,14 +894,11 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
     cancel_event = threading.Event()
 
     async def _drive():
-        # Anything already running before the loop starts belongs to this harness, not to
-        # the tool loop, so the census is taken against it. On Python 3.10 and 3.11
-        # ``asyncio.wait_for`` wraps the coroutine it is handed in a second task
-        # (``asyncio/tasks.py``), so ``all_tasks()`` below also holds the ``wait_for()``
-        # task driving this one, and that task is by construction not done: it is awaiting
-        # the census. 3.12 reimplemented ``wait_for`` on ``asyncio.timeout`` and awaits the
-        # coroutine directly, which is the whole reason this read green there and red on the
-        # two older interpreters. Neither is an orphan either way.
+        # Tasks already running belong to this harness, not the tool loop, so the census is taken
+        # against them. On 3.10/3.11 ``asyncio.wait_for`` wraps its coroutine in a SECOND task, so
+        # ``all_tasks()`` below also returns the ``wait_for()`` task driving this one, never done
+        # because it is awaiting the census. 3.12 reimplemented ``wait_for`` on ``asyncio.timeout``
+        # and awaits directly, which is why this read green there and red on the older two.
         harness = asyncio.all_tasks()
         agen = stream_with_studio_tools(
             transport,
@@ -918,9 +915,8 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
         await agen.aclose()
         # Give the drain a tick to join its worker before the task census.
         await asyncio.sleep(0)
-        # ``not task.done()`` is the contract: a task that has finished has been joined and
-        # is not a leak. What must not survive is a task still running with nobody left to
-        # await it.
+        # ``not task.done()``, not "no tasks exist": a finished task was joined and is no leak,
+        # what must not survive is one still running with nobody left to await it.
         return [
             task
             for task in asyncio.all_tasks()
