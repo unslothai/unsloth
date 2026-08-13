@@ -298,6 +298,55 @@ def test_grouped_gemm_forward_manual(
     )
 
 
+def test_grouped_gemm_gather_indices_optional_when_not_permuted():
+    """Regression for #8627: gather_indices=None must be accepted, not just
+    documented, when permute_x and permute_y are both False, since the kernel
+    never dereferences it on that path."""
+    data_config = DATA_CONFIGS[0]
+    model_config = SMALL_MODEL_CONFIGS[0]
+    topk = model_config.topk
+
+    X1, _, W1, _, gating_output = make_inputs(
+        M = data_config.bs * data_config.seq_len,
+        N = model_config.intermediate_size,
+        K = model_config.hidden_size,
+        E = model_config.num_experts,
+        topk = topk,
+        dtype = data_config.dtype,
+    )
+
+    _, topk_ids = calculate_topk(
+        gating_output,
+        topk,
+        use_sigmoid = model_config.use_sigmoid,
+        renormalize = model_config.renormalize,
+    )
+    topk_ids = topk_ids.view(-1)
+    m_sizes, gather_indices = get_routing_indices(topk_ids, num_experts = model_config.num_experts)
+
+    # permute_x=False expects X already rearranged into expert-grouped order;
+    # gather_indices is only needed here to build that layout, not passed to
+    # grouped_gemm itself.
+    X_test = permute(X1, gather_indices, topk)
+    ref_output = torch_grouped_gemm(X = X_test, W = W1, m_sizes = m_sizes)
+
+    test_output = grouped_gemm(
+        X = X_test,
+        W = W1,
+        topk = topk,
+        m_sizes = m_sizes,
+        gather_indices = None,
+        permute_x = False,
+        permute_y = False,
+        autotune = True,
+    )
+
+    atol, rtol = TOLERANCE[X_test.dtype]
+    assert torch.allclose(
+        ref_output, test_output, atol = atol, rtol = rtol
+    ), f"Grouped gemm forward failed: {(ref_output - test_output).abs().max().item():.6f}"
+
+
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_FWD,
