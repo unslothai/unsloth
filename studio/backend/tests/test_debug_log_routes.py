@@ -146,7 +146,11 @@ def test_the_endpoints_stay_out_of_the_access_log():
     """Load bearing, not tidiness. These paths are polled while the tab is open
     and they read the very file the access log writes to, so without the
     suppression each poll appends a line the next poll reads back."""
-    from loggers.handlers import _QUIET_SUCCESS_PATHS
+    from loggers.handlers import _is_quiet_success
 
-    assert "/api/settings/debug/logs" in _QUIET_SUCCESS_PATHS
-    assert "/api/settings/debug/logs/sources" in _QUIET_SUCCESS_PATHS
+    # The behaviour, not the membership: these two are suppressed through
+    # _SELF_READ_PATHS rather than _QUIET_SUCCESS_PATHS, because --verbose must
+    # not lift them. test_debug_log_self_feedback.py proves it over the real
+    # middleware and a real file.
+    assert _is_quiet_success("GET", "/api/settings/debug/logs", 200, False) is True
+    assert _is_quiet_success("GET", "/api/settings/debug/logs/sources", 200, False) is True

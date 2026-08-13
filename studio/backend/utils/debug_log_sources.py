@@ -63,7 +63,9 @@ def candidate_roots() -> list[Path]:
             resolved = Path(os.path.realpath(path))
         except (OSError, ValueError):
             return
-        if resolved not in roots:
+        # Folded, so an UNSLOTH_STUDIO_HOME that differs from the inferred root
+        # only in case is not scanned twice on a case-insensitive volume.
+        if not any(_identity(resolved) == _identity(known) for known in roots):
             roots.append(resolved)
 
     try:
@@ -92,6 +94,36 @@ def candidate_roots() -> list[Path]:
     return roots
 
 
+def _identity(path) -> str:
+    """One comparable spelling of a path, for containment and for dedup.
+
+    Two jobs, both platform quirks:
+
+    os.path.realpath is called separately for the directory and for each entry,
+    and on Windows ntpath.realpath decides PER CALL whether to keep the
+    \\\\?\\ extended-length prefix (it strips it only if the short form still
+    resolves). With a deep studio home on a host without long-path support the
+    directory can come back as C:\\... while the file comes back as
+    \\\\?\\C:\\..., which pathlib reads as two different DRIVES: containment then
+    fails and the whole family is silently dropped.
+
+    normcase folds case on Windows and is the identity on POSIX, so a
+    case-insensitive volume stops yielding the same file twice under two
+    spellings while Linux keeps its case-sensitive comparison unchanged.
+    """
+    text = os.path.normcase(str(path))
+    for prefix in ("\\\\?\\unc\\", "\\\\?\\UNC\\", "\\\\?\\"):
+        if text.startswith(prefix):
+            text = ("\\\\" if prefix.lower().endswith("unc\\") else "") + text[len(prefix) :]
+            break
+    return text
+
+
+def _is_inside(real, real_dir) -> bool:
+    inner, outer = _identity(real), _identity(real_dir)
+    return inner == outer or inner.startswith(outer.rstrip(os.sep) + os.sep)
+
+
 def _digest(realpath: str) -> str:
     return hashlib.sha256(realpath.encode("utf-8", "surrogateescape")).hexdigest()[:_DIGEST_CHARS]
 
@@ -117,7 +149,7 @@ def _family_files(family: str) -> list[Path]:
                 real = Path(os.path.realpath(entry))
                 # A symlink dropped into the log directory must not become a
                 # reader for ~/.ssh/id_rsa, so the TARGET has to stay inside.
-                if not real.is_relative_to(real_dir):
+                if not _is_inside(real, real_dir):
                     continue
                 if not real.is_file():
                     continue
@@ -126,7 +158,10 @@ def _family_files(family: str) -> list[Path]:
                 stat = real.stat()
             except (OSError, ValueError):
                 continue
-            found[str(real)] = (real, stat.st_mtime)
+            # Keyed on the folded spelling so a case-insensitive volume cannot
+            # list the same file twice, but the first spelling seen is what is
+            # kept, so the id digest stays over the real path.
+            found.setdefault(_identity(real), (real, stat.st_mtime))
     ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
     return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
 
@@ -135,7 +170,11 @@ def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     if family == "server":
         # uvicorn runs single process here, so our own pid is the one in the
         # active session's filename: an exact match, not a newest-file guess.
-        return f"pid{os.getpid()}" in path.name
+        # Anchored on the suffix, because run.py writes server-{stamp}-pid{pid}
+        # and a substring test for "pid1234" also matches a retained
+        # ...-pid12345.log, which would mark two sources current and could open
+        # the wrong one by default.
+        return path.name.endswith(f"-pid{os.getpid()}.log")
     return newest is not None and path == newest
 
 

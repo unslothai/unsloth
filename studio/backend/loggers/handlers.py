@@ -131,14 +131,8 @@ _QUIET_SUCCESS_PATHS = {
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
-    # The Settings > Debugging viewer polls these while it is open, and it is
-    # reading the very file this middleware writes to. Without the suppression
-    # each poll appends a request_completed record that the next poll reads
-    # back, so the log grows forever and the viewer fills with itself. The
-    # _is_redundant_repeat dedup does NOT cover it: that keys on the query
-    # string, and every poll carries a fresh cursor.
-    "/api/settings/debug/logs",
-    "/api/settings/debug/logs/sources",
+    # The Settings > Debugging viewer polls: see _SELF_READ_PATHS below, which
+    # is where they are actually suppressed.
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
@@ -174,12 +168,35 @@ _CHAT_LIST_PATHS = {
 }
 
 
+# The Settings > Debugging viewer polls these while it is open, and it is
+# reading the very file this middleware writes to. Without the suppression each
+# poll appends a request_completed record that the next poll reads back, so the
+# log grows forever and the viewer fills with itself. The _is_redundant_repeat
+# dedup does NOT cover it: that keys on the query string, and every poll carries
+# a fresh cursor.
+#
+# Separate from _QUIET_SUCCESS_PATHS because --verbose must NOT lift this one.
+# Everywhere else --verbose only means a noisier file; here the noise is fed
+# back to the reader, and --verbose is exactly what someone debugging turns on,
+# so lifting it buries the failure they opened the viewer to read (measured at
+# ~390 bytes/s of pure self-traffic at the 1 Hz Live poll rate).
+_SELF_READ_PATHS = {
+    "/api/settings/debug/logs",
+    "/api/settings/debug/logs/sources",
+}
+
+
 def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
     """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
     poll's transient pre-auth 401 (only in the bootstrap window before the first
     successful token refresh). Mutations, real (post-refresh) auth failures, and
-    all other errors always log. --verbose disables the whole suppressor."""
-    if _VERBOSE_ACCESS_LOG or method != "GET":
+    all other errors always log. --verbose disables the whole suppressor, except
+    for the log viewer's own reads."""
+    if method != "GET":
+        return False
+    if 200 <= status_code < 300 and path in _SELF_READ_PATHS:
+        return True
+    if _VERBOSE_ACCESS_LOG:
         return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS

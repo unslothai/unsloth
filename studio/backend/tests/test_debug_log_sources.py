@@ -117,6 +117,17 @@ def test_the_running_session_is_marked_current():
     assert source.is_current is True
 
 
+def test_a_retained_log_whose_pid_merely_starts_with_ours_is_not_current():
+    """Retention keeps the newest 20 session logs, so a file from pid 12345 can
+    still be sitting there while we are pid 1234. A substring test called both
+    of them the running session and could hand the picker the wrong default."""
+    ours = _seed("server", f"server-20260813-101012-pid{os.getpid()}.log")
+    other = _seed("server", f"server-20260101-090000-pid{os.getpid()}9.log")
+    current = {s.label: s.is_current for s in debug_log_sources.list_sources()}
+    assert current[ours.name] is True
+    assert current[other.name] is False
+
+
 def test_only_the_newest_files_per_family_are_offered():
     for i in range(debug_log_sources.MAX_SOURCES_PER_FAMILY + 4):
         path = _seed("llama-server", f"llama-17650001{i:02d}-port-8080.log")
@@ -151,3 +162,43 @@ def test_the_default_source_prefers_the_running_session():
     default = debug_log_sources.default_source_id()
     assert default is not None
     assert debug_log_sources.resolve_source_id(default) == Path(os.path.realpath(path))
+
+
+def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
+    """ntpath.realpath decides per call whether to keep the \\\\?\\ prefix, so
+    the directory and the file in it can come back spelled differently. pathlib
+    reads that as two different drives, and the whole family disappears with no
+    error anywhere."""
+    import ntpath
+
+    monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+    monkeypatch.setattr(os, "sep", "\\")
+
+    directory = "C:\\Users\\dan\\.unsloth\\studio\\logs\\server"
+    entry = "\\\\?\\C:\\Users\\dan\\.unsloth\\studio\\logs\\server\\server-1-pid2.log"
+    assert debug_log_sources._is_inside(entry, directory) is True
+    # The protection it exists for must still hold under the same spelling.
+    assert debug_log_sources._is_inside("\\\\?\\C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
+    assert debug_log_sources._is_inside("C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
+    # A sibling directory whose name merely starts with ours is not inside it.
+    assert debug_log_sources._is_inside(directory + "-old\\x.log", directory) is False
+
+
+def test_a_case_insensitive_volume_does_not_list_a_file_twice(monkeypatch):
+    """On APFS or NTFS a home reached as /Users/Bob and as /Users/bob is one
+    directory. Case-sensitive dedup offered every log twice, under two ids."""
+    import ntpath
+
+    monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+    lower = "c:\\users\\dan\\studio\\logs\\server\\server-1-pid2.log"
+    upper = "C:\\Users\\Dan\\Studio\\Logs\\Server\\Server-1-pid2.log"
+    assert debug_log_sources._identity(lower) == debug_log_sources._identity(upper)
+
+
+def test_posix_identity_stays_case_sensitive():
+    """The same fold on Linux would merge two genuinely different files."""
+    if os.name != "posix":
+        pytest.skip("posix only")
+    assert debug_log_sources._identity("/a/Server.log") != debug_log_sources._identity(
+        "/a/server.log"
+    )
