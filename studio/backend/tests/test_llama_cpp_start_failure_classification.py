@@ -1177,3 +1177,31 @@ class TestClassifyingItsOwnOutputIsAFixedPoint:
         out = "llama-server output: 3 t/s\nerror while loading shared libraries: libgomp.so.1: cannot open shared object file"
         msg = _classify(out, "/m.gguf", "u/x", 1)
         assert "libgomp.so.1" in msg
+
+
+class TestQuotedShortSecrets:
+    """A short secret survived quoting.
+
+    The name-adjacent rule for values under eight characters matched only the
+    bare NAME=value form, so a wrapper dumping its environment as shell-ish or
+    JSON put the credential straight into the startup-output tail.
+    """
+
+    @pytest.mark.parametrize(
+        "dump",
+        [
+            "env dump: DB_PASSWORD=hunter2 PORT=8080",
+            "env dump: DB_PASSWORD='hunter2'",
+            'env dump: DB_PASSWORD="hunter2"',
+            '{"DB_PASSWORD": "hunter2", "port": 8080}',
+            "DB_PASSWORD: hunter2",
+            "  'DB_PASSWORD' => 'hunter2'".replace(" => ", ": "),
+        ],
+    )
+    def test_the_value_never_reaches_the_message(self, monkeypatch, dump):
+        monkeypatch.setenv("DB_PASSWORD", "hunter2")
+        assert "hunter2" not in _classify(dump, "/m.gguf", "u/x", 1)
+
+    def test_a_non_secret_short_value_is_still_untouched(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PORT", "8080")
+        assert "8080" in _classify('{"UNSLOTH_PORT": "8080"}', "/m.gguf", "u/x", 1)

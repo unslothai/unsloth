@@ -3221,6 +3221,39 @@ def _llama_lib_dir(binary: str) -> Path:
     return _resolve_llama_binary(binary).parent
 
 
+# install_llama_prebuilt.write_exec_wrapper emits exactly this and nothing else:
+# a shebang, one exec line, a trailing newline. Anything more is somebody's own
+# script, whose extra lines are the whole reason not to skip past it.
+_INSTALLER_WRAPPER_RE = re.compile(
+    r'\A#!/bin/sh\n' r'exec "\$\(dirname "\$0"\)/[^"\n]+" "\$@"\n?\Z'
+)
+
+
+def _is_installer_entrypoint(binary: str) -> bool:
+    """Is ``binary`` an entrypoint the installer itself wrote?
+
+    Symlinks and real executables qualify: neither carries setup that could be
+    lost by launching the target instead. A shell script only qualifies when it
+    matches the installer's template exactly, so a user's wrapper that exports
+    variables before its exec line is launched as written.
+
+    Kept separate from _resolve_llama_binary, which must keep resolving ANY
+    wrapper: _llama_lib_dir needs the directory holding the dylibs, and that is
+    the target's directory whoever wrote the wrapper.
+    """
+    try:
+        path = Path(binary)
+        if path.is_symlink():
+            return True
+        with open(path, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return True
+    if not head.startswith(b"#!"):
+        return True
+    return bool(_INSTALLER_WRAPPER_RE.match(head.decode("utf-8", "ignore")))
+
+
 def _loader_path_var() -> str:
     """The platform's shared-library search env var.
 
@@ -9588,6 +9621,14 @@ class LlamaCppBackend:
                 pass
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
             return binary
+        # Provenance is not enough on its own. _llama_install_root treats the
+        # directory named by UNSLOTH_LLAMA_CPP_PATH as the active install with
+        # no marker file needed, so a user's own checkout reads as managed and
+        # a wrapper of theirs at its root would be resolved past, losing
+        # whatever it exports. Only skip an entrypoint we recognise as one the
+        # installer wrote.
+        if not _is_installer_entrypoint(binary):
+            return binary
         return str(_resolve_llama_binary(binary))
 
     @staticmethod
@@ -10135,10 +10176,15 @@ class LlamaCppBackend:
                     # Too short to replace globally ("1", "true", a port number
                     # would match everywhere), but a short password is still a
                     # password: redact it where it appears next to its name.
+                    # The name and the value may each be quoted, because an env
+                    # dump can be shell-ish (DB_PASSWORD='x'), JSON
+                    # ({"DB_PASSWORD": "x"}), or bare, and only the bare form
+                    # matched before.
                     if secret_name:
                         cleaned = re.sub(
-                            rf"({re.escape(name)}\s*[=:]\s*){re.escape(value)}",
-                            r"\1***",
+                            rf"([\"']?{re.escape(name)}[\"']?\s*[=:]\s*)"
+                            rf"([\"']?){re.escape(value)}\2",
+                            r"\1\2***\2",
                             cleaned,
                         )
                     continue

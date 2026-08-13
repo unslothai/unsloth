@@ -456,3 +456,63 @@ class TestAWrapperChainIsFollowedToTheEnd:
         b.chmod(0o755)
         got = llama_module._resolve_llama_binary(str(a))
         assert got in (a.resolve(), b.resolve())
+
+
+class TestOnlyTheInstallersOwnEntrypointIsSkipped:
+    """UNSLOTH_LLAMA_CPP_PATH makes a user's checkout read as managed.
+
+    _llama_install_root treats the directory named by that variable as the
+    active install with no marker file needed, so provenance alone said "ours"
+    for a wrapper at the root of somebody's own tree, and its exports were lost.
+    The installer writes a fixed three-line wrapper; anything else is theirs.
+    """
+
+    @staticmethod
+    def _tree(tmp_path, wrapper_body):
+        root = tmp_path / "my-llama-checkout"
+        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+        entry = root / "llama-server"
+        entry.write_text(wrapper_body)
+        entry.chmod(0o755)
+        return root, entry
+
+    _INSTALLER = '#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
+    _USERS = (
+        '#!/bin/sh\nexport MY_TUNING=1\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
+    )
+
+    def test_a_users_wrapper_in_a_custom_dir_is_launched_as_written(self, monkeypatch, tmp_path):
+        root, entry = self._tree(tmp_path, self._USERS)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        # It really does read as managed; the exemption is the wrapper shape.
+        assert LlamaCppBackend._is_unsloth_managed_binary(str(entry)) is True
+        assert LlamaCppBackend._exec_path_for_launch(str(entry)) == str(entry)
+
+    def test_the_installers_own_wrapper_is_still_resolved(self, monkeypatch, tmp_path):
+        root, entry = self._tree(tmp_path, self._INSTALLER)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        got = LlamaCppBackend._exec_path_for_launch(str(entry))
+        assert got == str((root / "build" / "bin" / "llama-server").resolve())
+
+    def test_the_library_dir_still_comes_from_the_target(self, monkeypatch, tmp_path):
+        # _llama_lib_dir must keep resolving ANY wrapper: the dylibs sit beside
+        # the target whoever wrote the script.
+        root, entry = self._tree(tmp_path, self._USERS)
+        assert llama_module._llama_lib_dir(str(entry)) == (root / "build" / "bin").resolve()
+
+    def test_a_symlink_entrypoint_is_ours_to_resolve(self, monkeypatch, tmp_path):
+        root = tmp_path / "t"
+        (root / "build" / "bin").mkdir(parents = True)
+        real = root / "build" / "bin" / "llama-server"
+        real.write_bytes(b"\xcf\xfa\xed\xfe")
+        link = root / "llama-server"
+        link.symlink_to(real)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert LlamaCppBackend._exec_path_for_launch(str(link)) == str(real.resolve())
