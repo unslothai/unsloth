@@ -19,6 +19,9 @@ import {
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
+import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
+import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -2766,6 +2769,45 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         })
       ).isDiffusion;
     }
+    // The stored override can live only on the server (written through the API, or
+    // from another browser), and this config comes from local storage. Nothing is
+    // resident at startup, so /load's omission path has nothing to inherit from, and
+    // the model would come up without the arguments that were saved for it.
+    //
+    // Sanitized like every other hydration: this becomes an EXPLICIT list, which
+    // /load validates strictly rather than putting through the carry-over paths that
+    // drop a newly denied flag quietly.
+    let resolvedExtraArgs = config.llamaExtraArgs;
+    if (
+      candidate.kind === "gguf" &&
+      !isDiffusion &&
+      resolvedExtraArgs === undefined
+    ) {
+      try {
+        const stored = await fetchLoadExtraArgs(
+          modelPath,
+          modelPath,
+          candidate.ggufVariant ?? null,
+        );
+        if (stored.length > 0) {
+          const managed = await loadManagedLlamaFlags();
+          const cleaned = sanitizeStoredExtraArgs(
+            stored,
+            managed?.managed ?? new Set<string>(),
+            {
+              maxBytes: managed?.maxBytes,
+              windowsCommandBudget: managed?.windowsCommandBudget,
+            },
+          );
+          if (cleaned.length > 0) {
+            resolvedExtraArgs = cleaned;
+          }
+        }
+      } catch {
+        // An overrides outage must not stop a startup load: without this the model
+        // comes up as it did before the feature existed.
+      }
+    }
     const effectiveTensorParallel = isDiffusion
       ? false
       : config.tensorParallel;
@@ -2820,8 +2862,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
               // Checked with the same arguments the load below sends, or a list
               // the backend refuses would pass this gate and fail the launch.
-              ...(config.llamaExtraArgs !== undefined
-                ? { llama_extra_args: config.llamaExtraArgs ?? [] }
+              ...(resolvedExtraArgs !== undefined
+                ? { llama_extra_args: resolvedExtraArgs ?? [] }
                 : {}),
             }
           : {}),
@@ -2873,8 +2915,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             // nothing to inherit them from and the model would come up without the
             // flags the user asked to be remembered. Undefined means this config
             // predates the field; a cleared list is an explicit none.
-            ...(config.llamaExtraArgs !== undefined
-              ? { llama_extra_args: config.llamaExtraArgs ?? [] }
+            ...(resolvedExtraArgs !== undefined
+              ? { llama_extra_args: resolvedExtraArgs ?? [] }
               : {}),
           }
         : {}),

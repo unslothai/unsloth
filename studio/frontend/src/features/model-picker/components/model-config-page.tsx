@@ -57,6 +57,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  type ModelMemorySettings,
+  loadModelMemorySettings,
+  subscribeModelMemorySettings,
+} from "@/features/settings/api/model-memory";
+import {
   type LlamaFlagCatalog,
   loadLlamaFlagCatalog,
   loadManagedLlamaFlags,
@@ -1266,12 +1271,39 @@ function ExtraArgsRow({
     };
   }, []);
 
-  const diagnostics = diagnoseExtraArgs(
-    text,
-    catalog,
-    config.selectedGpuIds != null,
-    config.gpuMemoryMode === "manual",
+  // Model Memory removes some of these before the launch: apply_model_memory_policy
+  // emits its own load mode and strips the rest, so an --mlock typed here would be
+  // shown, saved, and never passed. Read once and then kept in sync, like the section
+  // in Settings that owns it. A failed read leaves the row quiet rather than claiming
+  // a removal it cannot confirm.
+  const [modelMemory, setModelMemory] = useState<ModelMemorySettings | null>(
+    null,
   );
+  useEffect(() => {
+    let cancelled = false;
+    loadModelMemorySettings()
+      .then((loaded) => {
+        if (!cancelled) {
+          setModelMemory(loaded);
+        }
+      })
+      .catch(() => {});
+    const unsubscribe = subscribeModelMemorySettings(setModelMemory);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const diagnostics = diagnoseExtraArgs(text, catalog, {
+    gpuSelectionActive: config.selectedGpuIds != null,
+    manualGpuMemory: config.gpuMemoryMode === "manual",
+    // The same floor the batch control shows, for the same reason: with Slots blank
+    // the count is the server default this page cannot see, so only the hard 2 holds.
+    batchFloor: Math.max(2, config.nParallel ?? 2),
+    keepResident: modelMemory?.keepResident ?? false,
+    noRamReserve: modelMemory?.noRamReserve ?? false,
+  });
   const tokenCount = parseExtraArgs(text).tokens.length;
 
   // The panel owns the Load button, and an error here is one validate_extra_args
@@ -1623,12 +1655,11 @@ export function ModelConfigPage({
       }
       setExtraArgsLoadable(
         extraArgsAreLoadable(
-          diagnoseExtraArgs(
-            formatExtraArgs(args),
-            catalog,
-            configState.selectedGpuIds != null,
-            configState.gpuMemoryMode === "manual",
-          ),
+          diagnoseExtraArgs(formatExtraArgs(args), catalog, {
+            gpuSelectionActive: configState.selectedGpuIds != null,
+            manualGpuMemory: configState.gpuMemoryMode === "manual",
+            batchFloor: Math.max(2, configState.nParallel ?? 2),
+          }),
         ),
       );
     });
@@ -1640,6 +1671,7 @@ export function ModelConfigPage({
     configState.llamaExtraArgs,
     configState.selectedGpuIds,
     configState.gpuMemoryMode,
+    configState.nParallel,
     target.isGguf,
     resolvedIsDiffusion,
   ]);

@@ -197,12 +197,12 @@ test("values are never mistaken for flags", () => {
 test("a device flag is called removed, not winning, when GPUs are picked", () => {
   // The launch strips these whenever gpu_ids is set (_strip_device_extra_args), so
   // the ordinary "passed last, yours wins" note would be a lie for them.
-  const withPick = diagnoseExtraArgs("--device CUDA0", CATALOG, true);
+  const withPick = diagnoseExtraArgs("--device CUDA0", CATALOG, { gpuSelectionActive: true });
   assert.equal(withPick[0].level, "warning");
   assert.match(withPick[0].message, /--device will be removed/);
   assert.match(withPick[0].message, /GPU selection/);
   // With no GPU picked the flag is the user's own and nothing is stripped.
-  assert.deepEqual(diagnoseExtraArgs("--device CUDA0", CATALOG, false), []);
+  assert.deepEqual(diagnoseExtraArgs("--device CUDA0", CATALOG, {}), []);
 });
 
 test("a flag that takes a number rejects a value that is not one", () => {
@@ -936,7 +936,7 @@ test("Manual GPU memory reports the offload flags it removes", () => {
   // first; nothing does the same for the MoE count or the fitter, so saying they win
   // was false and the model quietly ran the control's value instead.
   const manual = (input: string) =>
-    diagnoseExtraArgs(input, CATALOG, false, true).map((d) => d.message);
+    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory: true }).map((d) => d.message);
   assert.ok(
     manual("--n-cpu-moe 10")[0].includes("will be removed"),
     manual("--n-cpu-moe 10")[0],
@@ -946,23 +946,85 @@ test("Manual GPU memory reports the offload flags it removes", () => {
   // Nothing is refused: the load still runs, just without them.
   assert.ok(!manual("--n-cpu-moe 10").includes("error"));
   assert.equal(
-    diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, false, true).every(
+    diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, { manualGpuMemory: true }).every(
       (d) => d.level !== "error",
     ),
     true,
   );
   // In Default mode they are passed, and the note about who wins is the true one.
   assert.ok(
-    diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, false, false)
+    diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, {})
       .map((d) => d.message)
       .join(" ")
       .includes("wins"),
   );
   // The layer count is translated, not dropped, so it still reads as winning.
   assert.ok(
-    diagnoseExtraArgs("-ngl 20", CATALOG, false, true)
+    diagnoseExtraArgs("-ngl 20", CATALOG, { manualGpuMemory: true })
       .map((d) => d.message)
       .join(" ")
       .includes("wins"),
+  );
+});
+
+test("a pass-through batch below the floor is refused", () => {
+  // The loader raises the --batch-size it emits itself (max(slots, 2), measured
+  // upstream: b1 aborts at any slot count, b4/p8 aborts, b8/p8 loads), but a
+  // pass-through -b is appended after it and wins, so the load starts and
+  // llama-server aborts on GGML_ASSERT instead.
+  const at = (input: string, batchFloor: number) =>
+    diagnoseExtraArgs(input, CATALOG, { batchFloor });
+  assert.ok(at("-b 1", 2).some((d) => d.level === "error"));
+  assert.ok(at("--batch-size 0", 2).some((d) => d.level === "error"));
+  assert.ok(at("--batch-size 4", 8).some((d) => d.level === "error"));
+  assert.match(
+    at("--batch-size 4", 8).filter((d) => d.level === "error")[0].message,
+    /8 parallel slot/,
+  );
+  // At or above the floor it passes (the note about shadowing the control stays),
+  // and the micro-batch is not policed here.
+  const errors = (input: string, batchFloor: number) =>
+    at(input, batchFloor).filter((d) => d.level === "error");
+  assert.deepEqual(errors("--batch-size 8", 8), []);
+  assert.deepEqual(errors("-b 2", 2), []);
+  assert.deepEqual(errors("-ub 1", 2), []);
+  // A blank slot count leaves only the hard floor of 2, the same limit the batch
+  // control itself asserts.
+  assert.deepEqual(errors("-b 2", 1), []);
+});
+
+test("Model Memory reports the flags its settings remove", () => {
+  // apply_model_memory_policy runs before the extras reach the command line, so an
+  // --mlock typed here was shown, saved, and never passed.
+  const keep = (input: string) =>
+    diagnoseExtraArgs(input, CATALOG, { keepResident: true }).map(
+      (d) => d.message,
+    );
+  const noReserve = (input: string) =>
+    diagnoseExtraArgs(input, CATALOG, { noRamReserve: true }).map(
+      (d) => d.message,
+    );
+  assert.match(keep("--mlock")[0], /will be removed/);
+  assert.match(keep("--load-mode mmap")[0], /Keep model in GPU memory/);
+  assert.match(noReserve("--no-mmap")[0], /Don't reserve system RAM/);
+  // No-reserve leaves the loaders that hold no full host copy alone.
+  assert.equal(
+    noReserve("--direct-io").some((message) => /will be removed/.test(message)),
+    false,
+  );
+  // With both on, no-reserve is the one that runs, and it names itself.
+  assert.match(
+    diagnoseExtraArgs("--mlock", CATALOG, {
+      keepResident: true,
+      noRamReserve: true,
+    })[0].message,
+    /Don't reserve system RAM/,
+  );
+  // With neither, nothing is stripped and a hand-typed flag still applies.
+  assert.equal(
+    diagnoseExtraArgs("--mlock", CATALOG, {}).some((d) =>
+      /will be removed/.test(d.message),
+    ),
+    false,
   );
 });

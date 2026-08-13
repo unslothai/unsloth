@@ -39,3 +39,26 @@ test("a collapsed section is re-judged once the catalogue lands", () => {
   assert.match(PANEL, /if \(showAdvanced \|\| !target\.isGguf \|\| resolvedIsDiffusion\) \{/);
   assert.match(PANEL, /loadLlamaFlagCatalog\(\)\.then\(\(catalog\) => \{/);
 });
+
+const ADAPTER = readFileSync(
+  path.join(HERE, "..", "src/features/chat/api/chat-adapter.ts"),
+  "utf8",
+);
+
+test("a background auto-load hydrates a server-only override", () => {
+  // resolveInitialConfig reads local storage, so an override written through the API
+  // or from another browser leaves the field undefined. Nothing is resident at
+  // startup, so /load has nothing to inherit from and the model came up without the
+  // arguments saved for it.
+  assert.match(ADAPTER, /let resolvedExtraArgs = config\.llamaExtraArgs;/);
+  assert.match(ADAPTER, /const stored = await fetchLoadExtraArgs\(/);
+  // Sanitized, because this becomes an explicit list that /load validates strictly.
+  assert.match(ADAPTER, /const cleaned = sanitizeStoredExtraArgs\(/);
+  // And both the preflight and the load send what was resolved, not the raw config.
+  assert.equal(
+    ADAPTER.match(/llama_extra_args: resolvedExtraArgs \?\? \[\]/g)?.length,
+    2,
+  );
+  // A diffusion GGUF takes none of them, so it is not fetched for either.
+  assert.match(ADAPTER, /candidate\.kind === "gguf" &&\s*\n?\s*!isDiffusion/);
+});

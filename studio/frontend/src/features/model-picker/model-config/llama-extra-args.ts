@@ -496,6 +496,39 @@ const MANUAL_OFFLOAD_STRIPPED_FLAGS: Record<string, string> = {
 };
 
 /**
+ * Flags Model Memory removes, per setting.
+ *
+ * apply_model_memory_policy runs before the extras reach the command line. "Keep model
+ * in GPU memory" emits its own load mode and strips every other load-mode-bearing flag,
+ * because a trailing one resets the whole mode and would drop the lock; "Don't reserve
+ * system RAM" drops the flags that would hold a full host copy. Either way the argument
+ * never reaches llama-server, so reporting that it wins would be false.
+ */
+const KEEP_RESIDENT_STRIPPED_FLAGS: Record<string, string> = {
+  "--mlock": "Keep model in GPU memory",
+  "-mlock": "Keep model in GPU memory",
+  "--load-mode": "Keep model in GPU memory",
+  "-lm": "Keep model in GPU memory",
+  "--no-mmap": "Keep model in GPU memory",
+  "-no-mmap": "Keep model in GPU memory",
+  "--mmap": "Keep model in GPU memory",
+  "--direct-io": "Keep model in GPU memory",
+  "-dio": "Keep model in GPU memory",
+  "--no-direct-io": "Keep model in GPU memory",
+  "-ndio": "Keep model in GPU memory",
+};
+
+/** The subset no-reserve vetoes: mmap and dio hold no full host copy, so they stay. */
+const NO_RAM_RESERVE_STRIPPED_FLAGS: Record<string, string> = {
+  "--mlock": "Don't reserve system RAM",
+  "-mlock": "Don't reserve system RAM",
+  "--no-mmap": "Don't reserve system RAM",
+  "-no-mmap": "Don't reserve system RAM",
+  "--no-direct-io": "Don't reserve system RAM",
+  "-ndio": "Don't reserve system RAM",
+};
+
+/**
  * Smallest value the backend's own parser accepts, per flag.
  *
  * parse_ctx_override refuses a negative context; parse_gpu_layers_override accepts
@@ -524,6 +557,9 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "--split-mode",
   "-sm",
 ]);
+
+/** The pass-through spellings of the batch size the floor above applies to. */
+const BATCH_SIZE_FLAGS = new Set(["--batch-size", "-b"]);
 
 const INTEGER_VALUE_FLAGS = new Set([
   "--ctx-size",
@@ -555,14 +591,36 @@ const REQUEST_SCOPED_FLAGS = new Set([
   "--n-predict",
 ]);
 
+/** The load settings that decide which flags survive to the command line. */
+export type ExtraArgsContext = {
+  /** The GPU picker owns placement, which removes the device flags. */
+  gpuSelectionActive?: boolean;
+  /** GPU Memory is Manual, which removes the offload flags its controls own. */
+  manualGpuMemory?: boolean;
+  /** Smallest --batch-size this launch can run, max(slots, 2). */
+  batchFloor?: number;
+  /** Model Memory keeps the weights resident, which owns the load mode. */
+  keepResident?: boolean;
+  /** Model Memory reserves no system RAM, which vetoes the reserving flags. */
+  noRamReserve?: boolean;
+};
+
 export function diagnoseExtraArgs(
   input: string,
   catalog: LlamaFlagCatalog | null,
-  /** True when the GPU picker owns placement, which removes the device flags. */
-  gpuSelectionActive = false,
-  /** True when GPU Memory is Manual, which removes the offload flags it owns. */
-  manualGpuMemory = false,
+  /**
+   * What this load's own settings do to the arguments, so the row can say which of
+   * them the launch will remove. An object rather than a run of booleans: every
+   * setting that owns a flag group adds one, and a positional list of five would be
+   * read wrong at the call site long before it stopped compiling.
+   */
+  context: ExtraArgsContext = {},
 ): ExtraArgsDiagnostic[] {
+  const gpuSelectionActive = context.gpuSelectionActive ?? false;
+  const manualGpuMemory = context.manualGpuMemory ?? false;
+  const batchFloor = Math.max(2, context.batchFloor ?? 2);
+  const keepResident = context.keepResident ?? false;
+  const noRamReserve = context.noRamReserve ?? false;
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote } = parseExtraArgs(input);
 
@@ -666,6 +724,7 @@ export function diagnoseExtraArgs(
   const shadowed: string[] = [];
   const stripped: string[] = [];
   const manualStripped: string[] = [];
+  const memoryStripped: [string, string][] = [];
   const reportedValues = new Set<string>();
   for (const [index, token] of tokens.entries()) {
     const flag = extraArgFlagName(token);
@@ -701,6 +760,18 @@ export function diagnoseExtraArgs(
           minimum === 0
             ? `${flag} cannot be negative.`
             : `${flag} takes ${minimum} or more.`;
+      } else if (
+        BATCH_SIZE_FLAGS.has(flag) &&
+        Number(value.trim()) < Math.max(2, batchFloor)
+      ) {
+        // Not raised the way the first-class control is: this flag is appended after
+        // the launcher's own --batch-size and wins it, so the load starts and
+        // llama-server aborts on the assertion instead.
+        const floor = Math.max(2, batchFloor);
+        message =
+          floor > 2
+            ? `${flag} takes ${floor} or more here: llama-server aborts on a batch below the ${floor} parallel slot(s) it serves.`
+            : `${flag} takes 2 or more: llama-server aborts on a batch of 1.`;
       }
       if (message !== null && !reportedValues.has(message)) {
         reportedValues.add(message);
@@ -728,6 +799,16 @@ export function diagnoseExtraArgs(
     }
     if (manualGpuMemory && MANUAL_OFFLOAD_STRIPPED_FLAGS[flag]) {
       manualStripped.push(flag);
+      continue;
+    }
+    // No-reserve first: with both settings on it is the one that runs, and its own
+    // veto is what removes the flag.
+    if (noRamReserve && NO_RAM_RESERVE_STRIPPED_FLAGS[flag]) {
+      memoryStripped.push([flag, NO_RAM_RESERVE_STRIPPED_FLAGS[flag]]);
+      continue;
+    }
+    if (keepResident && !noRamReserve && KEEP_RESIDENT_STRIPPED_FLAGS[flag]) {
+      memoryStripped.push([flag, KEEP_RESIDENT_STRIPPED_FLAGS[flag]]);
       continue;
     }
     const control = CONTROL_OWNED_FLAGS[flag];
@@ -777,6 +858,13 @@ export function diagnoseExtraArgs(
     out.push({
       level: "warning",
       message: `${stripped.join(", ")} will be removed: the GPU selection above owns placement. Set GPU Memory to Default to pass it yourself.`,
+    });
+  }
+  if (memoryStripped.length > 0) {
+    const setting = memoryStripped[0][1];
+    out.push({
+      level: "warning",
+      message: `${memoryStripped.map(([flag]) => flag).join(", ")} will be removed: ${setting} in Settings owns how the weights are held.`,
     });
   }
   if (manualStripped.length > 0) {
