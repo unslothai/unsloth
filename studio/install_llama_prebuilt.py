@@ -60,7 +60,6 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     environment_backend_override,
     install_kinds_for_backend,
     is_requestable_backend,
-    marker_backend,
     marker_backend_request,
     normalize_backend_request,
 )
@@ -141,7 +140,11 @@ UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
 # install_kinds that really are a Vulkan bundle. A Vulkan request can still end on a CPU
 # bundle (no Vulkan archive on Windows arm64; x64 falls through when it is missing or fails
 # validation), so check against this to keep the marker honest (#7357).
-VULKAN_INSTALL_KINDS = frozenset({"linux-vulkan", "windows-vulkan"})
+# Derived from the shared vocabulary rather than spelled out again: a new Vulkan bundle
+# family added to INSTALL_KIND_BACKENDS must not be missed here.
+VULKAN_INSTALL_KINDS = frozenset(
+    kind for kind, kind_backend in INSTALL_KIND_BACKENDS.items() if kind_backend == "vulkan"
+)
 
 CONCRETE_BACKENDS = tuple(backend for backend in REQUESTABLE_BACKENDS if backend != "auto")
 
