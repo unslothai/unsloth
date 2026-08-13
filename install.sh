@@ -2522,7 +2522,11 @@ _uv_install_pinned() {
     # configured mirror is EXCLUSIVE, as it is for astral's installer and for Install-UvFromRelease:
     # a restricted network sets one precisely because the public hosts are unreachable, and
     # download() has no timeout, so trying them first would hang rather than fall through.
-    if [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
+    if [ -n "${UV_DOWNLOAD_URL:-}" ]; then
+        _uip_bases="${UV_DOWNLOAD_URL%/}"
+    elif [ -n "${INSTALLER_DOWNLOAD_URL:-}" ]; then
+        _uip_bases="${INSTALLER_DOWNLOAD_URL%/}"
+    elif [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
         _uip_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
         _uip_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
@@ -2567,7 +2571,11 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                     rm -f "$_uip_stage" 2>/dev/null || true
                     continue
                 fi
-                chmod +x "$_uip_stage" 2>/dev/null || true
+                # 0755, not +x: cp gives the staging file the umask default, and +x
+                # then adds execute only where the umask allowed read. astral ships
+                # these 0755, and a umask of 077 would otherwise leave uv unusable
+                # for every other account on a shared machine.
+                chmod 0755 "$_uip_stage" 2>/dev/null || true
                 # Validate BEFORE publishing. The rename destroys whatever is at the destination,
                 # and a host whose loader is missing or a noexec mount cannot run the new binary,
                 # so testing after the rename would already have taken out a working uv the host

@@ -4328,9 +4328,15 @@ function Install-UvFromPinnedRelease {
         $destDir = Join-Path $userHome ".local\bin"
     }
 
-    # astral's mirrors and precedence; each serves the identical asset, so one pin holds.
-    # UV_DOWNLOAD_URL is not honoured: it points at a version the pin would reject.
-    $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+    # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL (and its older
+    # alias INSTALLER_DOWNLOAD_URL) outrank the mirror variables there, and a host that sets one
+    # usually cannot reach the public endpoints at all, so trying those first would stall. The pin
+    # still applies: a source serving a different build fails the digest and the caller falls back.
+    $uvBase = if ($env:UV_DOWNLOAD_URL) {
+        @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+        @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
         @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
     } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
         @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")

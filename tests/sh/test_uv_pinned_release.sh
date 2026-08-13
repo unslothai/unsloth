@@ -138,6 +138,28 @@ for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
     fi
 done
 
+# astral honours UV_DOWNLOAD_URL and its alias INSTALLER_DOWNLOAD_URL ahead of the mirror
+# variables, and a host that sets one usually cannot reach the public endpoints, so trying those
+# first stalls instead of falling back. All four implementations have to agree on that order.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh" \
+             "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"; do
+    if grep -q 'UV_DOWNLOAD_URL' "$_impl" && grep -q 'INSTALLER_DOWNLOAD_URL' "$_impl"; then
+        ok "${_impl##*/} honours astral's primary download override"
+    else
+        bad "${_impl##*/} honours astral's primary download override"
+    fi
+done
+
+# 0755, not the umask default: astral ships these executable for everyone, and a umask of 077
+# would otherwise leave uv unusable for other accounts on a shared machine.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
+    if grep -q 'chmod 0755' "$_impl" && ! grep -qE 'chmod \+x "\$_[a-z]+_stage"' "$_impl"; then
+        ok "${_impl##*/} stages uv with an explicit 0755"
+    else
+        bad "${_impl##*/} stages uv with an explicit 0755"
+    fi
+done
+
 # astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
 # default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
 # configured an XDG location, where no later shell looks for it.

@@ -1423,7 +1423,12 @@ exit 0
             # it across the rewrite. The shortcut loads this under RemoteSigned, which refuses a
             # marked unsigned script, so clear the mark on the file we just authored. A no-op on
             # every ordinary install, where the stream was never there.
-            Unblock-File -LiteralPath $launcherPs1 -ErrorAction SilentlyContinue
+            # -Confirm:$false: Unblock-File declares SupportsShouldProcess at the default
+            # Medium impact, so a profile setting $ConfirmPreference to Medium or Low would
+            # prompt here, even for a launcher that never had the stream. ErrorAction does
+            # not suppress a ShouldProcess prompt, and a noninteractive host turns it into
+            # an error that skips shortcut setup entirely.
+            Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
             # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
@@ -2548,10 +2553,16 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # Same mirrors and precedence as astral's installer; each serves the
-        # identical asset, so the pin holds across all of them. UV_DOWNLOAD_URL is
-        # not honoured: it points at an arbitrary version the pin would reject.
-        $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+        # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL and its
+        # older alias INSTALLER_DOWNLOAD_URL outrank the mirror variables there, and a host that
+        # sets one usually cannot reach the public endpoints at all, so trying those first would
+        # stall. The pin still applies: a source serving a different build fails the digest and
+        # the caller falls back.
+        $uvBase = if ($env:UV_DOWNLOAD_URL) {
+            @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+            @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
             @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")

@@ -1570,7 +1570,11 @@ _setup_install_uv_pinned() {
     # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
     # restricted network sets one because the public hosts are unreachable, so trying those first
     # would stall instead of falling through.
-    if [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
+    if [ -n "${UV_DOWNLOAD_URL:-}" ]; then
+        _siup_bases="${UV_DOWNLOAD_URL%/}"
+    elif [ -n "${INSTALLER_DOWNLOAD_URL:-}" ]; then
+        _siup_bases="${INSTALLER_DOWNLOAD_URL%/}"
+    elif [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
         _siup_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
     elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
         _siup_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
@@ -1596,7 +1600,11 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
                     rm -f "$_siup_stage" 2>/dev/null || true
                     continue
                 fi
-                chmod +x "$_siup_stage" 2>/dev/null || true
+                # 0755, not +x: cp gives the staging file the umask default, and +x
+                # then adds execute only where the umask allowed read. astral ships
+                # these 0755, and a umask of 077 would otherwise leave uv unusable
+                # for every other account on a shared machine.
+                chmod 0755 "$_siup_stage" 2>/dev/null || true
                 # Validate before publishing, as install.sh does: the rename destroys whatever is
                 # at the destination, so a binary that cannot run here must never replace one that
                 # could.
