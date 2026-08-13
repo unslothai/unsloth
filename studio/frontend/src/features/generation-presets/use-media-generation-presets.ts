@@ -373,13 +373,16 @@ export function useMediaGenerationPresets<Params extends object>({
     [customPresets, kind, presetsReady],
   );
 
-  // A delete leaves Default selected. The form itself only follows when the user did not edit it
-  // while the request was in flight; their newer input owns it in that case.
+  // A delete always leaves Default selected: the preset is gone whoever owns the form, and naming
+  // it would leave the control on a definition that no longer exists. Only the form VALUES are the
+  // claim's business, and they follow only when this delete still owns the form and the user did
+  // not edit it while the request was in flight; their newer input owns it in that case.
   const restoreDefaultAfterDelete = useCallback(
-    (paramsBeforeDelete: Params) => {
+    (paramsBeforeDelete: Params, ownsForm: boolean) => {
       const formUnchanged =
+        ownsForm &&
         paramsKeyRef.current(currentParamsRef.current) ===
-        paramsKeyRef.current(paramsBeforeDelete);
+          paramsKeyRef.current(paramsBeforeDelete);
       baselineParamsRef.current = formUnchanged
         ? applyParamsRef.current(defaultParamsRef.current)
         : defaultParamsRef.current;
@@ -410,9 +413,7 @@ export function useMediaGenerationPresets<Params extends object>({
     setCustomPresets((current) =>
       current.filter((preset) => preset.name !== deletedName),
     );
-    if (formClaim.current === claim) {
-      restoreDefaultAfterDelete(paramsBeforeDelete);
-    }
+    restoreDefaultAfterDelete(paramsBeforeDelete, formClaim.current === claim);
     return true;
   }, [
     activePreset,

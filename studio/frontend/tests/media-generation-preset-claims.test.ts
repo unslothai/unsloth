@@ -103,6 +103,26 @@ test("a preset write that failed gives its form claim back", () => {
   }
 });
 
+test("a delete clears the selection even when a pick took the form meanwhile", () => {
+  // The preset is gone either way, and a selection naming it leaves the control on a definition
+  // that no longer exists (and persists that name on the next debounced write).
+  const del = HOOK.slice(
+    HOOK.indexOf("const deletePreset = useCallback("),
+    HOOK.indexOf("const activeDefinition ="),
+  );
+  assert.match(
+    del,
+    /restoreDefaultAfterDelete\(paramsBeforeDelete, formClaim\.current === claim\);/,
+  );
+  const restore = HOOK.slice(
+    HOOK.indexOf("const restoreDefaultAfterDelete = useCallback("),
+    HOOK.indexOf("const deletePreset = useCallback("),
+  );
+  // Only the form VALUES are conditional; the selection reset is not.
+  assert.match(restore, /ownsForm &&/);
+  assert.match(restore, /setActivePreset\(DEFAULT_PRESET_NAME\);/);
+});
+
 test("a store with presets but no recipe still hydrates the library", () => {
   // saved:false means the recipe falls back to the model's defaults, not that the user's named
   // presets are gone; dropping them would hide a library the response is carrying.
