@@ -137,6 +137,7 @@ export {
 } from "./external-providers";
 export {
   type AttachmentText,
+  attachmentAudioSrc,
   countAttachmentTextLines,
   isAudioAttachment,
   parseAttachmentText,

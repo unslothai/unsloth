@@ -39,6 +39,20 @@ export function isAudioAttachment(
   );
 }
 
+// The audio part keeps only the coarse format the backend needs, so the
+// attachment's own content type wins when it names a real audio MIME.
+export function attachmentAudioSrc(
+  audio: { data: string; format: string },
+  contentType: string | undefined,
+): string {
+  const mime = AUDIO_MIME_RE.test(contentType ?? "")
+    ? (contentType as string)
+    : audio.format === "mp3"
+      ? "audio/mpeg"
+      : "audio/wav";
+  return `data:${mime};base64,${audio.data}`;
+}
+
 export function isPdfAttachment(
   name: string | undefined,
   contentType: string | undefined,

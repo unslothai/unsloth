@@ -9,6 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  attachmentAudioSrc,
   countAttachmentTextLines,
   isAudioAttachment,
   parseAttachmentText,
@@ -52,6 +53,25 @@ test("countAttachmentTextLines counts empty and single-line text", () => {
   assert.equal(countAttachmentTextLines(""), 0);
   assert.equal(countAttachmentTextLines("one line"), 1);
   assert.equal(countAttachmentTextLines("one\ntwo\n"), 3);
+});
+
+// The sent audio part only carries "mp3" or "wav", so an OGG or FLAC upload
+// would be mislabelled without the attachment's own content type.
+test("attachmentAudioSrc keeps the uploaded audio MIME", () => {
+  const part = { data: "AAA", format: "wav" };
+  assert.equal(
+    attachmentAudioSrc(part, "audio/ogg"),
+    "data:audio/ogg;base64,AAA",
+  );
+  assert.equal(
+    attachmentAudioSrc({ data: "AAA", format: "mp3" }, undefined),
+    "data:audio/mpeg;base64,AAA",
+  );
+  assert.equal(attachmentAudioSrc(part, ""), "data:audio/wav;base64,AAA");
+  assert.equal(
+    attachmentAudioSrc(part, "application/octet-stream"),
+    "data:audio/wav;base64,AAA",
+  );
 });
 
 test("isAudioAttachment matches by MIME and by extension", () => {

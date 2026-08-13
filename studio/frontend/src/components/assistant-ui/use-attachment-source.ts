@@ -3,7 +3,7 @@
 
 "use client";
 
-import { isAudioAttachment } from "@/features/chat";
+import { attachmentAudioSrc, isAudioAttachment } from "@/features/chat";
 import { useAuiState } from "@assistant-ui/react";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/shallow";
@@ -34,11 +34,6 @@ const useFileSrc = (file: File | undefined): string | undefined => {
 
   return objectUrl;
 };
-
-// A sent attachment keeps its payload as base64, so playback and preview have
-// to re-wrap it as a data URL.
-const audioPartSrc = (audio: { data: string; format: string }): string =>
-  `data:${audio.format === "mp3" ? "audio/mpeg" : "audio/wav"};base64,${audio.data}`;
 
 // Resolves what a preview can show for the attachment in scope: a composer
 // attachment still holds its File, a sent one only the content parts.
@@ -72,7 +67,7 @@ export const useAttachmentSource = (): AttachmentSource => {
         contentSrc: isImage
           ? parts.find((part) => part.type === "image")?.image
           : audio
-            ? audioPartSrc(audio)
+            ? attachmentAudioSrc(audio, contentType)
             : undefined,
         text: text || undefined,
       };
