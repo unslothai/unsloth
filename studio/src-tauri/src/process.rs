@@ -939,7 +939,7 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// Whether the user's profile is reachable at all: the managed install lives
 /// under it, so an unmounted roaming profile looks like no install.
 pub(crate) fn home_dir_available() -> Result<(), String> {
-    usable_home_dir(dirs::home_dir(), &windows_roots()).map(|_| ())
+    usable_home_dir(dirs::home_dir(), &windows_roots(), true).map(|_| ())
 }
 
 /// The profile a managed install may live under, or why it cannot. One policy for
@@ -948,6 +948,7 @@ pub(crate) fn home_dir_available() -> Result<(), String> {
 fn usable_home_dir(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
+    require_existing: bool,
 ) -> Result<std::path::PathBuf, String> {
     let home = home.ok_or_else(|| "Could not determine the home directory".to_string())?;
 
@@ -960,7 +961,11 @@ fn usable_home_dir(
         ));
     }
 
-    if !home.is_dir() {
+    // The installer is the one caller that may build the profile as it goes, the
+    // way it did before it shared this resolver. For everything else a home that
+    // is not there yet is an unmounted roaming profile, and creating it would
+    // leave an empty folder shadowing the real one when it arrives.
+    if require_existing && !home.is_dir() {
         return Err(format!(
             "Home directory {} is not reachable",
             home.display()
@@ -980,7 +985,25 @@ pub(crate) fn managed_cli_working_dir_from(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
 ) -> Result<std::path::PathBuf, String> {
-    let home = usable_home_dir(home, windirs)?;
+    working_dir_under(home, windirs, true)
+}
+
+/// The same directory for the installer, which may create the profile it runs
+/// under: install.ps1 and install.sh detect a SYSTEM profile themselves, and
+/// before they shared this resolver a home that did not exist yet was simply
+/// created along with ~/.unsloth.
+pub(crate) fn install_working_dir(
+    home: Option<std::path::PathBuf>,
+) -> Result<std::path::PathBuf, String> {
+    working_dir_under(home, &[], false)
+}
+
+fn working_dir_under(
+    home: Option<std::path::PathBuf>,
+    windirs: &[std::path::PathBuf],
+    require_existing_home: bool,
+) -> Result<std::path::PathBuf, String> {
+    let home = usable_home_dir(home, windirs, require_existing_home)?;
 
     // Where the installer already runs, so ~/.unsloth stays the one working root.
     let work_dir = home.join(".unsloth");
@@ -1604,6 +1627,30 @@ fn relative_override_pins(
     )
 }
 
+/// The pins a move needs, or None when the move must not happen.
+///
+/// A directory that cannot be named is one nothing can be anchored to. Staying is
+/// what the child did before this file learned about working directories, and it
+/// keeps every relative setting meaning exactly what it does now; only a
+/// directory we can name is worth moving out of. Refusing the whole spawn instead
+/// would take a probe, a backend, an auth provision or an update down over a
+/// setting the command may never read.
+fn pins_for_move(
+    work_dir: &std::path::Path,
+    skipped: &[&str],
+) -> Result<Option<Vec<(&'static str, std::path::PathBuf)>>, String> {
+    match relative_override_pins(work_dir, skipped) {
+        Ok(pins) => Ok(Some(pins)),
+        Err(error) => {
+            if std::env::current_dir().is_err() {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 /// What an ordinary managed child neither receives nor needs.
 fn child_skipped_env() -> Vec<&'static str> {
     MANAGED_CHILD_SCRUBBED_ENV
@@ -1623,7 +1670,7 @@ pub(crate) fn managed_cli_context_error() -> Option<ManagedContextError> {
         Ok(work_dir) => work_dir,
         Err(error) => return Some(ManagedContextError::WorkingDirectory(error)),
     };
-    relative_override_pins(&work_dir, &child_skipped_env())
+    pins_for_move(&work_dir, &child_skipped_env())
         .err()
         .map(ManagedContextError::PathSetting)
 }
@@ -1676,11 +1723,13 @@ fn apply_managed_cli_context_inner(
     work_dir: &std::path::Path,
     skipped: &[&str],
 ) -> Result<(), String> {
-    for (name, pinned) in relative_override_pins(work_dir, skipped)? {
-        cmd.env(name, pinned);
-    }
-    if needs_explicit_cwd(work_dir) {
-        cmd.current_dir(work_dir);
+    if let Some(pins) = pins_for_move(work_dir, skipped)? {
+        for (name, pinned) in pins {
+            cmd.env(name, pinned);
+        }
+        if needs_explicit_cwd(work_dir) {
+            cmd.current_dir(work_dir);
+        }
     }
     // Removed here as well as at the call sites, so the skip above is a fact
     // about the child rather than an assumption about every caller.
@@ -1696,11 +1745,13 @@ pub(crate) fn apply_managed_cli_context_tokio(
 ) -> Result<(), String> {
     let work_dir = managed_cli_working_dir()?;
     let skipped = child_skipped_env();
-    for (name, pinned) in relative_override_pins(&work_dir, &skipped)? {
-        cmd.env(name, pinned);
-    }
-    if needs_explicit_cwd(&work_dir) {
-        cmd.current_dir(&work_dir);
+    if let Some(pins) = pins_for_move(&work_dir, &skipped)? {
+        for (name, pinned) in pins {
+            cmd.env(name, pinned);
+        }
+        if needs_explicit_cwd(&work_dir) {
+            cmd.current_dir(&work_dir);
+        }
     }
     for name in &skipped {
         cmd.env_remove(name);
@@ -3083,7 +3134,7 @@ mod managed_cli_working_dir_tests {
         // the working directory resolver then refuses to start.
         let windirs = [PathBuf::from("C:\\Windows")];
         let home = PathBuf::from("C:\\Windows\\System32\\config\\systemprofile");
-        let error = usable_home_dir(Some(home), &windirs).unwrap_err();
+        let error = usable_home_dir(Some(home), &windirs, true).unwrap_err();
         assert!(
             error.contains("inside the Windows directory"),
             "unexpected error: {error}"
@@ -3091,7 +3142,7 @@ mod managed_cli_working_dir_tests {
         let real_home = scratch("usable-home");
         fs::create_dir_all(&real_home).unwrap();
         assert_eq!(
-            usable_home_dir(Some(real_home.clone()), &windirs).unwrap(),
+            usable_home_dir(Some(real_home.clone()), &windirs, true).unwrap(),
             real_home
         );
         fs::remove_dir_all(&real_home).ok();
@@ -3171,6 +3222,79 @@ mod managed_cli_working_dir_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_profile_that_is_not_there_yet_stops_a_managed_child_but_not_the_installer() {
+        // The installer built the profile as it went before it shared this
+        // resolver; a managed child that created one would leave an empty folder
+        // shadowing the roaming profile when it finally arrives.
+        let missing = scratch("absent-profile").join("someone");
+        let error = managed_cli_working_dir_from(Some(missing.clone()), &[]).unwrap_err();
+        assert!(error.contains("not reachable"), "unexpected error: {error}");
+        assert_eq!(
+            install_working_dir(Some(missing.clone())).unwrap(),
+            missing.join(".unsloth")
+        );
+        assert!(missing.join(".unsloth").is_dir());
+        fs::remove_dir_all(missing.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_named_leaves_the_child_where_it_is() {
+        // Nothing can be anchored to a directory this process cannot name, so the
+        // child stays in it rather than the spawn failing over a setting the
+        // command may never read. What it must not do is move and take the
+        // setting with it.
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let relative = |name: &str| match name {
+            "DG_VISUAL_BIN" => Some("visual".to_string()),
+            _ => None,
+        };
+        let absolute = |value: &str| panic!("unexpected value needing the OS: {value}");
+        assert!(
+            relative_override_pins_from(
+                None,
+                &work_dir,
+                relative,
+                absolute,
+                Some(std::path::Path::new("C:\\Users\\me")),
+                MANAGED_CHILD_SCRUBBED_ENV,
+                true,
+            )
+            .is_err(),
+            "the pins still report what a move would lose"
+        );
+        // And the spawn path turns that report into staying put. Run from a
+        // directory that is really gone, which is the only way to reach it: the
+        // whole process moves, so this holds the env lock and puts it back.
+        #[cfg(unix)]
+        {
+            let _env = crate::native_path_policy::PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let here = std::env::current_dir().unwrap();
+            let gone = scratch("vanished-cwd");
+            fs::create_dir_all(&gone).unwrap();
+            std::env::set_var("DG_VISUAL_BIN", "visual");
+            std::env::set_current_dir(&gone).unwrap();
+            fs::remove_dir_all(&gone).ok();
+            let unnameable = std::env::current_dir().is_err();
+            let mut cmd = Command::new("unsloth");
+            let applied = apply_managed_cli_context_at(&mut cmd, &work_dir);
+            let carries_cwd = cmd.get_current_dir().is_some();
+            std::env::set_current_dir(&here).unwrap();
+            std::env::remove_var("DG_VISUAL_BIN");
+            assert!(unnameable, "the directory should be gone");
+            assert!(
+                applied.is_ok(),
+                "a lost directory must not fail the spawn: {applied:?}"
+            );
+            assert!(
+                !carries_cwd,
+                "only a directory this process can name is worth moving out of"
+            );
+        }
     }
 
     #[test]
