@@ -125,6 +125,7 @@ struct InstallFailureContext {
     explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
     security_block: Option<SecurityBlockKind>,
+    last_clear: Option<String>,
     started: bool,
     output_tail: VecDeque<InstallOutputLine>,
 }
@@ -135,8 +136,8 @@ impl InstallFailureContext {
             self.started = true;
         }
         self.note_security_block(text);
-        if text.starts_with("[TAURI:ERROR_CLEAR] ") {
-            self.clear_failure(InstallOutputStream::Stdout);
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stdout, message);
             return true;
         }
         if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
@@ -170,8 +171,8 @@ impl InstallFailureContext {
 
     fn observe_stderr(&mut self, text: &str) -> bool {
         self.note_security_block(text);
-        if text.starts_with("[TAURI:ERROR_CLEAR] ") {
-            self.clear_failure(InstallOutputStream::Stderr);
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stderr, message);
             return true;
         }
         if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
@@ -214,10 +215,19 @@ impl InstallFailureContext {
         }
     }
 
-    fn clear_failure(&mut self, stream: InstallOutputStream) {
-        // A run that cleared its own failure state was never blocked at parse time, so a
-        // verdict here is stale.
-        self.security_block = None;
+    fn clear_failure(&mut self, stream: InstallOutputStream, message: &str) {
+        // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198), and
+        // the two are read by independent threads. So a verdict can land between a clear and its
+        // own twin, and treating the twin as a second clear would discard a real block. The twin
+        // repeats the message verbatim, so ignore a clear identical to the one just processed:
+        // a genuine later recovery carries different text and still clears.
+        let twin = self.last_clear.as_deref() == Some(message);
+        self.last_clear = Some(message.to_owned());
+        if !twin {
+            // A run that cleared its own failure state was never blocked at parse time, so a
+            // verdict here is stale.
+            self.security_block = None;
+        }
         if self.explicit_error_stream == Some(stream) {
             self.explicit_error = None;
             self.explicit_error_stream = None;
@@ -1467,6 +1477,39 @@ mod tests {
         let message = context.message(1);
         assert!(message.contains("blocked part of the installer"), "{message}");
         assert!(!message.contains("nothing was changed"), "{message}");
+    }
+
+    #[test]
+    fn the_twin_of_an_earlier_clear_does_not_erase_a_later_verdict() {
+        // Clear-TauriInstallError writes one clear to BOTH streams, and independent readers can
+        // interleave them around a block that happened afterwards. install.ps1 clears after each
+        // recovered step, so this is the ordinary shape of a setup.ps1 block late in a run.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        // the twin of the same clear, arriving late on the other stream
+        context.observe_stdout("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn a_genuinely_later_recovery_still_clears_the_verdict() {
+        // Distinct text means a real subsequent recovery, not a twin, and the guidance must go.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:ERROR_CLEAR] studio setup completed");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
     }
 
     #[test]

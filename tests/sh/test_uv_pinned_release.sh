@@ -96,6 +96,35 @@ else
     bad "$_floor_bad version floor(s) sit above the pinned uv"
 fi
 
+# astral's installer wrote its own shell-profile line; the pinned path does not, so install.sh's
+# own profile write is now the only thing that puts _LOCAL_BIN on a NEW shell's PATH. That guard
+# has to read the PATH we inherited: by the time it runs, this process has prepended the directory
+# for the uv bootstrap and the venv, so testing the live $PATH answers yes for a login shell that
+# would answer no, the profile line never gets written, and `unsloth` is missing from the next
+# terminal.
+_snapshot_at=$(grep -n '^_UNSLOTH_LOGIN_PATH="\$PATH"' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_first_mutation=$(grep -n 'export PATH=' "$INSTALL_SH" | head -1 | cut -d: -f1)
+if [ -n "$_snapshot_at" ] && [ -n "$_first_mutation" ] && [ "$_snapshot_at" -lt "$_first_mutation" ]; then
+    ok "the login PATH is snapshotted before anything prepends to PATH"
+else
+    bad "the login PATH snapshot is missing or too late (snapshot=$_snapshot_at first mutation=$_first_mutation)"
+fi
+if grep -q 'case ":\$_UNSLOTH_LOGIN_PATH:" in' "$INSTALL_SH"; then
+    ok "the shell-profile guard tests the inherited PATH, not the one we prepended to"
+else
+    bad "the shell-profile guard tests the inherited PATH, not the one we prepended to"
+fi
+
+# A configured uv mirror is exclusive: a restricted network sets one because the public hosts are
+# unreachable, and download() has no timeout, so trying them first stalls instead of falling back.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
+    if grep -q 'UV_INSTALLER_GHE_BASE_URL' "$_impl" && grep -q 'UV_INSTALLER_GITHUB_BASE_URL' "$_impl"; then
+        ok "${_impl##*/} honours a configured uv mirror"
+    else
+        bad "${_impl##*/} honours a configured uv mirror"
+    fi
+done
+
 # astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
 # default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
 # configured an XDG location, where no later shell looks for it.

@@ -1567,9 +1567,18 @@ _setup_install_uv_pinned() {
     [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
     _siup_work=$(mktemp -d) || return 1
     _siup_rc=1
-    for _siup_base in \
-        "https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION" \
-        "https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"; do
+    # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
+    # restricted network sets one because the public hosts are unreachable, so trying those first
+    # would stall instead of falling through.
+    if [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
+        _siup_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
+        _siup_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    else
+        _siup_bases="https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION
+https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    fi
+    for _siup_base in $_siup_bases; do
         _setup_http_get "$_siup_base/$_siup_asset" > "$_siup_work/$_siup_asset" 2>/dev/null || continue
         [ -s "$_siup_work/$_siup_asset" ] || continue
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue

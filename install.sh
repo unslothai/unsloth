@@ -594,6 +594,13 @@ _resolve_studio_destinations() {
     _STUDIO_HOME_REDIRECT=default
 }
 _resolve_studio_destinations
+# The PATH we inherited, before anything below prepends to it. The shim setup near the end has to
+# decide whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
+# several times over (the uv bootstrap, the venv), so testing $PATH there answers the wrong
+# question: it says yes for a login shell that would say no, and the profile entry never gets
+# written. astral's installer used to write its own profile line and cover for that; the pinned uv
+# path does not, so the guard has to look at what the user actually started with.
+_UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
@@ -2511,10 +2518,19 @@ _uv_install_pinned() {
 
     _uip_work=$(mktemp -d) || return 1
     _uip_rc=1
-    # astral's mirrors and precedence; each serves the identical asset, so one pin holds.
-    for _uip_base in \
-        "https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION" \
-        "https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"; do
+    # astral's mirrors and precedence; each serves the identical asset, so one pin holds. A
+    # configured mirror is EXCLUSIVE, as it is for astral's installer and for Install-UvFromRelease:
+    # a restricted network sets one precisely because the public hosts are unreachable, and
+    # download() has no timeout, so trying them first would hang rather than fall through.
+    if [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
+        _uip_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
+    elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
+        _uip_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
+    else
+        _uip_bases="https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION
+https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
+    fi
+    for _uip_base in $_uip_bases; do
         if ! download "$_uip_base/$_uip_asset" "$_uip_work/$_uip_asset"; then continue; fi
         _uip_got=$(_uv_sha256 "$_uip_work/$_uip_asset")
         if [ "$_uip_got" != "$_uip_want" ]; then
@@ -5253,8 +5269,8 @@ fi
 # the shim path (the directory guard above already rejects a real directory).
 ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
 
-case ":$PATH:" in
-    *":$_LOCAL_BIN:"*) ;;  # already on PATH
+case ":$_UNSLOTH_LOGIN_PATH:" in
+    *":$_LOCAL_BIN:"*) ;;  # already on the PATH a new shell will inherit
     *)
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             export PATH="$_LOCAL_BIN:$PATH"
