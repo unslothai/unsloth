@@ -2804,6 +2804,12 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     """
     if getattr(payload, "mcp_enabled", False):
         return False
+    if getattr(payload, "run_tools_locally", None) is True:
+        # The caller said which it wants, so stop inferring. Name-matching alone
+        # cannot separate "Search, run by the provider" from "Search, run here":
+        # both are enabled_tools ["web_search"]. Absent, the hosted reading still
+        # wins, which is what a client written before this existed meant.
+        return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
     # reaches the loop anyway. Neither is a hosted-tool request.
