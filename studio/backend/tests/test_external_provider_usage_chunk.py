@@ -778,12 +778,14 @@ def test_a_valid_but_non_object_frame_is_skipped_not_fatal(monkeypatch, payload)
     """`data: null` is valid JSON and not a dict. response_event_type rejects it, and the
     error check that follows must not then call .get() on it: that raised AttributeError
     and killed the stream, where the whole point of the skip is that it does not."""
-    body = b"data: " + payload + b"\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+    body = (
+        b"data: "
+        + payload
+        + b'\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n'
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content = body, headers = {"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
