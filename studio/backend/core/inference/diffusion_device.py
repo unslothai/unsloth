@@ -157,30 +157,24 @@ def resolve_selected_cuda_ordinal(
 ) -> Optional[int]:
     """The torch ordinal one diffusion load should run on, or None for automatic.
 
-    ``gpu_ids`` carries PHYSICAL GPU ids, the same namespace the chat and training paths take and
-    the UI reports. Torch indexes only the parent-visible subset, so under a
-    ``CUDA_VISIBLE_DEVICES`` mask the two differ in both value and order: ``4,5`` makes physical 4
-    and 5 the valid picks while torch sees 0 and 1, and ``1,0`` reverses them. Validation and the
-    translation therefore go through the hardware layer that owns that mask.
+    ``gpu_ids`` carries PHYSICAL ids, as chat, training and the UI use. Torch indexes only the
+    parent-visible subset, so under a ``CUDA_VISIBLE_DEVICES`` mask the two differ in value and
+    order (``4,5`` -> torch 0,1; ``1,0`` reverses them), hence going through the hardware layer
+    that owns the mask.
 
-    Neither engine shards a diffusion checkpoint: diffusers places whole components and sd.cpp
-    assigns whole modules per backend device, so a selection of several cards still resolves to
-    one. The most free VRAM wins, which is the rule ``auto_select_gpu_ids`` already applies to
-    training, and a tie takes the lowest ordinal for a stable answer. Picking the FIRST id instead
-    would land on ordinal 0 whenever the user selects everything -- exactly the card that is too
-    small on the mixed boxes this selection exists to serve.
-
-    Resolved ONCE per load and then carried, never re-derived: free VRAM changes the moment the
-    checkpoint lands, so a second call would answer with a different card than the weights are on.
+    Neither engine shards a checkpoint, so several cards still resolve to one: most free VRAM
+    wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
+    the FIRST id instead would land on ordinal 0 whenever everything is selected, i.e. the small
+    card on the mixed boxes this exists for. Resolved ONCE per load and carried, never re-derived:
+    free VRAM moves the moment the checkpoint lands.
 
     Raises ValueError for a selection this host cannot honour, so the load is refused with a
     reason rather than quietly running somewhere the user did not choose.
 
-    ``allow_ranking = False`` keeps the free-VRAM comparison out, for a caller that must not open a
-    CUDA context (the download-plan routes while a trainer holds the cards). Validation and the
-    mask translation still run, because neither touches CUDA: they read the environment mask and
-    nvidia-smi. A single card therefore still resolves -- which is the only shape the UI sends --
-    and only a multi-card selection, whose winner genuinely needs the probe, comes back None.
+    ``allow_ranking = False`` drops only the free-VRAM probe, for a caller that must not open a
+    CUDA context (the plan routes while a trainer holds the cards). Validation and translation
+    still run -- they read the mask and nvidia-smi -- so the single card the UI sends resolves and
+    only a multi-card pick comes back None.
     """
     wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
     if not wanted:
@@ -223,9 +217,9 @@ def diffusion_device_scope(ordinal: Optional[int]):
     """Make ``ordinal`` the current CUDA device for the block, then restore the previous one.
 
     For probes on a POOLED thread. ``torch.cuda.set_device`` is thread-local but not scoped, so a
-    permanent pin taken on an asyncio.to_thread executor thread outlives the request and leaves the
-    next one -- possibly an automatic load with no selection -- resolving its bare "cuda" calls
-    against the previous request's card. Worker threads are dedicated and keep the permanent pin.
+    permanent pin on an asyncio.to_thread executor thread outlives the request and leaves the next
+    one -- perhaps an automatic load -- resolving bare "cuda" against the previous request's card.
+    Worker threads are dedicated and keep the permanent pin.
     """
     if ordinal is None:
         yield
@@ -252,11 +246,11 @@ def diffusion_device_scope(ordinal: Optional[int]):
 def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
     """Point this thread's CUDA context at ``target.ordinal``.
 
-    ``torch.cuda.set_device`` is thread-local, so every worker that loads or runs a pipeline has to
-    call it; a load thread that sets it does nothing for the generate thread. It is the right lever
-    rather than an indexed device string because the offload policy reads
-    ``torch.cuda.mem_get_info()`` with no argument, i.e. the CURRENT device: setting it steers the
-    weights and the budget they are sized against to the same card. A no-op for an automatic pick.
+    Thread-local, so every worker that loads or runs a pipeline has to call it; the load thread
+    setting it does nothing for the generate thread. The right lever rather than an indexed device
+    string because the offload policy reads ``torch.cuda.mem_get_info()`` with no argument, i.e.
+    the CURRENT device, so this steers the weights and their budget to the same card. A no-op for
+    an automatic pick.
     """
     if not target.is_cuda_torch_device:
         return
@@ -279,11 +273,10 @@ def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
     loading thread was pointing at.
 
     Recorded WITH the pipeline because ``/images/generate`` runs on a pooled ``asyncio.to_thread``
-    worker. A pinned load leaves that worker set to its card permanently, and an automatic load
-    after it has no ordinal to re-pin with, so without this the next generation resolves its bare
-    "cuda" Generators and allocations against the previous model's GPU while the weights sit on the
-    default one. Kept apart from ``ordinal`` so the automatic path still reports a bare device and
-    an un-indexed target, exactly as it did before any of this existed.
+    worker: a pinned load leaves that worker on its card permanently, and a later automatic load
+    has no ordinal to re-pin with, so its bare "cuda" Generators and allocations would land on the
+    previous model's GPU while the weights sat on the default one. Kept apart from ``ordinal`` so
+    the automatic path still reports a bare device and an un-indexed target, as it always did.
     """
     if not target.is_cuda_torch_device:
         return None
@@ -305,9 +298,8 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
     reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
 
     ``ordinal`` is an ALREADY-RESOLVED torch index from ``resolve_selected_cuda_ordinal``, carried
-    for the life of one load rather than re-derived here. Honoured only on CUDA / ROCm, where a
-    device index is what the runners speak; XPU ordinals have no applicator and MPS / CPU have
-    nothing to choose between, so both ignore it.
+    for one load rather than re-derived. Honoured only on CUDA / ROCm, where an index is what the
+    runners speak; XPU has no applicator and MPS / CPU nothing to choose between.
     """
     try:
         import torch

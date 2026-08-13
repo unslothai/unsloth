@@ -1028,7 +1028,7 @@ class VideoBackend:
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
 
-        ``torch.cuda.set_device`` is thread-local, so this runs on each worker rather than once at
+        ``torch.cuda.set_device`` is thread-local, so this runs per worker rather than once at
         load: the daemon thread that builds the pipeline is not the one that denoises. Called with
         no argument on the automatic path, so a monkeypatched resolver keeps working.
         """

@@ -180,13 +180,13 @@ def device_backend_flags(
 ) -> list[str]:
     """Pin the diffusion, text-encoder and VAE graphs to one ggml device (e.g. ``CUDA1``).
 
-    Without this sd.cpp picks its own default device, which is ordinal 0 whatever the user chose,
-    so on a mixed box the checkpoint lands on whichever card happens to be first rather than the
-    one that can hold it. Empty for an automatic pick, which keeps sd.cpp's own choice.
+    Without this sd.cpp uses its own default device, ordinal 0 whatever the user chose, so on a
+    mixed box the checkpoint lands on the first card rather than the one that can hold it. Empty
+    for an automatic pick, which keeps sd.cpp's choice.
 
     ``--clip-on-cpu`` / ``--vae-on-cpu`` are the deprecated spellings of ``te=cpu`` / ``vae=cpu``,
-    so a device pinned over them would be the last-wins value and silently undo the low_vram
-    policy. Those modules stay on the CPU and only the ones the policy left on the GPU are pinned.
+    so pinning a device over them would win last and undo the low_vram policy. Only the modules
+    that policy left on the GPU are pinned.
     """
     if not device_name:
         return []
@@ -199,18 +199,17 @@ def device_backend_flags(
 def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
     """``flags`` with every ``--backend <spec>`` pair removed.
 
-    Two callers, for two different reasons, and both are wrong if they read the pin.
+    Two callers, both wrong if they read the pin.
 
-    The status and the saved recipe derive "was anything offloaded?" from whether these flags are
-    empty, so a pin on a `fast` load (whose policy is deliberately no flags at all) would report
-    an offload that never happened, purely because a card was selected.
+    The status and the saved recipe derive "was anything offloaded?" from these flags being
+    empty, so a pin on a `fast` load (whose policy is deliberately no flags) would report an
+    offload that never happened, purely because a card was selected.
 
-    And sd.cpp CONCATENATES repeated ``--backend`` values into one spec rather than replacing
-    (``examples/common/common.cpp`` declares the option with ``concat = ','``), while an explicit
-    per-module entry always beats the bare default (``ggml_extend_backend.cpp``). So appending
-    ``--backend cpu`` to a spec that already says ``diffusion=CUDA0`` leaves the denoiser on CUDA:
-    the CPU-backend restart, which exists to survive a ggml op the device cannot run, becomes a
-    silent no-op. The pin has to come off first.
+    And sd.cpp CONCATENATES repeated ``--backend`` values rather than replacing
+    (``examples/common/common.cpp``, ``concat = ','``), with an explicit per-module entry beating
+    the bare default (``ggml_extend_backend.cpp``). Appending ``--backend cpu`` to a spec that
+    says ``diffusion=CUDA0`` therefore leaves the denoiser on CUDA, making the CPU-backend restart
+    -- the recovery from a ggml op the device cannot run -- a silent no-op.
     """
     out: list[str] = []
     skip = False

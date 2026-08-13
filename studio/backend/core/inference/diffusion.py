@@ -1313,9 +1313,9 @@ class DiffusionBackend:
     def _state_device_target(self, state: _LoadState) -> DiffusionDeviceTarget:
         """The resident pipeline's target, pinned onto the calling thread.
 
-        Every worker that touches the loaded pipeline has to go through this rather than resolving
-        bare: the weights are on ``state.gpu_ordinal`` and ``state.device`` is the un-indexed
-        string, so an unpinned thread would resolve both to its own default card.
+        Every worker touching the loaded pipeline goes through this rather than resolving bare:
+        the weights are on ``state.gpu_ordinal`` while ``state.device`` is un-indexed, so an
+        unpinned thread would resolve to its own default card.
         """
         target = self._target_for_ordinal(state.family, state.gpu_ordinal)
         apply_diffusion_device_ordinal(target)

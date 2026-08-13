@@ -367,8 +367,8 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     """The ``--list-devices`` name for CUDA/ROCm physical index ``ordinal``, or None.
 
     None whenever the answer is not certain -- no selection, an unreadable probe, a build whose
-    devices are in another namespace, or an index it does not list -- because the fallback is
-    sd.cpp's own device choice, which is what runs today.
+    devices are in another namespace, an index it does not list -- since the fallback is sd.cpp's
+    own device choice, i.e. today's behaviour.
     """
     if not binary or ordinal is None:
         return None

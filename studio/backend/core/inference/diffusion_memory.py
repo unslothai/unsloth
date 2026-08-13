@@ -793,13 +793,12 @@ def apply_memory_plan(
     tiling is a no-op where there's no tiling control, and group / sequential offload fall back to
     whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39).
 
-    ``placement_device`` is the INDEXED device string when one card was selected ("cuda:1"), and
-    is what every diffusers handoff below receives. A bare "cuda" is not equivalent for the
-    CPU-offload APIs: ``enable_model_cpu_offload`` reads the index off the device and, finding
-    none, falls back to ``_offload_gpu_id = 0`` and installs hooks that onload to cuda:0
-    (pipeline_utils.py, diffusers 0.39). Generation runs on the selected card, so the modules would
-    be paged onto GPU 0 and either fail across devices or fill the very card the selection existed
-    to avoid. ``device`` stays bare for anything reading it as a policy string."""
+    ``placement_device`` is the INDEXED string when a card was selected ("cuda:1"), and is what
+    every diffusers handoff below receives. A bare "cuda" is not equivalent to the CPU-offload
+    APIs: ``enable_model_cpu_offload`` reads the index off the device and, finding none, falls
+    back to ``_offload_gpu_id = 0`` and onloads to cuda:0 (pipeline_utils.py, diffusers 0.39), so
+    the modules would page onto the very card the selection existed to avoid while generation ran
+    on another. ``device`` stays bare for anything reading it as a policy string."""
     placement = placement_device or device
     tiling_engaged = False
     if plan.vae_tiling:
