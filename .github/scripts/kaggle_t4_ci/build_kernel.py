@@ -256,9 +256,18 @@ importlib.invalidate_caches()
 # line a reader diffs between the control leg and the canary leg to name
 # what moved, so it is printed before anything can crash.
 sys.path.insert(0, {json.dumps(root)})
-import versions
-print("{PAYLOAD_SENTINEL} resolved " + json.dumps(
-    versions.flatten_versions(versions.resolved_versions())), flush=True)
+# Kept in a name rather than printed and discarded: report.version_table
+# builds the per-leg comparison out of the REPORTS, not out of the log, so a
+# leg whose report omits this is missing from the one table that says which
+# release differed from the healthy control. Wrapped because a half-installed
+# distribution can make importlib.metadata raise, and losing the report to a
+# diagnostic would put this leg back to reporting nothing at all.
+try:
+    import versions
+    RESOLVED = versions.flatten_versions(versions.resolved_versions())
+except Exception as exc:
+    RESOLVED = {{"error": f"{{type(exc).__name__}}: {{exc}}"[:200]}}
+print("{PAYLOAD_SENTINEL} resolved " + json.dumps(RESOLVED), flush=True)
 
 missing = []
 # ORDER IS PART OF THE TEST, not cosmetic. `unsloth` comes before
@@ -289,6 +298,7 @@ if missing:
         "label": {json.dumps(leg.name)},
         "model": "dependency probe",
         "passed": False,
+        "versions_flat": RESOLVED,
         "failures": ["import failed -- " + m for m in missing],
     }}), flush=True)
     raise SystemExit("payload dependencies incomplete: " + "; ".join(missing))

@@ -278,6 +278,18 @@ def test_a_probe_failure_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
         "unsloth_module_the_broken_commit_cannot_import" in f for f in reports[0]["failures"]
     )
 
+    # The resolved versions were computed and printed one line above the
+    # failure, and report.version_table reads them off the REPORT rather than
+    # off the log -- so without them the summary cannot say which release the
+    # red leg had that the green one did not.
+    import report as report_module
+
+    assert report_module.resolved_versions(reports[0]), reports[0].keys()
+    table = report_module.version_table(
+        [reports[0], {"label": "control", "versions_flat": {"transformers": "4.57.6"}}]
+    )
+    assert any("| package | control |" in line for line in table), table
+
 
 def test_an_install_that_cannot_be_resolved_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
     """Three exhausted pip attempts used to raise without reporting anything.
