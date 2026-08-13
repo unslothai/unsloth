@@ -1969,7 +1969,61 @@ fi
 if [ "$_setup_gpucheck_no_torch" = false ] && [ -f "$VENV_DIR/.unsloth-no-torch" ]; then
     _setup_gpucheck_no_torch=true
 fi
-if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } \
+# "AMD gets GPU wheels here", NOT "an AMD GPU is present" -- the POSIX half of $AmdHasGpuWheels
+# (setup.ps1:2593). _setup_amd_detected is equally true on arches Unsloth deliberately routes to
+# CPU torch (Vega, RDNA1, and every host whose arch cannot be read at all), so without this the
+# report below accuses those hosts of a fault on every `unsloth studio update` for behaving
+# exactly as designed. UNSLOTH_TORCH_BACKEND does not cover them: `studio update` runs this file
+# and never install.sh, so it is unset on precisely the repeat path.
+#
+# Sourced from Unsloth's OWN routing rather than AMD's support matrix, so the two cannot drift:
+#   install.sh:2852 _amd_arch_index_family_for_gfx -- AMD per-arch wheels (repo.amd.com/rocm/whl),
+#                                                     the shared half, identical to setup.ps1's
+#                                                     $_rocmWheelArches
+#   install.sh:4298 gfx906 -> the rocm6.3 index    -- MI50 / Radeon VII, the last wheel family
+#                                                     carrying gfx906 kernels
+#   gfx950/942/906/900                             -- carried by the GENERIC rocm index a ROCm
+#                                                     host resolves in get_torch_index_url, which
+#                                                     is arch-independent: upstream builds these
+#                                                     into every wheel (PYTORCH_ROCM_ARCH in
+#                                                     pytorch .ci/docker/manywheel/build.sh, and
+#                                                     the rocBLAS kernels are present in the
+#                                                     published torch 2.6-2.11 +rocm wheels)
+# The last four are Linux-only, which is why setup.ps1's list has none of them: AMD publishes no
+# Windows ROCm wheels for MI-series or Vega. Deliberately still absent: gfx803 (Polaris) and
+# gfx1010/1011/1012 (RDNA1), which appear in NO upstream wheel and no index install.sh routes to,
+# so their CPU torch is correct and reporting it accuses a working host.
+# test_torch_gpu_visibility_8473.py pins both directions of that relationship.
+# Normalised first: UNSLOTH_ROCM_GFX_ARCH lands in $_setup_gfx verbatim (setup.sh:1837), so a
+# copied HIP gcnArchName ("gfx906:sramecc-:xnack-") or a capitalised arch must still match.
+# Shell expansion only, no `tr`: coreutils is exactly what the minimal images this probe is
+# bounded for are missing, and a failed pipe here would empty the arch and read EVERY AMD host as
+# unwheeled -- silencing the whole report instead of the three host shapes it is meant to spare.
+# Same reasoning as the mask check above. ${x,,} would be shorter and is bash 4, which macOS's
+# /bin/bash 3.2 cannot even parse, so the arms carry the letter class instead.
+_setup_amd_wheel_arch="${_setup_gfx:-}"
+_setup_amd_wheel_arch="${_setup_amd_wheel_arch//[[:space:]]/}"
+_setup_amd_wheel_arch="${_setup_amd_wheel_arch%%:*}"
+case "$_setup_amd_wheel_arch" in
+    [Gg][Ff][Xx]*) _setup_amd_wheel_arch="gfx${_setup_amd_wheel_arch#???}" ;;
+esac
+_setup_amd_has_gpu_wheels=false
+case "$_setup_amd_wheel_arch" in
+    gfx1201|gfx1200|gfx1151|gfx1150|gfx1152|gfx1103|gfx1102|gfx1101|gfx1100) _setup_amd_has_gpu_wheels=true ;;
+    gfx1036|gfx1035|gfx1034|gfx1033|gfx1032|gfx1031|gfx1030)                 _setup_amd_has_gpu_wheels=true ;;
+    gfx950|gfx942|gfx90[aA]|gfx908|gfx906|gfx900)                            _setup_amd_has_gpu_wheels=true ;;
+esac
+# An explicit GPU index pin still reconciles on an arch with no wheels of its own: the user asked
+# for that index, so a torch that cannot see the GPU afterwards is worth reporting. Mirrors
+# $_amdPinIsGpu (setup.ps1:2664). The "cpu" leaf is excluded by the condition below, so a non-empty
+# leaf reaching here is a GPU pin.
+_setup_gpucheck_pin_is_gpu=false
+if [ -n "$_setup_gpucheck_pin_leaf" ]; then
+    _setup_gpucheck_pin_is_gpu=true
+fi
+if { [ "$_setup_nvidia_usable" = true ] \
+     || { [ "$_setup_amd_detected" = true ] \
+          && { [ "$_setup_amd_has_gpu_wheels" = true ] || [ "$_setup_gpucheck_pin_is_gpu" = true ]; }; }; } \
     && [ "$_setup_gpucheck_pin_leaf" != "cpu" ] \
     && [ "${UNSLOTH_TORCH_BACKEND:-}" != "cpu" ] \
     && [ "$_setup_gpucheck_masked" = false ] \

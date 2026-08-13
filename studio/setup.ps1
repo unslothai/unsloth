@@ -2724,6 +2724,18 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
 }
 
+# Backstop, and a no-op against the chain above: every AMD arm in it already assigns
+# $script:GpuSummaryAnnounced, with this exact value and this exact gate. It is here because the
+# chain is the part of this file that keeps growing an arm, and an arm that forgets the assignment
+# does not fail loudly -- it silently drops the reconciliation below on a host that genuinely does
+# expect a GPU, which is the bug the report exists to catch. Cannot announce anything the arms
+# would not: same $AmdHasGpuWheels -or $_amdPinIsGpu gate, and it only ever fills in a $null.
+if ($null -eq $script:GpuSummaryAnnounced -and
+    ($HasROCm -or $ROCmGpuLabel -or $script:ROCmGfxArch) -and
+    ($AmdHasGpuWheels -or $_amdPinIsGpu)) {
+    $script:GpuSummaryAnnounced = if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { "AMD GPU" }
+}
+
 # ============================================
 # 1a.5. Windows Long Paths (required for deep node_modules / Python paths)
 # ============================================

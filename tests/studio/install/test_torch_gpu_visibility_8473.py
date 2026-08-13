@@ -19,6 +19,7 @@ while enforcing a short one, so the hang case finishes in seconds.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -673,3 +674,200 @@ def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
     result = _run_block(block, venv, tmp_path, nvidia = True)
     assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
     assert "torch 2.9.0+xpu" in result["stdout"]
+
+
+# ── The supported-arch gate: hosts Unsloth deliberately puts on CPU torch ────────────────────
+#
+# _setup_amd_detected is "an AMD GPU is present", not "Unsloth installed GPU wheels for it".
+# install.sh routes Vega / RDNA1 / unreadable-arch hosts to CPU torch on purpose, so without the
+# gate every one of them is told, in red, on every `unsloth studio update`, that its CPU torch is
+# a fault worth filing. UNSLOTH_TORCH_BACKEND cannot cover them: `studio update` runs setup.sh and
+# never install.sh, so it is unset on exactly the repeat path. Mirrors $AmdHasGpuWheels
+# (setup.ps1:2593), which has carried this gate since it was written.
+
+
+@pytest.mark.parametrize(
+    ("gfx", "marketing"),
+    [
+        ("gfx1010", "Radeon RX 5700 XT"),  # RDNA1, no wheels in any index Unsloth uses
+        ("gfx1012", "Radeon RX 5500 XT"),  # RDNA1
+        ("gfx803", "Radeon RX 580 Series"),  # GCN4 / Polaris
+    ],
+)
+def test_an_arch_with_no_gpu_wheels_is_not_accused(block, tmp_path, gfx, marketing):
+    """CPU torch is the CORRECT outcome on these hosts, so the report is a false accusation
+    against a machine working exactly as designed -- and it repeats on every update."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx, marketing = marketing)
+    assert "gpu check" not in result["stdout"]
+    assert "unsloth/issues" not in result["stdout"]
+    # Cheap as well as quiet: nothing to reconcile, so the update must not pay for an
+    # interpreter launch either.
+    assert result["calls"] == ""
+    assert result["returncode"] == 0
+
+
+def test_an_unreadable_arch_is_not_accused(block, tmp_path):
+    """The KFD-sysfs path: /dev/kfd names an AMD vendor_id but no gfx arch is available from it,
+    and rocminfo/amd-smi are missing. get_torch_index_url cannot route GPU wheels without an
+    arch (install.sh:3330 warns and returns the cpu index), so there is nothing to reconcile.
+    Blast radius is why this case matters: it is EVERY AMD host whose arch cannot be read, not a
+    named arch, and all of them get CPU torch by definition."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "", marketing = "")
+    assert "gpu check" not in result["stdout"]
+    assert result["calls"] == ""
+    assert result["returncode"] == 0
+
+
+@pytest.mark.parametrize("gfx", ["gfx1201", "gfx1100", "gfx1030", "gfx90a", "gfx908"])
+def test_an_arch_with_gpu_wheels_is_still_reported(block, tmp_path, gfx):
+    """The other direction, and the whole point of #8473: these arches DO get GPU wheels, so
+    CPU torch on them is the contradiction the report exists for. A gate that silenced these
+    would delete the feature."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+    assert f"SUB|detected by the installer: AMD ROCm ({gfx})|ERR" in result["stdout"]
+
+
+@pytest.mark.parametrize("gfx", ["gfx942", "gfx950", "gfx906", "gfx900"])
+def test_the_linux_only_arches_are_reported(block, tmp_path, gfx):
+    """These four are why the POSIX list is not a copy of setup.ps1's. gfx906 (MI50 / Radeon VII)
+    also gets GPU wheels from Unsloth's own rocm6.3 reroute (install.sh:4298); all four are built
+    into the generic rocm wheels a ROCm host resolves (upstream PYTORCH_ROCM_ARCH carries
+    gfx900/906/908/90a/942 for every release 2.6-2.11, and gfx950 from 2.10). None are in
+    $_rocmWheelArches because AMD publishes no Windows wheels for them, so copying that list
+    verbatim would go silent on a broken MI300 -- the flagship Linux part."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.4"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.4"},
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "cu128"},
+    ],
+)
+def test_a_gpu_index_pin_reconciles_even_on_an_unwheeled_arch(block, tmp_path, env):
+    """An explicit GPU index pin is a request for GPU wheels, so torch failing to see the GPU
+    afterwards is worth reporting even on an arch with no wheels of its own -- the user asked
+    for that index and install.sh honours the pin verbatim. Matches $_amdPinIsGpu
+    (setup.ps1:2664) rather than inventing a third behaviour for the same situation."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1010", env = env)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_a_cpu_pin_still_wins_over_a_wheeled_arch(block, tmp_path):
+    """The new gate widens suppression; it must not narrow the exclusions already there."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"UNSLOTH_TORCH_INDEX_FAMILY": "cpu"},
+    )
+    assert "gpu check" not in result["stdout"]
+    assert result["calls"] == ""
+
+
+@pytest.mark.parametrize(
+    ("gfx", "reported"),
+    [
+        ("GFX1201", True),  # UNSLOTH_ROCM_GFX_ARCH is not lowercased on the way in
+        ("gfx906:sramecc-:xnack-", True),  # a copied HIP gcnArchName
+        ("  gfx1201  ", True),
+        ("GFX1010", False),  # normalisation must not become a bypass
+        ("gfx803:xnack-", False),
+    ],
+)
+def test_the_arch_is_normalised_before_the_membership_test(block, tmp_path, gfx, reported):
+    """$_setup_gfx takes UNSLOTH_ROCM_GFX_ARCH verbatim (setup.sh:1837), so an unnormalised
+    comparison would both miss real GPU hosts and hand every accused host a one-variable bypass."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
+    assert ("PyTorch cannot see the AMD GPU reported above" in result["stdout"]) is reported
+
+
+def test_the_nvidia_path_is_untouched_by_the_amd_arch_gate(block, tmp_path):
+    """An NVIDIA host never assigns $_setup_gfx at all, and setup.sh runs under `set -u`."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, nvidia = True, gfx = "")
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
+    assert result["returncode"] == 0
+
+
+# ── Drift guards for the arch list ──────────────────────────────────────────────────────────
+
+
+def _posix_wheel_arches() -> set[str]:
+    """The gfx arches setup.sh's gate accepts, parsed out of the real case block."""
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    start = text.index("_setup_amd_has_gpu_wheels=false")
+    end = text.index("esac", start)
+    # gfx90[aA] -> gfx90a: the arms carry a letter class because the arch is normalised with
+    # shell expansion only (no `tr`), so the class is part of the real pattern.
+    body = re.sub(r"\[([a-zA-Z])[a-zA-Z]*\]", lambda m: m.group(1).lower(), text[start:end])
+    found = set(re.findall(r"gfx[0-9a-z]+", body))
+    assert found, "the arch list is no longer parseable out of setup.sh"
+    return found
+
+
+def _windows_wheel_arches() -> set[str]:
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    start = text.index("$_rocmWheelArches = @(")
+    # To the closing paren on its own line: entries carry trailing comments that contain
+    # parentheses ("# RDNA 2 (RX 6000)"), so the first ")" is not the end of the array.
+    end = text.index("\n)", start)
+    found = set(re.findall(r'"(gfx[0-9a-z]+)"', text[start:end]))
+    assert found, "$_rocmWheelArches is no longer parseable out of setup.ps1"
+    return found
+
+
+def _install_sh_family_arches() -> set[str]:
+    text = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+    start = text.index("_amd_arch_index_family_for_gfx() {")
+    end = text.index("esac", start)
+    found = set(re.findall(r"(gfx[0-9a-z]+)\|?(?=[|)])", text[start:end]))
+    assert found, "_amd_arch_index_family_for_gfx is no longer parseable out of install.sh"
+    return found
+
+
+def test_every_arch_unsloth_routes_gpu_wheels_to_is_in_the_posix_gate():
+    """The gate's authority is install.sh's own routing, not AMD's support matrix: an arch added
+    to _amd_arch_index_family_for_gfx and not here would get GPU wheels and then be silently
+    unreconcilable, which is the failure the gate must not introduce."""
+    missing = _install_sh_family_arches() - _posix_wheel_arches()
+    assert not missing, (
+        f"install.sh routes {sorted(missing)} to AMD per-arch GPU wheels, but setup.sh's "
+        f"reconciliation gate would treat those hosts as CPU-by-design and stay silent."
+    )
+
+
+def test_the_posix_gate_covers_the_windows_list():
+    """setup.sh's list is a superset of setup.ps1's, never a divergent one. The delta is
+    Linux-only by construction (gfx906 / gfx942 / gfx950 have no Windows ROCm wheels), so an
+    arch present on Windows and absent here is drift, not a platform difference."""
+    missing = _windows_wheel_arches() - _posix_wheel_arches()
+    assert (
+        not missing
+    ), f"in setup.ps1 $_rocmWheelArches but not in setup.sh's gate: {sorted(missing)}"
+    extra = _posix_wheel_arches() - _windows_wheel_arches()
+    assert extra == {"gfx900", "gfx906", "gfx942", "gfx950"}, (
+        f"unexpected POSIX-only arches {sorted(extra)}: each one needs a documented Linux "
+        f"routing path in install.sh, or it silences a host that does get GPU wheels."
+    )
+
+
+def test_the_known_unwheeled_arches_are_absent_from_both_lists():
+    """Pins the reported hosts themselves: an arch quietly added here would restore the false
+    accusation these tests exist to prevent."""
+    for arch in ("gfx803", "gfx1010", "gfx1011", "gfx1012"):
+        assert arch not in _posix_wheel_arches()
+        assert arch not in _windows_wheel_arches()
