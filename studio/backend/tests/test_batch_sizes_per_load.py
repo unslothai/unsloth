@@ -269,7 +269,12 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
         big = route._estimate_gguf_required_gb(
             config, max_seq_length = 32768, n_batch = 65536, n_ubatch = 65536
         )
-    assert base > 1.5
+    # the defaults emit no flag but still launch at a 512-token micro-batch, whose mask
+    # is 32768 x 512 x 2 x 1.5 = 48 MiB over the 1 GiB of weights, plus the 72 MiB
+    # activation scratch every load reserves whatever its slot count
+    assert base == pytest.approx(
+        1.0 + (32768 * 512 * 2 * 1.5 + 4 * 8192 * 512 * 4 * 1.15) / 1024**3
+    )
     # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
     assert big > base + 2.0
 
@@ -665,12 +670,20 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
         big_2 = _gb(n_parallel = 2, n_batch = 32768, n_ubatch = 32768)
         typical_4 = _gb(n_parallel = 4, n_batch = 2048, n_ubatch = 512)
 
-    # Unset fields still launch at llama.cpp's known default 512-token micro-batch.
-    assert blank_1 > 1.5
+    # Unset fields still launch at llama.cpp's known default 512-token micro-batch, so
+    # its mask is charged, and so is the activation scratch, but one slot reserves no
+    # output buffer (the measured 36 MiB at one slot IS the scratch).
+    assert blank_1 == pytest.approx(
+        1.0 + (32768 * 512 * 2 * 1.5 + 4 * 8192 * 512 * 4 * 1.15) / 1024**3
+    )
+    # three output buffers for four slots, 0.575 GiB each at the default micro-batch
     assert blank_4 > blank_1 + 1.5
-    # The remote header may enable embeddings, so the first output buffer is charged.
-    assert big_1 > blank_1 + 30.0
-    # 262144 * 32768 * 4 = 32 GiB for the second slot too.
+    # one slot pays the mask and the scratch, no output buffer: the mask is
+    # 32768 x 32768 x 2 x 1.5 = 3 GiB and the scratch 4 x 8192 x 32768 x 4 x 1.15 = 4.6 GiB
+    assert big_1 == pytest.approx(
+        1.0 + (32768 * 32768 * 2 * 1.5 + 4 * 8192 * 32768 * 4 * 1.15) / 1024**3
+    )
+    # 262144 * 32768 * 4 = 32 GiB for the second slot, which the mask alone missed
     assert big_2 > big_1 + 30.0
     # and it stays proportionate where the values are ordinary
     assert typical_4 < 4.0
@@ -703,3 +716,106 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
     assert layer_2 - layer_1 < 30.0
     # tensor mode replicates the whole buffer on every card, so it does roughly double
     assert tensor_2 > tensor_1 * 1.8
+
+
+def test_the_remote_guard_charges_the_single_slot_activation_scratch():
+    """One slot reserves no output buffer, but it does reserve the activation scratch:
+    4 * n_embd * ubatch * 4 is the whole of the 36 MiB _estimate_compute_buffer_bytes was
+    measured against at --parallel 1, and that branch charges it at every slot count. So
+    the ceiling output buffer, which multiplies by (slots - 1), covers nothing at one slot
+    and a one-slot remote estimate would carry the KQ mask alone. That is the guard reading
+    LOW against the same model once it is cached -- 4.6 GiB low at an explicit 32768-token
+    micro-batch -- which is the direction that admits a load and OOMs the training run.
+    The remote estimate must not fall under what the cached path charges for the same
+    launch."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
+    )
+    remote_variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+    with (
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            return_value = ([remote_variant], False),
+        ),
+        patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+    ):
+        one_slot = route._estimate_gguf_required_gb(
+            config, max_seq_length = 32768, n_parallel = 1, n_batch = 32768, n_ubatch = 32768
+        )
+        one_slot_default = route._estimate_gguf_required_gb(
+            config, max_seq_length = 32768, n_parallel = 1
+        )
+
+    # what the same weights cost once they are on disk and the header is readable
+    cached = LlamaCppBackend.__new__(LlamaCppBackend)
+    cached._vocab_size = 151936
+    cached._embedding_length = 8192  # Llama-3-70B / Qwen2.5-72B, the ceiling assumed remotely
+    cached._pooling_type = None  # a chat GGUF, so no first-slot output buffer either side
+    weights_and_mask = 1.0 + 32768 * 32768 * 2 * 1.5 / 1024**3
+    cached_flat = cached._estimate_compute_buffer_bytes(n_ubatch = 32768, n_parallel = 1) / 1024**3
+    assert cached_flat > 4.5  # the scratch is 4.6 GiB here, not a rounding term
+    assert one_slot == pytest.approx(weights_and_mask + cached_flat)
+    # and the same holds at the default micro-batch, where it is only 72 MiB
+    cached_flat_default = (
+        cached._estimate_compute_buffer_bytes(n_ubatch = 512, n_parallel = 1) / 1024**3
+    )
+    assert one_slot_default == pytest.approx(
+        1.0 + 32768 * 512 * 2 * 1.5 / 1024**3 + cached_flat_default
+    )
+
+
+def test_the_remote_reserve_tracks_what_the_cached_path_charges():
+    """The invariant behind the slot count. A remote estimate and a cached one price the
+    same launch, and the guard 409s on the difference, so remote must sit just ABOVE
+    cached for a chat model rather than half a gigabyte above it. Measured here against
+    _estimate_compute_buffer_bytes, the header-readable branch this one stands in for.
+
+    The residual: a remote EMBEDDING GGUF reads low, because that branch charges an output
+    buffer at every slot and this one cannot know it is an embedding model. It is bounded
+    by the model's real vocab and those repos are small (Qwen3-Embedding-0.6B is the large
+    end), so it is the same small-half under-charge the activation scratch used to be,
+    where charging it costs every chat load half a gigabyte of headroom.
+    """
+    from unittest.mock import patch
+
+    from core.inference.llama_cpp import LlamaCppBackend
+    from routes import inference as route
+
+    backend = LlamaCppBackend()
+    backend._vocab_size, backend._embedding_length = 151936, 5120
+
+    def cached_flat_gb(n_parallel, embedding):
+        with patch.object(
+            type(backend), "is_embedding_gguf", property(lambda self: embedding)
+        ):
+            return (
+                backend._estimate_compute_buffer_bytes(
+                    n_ubatch = 512, n_parallel = n_parallel
+                )
+                / 1024**3
+            )
+
+    for slots in (1, 2, 4):
+        remote = route._remote_gguf_compute_reserve_gb(n_parallel = slots)
+        cached = cached_flat_gb(slots, False)
+        # Never under the cached figure: that is the direction that OOMs the training job.
+        assert remote >= cached, (slots, remote, cached)
+
+    # And at one slot, not a whole output buffer over it either, which is what charging the
+    # first slot did: 0.575 GiB of headroom taken from every uncached chat load, on a guard
+    # that answers 409. Above one slot the gap widens legitimately, since the vocab ceiling
+    # is wider than any real model's.
+    one_ceiling_buffer = (route._ASSUMED_MAX_VOCAB * 512 * 4) / 1024**3
+    gap_at_one_slot = route._remote_gguf_compute_reserve_gb(n_parallel = 1) - cached_flat_gb(
+        1, False
+    )
+    assert 0 <= gap_at_one_slot < one_ceiling_buffer / 4, gap_at_one_slot
