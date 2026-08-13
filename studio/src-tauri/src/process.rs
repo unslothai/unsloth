@@ -1345,6 +1345,11 @@ fn names_a_path(name: &str, value: &str) -> bool {
     true
 }
 
+/// Names every managed spawn removes before starting the child: Tauri uses the
+/// legacy Studio root whatever the environment says. Resolving one can only
+/// invent a failure for a value the child is never going to see.
+const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
+
 fn relative_override_pins_from(
     cwd: Option<std::path::PathBuf>,
     work_dir: &std::path::Path,
@@ -1352,6 +1357,22 @@ fn relative_override_pins_from(
     absolute: impl Fn(&str) -> Option<std::path::PathBuf>,
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     let Some(cwd) = cwd else {
+        // The directory being left is unknown, so nothing can be anchored to it.
+        // Moving anyway would quietly retarget every relative value at the new
+        // directory, so this is only survivable with nothing left to preserve.
+        for name in RELATIVE_PATH_ENV.iter().chain(PATH_LIST_ENV) {
+            if MANAGED_CHILD_SCRUBBED_ENV.contains(name) {
+                continue;
+            }
+            let Some(value) = lookup(name) else { continue };
+            let value = value.trim();
+            if value.is_empty() || value.starts_with('~') || is_fully_qualified(value) {
+                continue;
+            }
+            return Err(format!(
+                "{name} is relative and the directory it was written against is gone"
+            ));
+        }
         return Ok(Vec::new());
     };
     // The usual case: the child keeps the directory it inherited, so every
@@ -1383,6 +1404,9 @@ fn relative_override_pins_from(
     };
     let mut pins = Vec::new();
     for name in RELATIVE_PATH_ENV {
+        if MANAGED_CHILD_SCRUBBED_ENV.contains(name) {
+            continue;
+        }
         let Some(value) = lookup(name) else { continue };
         let original = value.trim().to_string();
         let value = expanded(name, &original);
@@ -1520,6 +1544,11 @@ pub(crate) fn apply_managed_cli_context_at(
     if needs_explicit_cwd(work_dir) {
         cmd.current_dir(work_dir);
     }
+    // Removed here as well as at the call sites, so the skip above is a fact
+    // about the child rather than an assumption about every caller.
+    for name in MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
 }
@@ -1533,6 +1562,9 @@ pub(crate) fn apply_managed_cli_context_tokio(
     }
     if needs_explicit_cwd(&work_dir) {
         cmd.current_dir(&work_dir);
+    }
+    for name in MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
@@ -1780,7 +1812,19 @@ pub fn start_backend(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    apply_managed_cli_context_at(&mut cmd, &work_dir).unwrap();
+    if let Err(error) = apply_managed_cli_context_at(&mut cmd, &work_dir) {
+        // The drive holding an override can go between the preflight check and
+        // this call, and a panic in the spawn path takes the desktop with it.
+        let msg = format!("Failed to prepare the Unsloth backend command: {}", error);
+        diagnostics::record_backend_start_failure(
+            diagnostics_state,
+            Some(port),
+            None,
+            "managed_cli_context",
+            &msg,
+        );
+        return Err(msg);
+    }
 
     #[cfg(windows)]
     cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
@@ -2920,7 +2964,9 @@ mod managed_cli_working_dir_tests {
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
             "HF_HOME" => Some("cache".to_string()),
-            "UNSLOTH_STUDIO_HOME" => Some("  studio  ".to_string()),
+            // A name the child keeps: the two Studio roots are removed for
+            // every managed spawn, so they are never pinned.
+            "UNSLOTH_COMPILE_LOCATION" => Some("  studio  ".to_string()),
             "OLLAMA_MODELS" => Some("D:\\models".to_string()),
             "HF_HUB_CACHE" => Some("~/hub".to_string()),
             "XDG_CACHE_HOME" => Some("   ".to_string()),
@@ -2942,13 +2988,13 @@ mod managed_cli_working_dir_tests {
         assert_eq!(
             pins,
             vec![
-                ("UNSLOTH_STUDIO_HOME", cwd.join("studio")),
                 // Root-relative: the drive is the current one, which the move
                 // can change, so the OS resolves it before that happens.
                 (
                     "LLAMA_SERVER_PATH",
                     PathBuf::from("C:\\srv\\llama-server")
                 ),
+                ("UNSLOTH_COMPILE_LOCATION", cwd.join("studio")),
                 ("HF_HOME", cwd.join("cache")),
                 (
                     "HF_DATASETS_CACHE",
@@ -2970,9 +3016,22 @@ mod managed_cli_working_dir_tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(relative_override_pins_from(None, &work_dir, env, absolute)
-            .unwrap()
-            .is_empty());
+        // The directory being left is unknown, so a relative override cannot be
+        // anchored to it and the move is refused rather than retargeting it.
+        assert!(relative_override_pins_from(None, &work_dir, env, absolute).is_err());
+        // With nothing relative left to preserve, an unknown directory is fine.
+        let absolute_only = |name: &str| match name {
+            "HF_HOME" => Some("D:\\cache".to_string()),
+            "HF_HUB_CACHE" => Some("~/hub".to_string()),
+            // Removed for every managed child, so never in the way.
+            "UNSLOTH_STUDIO_HOME" => Some("studio".to_string()),
+            _ => None,
+        };
+        assert!(
+            relative_override_pins_from(None, &work_dir, absolute_only, absolute)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3358,7 +3417,7 @@ mod managed_cli_working_dir_tests {
             &work_dir,
             |name| match name {
                 "UNSLOTH_LLAMA_CPP_PATH" => Some("[llama]".to_string()),
-                "UNSLOTH_STUDIO_HOME" => Some("%data%".to_string()),
+                "UNSLOTH_COMPILE_LOCATION" => Some("%data%".to_string()),
                 _ => None,
             },
             |_| None,
@@ -3367,8 +3426,8 @@ mod managed_cli_working_dir_tests {
         assert_eq!(
             pins,
             vec![
-                ("UNSLOTH_STUDIO_HOME", cwd.join("%data%")),
                 ("UNSLOTH_LLAMA_CPP_PATH", cwd.join("[llama]")),
+                ("UNSLOTH_COMPILE_LOCATION", cwd.join("%data%")),
             ],
             "a legal directory name was mistaken for JSON or a placeholder"
         );

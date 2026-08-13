@@ -640,6 +640,7 @@ def check_working_directory(
     home_isdir = None,
     syspath = None,
     expandvars = None,
+    relocate = True,
 ):
     """Decide what to do about the current working directory.
 
@@ -669,11 +670,18 @@ def check_working_directory(
     if not is_system_dir(cwd, windirs, pathmod, sep):
         return None, None, False
 
-    if not is_relocatable_invocation(argv, environ):
+    if not relocate or not is_relocatable_invocation(argv, environ):
+        # `relocate = False` is the imported-as-a-library case: the caller has
+        # already loaded the command modules, so a move now would be too late for
+        # the roots they resolved at import time.
         return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
 
     target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs, home_isdir)
     unpinnable = None
+    # Both are the caller's own process state when the guard runs inside a host,
+    # so nothing is left rewritten unless the move actually happens.
+    environ_before = dict(environ)
+    syspath_before = list(syspath) if syspath is not None else None
     if target is not None:
         try:
             # Before moving, or a relative override the caller wrote would end up
@@ -703,6 +711,13 @@ def check_working_directory(
                     target = None
             except OSError:
                 target = None
+    if target is None:
+        # Nothing moved, so nothing stays rewritten: put back what pinning wrote.
+        if environ_before != environ:
+            environ.clear()
+            environ.update(environ_before)
+        if syspath_before is not None and syspath_before != syspath:
+            syspath[:] = syspath_before
     if unpinnable is not None:
         # Named separately from the profile case below: blaming the user folder
         # for an override that could not be preserved sends them looking in the

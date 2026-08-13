@@ -1270,3 +1270,43 @@ def test_cli_guard_expands_a_hyphenated_name_the_way_ntpath_does():
     )
     assert colour == "yellow"
     assert environ_out["HF_HOME"] == r"C:\right\hf"
+
+
+def test_cli_guard_puts_back_what_it_pinned_when_the_move_fails():
+    r"""Inside a host process the environment and sys.path are the caller's, so a
+    chdir that fails must not leave them rewritten as though it had moved."""
+    environ_out: dict[str, str] = {}
+    syspath = ["lib", r"C:\Python\Lib"]
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {"HF_HOME": "cache", "PYTHONPATH": "lib"},
+        environ_out = environ_out,
+        syspath = syspath,
+        real_dirs = ("lib",),
+        chdir_error = PermissionError("access denied"),
+    )
+    assert (colour, chdir_calls) == ("red", [_RELOCATED])
+    assert environ_out["HF_HOME"] == "cache"
+    assert environ_out["PYTHONPATH"] == "lib"
+    assert syspath == ["lib", r"C:\Python\Lib"]
+
+
+def test_cli_guard_will_not_relocate_once_the_commands_are_imported():
+    r"""A host that imports the app has already resolved STUDIO_HOME, so a move
+    from the callback would leave that cached root in the folder being left."""
+    outcome = _system_dir_guard.check_working_directory(
+        ["studio", "--api-only"],
+        {"WINDIR": r"C:\Windows", "USERPROFILE": r"C:\Users\me"},
+        "win32",
+        getcwd = lambda: r"C:\Windows\System32",
+        chdir = lambda _target: pytest.fail("a library call must not move the host"),
+        pathmod = ntpath,
+        sep = "\\",
+        expanduser = lambda _p: r"C:\Users\me",
+        isdir = lambda path: ntpath.normcase(path) == ntpath.normcase(r"C:\Windows\System32"),
+        relocate = False,
+    )
+    message, colour, fatal = outcome
+    assert (colour, fatal) == ("red", True)
+    assert message is not None

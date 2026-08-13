@@ -146,7 +146,16 @@ def main(
     global _startup_guard
     _guard, _startup_guard = _startup_guard, None
     if _guard is None:
-        _guard = _check_working_directory(_invocation_args(ctx), _os.environ, _sys.platform)
+        # A host reaches this after unsloth_cli.commands.studio has already
+        # resolved STUDIO_HOME at import time, so moving now would leave that
+        # cached root behind in the folder being left. The console script never
+        # gets here: it is checked above, before any command is imported.
+        _guard = _check_working_directory(
+            _invocation_args(ctx),
+            _os.environ,
+            _sys.platform,
+            relocate = False,
+        )
     _message, _colour, _fatal = _guard
     if _message is not None:
         typer.secho(_message, fg = _colour, err = True)
