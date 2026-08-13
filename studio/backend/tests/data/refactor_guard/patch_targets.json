@@ -934,7 +934,7 @@
   "utils.hardware.hardware._smi_query": [
     "tests/test_gpu_selection.py"
   ],
-  "utils.hardware.hardware._torch_get_per_device_info": [
+  "utils.hardware.hardware._torch_get_device_inventory": [
     "tests/test_gpu_selection.py"
   ],
   "utils.hardware.hardware._torch_get_physical_gpu_count": [

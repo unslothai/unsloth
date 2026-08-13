@@ -36,7 +36,10 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  attachmentsPastedText,
+  isPastedTextFile,
   pasteClipboardFiles,
+  pasteLongTextAsFile,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -100,7 +103,10 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
-import { parseExternalModelId } from "@/features/chat/external-providers";
+import {
+  parseExternalModelId,
+  providerModelSupportsStudioTools,
+} from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
@@ -139,6 +145,11 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
+  composerPasteDraftKey,
+  createPastedTextFile,
+  pastedTextOf,
+  readPasteDraft,
+  writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
   type PromptQueueRunFailedEventDetail,
@@ -240,6 +251,7 @@ import {
   type ReactNode,
   Fragment,
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -1327,11 +1339,13 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
+// Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
+// would otherwise reconcile the whole message list.
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
+}> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -1642,7 +1656,8 @@ export const Thread: FC<{
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
-};
+});
+Thread.displayName = "Thread";
 
 const GeneratedImageViewportOverlay: FC<{
   hideComposer?: boolean;
@@ -2041,16 +2056,17 @@ const Composer: FC<{
   const researchThreadClaimed = useResearchRunStore((state) =>
     researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
   );
-  const activeResearchRun = useResearchRunStore((state) => {
+  // Derive in the selector, as useThreadResearchActive does: a bare run selector re-renders the
+  // composer on every streamed research delta.
+  const isResearchActive = useResearchRunStore((state) => {
     const runId = researchThreadId
       ? state.latestRunByThreadId[researchThreadId]
       : undefined;
-    return runId ? state.sessions[runId]?.run : undefined;
+    const run = runId ? state.sessions[runId]?.run : undefined;
+    return Boolean(
+      run && !["completed", "failed", "cancelled"].includes(run.status),
+    );
   });
-  const isResearchActive = Boolean(
-    activeResearchRun &&
-      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
-  );
   const hasResearchMessage = useAuiState(({ thread }) =>
     thread.messages.some((message) => {
       const custom = (
@@ -2098,6 +2114,35 @@ const Composer: FC<{
     useImeComposerInputHandlers({ submitOnEnter: true });
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Bulk text pastes attach as a file instead of filling the input, except
+      // in image-edit mode, whose submit path takes an inline instruction only.
+      const input = event.currentTarget;
+      // An attachment is serialised after all inline text, so only a paste that
+      // was already heading to the end can become one. Mid-text pastes stay
+      // inline, where the order the user typed them in survives.
+      const pasteGoesLast = input.selectionEnd === input.value.length;
+      const { selectionStart, selectionEnd, value } = input;
+      // Swallowing the paste also swallowed the replacement the browser would
+      // have made. Only once the attachment is in, and only if the composer is
+      // still the one that was pasted into, or a failed paste eats the text.
+      const dropReplacedSelection = () => {
+        if (selectionStart === selectionEnd) return;
+        const composer = aui.composer();
+        if (composer.getState().text !== value) return;
+        composer.setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
+      };
+      const attachedPastedText = !overlay && pasteGoesLast && pasteLongTextAsFile(
+        event,
+        async (file) => {
+          await aui.composer().addAttachment(file);
+          dropReplacedSelection();
+        },
+        () =>
+          toast.error("Could not attach the pasted text.", {
+            description: "Paste it again, or paste it in smaller pieces.",
+          }),
+      );
+      if (attachedPastedText) return;
       pasteClipboardFiles(
         event,
         async (files) => {
@@ -2111,7 +2156,7 @@ const Composer: FC<{
           }),
       );
     },
-    [aui],
+    [aui, overlay],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -2153,6 +2198,19 @@ const Composer: FC<{
     composer.attachments.some(
       (attachment) => attachment.status.type === "running",
     ),
+  );
+  const attachmentsAreAllPastedText = useAuiState(
+    ({ composer }) =>
+      composer.attachments.length > 0 &&
+      composer.attachments.every((attachment) =>
+        isPastedTextFile((attachment as { file?: File }).file),
+      ),
+  );
+  // Identities only: paste autosave keys off this, and the bodies behind it can
+  // be megabytes. Every attachment counts, not just pasted ones, so removing an
+  // ordinary file also releases the paste restore waiting on it.
+  const composerAttachmentSignature = useAuiState(({ composer }) =>
+    composer.attachments.map((attachment) => attachment.id).join(","),
   );
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
@@ -2499,9 +2557,7 @@ const Composer: FC<{
   );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  const canQueueCurrentPrompt =
-    composerText.trim().length > 0 &&
-    !hasAttachments &&
+  const composerAcceptsQueueing =
     !hasPendingAudio &&
     !isComposing &&
     !hasPendingAttachments &&
@@ -2509,6 +2565,12 @@ const Composer: FC<{
     !hasMaterializingAudioAttachments &&
     !disabled &&
     !overlay;
+  const canQueueCurrentPrompt =
+    composerText.trim().length > 0 && !hasAttachments && composerAcceptsQueueing;
+  // A long paste is text the composer parked in a chip, so it queues like the
+  // same text did before it attached, rather than being refused as a file.
+  const canQueuePastedTextPrompt =
+    attachmentsAreAllPastedText && composerAcceptsQueueing;
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
@@ -2517,7 +2579,15 @@ const Composer: FC<{
   // previous thread's composer contents.
   const draftThreadId = referenceThreadId;
   const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
+  // A pasted attachment is a File held in memory only, so without its own slot
+  // an unsent paste is the one draft a reload throws away.
+  const pasteDraftKey = draftThreadId
+    ? composerPasteDraftKey(draftThreadId)
+    : null;
   const lastDraftKeyRef = useRef(draftKey);
+  // Which key the paste restore has finished for. The save effect writes only
+  // for that key, so a draft is never cleared before it has been put back.
+  const restoredPasteKeyRef = useRef<string | null>(null);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
@@ -2526,6 +2596,43 @@ const Composer: FC<{
       composer.setText(draft);
     }
   }, [draftKey, aui]);
+  // Separate from the text restore above, which must stay keyed on the draft
+  // alone: this one retries on attachment changes, and rewriting the composer
+  // text on those would drop whatever had been typed since the last autosave.
+  useEffect(() => {
+    const composer = aui.composer();
+    if (!composer.getState().isEditing) return;
+    if (restoredPasteKeyRef.current === pasteDraftKey) return;
+    // The composer outlives a thread switch, so restore only into an empty one
+    // rather than mixing this thread's draft with whatever the last one left.
+    // Changing attachments re-runs this effect, which is how the retry happens.
+    if (composer.getState().attachments.length > 0) return;
+    const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
+    if (stored.length === 0) {
+      restoredPasteKeyRef.current = pasteDraftKey;
+      return;
+    }
+    // Claim the key only once the attachments are in, so the save effect
+    // cannot write an empty composer over the draft still being restored.
+    void Promise.all(
+      stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
+    ).finally(() => {
+      restoredPasteKeyRef.current = pasteDraftKey;
+    });
+  }, [pasteDraftKey, composerAttachmentSignature, aui]);
+  // Keyed on the paste identities, never their bodies, so typing beside a
+  // megabyte paste does not rewrite it to localStorage every 300ms.
+  useEffect(() => {
+    if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
+    const pastes = aui
+      .composer()
+      .getState()
+      .attachments.flatMap((attachment) => {
+        const text = pastedTextOf((attachment as { file?: File }).file);
+        return text === undefined ? [] : [text];
+      });
+    writePasteDraft(pasteDraftKey, pastes);
+  }, [composerAttachmentSignature, pasteDraftKey, aui]);
   useEffect(() => {
     // After a thread switch composerText can still hold the previous
     // thread's text; skip that cycle so it isn't saved under the new key.
@@ -2543,9 +2650,11 @@ const Composer: FC<{
   // Without this the restore effect above puts the sent text back when the
   // runtime rebinds on the first message.
   const draftKeyRef = useRef(draftKey);
+  const pasteDraftKeyRef = useRef(pasteDraftKey);
   useEffect(() => {
     draftKeyRef.current = draftKey;
-  }, [draftKey]);
+    pasteDraftKeyRef.current = pasteDraftKey;
+  }, [draftKey, pasteDraftKey]);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -2554,6 +2663,10 @@ const Composer: FC<{
     const key = draftKeyRef.current;
     if (key) {
       writeComposerDraft(key, "");
+    }
+    const pasteKey = pasteDraftKeyRef.current;
+    if (pasteKey) {
+      writePasteDraft(pasteKey, []);
     }
   }, []);
   // react-textarea-autosize re-measures only on value change or window resize,
@@ -2972,6 +3085,57 @@ const Composer: FC<{
     [createPromptQueueTarget, referenceThreadId],
   );
 
+  // The queue carries text, and a long paste is text the composer parked in a
+  // chip, so fold it back in rather than refusing to queue it as a file.
+  const queuePastedTextPrompt = useCallback(
+    (waitForCurrentRun: boolean): boolean => {
+      const composer = aui.composer();
+      const attachments = composer.getState().attachments;
+      const files: File[] = [];
+      for (const attachment of attachments) {
+        const file = (attachment as { file?: File }).file;
+        if (file === undefined || !isPastedTextFile(file)) return false;
+        files.push(file);
+      }
+      if (files.length === 0) return false;
+
+      const attachmentIds = attachments.map((attachment) => attachment.id);
+      const textAtQueue = composer.getState().text.trim();
+      void Promise.all(files.map((file) => file.text()))
+        .then((texts) => {
+          const queuedPrompt = [textAtQueue, ...texts]
+            .filter((part) => part.trim().length > 0)
+            .join("\n\n");
+          if (queuedPrompt.length === 0) return;
+          startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
+            const state = composer.getState();
+            // Only clear the composer this prompt was queued from.
+            if (
+              state.text.trim() !== textAtQueue ||
+              state.attachments.length !== attachmentIds.length ||
+              !state.attachments.every(
+                (attachment, index) => attachment.id === attachmentIds[index],
+              )
+            ) {
+              return;
+            }
+            void composer.clearAttachments();
+            flushResourcesSync(() => {
+              composer.setText("");
+            });
+            clearStoredDraft();
+          });
+        })
+        .catch(() => {
+          toast.error("Could not queue the pasted text.", {
+            description: "Show it in the text field, then send it again.",
+          });
+        });
+      return true;
+    },
+    [aui, clearStoredDraft, startHydratedPromptQueue],
+  );
+
   const dismissWaitToast = useCallback(() => {
     if (waitToastRef.current !== null) {
       toast.dismiss(waitToastRef.current);
@@ -3315,6 +3479,12 @@ const Composer: FC<{
           return;
         }
         if (!canQueueCurrentPrompt) {
+          if (
+            canQueuePastedTextPrompt &&
+            queuePastedTextPrompt(liveThreadIsRunning || livePreStreamRunActive)
+          ) {
+            return;
+          }
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
               liveThreadIsRunning
@@ -3406,6 +3576,8 @@ const Composer: FC<{
     [
       aui,
       canQueueCurrentPrompt,
+      canQueuePastedTextPrompt,
+      queuePastedTextPrompt,
       clearStoredDraft,
       closeOverlay,
       composerText,
@@ -3550,9 +3722,20 @@ const Composer: FC<{
               }
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
-              queueDisabled={disableQueue || !canQueueCurrentPrompt}
+              queueDisabled={
+                disableQueue ||
+                !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
+              }
               onQueueClick={() => {
                 if (disableQueue) return;
+                // Same pasted-text path the Enter key takes, or the button
+                // would refuse what submitting the form accepts.
+                if (
+                  canQueuePastedTextPrompt &&
+                  queuePastedTextPrompt(true)
+                ) {
+                  return;
+                }
                 const queuedPrompt = composerText.trim();
                 if (queuedPrompt.length === 0) {
                   return;
@@ -4478,7 +4661,10 @@ const ComposerToolsMenu: FC<{
   const researchDisabled =
     !researchAvailable ||
     (Boolean(externalSelection) &&
-      selectedExternalProvider?.providerType !== "openai_codex") ||
+      providerModelSupportsStudioTools(
+        selectedExternalProvider?.providerType,
+        externalSelection?.modelId,
+      ) !== true) ||
     incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
@@ -5094,47 +5280,52 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  const activeResearchRun = useResearchRunStore((state) => {
+  // Id and status, not the run: run identity changes on every streamed research delta.
+  const activeResearchRunId = useResearchRunStore((state) =>
+    activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
+  );
+  const activeResearchRunStatus = useResearchRunStore((state) => {
     const runId = activeThreadId
       ? state.latestRunByThreadId[activeThreadId]
       : undefined;
-    return runId ? state.sessions[runId]?.run : undefined;
+    return runId ? state.sessions[runId]?.run.status : undefined;
   });
   const isResearchActive = Boolean(
-    activeResearchRun &&
-      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+    activeResearchRunStatus &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRunStatus),
   );
   const [stoppingResearchRunId, setStoppingResearchRunId] = useState<
     string | null
   >(null);
   const stoppingResearchRunIdRef = useRef<string | null>(null);
   const researchStopping = Boolean(
-    activeResearchRun &&
-      (activeResearchRun.status === "cancelling" ||
-        stoppingResearchRunId === activeResearchRun.id),
+    activeResearchRunStatus &&
+      (activeResearchRunStatus === "cancelling" ||
+        (activeResearchRunId !== undefined &&
+          stoppingResearchRunId === activeResearchRunId)),
   );
   useEffect(() => {
     if (
       !isResearchActive ||
       (stoppingResearchRunIdRef.current &&
-        stoppingResearchRunIdRef.current !== activeResearchRun?.id)
+        stoppingResearchRunIdRef.current !== activeResearchRunId)
     ) {
       stoppingResearchRunIdRef.current = null;
       setStoppingResearchRunId(null);
     }
-  }, [activeResearchRun?.id, isResearchActive]);
+  }, [activeResearchRunId, isResearchActive]);
   const stop = () => {
-    if (isResearchActive && activeResearchRun) {
+    if (isResearchActive && activeResearchRunId) {
       if (
-        activeResearchRun.status === "cancelling" ||
-        stoppingResearchRunIdRef.current === activeResearchRun.id
+        activeResearchRunStatus === "cancelling" ||
+        stoppingResearchRunIdRef.current === activeResearchRunId
       ) {
         return;
       }
       if (isQueueRunning) onStopClick?.();
-      stoppingResearchRunIdRef.current = activeResearchRun.id;
-      setStoppingResearchRunId(activeResearchRun.id);
-      void cancelResearchRun(activeResearchRun.id)
+      stoppingResearchRunIdRef.current = activeResearchRunId;
+      setStoppingResearchRunId(activeResearchRunId);
+      void cancelResearchRun(activeResearchRunId)
         .then((run) => ingestResearchUpdate(run))
         .catch((error) => {
           stoppingResearchRunIdRef.current = null;
@@ -5914,7 +6105,11 @@ const CopyButton: FC = () => {
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleCopy = async () => {
-    const text = aui.message().getCopyText();
+    // getCopyText reads content only, and a long paste sits in an attachment.
+    const pasted = attachmentsPastedText(aui.message().getState().attachments);
+    const text = [aui.message().getCopyText(), pasted]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
     if (await copyToClipboard(text)) {
       setCopied(true);
       if (resetTimeoutRef.current) {
