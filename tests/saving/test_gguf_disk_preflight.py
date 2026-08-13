@@ -3183,3 +3183,216 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
         prewarm = inspect.getsource(S._prewarm_base_model_hub_cache)
         assert "from unsloth_zoo.hf_cache import _active_caches" in prewarm
         assert "_active_caches" in inspect.getsource(S._hub_cache_directory)
+
+
+class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
+    """`save_to_gguf` drops a bf16 initial conversion to f16 on a T4.
+
+    It does so AFTER resolving one, so the preflight has to do the same after
+    both of its branches. `_gguf_source_dtype` covers only the dtype the
+    preflight is TOLD; it cannot cover a `first_conversion` the caller passed,
+    nor the single direct-convert method `_choose_first_conversion` hands back
+    unchanged.
+
+    The cost is a whole checkpoint, because the estimate omits an output that
+    EQUALS the initial conversion: `["bf16"]` at "bf16" is priced as one
+    16-bit file, and the export writes an f16 intermediate AND a bf16 output.
+    """
+
+    N = 8_190_735_360  # Qwen3-8B logical parameters
+    BITS = {"f32": 32.0, "f16": 16.0, "bf16": 16.0, "q4_k_m": 4.9}
+
+    @classmethod
+    def _estimate(
+        cls,
+        model = None,
+        quantization_methods = (),
+        first_conversion = "f16",
+        needs_merge = True,
+        n_parameters = None,
+        base_cache_copy = False,
+    ):
+        total = cls.N * 2 if needs_merge else 0
+        total += int(cls.N * cls.BITS[first_conversion] / 8)
+        for method in dict.fromkeys(quantization_methods):
+            if method != first_conversion:
+                total += int(cls.N * cls.BITS[method] / 8)
+        return total
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        """Records the `first_conversion` the preflight prices the export at."""
+        asked = []
+
+        def estimate(**kwargs):
+            if kwargs.get("quantization_methods") and kwargs.get("needs_merge"):
+                # Once for `need` and once for `need_with_cache`; deduped so
+                # the assertions below are about the NAME and not the count.
+                if kwargs["first_conversion"] not in asked:
+                    asked.append(kwargs["first_conversion"])
+            return self._estimate(**kwargs)
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
+        monkeypatch.setattr(S, "free_bytes", lambda path: 1000 * GB)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        return asked
+
+    def _run(self, first_conversion):
+        S._preflight_gguf_disk(
+            _FakeModel(),
+            "model",
+            "bf16",
+            first_conversion = first_conversion,
+            model_dtype = "bf16",
+        )
+
+    @pytest.mark.parametrize("first_conversion", ["bf16", None])
+    def test_hardware_without_bf16_is_priced_at_f16(
+        self, sized, monkeypatch, first_conversion
+    ):
+        """None goes through `_choose_first_conversion`, which returns "bf16" too."""
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: False)
+        self._run(first_conversion)
+        assert sized == ["f16"]
+
+    @pytest.mark.parametrize("first_conversion", ["bf16", None])
+    def test_hardware_with_bf16_is_left_alone(self, sized, monkeypatch, first_conversion):
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: True)
+        self._run(first_conversion)
+        assert sized == ["bf16"]
+
+    def test_an_unanswerable_probe_takes_the_wider_reading(self, sized, monkeypatch):
+        def boom():
+            raise RuntimeError("no CUDA here")
+
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", boom)
+        self._run("bf16")
+        assert sized == ["f16"]
+
+    def test_the_undercount_is_a_whole_checkpoint(self):
+        """What the wrong name costs, priced with the transcribed estimator."""
+        wrong = self._estimate(quantization_methods = ["bf16"], first_conversion = "bf16")
+        right = self._estimate(quantization_methods = ["bf16"], first_conversion = "f16")
+        assert (right - wrong) == self.N * 2
+        assert round(wrong / GB, 1) == 30.5
+        assert round(right / GB, 1) == 45.8
+        assert round((right - wrong) / GB, 1) == 15.3
+
+    def test_the_exporter_still_does_the_drop_this_mirrors(self):
+        import inspect
+
+        source = inspect.getsource(S.save_to_gguf)
+        assert 'first_conversion == "bf16" and not torch.cuda.is_bf16_supported()' in source
+        assert 'first_conversion = "f16"' in source
+
+
+class TestTheCacheIsChargedOnTheConversionFilesystem:
+    """A third filesystem: the output on an external drive, the CWD and the
+    Hugging Face cache together on the machine's own disk.
+
+    The pre-warm downloads the base there and leaves it there for the rest of
+    the export, so the cached base and the intermediate conversion are on that
+    disk together. `cache_here` and `cache_sibling` only ever place the cache
+    on the checkpoint's filesystem or the `_gguf` sibling's, and this is
+    neither, so nothing charged it.
+
+    The pre-warmer's own gate does not cover it: it asks for two base copies
+    free, and an `f32` conversion is two base copies on its own. Qwen3-8B, a
+    15.3GB base and a 30.5GB conversion, on 38.1GB free: 38.1 clears the
+    pre-warm's 30.5 threshold and the conversion-only 30.5 check, then the
+    conversion writes 30.5 into the 22.8 the cached base left. 7.6GB short.
+    """
+
+    N = 8_190_735_360
+    BASE = 2 * N            # the 16-bit base the pre-warm downloads: 15.3GB
+    CONVERSION = 4 * N      # an f32 intermediate: 30.5GB, two base copies
+    WORK = "/work"
+    CACHE = "/home/u/.cache/huggingface"
+
+    @pytest.fixture
+    def state(self, monkeypatch):
+        # The output and its `_gguf` sibling on device 1; the CWD on device 2.
+        # `cache_device` is a knob so the same scenario can put the cache on
+        # the conversion's disk, on the output's, or nowhere resolvable.
+        state = {"conversion_free": int(2.5 * self.BASE), "cache_device": 2}
+        devices = {"model": 1, "model_gguf": 1, self.WORK: 2}
+
+        def estimate(**kwargs):
+            total = self.BASE if kwargs.get("needs_merge", True) else 0
+            if kwargs.get("base_cache_copy", False):
+                total += self.BASE
+            total += self.CONVERSION
+            return total
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
+        monkeypatch.setattr(
+            S,
+            "_filesystem_id",
+            lambda path: devices.get(str(path), state["cache_device"]),
+        )
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: state["conversion_free"]
+            if str(path) == self.WORK
+            else 1000 * GB,
+        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: self.WORK)
+        monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.CACHE)
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def _preflight(self):
+        return S._preflight_gguf_disk(
+            _FakeModel(), "model", "f32", first_conversion = "f32", needs_merge = True
+        )
+
+    def test_the_prewarms_own_threshold_lets_this_through(self, state):
+        """Two base copies free, which is the gate `_prewarm...` applies."""
+        assert state["conversion_free"] >= 2 * self.BASE
+        assert round(state["conversion_free"] / GB, 1) == 38.1
+        assert round(self.CONVERSION / GB, 1) == 30.5
+        assert round(self.BASE / GB, 1) == 15.3
+        assert round((self.BASE + self.CONVERSION - state["conversion_free"]) / GB, 1) == 7.6
+
+    def test_a_cache_sharing_the_working_directory_drops_the_prewarm(self, state, capsys):
+        assert self._preflight() == ("model", False)
+        assert "Skipping the Hugging Face cache pre-warm" in capsys.readouterr().out
+
+    def test_room_for_both_keeps_it(self, state):
+        state.update(conversion_free = self.BASE + self.CONVERSION)
+        assert self._preflight() == ("model", True)
+
+    def test_a_cache_elsewhere_is_not_charged_here(self, state):
+        """The premise reversed: only a cache on THIS disk costs the pre-warm."""
+        state.update(cache_device = 3)
+        assert self._preflight() == ("model", True)
+
+    def test_an_unresolvable_cache_charges_nothing_new(self, state, monkeypatch):
+        monkeypatch.setattr(S, "_hub_cache_directory", lambda: None)
+        assert self._preflight() == ("model", True)
+
+    def test_a_conversion_that_does_not_fit_at_all_still_refuses(self, state):
+        """The raise comes first, so this can never soften a refusal."""
+        state.update(conversion_free = self.CONVERSION - 1)
+        with pytest.raises(RuntimeError, match = "written to the current working directory"):
+            self._preflight()
+
+    def test_no_prewarm_means_no_charge(self, state, monkeypatch):
+        """Kaggle and Colab return before the pre-warm, so it costs nothing."""
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", True)
+        assert self._preflight() == ("model", True)
+
+    def test_the_message_names_the_filesystem_it_measured(self, state, capsys):
+        self._preflight()
+        out = capsys.readouterr().out
+        assert self.WORK in out
+        assert "38.1GB free" in out
+        assert "~30.5GB" in out

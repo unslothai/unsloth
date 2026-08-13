@@ -3941,6 +3941,28 @@ def _preflight_gguf_disk(
             first_conversion = _choose_first_conversion(
                 methods, model_dtype, has_imatrix = has_imatrix
             )
+        # `save_to_gguf` drops a bf16 initial conversion to f16 on hardware
+        # with no bf16, AFTER it has resolved one, so the drop has to be
+        # applied after both branches above and not only inside the resolver.
+        # `_gguf_source_dtype` covers the dtype this is TOLD; it cannot cover
+        # a `first_conversion` the caller passed, nor the single direct-convert
+        # method `_choose_first_conversion` returns unchanged.
+        #
+        # It is the requested-output rule that makes this cost a checkpoint:
+        # the estimate omits an output EQUAL to the initial conversion, so
+        # `["bf16"]` at first_conversion "bf16" is priced as one 16-bit file,
+        # while a T4 writes an f16 intermediate AND a separate bf16 output.
+        # 15.3GB unaccounted for on Qwen3-8B, the same figure and the same
+        # mechanism as the dtype case.
+        if first_conversion == "bf16":
+            try:
+                if not torch.cuda.is_bf16_supported():
+                    first_conversion = "f16"
+            except Exception:
+                # `save_to_gguf` asks unguarded, so a raise here means no
+                # export runs and this figure is never used. f16 is the wider
+                # of the two readings, and never the narrower.
+                first_conversion = "f16"
         need = estimate_gguf_export_bytes(
             model = model,
             quantization_methods = methods,
@@ -4066,10 +4088,19 @@ def _preflight_gguf_disk(
 
     need_here = need
     need_here_with_cache = need_with_cache
-    # Set only where the base-model cache turns out to share the sibling's
-    # filesystem: the GGUF files themselves fit there, a cached base as well
-    # does not, and dropping the optional half beats failing the export.
+    # Cleared where the base-model cache turns out to share a filesystem that
+    # has room for what the export writes there but not for a cached base as
+    # well: dropping the optional half beats failing the export. The message
+    # travels with the flag because more than one filesystem can now set it,
+    # and each has to name the one it measured.
     sibling_prewarm_ok = True
+    prewarm_drop_message = None
+    # Resolved once, above the split, because the cache is not necessarily on
+    # either of the two filesystems the split is about: the conversion's own
+    # filesystem below asks the same question of the same path. Zero whenever
+    # the pre-warm cannot run, which is what leaves every branch below inert.
+    cache_extra = max(0, need_with_cache - need)
+    cache_directory = _hub_cache_directory() if cache_extra > 0 else None
     if separate_storage:
         # `need_sibling` is the same estimate without the checkpoint, so the
         # difference is the checkpoint and nothing else. An estimator that
@@ -4098,11 +4129,9 @@ def _preflight_gguf_disk(
         # sibling check accept `need_sibling` alone on a filesystem the base
         # model is about to be downloaded onto. Unresolvable leaves it charged
         # here, which is where it was charged before.
-        cache_extra = max(0, need_with_cache - need)
         cache_here = cache_extra
         cache_sibling = 0
         if cache_extra > 0:
-            cache_directory = _hub_cache_directory()
             if cache_directory is not None and _on_separate_filesystems(
                 cache_directory, save_directory
             ):
@@ -4178,6 +4207,13 @@ def _preflight_gguf_disk(
             )
         if cache_sibling > 0 and gguf_free < need_sibling + cache_sibling:
             sibling_prewarm_ok = False
+            prewarm_drop_message = (
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
+                f"cache is on the same filesystem as `{gguf_directory}`, which has "
+                f"{gguf_free / 1024**3:.1f}GB free: enough for the GGUF files "
+                f"(~{need_sibling / 1024**3:.1f}GB) but not for a cached copy of the base "
+                f"model as well. The next export will download the base again."
+            )
     elif (
         merge_is_disposable
         and needs_merge
@@ -4217,6 +4253,24 @@ def _preflight_gguf_disk(
         and _on_separate_filesystems(conversion_directory, gguf_directory)
     ):
         conversion_free = free_bytes(conversion_directory)
+        # The pre-warm runs BEFORE the merge and leaves the base model in the
+        # Hugging Face cache for the rest of the export, so when the cache
+        # shares this filesystem the cached base and the intermediate are on
+        # it together. Nothing above has charged that: `cache_here` and
+        # `cache_sibling` only ever place the cache on the checkpoint's
+        # filesystem or the sibling's, and this is neither.
+        #
+        # The pre-warmer's own gate does not cover it either. It asks for two
+        # base copies free on the cache filesystem, and an `f32` conversion is
+        # two base copies on its own: 38.1GB free clears the pre-warm's 30.5GB
+        # threshold and this 30.5GB conversion check, then holds a 15.3GB
+        # cached base while writing 30.5GB, and runs out 7.6GB short.
+        cache_with_conversion = (
+            cache_extra
+            if cache_directory is not None
+            and _shares_filesystem(cache_directory, conversion_directory)
+            else 0
+        )
         if conversion_free is not None and conversion_free < need_conversion:
             raise RuntimeError(
                 f"Unsloth: Not enough disk space to convert to GGUF.\n"
@@ -4232,16 +4286,28 @@ def _preflight_gguf_disk(
                 f"conversion is written here either way.\n"
                 f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
             )
+        if (
+            conversion_free is not None
+            and cache_with_conversion > 0
+            and conversion_free < need_conversion + cache_with_conversion
+        ):
+            # Only reached once the conversion alone has cleared the raise
+            # above, so this can never turn a refusal into a pass: it drops
+            # the optional half of an export that otherwise fits.
+            sibling_prewarm_ok = False
+            prewarm_drop_message = (
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
+                f"cache is on the same filesystem as the working directory "
+                f"`{conversion_directory}`, which has "
+                f"{conversion_free / 1024**3:.1f}GB free: enough for the intermediate "
+                f"`{first_conversion}` conversion (~{need_conversion / 1024**3:.1f}GB) but "
+                f"not for a cached copy of the base model as well. The next export will "
+                f"download the base again."
+            )
 
     if free is None or free >= need_here_with_cache:
-        if not sibling_prewarm_ok and prewarm_possible:
-            print(
-                f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
-                f"cache is on the same filesystem as `{gguf_directory}`, which has "
-                f"{gguf_free / 1024**3:.1f}GB free: enough for the GGUF files "
-                f"(~{need_sibling / 1024**3:.1f}GB) but not for a cached copy of the base "
-                f"model as well. The next export will download the base again."
-            )
+        if not sibling_prewarm_ok and prewarm_possible and prewarm_drop_message:
+            print(prewarm_drop_message)
         return save_directory, sibling_prewarm_ok
 
     if free >= need_here:
