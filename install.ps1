@@ -1787,7 +1787,13 @@ exit 0
             # Outside the content check on purpose: a launcher whose bytes already match still
             # has to lose the mark, and clearing an absent stream neither writes nor restamps
             # the file, so an unchanged re-run stays a no-op on disk either way.
-            Unblock-File -LiteralPath $launcherPs1 -ErrorAction SilentlyContinue
+            #
+            # -Confirm:$false: Unblock-File declares SupportsShouldProcess at the default
+            # Medium impact, so a profile setting $ConfirmPreference to Medium or Low would
+            # prompt here, even for a launcher that never had the stream. ErrorAction does
+            # not suppress a ShouldProcess prompt, and a noninteractive host turns it into
+            # an error that skips shortcut setup entirely.
+            Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
             # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
@@ -2922,6 +2928,34 @@ exit 0
         }
     }
 
+    function Test-UvExecutable {
+        # Can this specific file run here at all, regardless of which version it reports?
+        # Start-Process rather than the call operator so the wait has a ceiling and stdin is
+        # not this console's: a binary that endpoint protection stalls, or one that decides to
+        # prompt, must not hold an unattended install open. `uv --version` answers in
+        # milliseconds, so only a binary we would refuse anyway ever reaches the timeout.
+        param([string]$Path)
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+        # Redirected, not swallowed by the console: uv's version line is not part of this
+        # installer's output, and the files are removed either way.
+        $outFile = [System.IO.Path]::GetTempFileName()
+        $errFile = [System.IO.Path]::GetTempFileName()
+        try {
+            $proc = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+            if (-not $proc.WaitForExit(20000)) {
+                try { $proc.Kill() } catch {}
+                return $false
+            }
+            return ($proc.ExitCode -eq 0)
+        } catch {
+            return $false
+        } finally {
+            Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # Fallback for hosts without winget. Same archive, destination and user-PATH
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
     # SHA-256 instead of script text run in-process, which is what AMSI and cloud
@@ -2959,10 +2993,16 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # Same mirrors and precedence as astral's installer; each serves the
-        # identical asset, so the pin holds across all of them. UV_DOWNLOAD_URL is
-        # not honoured: it points at an arbitrary version the pin would reject.
-        $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+        # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL and its
+        # older alias INSTALLER_DOWNLOAD_URL outrank the mirror variables there, and a host that
+        # sets one usually cannot reach the public endpoints at all, so trying those first would
+        # stall. The pin still applies: a source serving a different build fails the digest and
+        # the caller falls back.
+        $uvBase = if ($env:UV_DOWNLOAD_URL) {
+            @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+            @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
             @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -2998,27 +3038,81 @@ exit 0
             # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
             Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
             [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
-            $haveUv = $false
+
+            $stagedUv = Join-Path $work "uv.exe"
+            if (-not (Test-Path -LiteralPath $stagedUv)) {
+                substep "uv.exe was not present in $asset." "Yellow"
+                return $false
+            }
+            # Run it where it landed, before anything at the destination is touched. A host can
+            # have a working older uv while AppLocker, WDAC or endpoint protection refuses this
+            # one, and copying first would destroy the incumbent and leave the user with neither.
+            # Staging under the destination instead would answer a policy that is scoped by path,
+            # but it also means writing into a directory that is on PATH, so the probe stays here
+            # and the incumbent is preserved and restored below for the path-scoped case.
+            if (-not (Test-UvExecutable -Path $stagedUv)) {
+                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
+                return $false
+            }
+
+            # Windows has no atomic replace for a file that may be open, so the incumbent is
+            # copied aside and put back if the published copy turns out not to run. uvw.exe is
+            # not probed: it is the windowless launcher, it has no console to answer on, and it
+            # ships from the same verified archive as the uv.exe that just did.
+            $backups = @{}
+            $published = @()
+            $ok = $true
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
                 $src = Join-Path $work $exe
-                if (Test-Path -LiteralPath $src) {
-                    $dst = Join-Path $destDir $exe
-                    Copy-Item -LiteralPath $src -Destination $dst -Force
-                    if ($exe -eq "uv.exe") {
-                        # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
-                        # a locked or ACL-denied destination leaves whatever was already there and
-                        # execution still reaches this line. Compare against the archive we just
-                        # verified: a stale uv.exe must not pass for the one we meant to install.
-                        try {
-                            $haveUv = (Test-Path -LiteralPath $dst) -and
-                                (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
-                                (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
-                        } catch { $haveUv = $false }
+                if (-not (Test-Path -LiteralPath $src)) { continue }
+                $dst = Join-Path $destDir $exe
+                if (Test-Path -LiteralPath $dst) {
+                    $backup = "$dst.unsloth-old"
+                    try {
+                        Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
+                        $backups[$dst] = $backup
+                    } catch {
+                        # No backup means no safe replace: leave the incumbent alone rather than
+                        # overwrite something we could not first put a copy of somewhere.
+                        if ($exe -eq "uv.exe") { $ok = $false; break }
+                        continue
+                    }
+                }
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+                $published += $dst
+                if ($exe -eq "uv.exe") {
+                    # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
+                    # a locked or ACL-denied destination leaves whatever was already there and
+                    # execution still reaches this line. Compare against the archive we just
+                    # verified: a stale uv.exe must not pass for the one we meant to install.
+                    $copied = $false
+                    try {
+                        $copied = (Test-Path -LiteralPath $dst) -and
+                            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                            (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                    } catch { $copied = $false }
+                    # Probe again at the destination: a policy scoped to a path can allow the
+                    # temp copy and refuse this one.
+                    if (-not ($copied -and (Test-UvExecutable -Path $dst))) { $ok = $false; break }
+                }
+            }
+
+            if (-not $ok) {
+                foreach ($dst in $published) {
+                    if ($backups.ContainsKey($dst)) {
+                        Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction SilentlyContinue
+                    } else {
+                        # Nothing was there before this run, so removing ours leaves the
+                        # destination exactly as it was found.
+                        Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
                     }
                 }
             }
-            if (-not $haveUv) {
-                substep "uv.exe was not present in $asset." "Yellow"
+            foreach ($backup in $backups.Values) {
+                Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+            }
+            if (-not $ok) {
+                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
             }
         } finally {

@@ -138,6 +138,28 @@ for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
     fi
 done
 
+# astral honours UV_DOWNLOAD_URL and its alias INSTALLER_DOWNLOAD_URL ahead of the mirror
+# variables, and a host that sets one usually cannot reach the public endpoints, so trying those
+# first stalls instead of falling back. All four implementations have to agree on that order.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh" \
+             "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"; do
+    if grep -q 'UV_DOWNLOAD_URL' "$_impl" && grep -q 'INSTALLER_DOWNLOAD_URL' "$_impl"; then
+        ok "${_impl##*/} honours astral's primary download override"
+    else
+        bad "${_impl##*/} honours astral's primary download override"
+    fi
+done
+
+# 0755, not the umask default: astral ships these executable for everyone, and a umask of 077
+# would otherwise leave uv unusable for other accounts on a shared machine.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"; do
+    if grep -q 'chmod 0755' "$_impl" && ! grep -qE 'chmod \+x "\$_[a-z]+_stage"' "$_impl"; then
+        ok "${_impl##*/} stages uv with an explicit 0755"
+    else
+        bad "${_impl##*/} stages uv with an explicit 0755"
+    fi
+done
+
 # astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
 # default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
 # configured an XDG location, where no later shell looks for it.
@@ -316,6 +338,82 @@ if grep -q '^rc=0$' "$WORK/out_noexec"; then
     bad "a uv that cannot execute declines to the fallback"
 else
     ok "a uv that cannot execute declines to the fallback"
+fi
+
+# And it must not have destroyed the uv the host was already using. The rename publishes over the
+# destination, so validating the new binary only after that point would leave a host whose loader
+# is missing with neither its old working uv nor a usable new one, while _uv_present_before still
+# says one is installed.
+mkdir -p "$WORK/home_keep/.local/bin"
+printf '#!/bin/sh\necho "uv 0.9.9 (incumbent)"\n' > "$WORK/home_keep/.local/bin/uv"
+chmod +x "$WORK/home_keep/.local/bin/uv"
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-bad.tar.gz $BAD_EXEC_SHA"; }
+    download() { cp -f "$WORK/uv-bad.tar.gz" "$2"; }
+    HOME="$WORK/home_keep"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+) >/dev/null 2>&1 || true
+if "$WORK/home_keep/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
+    ok "a uv that cannot execute never replaces the working one"
+else
+    bad "a uv that cannot execute replaced the working one"
+fi
+if [ -z "$(find "$WORK/home_keep/.local/bin" -name '.uv.*' 2>/dev/null)" ]; then
+    ok "the rejected staging file is cleaned up"
+else
+    bad "the rejected staging file is cleaned up"
+fi
+# uv and uvx ship as a set. When uv is rejected the loop must abandon the whole placement, not
+# carry on and publish the pinned uvx beside whatever older uv the host already had, which is a
+# pairing we never build or test.
+if [ -f "$WORK/home_keep/.local/bin/uvx" ]; then
+    bad "a rejected uv must not publish its uvx"
+else
+    ok "a rejected uv must not publish its uvx"
+fi
+
+# The probe runs a binary that was just downloaded, so it has to be bounded on both of the ways
+# such a binary can fail to return: reading stdin, and never exiting. Neither may hold an
+# unattended install open.
+mkdir -p "$WORK/src_hang/uv-fake-triple"
+# Reads a line from stdin, so with the installer's console attached it would block forever;
+# with </dev/null the read hits EOF at once. Then sleeps past the ceiling, so an unbounded
+# wait would hang here instead.
+printf '#!/bin/sh\nread _line\nsleep 120\n' > "$WORK/src_hang/uv-fake-triple/uv"
+chmod +x "$WORK/src_hang/uv-fake-triple/uv"
+printf '#!/bin/sh\necho uvx\n' > "$WORK/src_hang/uv-fake-triple/uvx"
+tar -czf "$WORK/uv-hang.tar.gz" -C "$WORK/src_hang" uv-fake-triple
+if command -v sha256sum >/dev/null 2>&1; then
+    HANG_SHA=$(sha256sum "$WORK/uv-hang.tar.gz" | awk '{print $1}')
+else
+    HANG_SHA=$(shasum -a 256 "$WORK/uv-hang.tar.gz" | awk '{print $1}')
+fi
+mkdir -p "$WORK/home_hang"
+_HANG_START=$(date +%s)
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-hang.tar.gz $HANG_SHA"; }
+    download() { cp -f "$WORK/uv-hang.tar.gz" "$2"; }
+    HOME="$WORK/home_hang"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_hang" 2>&1 || true
+_HANG_ELAPSED=$(( $(date +%s) - _HANG_START ))
+# 40s, not 20: the ceiling only applies where `timeout` exists, and a host without it still has
+# to come back because stdin is closed. Either way this must not run for two minutes.
+if [ "$_HANG_ELAPSED" -lt 40 ] && grep -q '^rc=1$' "$WORK/out_hang"; then
+    ok "the executable probe is bounded and declines (${_HANG_ELAPSED}s)"
+else
+    bad "the executable probe is bounded and declines (${_HANG_ELAPSED}s, $(cat "$WORK/out_hang"))"
 fi
 
 # Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not

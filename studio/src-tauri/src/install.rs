@@ -31,6 +31,8 @@ use crate::process::trim_line_endings;
 
 const FAILURE_CONTEXT_LINES: usize = 8;
 const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
+/// Clear labels are a small fixed set; this only bounds a pathological producer.
+const MAX_UNPAIRED_CLEARS: usize = 64;
 
 fn generic_failure_message(code: i32) -> String {
     format!(
@@ -59,17 +61,24 @@ const POWERSHELL_ERROR_ID_FIELD: &str = "FullyQualifiedErrorId";
 /// spawns studio/setup.ps1 through the same inherited pipes: a block there arrives after the venv,
 /// PyTorch and the packages are already on disk, so the same reassurance would be a lie. A
 /// `[TAURI:STEP]` marker is the dividing line, since a pre-start block produces none at all.
+/// Not "nothing was changed": a diagnostics attempt and its phase log are created before
+/// PowerShell is ever spawned, so the only honest claim is that no installation step ran. And not
+/// "this is a false positive": classification proves the output carries an error id, nothing about
+/// the script's integrity, and install.ps1 can sit in a user-writable directory. Telling someone
+/// to report a correct detection to their vendor is worse than telling them to reinstall first.
 const AMSI_MALWARE_GUIDANCE_PRE_START: &str = "Security software blocked the installer before it \
-     started, so no installation steps ran and nothing was changed on this machine. This is a \
-     false positive: update your security product's definitions and retry, or report it to your \
+     started, so no installation steps ran; only diagnostic logs may have been written. This is \
+     usually a false positive: reinstall from an official Unsloth package, and if an unmodified \
+     copy is still blocked, update your security product's definitions or report it to your \
      vendor. Do not disable endpoint protection.";
 const AMSI_MALWARE_GUIDANCE_IN_PROGRESS: &str = "Security software blocked part of the installer, \
-     so setup did not finish and some components may already be installed. This is a false \
-     positive: update your security product's definitions and retry, or report it to your \
-     vendor. Do not disable endpoint protection.";
+     so setup did not finish and some components may already be installed. This is usually a \
+     false positive: reinstall from an official Unsloth package, and if an unmodified copy is \
+     still blocked, update your security product's definitions or report it to your vendor. Do \
+     not disable endpoint protection.";
 const AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START: &str = "This machine's security policy blocked the \
-     installer before it started, so no installation steps ran and nothing was changed. Ask \
-     whoever manages the device to allow it.";
+     installer before it started, so no installation steps ran. Ask whoever manages the device \
+     to allow it.";
 const AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS: &str = "This machine's security policy blocked part \
      of the installer, so setup did not finish and some components may already be installed. Ask \
      whoever manages the device to allow it.";
@@ -95,14 +104,34 @@ impl SecurityBlockKind {
     }
 }
 
-fn security_block_kind(text: &str) -> Option<SecurityBlockKind> {
-    if !text.contains(POWERSHELL_ERROR_ID_FIELD) {
-        return None;
+/// True when `id` is the value of the `FullyQualifiedErrorId` field, rather than merely present
+/// on the same line. PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`, so the id has
+/// to follow the colon; a line that names the field and the id in prose does not qualify.
+fn is_error_id_value(text: &str, id: &str) -> bool {
+    let mut rest = text;
+    while let Some(at) = rest.find(POWERSHELL_ERROR_ID_FIELD) {
+        let after = &rest[at + POWERSHELL_ERROR_ID_FIELD.len()..];
+        let after = after.trim_start();
+        if let Some(value) = after.strip_prefix(':') {
+            let value = value.trim_start();
+            if let Some(tail) = value.strip_prefix(id) {
+                // The id can carry a cmdlet suffix, but nothing else may extend the token.
+                if tail.is_empty() || tail.starts_with(',') || tail.starts_with(char::is_whitespace)
+                {
+                    return true;
+                }
+            }
+        }
+        rest = &rest[at + POWERSHELL_ERROR_ID_FIELD.len()..];
     }
-    if text.contains(AMSI_MALWARE_ERROR_ID) {
+    false
+}
+
+fn security_block_kind(text: &str) -> Option<SecurityBlockKind> {
+    if is_error_id_value(text, AMSI_MALWARE_ERROR_ID) {
         return Some(SecurityBlockKind::Malware);
     }
-    if text.contains(AMSI_ADMIN_BLOCK_ERROR_ID) {
+    if is_error_id_value(text, AMSI_ADMIN_BLOCK_ERROR_ID) {
         return Some(SecurityBlockKind::AdminPolicy);
     }
     None
@@ -236,6 +265,12 @@ impl InstallFailureContext {
             }
         };
         self.unpaired_clears.retain(|_, count| *count > 0);
+        // Legitimate producers clear with a small fixed set of labels. Anything that grows this
+        // past a sane bound is not a producer we are pairing for, and an unbounded map fed by
+        // child output is a memory sink. Dropping the oldest entries only costs a twin match.
+        if self.unpaired_clears.len() > MAX_UNPAIRED_CLEARS {
+            self.unpaired_clears.clear();
+        }
         if !twin {
             // A run that cleared its own failure state was never blocked at parse time, so a
             // verdict here is stale.
@@ -1457,7 +1492,9 @@ mod tests {
         assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
         assert!(message.starts_with("Installation failed: "), "{message}");
         assert!(message.contains("blocked the installer before it started"), "{message}");
-        assert!(message.contains("nothing was changed on this machine"), "{message}");
+        assert!(message.contains("only diagnostic logs may have been written"), "{message}");
+        // We cannot know a verdict is wrong, so the text must not assert it.
+        assert!(!message.contains("This is a false positive"), "{message}");
     }
 
     #[test]
@@ -1473,7 +1510,7 @@ mod tests {
         let message = context.message(1);
         assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
         assert!(message.contains("blocked part of the installer"), "{message}");
-        assert!(!message.contains("nothing was changed"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
         assert!(message.contains("some components may already be installed"), "{message}");
     }
 
@@ -1489,7 +1526,7 @@ mod tests {
         context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
         let message = context.message(1);
         assert!(message.contains("blocked part of the installer"), "{message}");
-        assert!(!message.contains("nothing was changed"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
     }
 
     #[test]
@@ -1544,6 +1581,43 @@ mod tests {
     }
 
     #[test]
+    fn the_id_has_to_be_the_field_value_not_just_on_the_line() {
+        // Prose that names both the field and the id is not an error record.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr(
+            "checking FullyQualifiedErrorId handling for ScriptContainedMaliciousContent",
+        );
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+        // A longer token that merely starts with the id is a different id.
+        assert!(!is_error_id_value(
+            "+ FullyQualifiedErrorId : ScriptContainedMaliciousContentX",
+            AMSI_MALWARE_ERROR_ID
+        ));
+        // The real record, with and without the cmdlet suffix.
+        assert!(is_error_id_value(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
+            AMSI_MALWARE_ERROR_ID
+        ));
+        assert!(is_error_id_value(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,Microsoft.PowerShell",
+            AMSI_MALWARE_ERROR_ID
+        ));
+    }
+
+    #[test]
+    fn a_flood_of_distinct_clears_cannot_grow_the_pairing_map() {
+        let mut context = InstallFailureContext::default();
+        for i in 0..(MAX_UNPAIRED_CLEARS * 4) {
+            context.observe_stdout(&format!("[TAURI:ERROR_CLEAR] step {i} recovered"));
+        }
+        assert!(context.unpaired_clears.len() <= MAX_UNPAIRED_CLEARS, "{}", context.unpaired_clears.len());
+    }
+
+    #[test]
     fn merely_naming_the_error_id_is_not_a_verdict() {
         // The id is only a verdict as the value of a PowerShell error record's field. A scanner
         // log or a test fixture that prints the bare string must not attach antivirus guidance
@@ -1564,7 +1638,7 @@ mod tests {
         context.observe_stderr("    + FullyQualifiedErrorId : ScriptHasAdminBlockedContent");
         let message = context.message(1);
         assert!(message.contains("blocked part of the installer"), "{message}");
-        assert!(!message.contains("nothing was changed"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
     }
 
     #[test]

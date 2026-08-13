@@ -4327,6 +4327,31 @@ function Get-UvHostArch {
 # Writes to the pipeline, not the console: under Invoke-SetupCommand a quiet run swallows this
 # exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
 # the call site are unchanged.
+function Test-SetupUvExecutable {
+    # Can this specific file run here at all, regardless of the version it reports? Start-Process
+    # rather than the call operator so the wait has a ceiling and stdin is not this console's: a
+    # binary stalled by endpoint protection must not hold an unattended setup open. Mirrors
+    # Test-UvExecutable in install.ps1.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        if (-not $proc.WaitForExit(20000)) {
+            try { $proc.Kill() } catch {}
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    } catch {
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-UvFromPinnedRelease {
     $arch = Get-UvHostArch
     if (-not $UvPinnedAssets.ContainsKey($arch)) {
@@ -4352,9 +4377,15 @@ function Install-UvFromPinnedRelease {
         $destDir = Join-Path $userHome ".local\bin"
     }
 
-    # astral's mirrors and precedence; each serves the identical asset, so one pin holds.
-    # UV_DOWNLOAD_URL is not honoured: it points at a version the pin would reject.
-    $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+    # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL (and its older
+    # alias INSTALLER_DOWNLOAD_URL) outrank the mirror variables there, and a host that sets one
+    # usually cannot reach the public endpoints at all, so trying those first would stall. The pin
+    # still applies: a source serving a different build fails the digest and the caller falls back.
+    $uvBase = if ($env:UV_DOWNLOAD_URL) {
+        @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+        @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
         @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
     } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
         @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -4390,24 +4421,69 @@ function Install-UvFromPinnedRelease {
         # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
         Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
         [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
-        $haveUv = $false
+        $stagedUv = Join-Path $work "uv.exe"
+        if (-not (Test-Path -LiteralPath $stagedUv)) {
+            Write-Output "uv.exe was not present in $asset."
+            return $false
+        }
+        # Run it where it landed, before anything at the destination is touched. A host can have
+        # a working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
+        # copying first would destroy the incumbent and leave the user with neither.
+        if (-not (Test-SetupUvExecutable -Path $stagedUv)) {
+            Write-Output "the downloaded uv $UvPinnedVersion could not run on this machine."
+            return $false
+        }
+
+        # Windows has no atomic replace for a file that may be open, so the incumbent is copied
+        # aside and restored if the published copy turns out not to run. uvw.exe is not probed:
+        # it is the windowless launcher with no console to answer on, and it comes from the same
+        # verified archive as the uv.exe that just did.
+        $backups = @{}
+        $published = @()
+        $haveUv = $true
         foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
             $src = Join-Path $work $exe
-            if (Test-Path -LiteralPath $src) {
-                $dst = Join-Path $destDir $exe
-                Copy-Item -LiteralPath $src -Destination $dst -Force
-                if ($exe -eq "uv.exe") {
-                    # Invoke-SetupCommand sets ErrorActionPreference to Continue, so a locked or
-                    # ACL-denied destination makes this copy non-terminating and execution still
-                    # reaches here with whatever was already on disk. Compare against the archive
-                    # we just verified: a stale uv.exe must not pass for the one we installed.
-                    try {
-                        $haveUv = (Test-Path -LiteralPath $dst) -and
-                            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
-                            (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
-                    } catch { $haveUv = $false }
+            if (-not (Test-Path -LiteralPath $src)) { continue }
+            $dst = Join-Path $destDir $exe
+            if (Test-Path -LiteralPath $dst) {
+                $backup = "$dst.unsloth-old"
+                try {
+                    Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
+                    $backups[$dst] = $backup
+                } catch {
+                    if ($exe -eq "uv.exe") { $haveUv = $false; break }
+                    continue
                 }
             }
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+            $published += $dst
+            if ($exe -eq "uv.exe") {
+                # Invoke-SetupCommand sets ErrorActionPreference to Continue, so a locked or
+                # ACL-denied destination makes this copy non-terminating and execution still
+                # reaches here with whatever was already on disk. Compare against the archive
+                # we just verified: a stale uv.exe must not pass for the one we installed.
+                $copied = $false
+                try {
+                    $copied = (Test-Path -LiteralPath $dst) -and
+                        (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                        (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                } catch { $copied = $false }
+                # Probe again here: a policy scoped to a path can allow the temp copy and
+                # refuse this one.
+                if (-not ($copied -and (Test-SetupUvExecutable -Path $dst))) { $haveUv = $false; break }
+            }
+        }
+        if (-not $haveUv) {
+            foreach ($dst in $published) {
+                if ($backups.ContainsKey($dst)) {
+                    Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction SilentlyContinue
+                } else {
+                    Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        foreach ($backup in $backups.Values) {
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
         }
         if (-not $haveUv) {
             Write-Output "uv.exe was not present in $asset."
