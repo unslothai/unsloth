@@ -1198,6 +1198,33 @@ fn is_fully_qualified(value: &str) -> bool {
         if drive.is_ascii_alphabetic() && (*sep == b'\\' || *sep == b'/'))
 }
 
+/// Whether the value names the same place from any working directory.
+///
+/// Windows rules on Windows, the native ones off it. The lost-directory
+/// fallback below is the one branch a Linux or macOS process reaches, and what
+/// it reads there is a POSIX environment: `/var/cache/unsloth` is no more
+/// cwd-dependent than `C:\cache`, and judging it by the Windows rules refused
+/// every managed spawn over a setting that was never relative. A Windows-shaped
+/// value stays Windows-judged, so "/cache" is still the root of whichever drive
+/// the process is on.
+fn is_cwd_independent(value: &str, windows: bool) -> bool {
+    if windows {
+        is_fully_qualified(value)
+    } else {
+        // The whole of absoluteness off Windows.
+        value.starts_with('/')
+    }
+}
+
+/// What separates the entries of a path list, as os.pathsep spells it.
+fn path_list_separator(windows: bool) -> char {
+    if windows {
+        ';'
+    } else {
+        ':'
+    }
+}
+
 /// Whether the value depends on process state `join` cannot see: the current
 /// directory of a drive ("D:cache") or of the current drive ("\\cache").
 fn needs_os_resolution(value: &str) -> bool {
@@ -1396,6 +1423,7 @@ fn relative_override_pins_from(
     absolute: impl Fn(&str) -> Option<std::path::PathBuf>,
     home: Option<&std::path::Path>,
     skipped: &[&str],
+    windows: bool,
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     let Some(cwd) = cwd else {
         // The directory being left is unknown, so nothing can be anchored to it.
@@ -1410,7 +1438,7 @@ fn relative_override_pins_from(
             // drive and still carries something the lost directory decided.
             let raw = value.trim();
             let entries: Vec<&str> = if PATH_LIST_ENV.contains(name) {
-                raw.split(';').collect()
+                raw.split(path_list_separator(windows)).collect()
             } else {
                 vec![raw]
             };
@@ -1429,10 +1457,7 @@ fn relative_override_pins_from(
                     Some(home) => expand_windows_user(entry, home),
                     None => entry.to_string(),
                 };
-                // Windows spelling, plus the native one: this branch is the
-                // only part of the pinning that runs off Windows, where
-                // /var/cache is as anchored as C:\\cache is here.
-                if is_fully_qualified(&entry) || std::path::Path::new(&entry).is_absolute() {
+                if is_cwd_independent(&entry, windows) {
                     continue;
                 }
                 return Err(format!(
@@ -1554,6 +1579,7 @@ fn relative_override_pins(
         |value| std::path::absolute(value).ok(),
         dirs::home_dir().as_deref(),
         skipped,
+        cfg!(windows),
     )
 }
 
@@ -3076,7 +3102,7 @@ mod managed_cli_working_dir_tests {
         };
 
         let pins =
-            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV).unwrap();
+            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).unwrap();
         assert_eq!(
             pins,
             vec![
@@ -3099,18 +3125,18 @@ mod managed_cli_working_dir_tests {
         // An unresolvable drive-relative value refuses the whole move rather
         // than being dropped: a child moved with that override still relative
         // would read and write somewhere else than the caller named.
-        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV).is_err());
+        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).is_err());
 
         // Staying put is the common case: nothing is rewritten, so a desktop
         // started from a project folder keeps every override as it was.
         assert!(
-            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV)
+            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
                 .unwrap()
                 .is_empty()
         );
         // The directory being left is unknown, so a relative override cannot be
         // anchored to it and the move is refused rather than retargeting it.
-        assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV).is_err());
+        assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).is_err());
         // With nothing relative left to preserve, an unknown directory is fine.
         let absolute_only = |name: &str| match name {
             "HF_HOME" => Some("D:\\cache".to_string()),
@@ -3120,7 +3146,7 @@ mod managed_cli_working_dir_tests {
             _ => None,
         };
         assert!(
-            relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV)
+            relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
                 .unwrap()
                 .is_empty()
         );
@@ -3401,7 +3427,8 @@ mod managed_cli_working_dir_tests {
             mixed,
             |_| None,
             home,
-            MANAGED_CHILD_SCRUBBED_ENV
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
         )
         .is_err());
         // Every entry qualified: nothing is left depending on it.
@@ -3415,31 +3442,81 @@ mod managed_cli_working_dir_tests {
             qualified,
             |_| None,
             home,
-            MANAGED_CHILD_SCRUBBED_ENV
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
         )
         .unwrap()
         .is_empty());
     }
 
     #[test]
-    fn a_native_absolute_override_survives_a_lost_directory() {
-        // The lost-directory branch is the one piece of the pinning that runs
-        // off Windows, where an absolute value looks nothing like C:\\cache.
+    fn a_lost_directory_reads_a_posix_environment_by_posix_rules() {
+        // Off Windows the same fallback runs, and what it reads there is a POSIX
+        // environment. Judging /var/cache/unsloth by the Windows rules called it
+        // relative and failed preflight and every managed spawn over a setting
+        // that was never relative.
         let work_dir = PathBuf::from("/home/me/.unsloth");
+        let home = Some(std::path::Path::new("/home/me"));
         let posix = |name: &str| match name {
             "XDG_CACHE_HOME" => Some("/var/cache/unsloth".to_string()),
+            _ => None,
+        };
+        assert!(
+            relative_override_pins_from(
+                None,
+                &work_dir,
+                posix,
+                |_| None,
+                home,
+                MANAGED_CHILD_SCRUBBED_ENV,
+                false
+            )
+            .unwrap()
+            .is_empty()
+        );
+        // Something genuinely relative is still refused.
+        let relative = |name: &str| match name {
+            "XDG_CACHE_HOME" => Some("cache".to_string()),
             _ => None,
         };
         assert!(relative_override_pins_from(
             None,
             &work_dir,
+            relative,
+            |_| None,
+            home,
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false
+        )
+        .is_err());
+        // A POSIX list is separated by ':', so a relative entry behind an
+        // absolute one is still caught.
+        let mixed = |name: &str| match name {
+            "PYTHONPATH" => Some("/opt/vendor:plugins".to_string()),
+            _ => None,
+        };
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            mixed,
+            |_| None,
+            home,
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false
+        )
+        .is_err());
+        // And on Windows the same value stays Windows-judged: "/var/cache" is
+        // the root of whichever drive the process is on.
+        assert!(relative_override_pins_from(
+            None,
+            &PathBuf::from("C:\\Users\\me\\.unsloth"),
             posix,
             |_| None,
-            Some(std::path::Path::new("/home/me")),
-            MANAGED_CHILD_SCRUBBED_ENV
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
         )
-        .unwrap()
-        .is_empty());
+        .is_err());
     }
 
     #[test]
@@ -3460,6 +3537,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             home,
             MANAGED_CHILD_SCRUBBED_ENV,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -3473,6 +3551,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             home,
             &child_skipped_env(),
+            true,
         )
         .unwrap();
         assert!(for_child.is_empty(), "a child that ignores it must not pin it");
@@ -3564,6 +3643,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
             MANAGED_CHILD_SCRUBBED_ENV,
+            true,
         )
         .unwrap();
         let expected = format!(
@@ -3593,6 +3673,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
             MANAGED_CHILD_SCRUBBED_ENV,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -3625,6 +3706,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
             MANAGED_CHILD_SCRUBBED_ENV,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -3656,6 +3738,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
             MANAGED_CHILD_SCRUBBED_ENV,
+            true,
         )
         .unwrap();
         assert!(pins.is_empty(), "a non-path value was rewritten: {pins:?}");
@@ -3677,6 +3760,7 @@ mod managed_cli_working_dir_tests {
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
             MANAGED_CHILD_SCRUBBED_ENV,
+            true,
         )
         .unwrap();
         // `~` is written out: only some readers of these names expand it.
@@ -3754,6 +3838,7 @@ mod managed_cli_working_dir_tests {
                 absolute,
                 Some(std::path::Path::new("C:\\Users\\me")),
                 MANAGED_CHILD_SCRUBBED_ENV,
+                true,
             )
             .unwrap();
             if round == 0 {
