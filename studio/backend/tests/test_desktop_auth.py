@@ -792,6 +792,10 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     prompts_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
+    whisper_module = ModuleType("routes.whisper")
+    whisper_module.router = APIRouter()
+    profile_stats_module = ModuleType("routes.profile_stats")
+    profile_stats_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -803,6 +807,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "inference_studio_router": APIRouter(),
         "mcp_servers_router": APIRouter(),
         "models_router": APIRouter(),
+        "openai_codex_auth_router": APIRouter(),
         "providers_router": APIRouter(),
         "rag_router": APIRouter(),
         "research_runs_router": APIRouter(),
@@ -820,6 +825,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
+    monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
+    monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
 
     import studio.backend.main as backend_main
 
@@ -828,6 +835,14 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
+    # _hardware_snapshot() returns None until detection settles, so chat_only never publishes.
+    import threading
+
+    _settled = threading.Event()
+    _settled.set()
+    monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
+    # On a Mac the MLX self-heal overturns "mlx_unavailable" and health_check() drops the snapshot.
+    monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
     from auth.authentication import create_access_token
@@ -1048,3 +1063,41 @@ def test_desktop_auth_provision_has_bounded_timeout():
     assert m is not None
     seconds = int(m.group(1))
     assert 5 <= seconds <= 120
+
+
+def test_the_router_stub_covers_every_router_main_imports():
+    """The fake ``routes`` module above is a hardcoded dict, so a router added to main.py's
+    ``from routes import (...)`` block without a matching stub entry kills every test in this
+    file with an ImportError rather than a useful message, as ``openai_codex_auth_router`` did
+    after #8511. Comparing the two lists keeps that omission local to this assertion."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    main_src = (backend / "main.py").read_text(encoding = "utf-8")
+    block = re.search(r"from routes import \(([^)]*)\)", main_src, re.S)
+    assert block is not None, "main.py no longer has a parenthesised routes import; re-derive this"
+    imported = set(re.findall(r"(\w+_router)", block.group(1)))
+    assert imported, "the routes import block named no routers; re-derive this"
+
+    # The health test's own stub only: another fixture's stubs would count as coverage here.
+    own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
+    stubbed = set(re.findall(r'"(\w+_router)":', own_src))
+    assert stubbed, "the health test's stub dict named no routers; re-derive this"
+    missing = sorted(imported - stubbed)
+    assert not missing, (
+        f"main.py imports {missing} from routes, but the stub dict in this file does not "
+        f"define them, so the routes stand-in will not satisfy that import"
+    )
+
+    # Same drift for submodule imports, which need a sys.modules entry rather than a dict key.
+    submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
+    assert submodules, "main.py imports no routes submodule; re-derive this"
+    registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
+    assert registered, "the health test registered no routes submodule; re-derive this"
+    unstubbed = sorted(submodules - registered)
+    assert not unstubbed, (
+        f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
+        f"registers in sys.modules, so the real package would be imported instead"
+    )
