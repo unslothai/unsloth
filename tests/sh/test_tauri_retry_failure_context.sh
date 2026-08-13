@@ -219,15 +219,12 @@ if [ "$_setup_mode_count" -ne 2 ]; then
     exit 1
 fi
 
-# setup.sh exits in exactly two places and both are accounted for here. setup_fail is the
-# one failure exit: every failure path goes through it so the desktop gets a [TAURI:ERROR]
-# line instead of a bare exit code. The pinned-uv signal handler is the other, and it is not
-# a failure: it re-raises the caller's own termination as 128+signal, the way install.sh's
-# _on_install_signal does, because install.rs cancels an install by SIGTERMing the process
-# group and a cancel must not be reported to the user as an installer failure. A third exit
-# anywhere, or a second exit inside either of these two, is an unrouted failure exit.
-# `|| true`: grep -c reports 0 with status 1, and under set -e a removed handler would
-# abort this file with no explanation instead of the failure below.
+# setup.sh has exactly two exits. setup_fail is the only failure exit: every failure path goes
+# through it so the desktop gets a [TAURI:ERROR] line, not a bare exit code. The pinned-uv signal
+# handler is not a failure, it re-raises as 128+signal like install.sh's _on_install_signal,
+# because install.rs cancels an install by SIGTERMing the process group with intentional_stop and
+# a cancel must not raise a failure banner. A third exit, or a second inside either, is unrouted.
+# `|| true`: grep -c reports 0 with status 1, which under set -e would abort with no explanation.
 _setup_fail_exits=$(sed -n '/^setup_fail()/,/^}/p' "$SETUP_SH" |
     grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)
 _setup_signal_exits=$(sed -n '/^_setup_uv_on_signal()/,/^}/p' "$SETUP_SH" |
@@ -241,8 +238,7 @@ if [ "$_setup_fail_exits" -ne 1 ] ||
     echo "  FAIL: Unix setup has explicit exits outside setup_fail"
     exit 1
 fi
-# The signal handler stays reachable only from its own traps, at 128+signal. Called from
-# ordinary control flow it would be exactly the unrouted failure exit the count forbids.
+# Trap-only: called from ordinary control flow the handler is the unrouted failure exit again.
 _setup_signal_refs=$(grep -c '_setup_uv_on_signal' "$SETUP_SH" || true)
 if [ "$_setup_signal_refs" -ne 4 ] ||
     ! grep -qF "trap '_setup_uv_on_signal 129' HUP" "$SETUP_SH" ||
@@ -253,10 +249,8 @@ if [ "$_setup_signal_refs" -ne 4 ] ||
 fi
 echo "  PASS: Unix setup routes explicit exits through setup_fail"
 
-# Prove the exception behaves as claimed rather than only reading like it. A stubbed pinned-uv
-# install is interrupted for real, in Tauri mode, and has to report the signal as 128+signal,
-# leave none of the pinned path's temporaries behind (a ~40 MB unpacked archive plus staging
-# files inside a directory that is on PATH), and emit no failure context for a cancel.
+# Prove the exception behaves as claimed: a stubbed pinned-uv install, interrupted for real in
+# Tauri mode, must report 128+signal, leave no temporaries behind, and print no cancel failure.
 _signal_dir=$(mktemp -d)
 trap 'rm -f "$_stdout_file" "$_stderr_file"; rm -rf "$_signal_dir"' EXIT
 {
@@ -274,7 +268,7 @@ trap '_setup_uv_on_signal 129' HUP
 trap '_setup_uv_on_signal 130' INT
 trap '_setup_uv_on_signal 143' TERM
 : > "$1/ready"
-# Short sleeps, not one long one: a trap runs only once the foreground command returns.
+# Short sleeps: a trap runs only once the foreground command returns.
 while :; do sleep 0.1; done
 SIGNAL_STUB
 mkdir -p "$_signal_dir/work/uv-x86_64-unknown-linux-gnu" "$_signal_dir/dest"
