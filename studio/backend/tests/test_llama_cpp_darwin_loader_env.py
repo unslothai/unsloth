@@ -532,7 +532,11 @@ class TestPinningTheInstallersOwnEntrypoint:
         root = tmp_path / "llama.cpp"
         (root / "build" / "bin").mkdir(parents = True)
         (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
-        for marker in ("UNSLOTH_PREBUILT_INFO.json", ".unsloth_llama_install", "unsloth_install.json"):
+        for marker in (
+            "UNSLOTH_PREBUILT_INFO.json",
+            ".unsloth_llama_install",
+            "unsloth_install.json",
+        ):
             (root / marker).write_text("{}")
         entry = root / "llama-server"
         entry.write_text(body)
