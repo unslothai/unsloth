@@ -15,13 +15,18 @@ export function sandboxRevealPath(sessionId: string): string {
  * Whether this session's sandbox holds anything.
  *
  * Used to tell a candidate folder apart from one that was never written to.
- * A sandbox that does not exist walks to nothing, so it reports no files
- * rather than an error, which is what makes this usable as a probe.
+ * A sandbox that does not exist walks to nothing, so "no sandbox" already
+ * arrives as a successful listing with an empty array. That is what makes a
+ * non-OK response mean something else entirely, and why it is thrown rather
+ * than read as "no files": swallowing it would send the caller on to its
+ * fallback and open a different workspace, reporting nothing.
  */
 export async function sandboxHasFiles(sessionId: string): Promise<boolean> {
   const { prefix, query } = sandboxRoutePrefix(sessionId);
   const response = await authFetch(`${prefix}${query}`);
-  if (!response.ok) return false;
+  if (!response.ok) {
+    throw new Error(`Could not read the chat's folder (${response.status})`);
+  }
   const body: unknown = await response.json();
   const files = (body as { files?: unknown } | null)?.files;
   return Array.isArray(files) && files.length > 0;

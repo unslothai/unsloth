@@ -338,14 +338,57 @@ class _SwappedForAFile:
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp_path, request):
     """``expect_dir`` is what the sandbox route passes, because the parent of a
-    sandbox is the root holding every other chat's."""
+    sandbox is the root holding every other chat's.
+
+    A real file on disk rather than a fake that lies between two stats: under
+    ``expect_dir`` the type check IS the decision, one ``lstat``, so there is
+    no longer a gap between them for a fake to sit in. That is the property
+    being tested.
+    """
     request.getfixturevalue(host)
     root = tmp_path / "sandbox"
-    (root / "thread-1").mkdir(parents = True)
+    root.mkdir(parents = True)
+    (root / "thread-1").write_bytes(b"not a directory any more")
     with pytest.raises(FileNotFoundError):
-        path_utils.reveal_in_file_manager(_SwappedForAFile(root / "thread-1"), expect_dir = True)
+        path_utils.reveal_in_file_manager(root / "thread-1", expect_dir = True)
     assert spawned.popen == []
     assert spawned.startfile == []
+
+
+@pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
+def test_a_sandbox_swapped_for_a_directory_symlink_is_refused(host, spawned, tmp_path, request):
+    """``is_dir()`` follows links, so a sandbox replaced by a link to somewhere
+    else would pass a naive directory check and open the TARGET: another
+    chat's sandbox, or anywhere at all. The guard asks for the link's own type.
+    """
+    request.getfixturevalue(host)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    link = tmp_path / "sandbox" / "thread-1"
+    link.parent.mkdir(parents = True)
+    link.symlink_to(elsewhere, target_is_directory = True)
+    assert link.is_dir(), "the premise: it looks like a directory"
+
+    with pytest.raises(FileNotFoundError):
+        path_utils.reveal_in_file_manager(link, expect_dir = True)
+    assert spawned.popen == []
+    assert spawned.startfile == []
+
+
+@pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
+def test_a_symlinked_cache_entry_is_still_revealed_without_expect_dir(
+    host, spawned, tmp_path, request
+):
+    """A Hugging Face snapshot is a link farm, so the cached-model reveal must
+    keep following links. Only the sandbox caller opts into the strict check."""
+    request.getfixturevalue(host)
+    blob = tmp_path / "blob.gguf"
+    blob.write_bytes(b"gguf")
+    link = tmp_path / "snapshot" / "model.gguf"
+    link.parent.mkdir(parents = True)
+    link.symlink_to(blob)
+    path_utils.reveal_in_file_manager(link)
+    assert spawned.popen or spawned.startfile
 
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])

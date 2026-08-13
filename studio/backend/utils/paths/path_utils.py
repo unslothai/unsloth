@@ -241,27 +241,42 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     a sandbox is the root holding every other chat's.
 
     ``expect_dir`` says the caller only ever reveals a directory, and refuses
-    anything else the same way. Deletion is not the only route to the parent: a
-    target swapped for a regular file takes the file branch on every platform,
-    and on Linux that branch names the parent, which for a sandbox is the root
-    holding every other chat's. macOS and Windows show the parent too, with the
-    file selected. A caller that knows what it is revealing need not race the
-    swap. Off by default: the cached-model reveal legitimately points at a file.
+    everything else: a target swapped for a regular file takes the file branch
+    on every platform, and that branch names the enclosing directory, which for
+    a sandbox is the root holding every other chat's. A symlink is refused too,
+    and that is the whole reason this is one ``lstat`` rather than a couple of
+    ``Path`` predicates. ``is_dir()`` follows links, so a sandbox swapped for a
+    link to somewhere else passes it and the launcher opens the target; asking
+    for the link's OWN type answers both questions in a single syscall, leaving
+    no window between them. (``is_dir(follow_symlinks = False)`` would say the
+    same thing but only on 3.13+, and this runs on 3.10.)
+
+    Off by default: the cached-model reveal legitimately points at a file, and
+    at a symlinked one, since a Hugging Face cache snapshot is a link farm.
     """
+    import stat as stat_module
     import subprocess
 
-    if not path.exists():
-        raise FileNotFoundError(str(path))
-    # Decided ONCE and then only read. Each branch used to re-stat, so a swap
-    # landing between two of them could still take a path the guard above had
-    # already ruled out; with one decision there is no window left to lose.
-    is_dir = path.is_dir()
-    if expect_dir and not is_dir:
-        raise FileNotFoundError(str(path))
-    is_file = not is_dir and path.is_file()
-    if not is_dir and not is_file:
-        # Neither, so there is nothing to show and no parent worth widening to.
-        raise FileNotFoundError(str(path))
+    if expect_dir:
+        try:
+            # No-follow, and the only stat this branch takes.
+            entry = os.lstat(path)
+        except OSError as exc:
+            raise FileNotFoundError(str(path)) from exc
+        if not stat_module.S_ISDIR(entry.st_mode):
+            raise FileNotFoundError(str(path))
+        is_dir, is_file = True, False
+    else:
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        # Decided ONCE and then only read. Each branch used to re-stat, so a
+        # swap landing between two of them could still take a path the guard
+        # above had already ruled out.
+        is_dir = path.is_dir()
+        is_file = not is_dir and path.is_file()
+        if not is_dir and not is_file:
+            # Neither, so nothing to show and no parent worth widening to.
+            raise FileNotFoundError(str(path))
 
     target = str(path)
     if sys.platform == "darwin":

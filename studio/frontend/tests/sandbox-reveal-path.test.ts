@@ -141,14 +141,22 @@ test("a sandbox holding files is told apart from one that was never written", as
       json: async () => ({ path: "/s/thread-1", files: [] }),
     }) as unknown as Response) as typeof fetch;
   assert.equal(await sandboxHasFiles("thread-1"), false);
+});
 
+test("a probe that could not be answered is reported, not read as an empty folder", async () => {
+  // "No sandbox" already arrives as a 200 with an empty list, so a non-OK is
+  // something else: a backend or storage failure. Reading it as "no files"
+  // would send the caller on to the current project scope and open a
+  // different workspace, with nothing said about the failure.
   globalThis.fetch = (async () =>
     ({
       ok: false,
-      status: 404,
+      status: 500,
       json: async () => ({}),
     }) as unknown as Response) as typeof fetch;
-  assert.equal(await sandboxHasFiles("thread-1"), false);
+  await assert.rejects(sandboxHasFiles("thread-1"), {
+    message: "Could not read the chat's folder (500)",
+  });
 });
 
 test("the legacy probe runs only for a chat now inside a project", () => {
