@@ -31,6 +31,7 @@ The sizing functions are stubbed rather than exercised, so this runs on CPU,
 in milliseconds, against any installed unsloth_zoo.
 """
 
+import math
 import os
 
 import pytest
@@ -40,8 +41,53 @@ from unsloth import save as S
 GB = 1024**3
 
 
+def _with_merge_headroom(n_bytes):
+    """What the merge preflight asks for, given a raw output size.
+
+    unsloth_zoo's merge guard compares against `int(free * 0.95)`, so the
+    preflight has to ask for the same effective figure. The 0.95 is written
+    out rather than read from `S`, so dropping the headroom fails here.
+    """
+    return math.ceil(n_bytes / 0.95)
+
+
 class _FakeModel:
     """Not a PeftModel; the preflight is called with an explicit needs_merge."""
+
+
+class _ModelWithEmbeddings:
+    """Answers the two embedding getters a weight-only export leaves alone."""
+
+    class _Weight:
+        def __init__(self, numel):
+            self._numel = numel
+
+        def numel(self):
+            return self._numel
+
+    class _Embedding:
+        def __init__(self, weight):
+            self.weight = weight
+
+    def __init__(
+        self,
+        input_numel,
+        output_numel = 0,
+        tied = False,
+    ):
+        self._input = self._Embedding(self._Weight(input_numel))
+        if tied:
+            self._output = self._input
+        elif output_numel:
+            self._output = self._Embedding(self._Weight(output_numel))
+        else:
+            self._output = None
+
+    def get_input_embeddings(self):
+        return self._input
+
+    def get_output_embeddings(self):
+        return self._output
 
 
 @pytest.fixture
@@ -417,13 +463,13 @@ class TestMergeSizing:
         S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit")
         # Not the GGUF estimate, which would add an intermediate conversion
         # this export never writes.
-        assert sized == [10 * GB]
+        assert sized == [_with_merge_headroom(10 * GB)]
 
     @pytest.mark.parametrize("save_method", ["merged 16bit", "MERGED_16BIT", " merged-16bit "])
     def test_supported_spellings_are_measured_too(self, sized, save_method):
         """`unsloth_save_model` normalizes spaces, so these are the same export."""
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
-        assert sized == [10 * GB]
+        assert sized == [_with_merge_headroom(10 * GB)]
 
     @pytest.mark.parametrize(
         "save_method,expected_gb",
@@ -439,12 +485,101 @@ class TestMergeSizing:
     def test_every_compressed_export_sizes_its_sibling(self, sized, save_method, expected_gb):
         """`_unsloth_save_compressed_tensors` keeps the merge AND the sibling."""
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
-        assert sized == [pytest.approx(expected_gb * GB)]
+        assert sized == [pytest.approx(_with_merge_headroom(expected_gb * GB))]
 
     def test_an_unsupported_near_miss_is_left_to_its_own_error(self, sized):
         """`_normalize_compressed_method` raises on these; the message is downstream."""
         assert S._preflight_merge_disk(_FakeModel(), "model", "fp4_banana") == "model"
         assert sized == []
+
+    @pytest.mark.parametrize(
+        "save_method", ["torchao_fp8", "torchao_int8", "portable_fp8", "portable-int8"]
+    )
+    def test_a_torchao_export_is_sized_by_its_sibling_alone(self, sized, save_method):
+        """The torchao path merges into a temp dir, not into `save_directory`.
+
+        So `save_directory` holds the 8-bit sibling only, and pricing the
+        16-bit merge there as well would move an export that fits.
+        """
+        S._preflight_merge_disk(_FakeModel(), "model", save_method)
+        assert sized == [_with_merge_headroom(5 * GB)]
+
+    def test_the_embeddings_are_not_priced_as_quantized(self, sized):
+        """Weight-only schemes quantize `Linear` only.
+
+        The input embeddings and an untied lm_head stay 16-bit in the sibling,
+        so a model that is a quarter embeddings costs more than half the merge.
+        """
+        model = _ModelWithEmbeddings(input_numel = 1024**3, output_numel = 1024**3 // 2)
+        # 10GB merge, 3GB of it embeddings -> 7GB at 8 bits + 3GB copied.
+        S._preflight_merge_disk(model, "model", "fp8")
+        assert sized == [_with_merge_headroom(10 * GB + 3 * GB + int(3.5 * GB))]
+
+    def test_tied_embeddings_are_counted_once(self, sized):
+        model = _ModelWithEmbeddings(input_numel = 1024**3, tied = True)
+        S._preflight_merge_disk(model, "model", "fp8")
+        assert sized == [_with_merge_headroom(10 * GB + 2 * GB + 4 * GB)]
+
+    def test_a_model_that_does_not_answer_is_sized_as_before(self, sized):
+        """The old whole-model arithmetic, so this can only ever ask for more."""
+        S._preflight_merge_disk(_FakeModel(), "model", "fp8")
+        assert sized == [_with_merge_headroom(15 * GB)]
+
+    def test_the_torchao_merge_really_is_staged_elsewhere(self):
+        """The sizing above is only right while this stays true."""
+        import inspect
+
+        source = inspect.getsource(S._unsloth_save_torchao)
+        assert "mkdtemp" in source
+        assert "save_directory = staging" in source
+        assert 'out_dir = base + "-" + suffix' in source
+
+
+class TestMergeHeadroomMatchesTheZooGuard:
+    """A working directory that is "just big enough" is not big enough.
+
+    `merge_and_overwrite_lora` compares the save against `int(free * 0.95)`,
+    so a 30GB merge with 31GB free was left in /kaggle/working by the redirect
+    and then refused outright by the merge itself.
+    """
+
+    @pytest.fixture
+    def kaggle(self, monkeypatch):
+        """A `kaggle_tmp_redirect` that answers like the real one."""
+        free_working = 31 * GB
+
+        def fake_redirect(
+            save_directory,
+            need_bytes = 0,
+            what = "export",
+        ):
+            if need_bytes <= 0 or free_working >= need_bytes:
+                return save_directory, None
+            return "/tmp/unsloth_saves/model", "moved"
+
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 30 * GB)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", fake_redirect)
+
+    def test_a_merge_that_only_just_fits_is_still_redirected(self, kaggle):
+        assert S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit") == (
+            "/tmp/unsloth_saves/model"
+        )
+
+    def test_the_ask_clears_the_guard_that_comes_next(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 30 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit")
+        # Free space that satisfies this preflight also satisfies the 5% the
+        # merge reserves; 31GB satisfies neither.
+        assert int(asked[0] * 0.95) >= 30 * GB
+        assert int(31 * GB * 0.95) < 30 * GB
 
 
 class TestSixteenBitCheckpointDetection:
@@ -467,6 +602,64 @@ class TestSixteenBitCheckpointDetection:
 
     def test_no_config_at_all_is_counted(self):
         assert S._gguf_writes_16bit_checkpoint(_FakeModel()) is True
+
+
+class TestFallbackCheckpointDtype:
+    """The non-PEFT fallback `save_pretrained`s the model at its own dtype.
+
+    The estimator budgets two bytes per parameter for that checkpoint, so an
+    fp32 model (`dtype = torch.float32` is a supported load) writes twice what
+    was measured and can fill a disk this called big enough.
+    """
+
+    @pytest.fixture
+    def sized_from_parameters(self, monkeypatch):
+        import torch
+        monkeypatch.setattr(
+            S,
+            "model_16bit_bytes",
+            lambda model: sum(p.numel() for p in model.parameters()) * 2,
+        )
+        return torch
+
+    def test_float32_parameters_cost_the_difference(self, sized_from_parameters):
+        torch = sized_from_parameters
+        model = torch.nn.Linear(8, 8, dtype = torch.float32)
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._fallback_checkpoint_extra_bytes(model) == n_parameters * 2
+
+    def test_a_sixteen_bit_model_adds_nothing(self, sized_from_parameters):
+        torch = sized_from_parameters
+        model = torch.nn.Linear(8, 8, dtype = torch.bfloat16)
+        assert S._fallback_checkpoint_extra_bytes(model) == 0
+
+    def test_a_reused_checkpoint_on_disk_adds_nothing(self, sized_from_parameters, tmp_path):
+        """Nothing is written, whatever dtype the model is in memory."""
+        torch = sized_from_parameters
+        model = torch.nn.Linear(8, 8, dtype = torch.float32)
+        model.config = type("cfg", (), {"_name_or_path": str(tmp_path)})()
+        assert S._fallback_checkpoint_extra_bytes(model) == 0
+
+    def test_an_unmeasurable_model_adds_nothing(self):
+        assert S._fallback_checkpoint_extra_bytes(_FakeModel()) == 0
+
+    def test_the_gguf_preflight_asks_for_it(self, sized_from_parameters, monkeypatch):
+        torch = sized_from_parameters
+        asked = []
+        model = torch.nn.Linear(8, 8, dtype = torch.float32)
+        n_parameters = sum(p.numel() for p in model.parameters())
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", lambda **kwargs: 100 * GB)
+        monkeypatch.setattr(S, "free_bytes", lambda path: 1000 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        S._preflight_gguf_disk(model, "model", "q4_k_m", needs_merge = True)
+        assert asked == [100 * GB + n_parameters * 2]
 
 
 class TestDisabledImatrixIsNotSizedAsAnImatrix:

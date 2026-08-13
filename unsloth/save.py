@@ -50,6 +50,7 @@ except Exception:
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
+import math
 import requests
 import torch
 import os
@@ -2922,6 +2923,18 @@ def _hub_cache_prewarm_disabled(disable):
             os.environ[key] = previous
 
 
+# unsloth_zoo's own merge guard compares the save against `int(free * 0.95)`
+# (`saving_utils.merge_and_overwrite_lora`), and `model_16bit_bytes` counts
+# tensors only: config.json, the tokenizer files and the safetensors index are
+# written on top of them. Ask the redirect for that same effective figure, or a
+# working directory that measures "just big enough" keeps the export and the
+# merge then refuses it outright instead of using /tmp.
+_MERGE_FREE_SPACE_RESERVE = 0.95
+
+# torchao weight-only fp8 / int8: one byte per quantized weight.
+_TORCHAO_SIBLING_WEIGHT_BITS = 8
+
+
 def _compressed_scheme_weight_bits(scheme):
     """Bits per weight of a compressed-tensors sibling checkpoint.
 
@@ -2932,6 +2945,42 @@ def _compressed_scheme_weight_bits(scheme):
     """
     scheme = str(scheme).upper()
     return 4 if scheme.startswith("W4") or "FP4" in scheme else 8
+
+
+def _unquantized_parameter_bytes(model):
+    """Bytes a weight-only export leaves at 16 bits in the sibling checkpoint.
+
+    compressed-tensors and torchao both quantize `Linear` weights only, so the
+    input embeddings and an untied `lm_head` stay 16-bit. They are the
+    dominant exclusion (a 4.5B model measured 0.5B of them), so pricing the
+    whole sibling at the scheme's width under-sizes it by the embedding share.
+
+    Tied embeddings are one tensor and are counted once. Zero when the model
+    does not answer, which leaves the estimate exactly as it was.
+    """
+    total = 0
+    seen = set()
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            weight = getattr(getattr(model, getter)(), "weight", None)
+            if weight is None or id(weight) in seen:
+                continue
+            seen.add(id(weight))
+            total += weight.numel() * 2
+        except Exception:
+            continue
+    return total
+
+
+def _quantized_sibling_bytes(model, merge_bytes, weight_bits):
+    """Bytes of the quantized sibling written to `save_directory + "-<suffix>"`.
+
+    `merge_bytes` is the 16-bit checkpoint size. Only the part of it that a
+    weight-only scheme actually quantizes shrinks; the rest is copied across
+    at 16 bits.
+    """
+    unquantized = min(_unquantized_parameter_bytes(model), merge_bytes)
+    return int((merge_bytes - unquantized) * weight_bits / 16) + unquantized
 
 
 def _preflight_merge_disk(
@@ -2966,7 +3015,10 @@ def _preflight_merge_disk(
     except Exception:
         # An unsupported near-miss name raises later, where the message is.
         return save_directory
-    if compressed is None and method != "merged_16bit":
+    # The torchao portable exports are the same shape as the compressed ones
+    # from here: a quantized sibling at `save_directory + "-<suffix>"`.
+    torchao = _normalize_torchao_method(method)
+    if compressed is None and torchao is None and method != "merged_16bit":
         return save_directory
     try:
         # A merge writes 2 bytes per logical parameter and no GGUF at all, so
@@ -2975,8 +3027,16 @@ def _preflight_merge_disk(
         need = model_16bit_bytes(model)
         if need <= 0:
             return save_directory
-        if compressed is not None:
-            need += int(need * _compressed_scheme_weight_bits(compressed[0]) / 16)
+        if torchao is not None:
+            # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
+            # directory rather than `save_directory`, so the only thing landing
+            # here is the 8-bit sibling.
+            need = _quantized_sibling_bytes(model, need, _TORCHAO_SIBLING_WEIGHT_BITS)
+        elif compressed is not None:
+            need += _quantized_sibling_bytes(
+                model, need, _compressed_scheme_weight_bits(compressed[0])
+            )
+        need = math.ceil(need / _MERGE_FREE_SPACE_RESERVE)
         new_directory, message = kaggle_tmp_redirect(
             save_directory,
             need_bytes = need,
@@ -3051,6 +3111,32 @@ def _gguf_writes_16bit_checkpoint(model):
         return not (name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
         return True
+
+
+def _fallback_checkpoint_extra_bytes(model):
+    """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate.
+
+    `estimate_gguf_export_bytes` budgets two bytes per logical parameter for
+    the checkpoint, which is what a LoRA merge writes. The non-PEFT fallback
+    calls `self.save_pretrained` with no cast, so a model loaded with
+    `dtype = torch.float32` (a supported load) writes four and can fill a disk
+    the preflight called big enough.
+
+    Measured from the parameters' real storage, so a mixed-dtype model is not
+    priced off its largest tensor, and clamped at zero: this can only ever ask
+    for more room, never less, and an unmeasurable model adds nothing.
+    """
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return 0
+    if not _gguf_writes_16bit_checkpoint(model):
+        return 0
+    try:
+        actual = 0
+        for parameter in model.parameters():
+            actual += parameter.numel() * parameter.element_size()
+        return max(0, actual - model_16bit_bytes(model))
+    except Exception:
+        return 0
 
 
 def _preflight_gguf_disk(
@@ -3128,6 +3214,13 @@ def _preflight_gguf_disk(
             if prewarm_possible
             else need
         )
+        # The estimate prices the checkpoint at two bytes per parameter. The
+        # non-PEFT fallback writes it at the model's own dtype, so an fp32
+        # model needs the difference on top. Zero for every 16-bit model.
+        if need > 0 and needs_merge:
+            extra = _fallback_checkpoint_extra_bytes(model)
+            need += extra
+            need_with_cache += extra
     except Exception:
         # Sizing is best effort. A failure here must not stop an export that
         # would otherwise have worked.
