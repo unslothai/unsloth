@@ -51,6 +51,19 @@ def _catches_import_error(handler: ast.ExceptHandler) -> bool:
     return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
 
 
+# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which
+# ImportError alone does not cover.
+_CATCHES_EVERYTHING = ("Exception", "BaseException")
+
+
+def _covers_half_built_zoo(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:  # bare except
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    caught = {n.id for n in names if isinstance(n, ast.Name)}
+    return bool(caught & set(_CATCHES_EVERYTHING)) or {"RuntimeError", "AttributeError"} <= caught
+
+
 def test_warning_flag_defined_at_module_scope():
     flags = {
         name: value
@@ -100,7 +113,15 @@ def test_warning_handler_gated_on_module_flag():
     assert try_node is not None
     handlers = [h for h in try_node.handlers if _catches_import_error(h)]
     assert handlers
-    handler = handlers[0]
+    # And it has to keep covering the half-built cases, not just the missing-module one. That is
+    # what #8603 widened the handler for: an unsloth_zoo that imports but raises RuntimeError or
+    # AttributeError aborts the export otherwise, and a revert to ImportError alone still
+    # satisfies _catches_import_error above.
+    covering = [h for h in handlers if _covers_half_built_zoo(h)]
+    assert (
+        covering
+    ), "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
+    handler = covering[0]
     flag_reads = []
     flag_writes = []
     warning_calls = []
