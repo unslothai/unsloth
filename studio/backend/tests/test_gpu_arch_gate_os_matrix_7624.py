@@ -1775,6 +1775,121 @@ class TestArchCrashRetryOntoAnApu:
         assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
 
 
+class TestUnifiedMemoryOptOut:
+    """Turning GGML_CUDA_ENABLE_UNIFIED_MEMORY off has to make it ABSENT (#8651).
+
+    ggml gates managed memory on ``getenv(...) != nullptr``, so a value of "0" is
+    still on and the reporter's only route was patching the source. The Strix Halo
+    host below is the reported one: a gfx1151 APU whose pool ROCm already reports in
+    full, where plain hipMalloc offloads all layers and the managed path does not.
+    Mock-based, no ROCm here."""
+
+    def _strix_halo(self, monkeypatch):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _fake_torch(
+            [_device("gfx1151", free_mib = 47000, is_integrated = 1)],
+            vendor = "amd",
+        )
+
+    def _load(self, tmp_path, monkeypatch, env_extra = None):
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._strix_halo(monkeypatch),
+            None,
+            returncode = None,
+            env_extra = env_extra,
+        )
+
+    def test_the_apu_still_gets_it_by_default(self, tmp_path, monkeypatch, probe_env):
+        """The baseline this must not regress: #5301 added the variable for exactly
+        this hardware, so an untouched Strix Halo keeps it."""
+        _cmd, env = self._load(tmp_path, monkeypatch)[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    @pytest.mark.parametrize("value", ["0", "", "false", "FALSE", "no", "off", " 0 "])
+    def test_a_falsy_user_value_is_not_passed_through(
+        self, tmp_path, monkeypatch, probe_env, value
+    ):
+        """setdefault kept the user's "0", which ggml then read as enabled."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": value}
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    @pytest.mark.parametrize("value", ["1", "2", "true", "on"])
+    def test_a_truthy_user_value_still_wins(self, tmp_path, monkeypatch, probe_env, value):
+        """Only the off spellings are intercepted; anything else is passed through
+        untouched, ownership included."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": value}
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == value
+
+    def test_the_disable_switch_keeps_it_unset(self, tmp_path, monkeypatch, probe_env):
+        """The switch users can find, mirroring UNSLOTH_DISABLE_DC_TUNING."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_disable_switch_also_clears_an_inherited_value(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Both halves together: the switch has to beat a stale inherited "1" too,
+        or the escape hatch does nothing on the host most likely to have one."""
+        _cmd, env = self._load(
+            tmp_path,
+            monkeypatch,
+            {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1", "GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_a_non_one_disable_value_does_nothing(self, tmp_path, monkeypatch, probe_env):
+        """Exact "1", like the DC switch. A guard that fired on any value would
+        make the name itself a trap, which is the bug being fixed."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_the_opt_out_survives_a_retry_onto_an_apu(self, tmp_path, monkeypatch, probe_env):
+        """The arch-crash retry re-adds the variable when it lands on an APU. It
+        must not undo an opt-out the user made for the whole launch."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        torch = _fake_torch(
+            [
+                _device("gfx1030", free_mib = 40000),
+                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            env_extra = {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
+        )
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for _c, env in launches)
+
+
 class TestArchCrashRetryDropsDeadTensorMode:
     """Narrowing to one device makes --split-mode tensor a no-op still REPORTED as
     active: tensor_parallel drives the UI and the MTP crash watchdog. Dropping
