@@ -4047,7 +4047,13 @@ def _run_setup_ps1_routing(
     script_path = tmp_path / "routing.ps1"
     script_path.write_text(script, encoding = "utf-8")
     completed = subprocess.run(
-        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script_path)],
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script_path),
+        ],
         capture_output = True,
         text = True,
         timeout = 120,
@@ -4083,15 +4089,22 @@ def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_ex
     sh_dir.mkdir()
     ps_dir.mkdir()
     sh = _run_setup_sh_routing(
-        status, sh_dir, install_exists = install_exists, explicit_backend = explicit_backend,
+        status,
+        sh_dir,
+        install_exists = install_exists,
+        explicit_backend = explicit_backend,
     )
     ps = _run_setup_ps1_routing(
-        status, ps_dir, install_exists = install_exists, explicit_backend = explicit_backend,
+        status,
+        ps_dir,
+        install_exists = install_exists,
+        explicit_backend = explicit_backend,
     )
 
     assert ps["returncode"] == sh["returncode"], {"bash": sh, "pwsh": ps}
     assert ("source_build=true" in ps["stdout"]) == ("source_build=true" in sh["stdout"]), {
-        "bash": sh, "pwsh": ps,
+        "bash": sh,
+        "pwsh": ps,
     }
     # Pin the two branches the backend selector depends on, so a future edit that keeps
     # the halves in step but changes the contract still fails.

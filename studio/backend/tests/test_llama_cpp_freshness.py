@@ -162,7 +162,8 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "payload", ["[]", '["cpu"]', '"cuda"', "123", "true", "null"],
+    "payload",
+    ["[]", '["cpu"]', '"cuda"', "123", "true", "null"],
     ids = ["empty-list", "list", "string", "int", "bool", "null"],
 )
 def test_read_install_marker_rejects_non_object_json(tmp_path, payload):
