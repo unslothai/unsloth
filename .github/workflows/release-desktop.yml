@@ -539,7 +539,7 @@ jobs:
       # harden-runner v2.20.0; stay in audit until the macOS + Windows
       # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -779,7 +779,7 @@ jobs:
           git diff -- Cargo.toml Cargo.lock
 
       - name: Rust cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: 'studio/src-tauri -> target'
 
@@ -963,7 +963,7 @@ jobs:
       - name: Build Linux deb
         id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
@@ -1045,7 +1045,7 @@ jobs:
       - name: Build macOS app
         id: build_macos
         if: matrix.platform == 'macos-latest'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # The signing key is not password protected, and no secret of this name
@@ -1209,7 +1209,7 @@ jobs:
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # The signing key is not password protected, and no secret of this name
@@ -1644,7 +1644,7 @@ jobs:
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -2132,13 +2132,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
       # Sparse: a full checkout to fetch one file would be wasteful.
       - name: Check out the scan script
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: scripts/virustotal_scan.py
