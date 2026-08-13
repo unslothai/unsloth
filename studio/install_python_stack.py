@@ -3029,8 +3029,10 @@ def _probe_rocm_torch() -> tuple[bool, str, bool, str]:
     )
     last = lines[-1] if lines else ""
     marker, version, runtime_cuda = (last.split("|") + ["", ""])[:3]
+    # No separator means nothing the probe was asked to print survived, so version and
+    # runtime are already empty: a probe that did not run reports no CUDA evidence.
     printed = "|" in last
-    return bool(printed and marker), version, printed, runtime_cuda if printed else ""
+    return bool(printed and marker), version, printed, runtime_cuda
 
 
 def _rocm_repair_key(index_url: str, installed_version: str, torch_importable: bool) -> str:
