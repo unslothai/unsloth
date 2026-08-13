@@ -1228,50 +1228,98 @@ const TOGGLE_ENV: &[&str] = &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"];
 
 /// %NAME%, $NAME and ${NAME} against the process environment.
 ///
-/// The twin of the expansion `unsloth_cli/_system_dir_guard.py` gets from
-/// os.path.expandvars, which on Windows paths takes all three forms, so all
-/// three are taken here or the two layers would disagree about the folder. A
-/// name this machine does not set is left as written, which is what expandvars
-/// does as well.
+/// Mirrors ntpath.expandvars, which is what the CLI guard uses, down to its
+/// pattern: `'[^']*'?|%(%|[^%]*%?)|\$(\$|[-\w]+|\{[^}]*\}?)`. The details matter
+/// because the two layers have to name the same folder: a single-quoted run is
+/// copied through unexpanded, `%%` and `$$` stand for one character, a `$` name
+/// may contain a hyphen, and anything unterminated is left exactly as written,
+/// as is a name this machine does not set.
 fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
     let mut index = 0;
     while index < bytes.len() {
-        let rest = &value[index..];
-        let (name, consumed) = match bytes[index] {
-            b'%' => match rest[1..].find('%') {
-                Some(end) if end > 0 => (&rest[1..1 + end], 1 + end + 1),
-                _ => (&rest[..0], 0),
-            },
-            b'$' if rest[1..].starts_with('{') => match rest.find('}') {
-                Some(end) if end > 2 => (&rest[2..end], end + 1),
-                _ => (&rest[..0], 0),
-            },
-            b'$' => {
-                let end = rest[1..]
-                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                    .map_or(rest.len(), |offset| offset + 1);
-                if end > 1 {
-                    (&rest[1..end], end)
-                } else {
-                    (&rest[..0], 0)
+        // Only taken for the three ASCII markers below, where index + 1 is
+        // always a character boundary.
+        match bytes[index] {
+            b'\'' => {
+                // A quoted run is copied through, terminator included when it
+                // has one, so a reference inside it is not expanded.
+                let rest = &value[index + 1..];
+                let end = rest
+                    .find('\'')
+                    .map_or(value.len(), |offset| index + 1 + offset + 1);
+                out.push_str(&value[index..end]);
+                index = end;
+            }
+            b'%' => {
+                let rest = &value[index + 1..];
+                if rest.starts_with('%') {
+                    out.push('%');
+                    index += 2;
+                    continue;
+                }
+                match rest.find('%') {
+                    Some(offset) => {
+                        let end = index + 1 + offset + 1;
+                        match lookup(&rest[..offset]) {
+                            Some(expanded) => out.push_str(&expanded),
+                            None => out.push_str(&value[index..end]),
+                        }
+                        index = end;
+                    }
+                    // No closing %, so nothing here is a reference.
+                    None => {
+                        out.push_str(&value[index..]);
+                        index = value.len();
+                    }
                 }
             }
-            _ => (&rest[..0], 0),
-        };
-        if consumed == 0 {
-            let step = value[index..].chars().next().map_or(1, char::len_utf8);
-            out.push_str(&value[index..index + step]);
-            index += step;
-            continue;
+            b'$' => {
+                let rest = &value[index + 1..];
+                if rest.starts_with('$') {
+                    out.push('$');
+                    index += 2;
+                    continue;
+                }
+                if rest.starts_with('{') {
+                    match rest.find('}') {
+                        Some(offset) => {
+                            let end = index + 1 + offset + 1;
+                            match lookup(&rest[1..offset]) {
+                                Some(expanded) => out.push_str(&expanded),
+                                None => out.push_str(&value[index..end]),
+                            }
+                            index = end;
+                        }
+                        None => {
+                            out.push_str(&value[index..]);
+                            index = value.len();
+                        }
+                    }
+                    continue;
+                }
+                // \w under re.ASCII, plus the hyphen ntpath allows.
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                    .unwrap_or(rest.len());
+                if end == 0 {
+                    out.push('$');
+                    index += 1;
+                    continue;
+                }
+                match lookup(&rest[..end]) {
+                    Some(expanded) => out.push_str(&expanded),
+                    None => out.push_str(&value[index..index + 1 + end]),
+                }
+                index += 1 + end;
+            }
+            _ => {
+                let step = value[index..].chars().next().map_or(1, char::len_utf8);
+                out.push_str(&value[index..index + step]);
+                index += step;
+            }
         }
-        match lookup(name) {
-            Some(expanded) => out.push_str(&expanded),
-            // Unset: the reference is kept exactly as it was written.
-            None => out.push_str(&value[index..index + consumed]),
-        }
-        index += consumed;
     }
     out
 }
@@ -1417,12 +1465,31 @@ fn relative_override_pins(
 /// Preflight asks first: a context that cannot be built is not a broken CLI, and
 /// reporting it as one starts an automatic repair that needs the same context
 /// and fails the same way.
-pub(crate) fn managed_cli_context_error() -> Option<String> {
+pub(crate) fn managed_cli_context_error() -> Option<ManagedContextError> {
     let work_dir = match managed_cli_working_dir() {
         Ok(work_dir) => work_dir,
-        Err(error) => return Some(error),
+        Err(error) => return Some(ManagedContextError::WorkingDirectory(error)),
     };
-    relative_override_pins(&work_dir).err()
+    relative_override_pins(&work_dir)
+        .err()
+        .map(ManagedContextError::PathSetting)
+}
+
+/// Why a managed spawn cannot be configured. The two are told apart because the
+/// fixes are: a profile that has to come back, and a path setting the user wrote
+/// that the OS cannot resolve.
+#[derive(Debug, Clone)]
+pub(crate) enum ManagedContextError {
+    WorkingDirectory(String),
+    PathSetting(String),
+}
+
+impl std::fmt::Display for ManagedContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkingDirectory(error) | Self::PathSetting(error) => f.write_str(error),
+        }
+    }
 }
 
 /// Whether the child has to be told where to run.
@@ -3171,6 +3238,11 @@ mod managed_cli_working_dir_tests {
     fn every_spelling_expandvars_takes_is_expanded_here_too() {
         let lookup = |name: &str| match name {
             "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
+            // ntpath counts the hyphen as part of a $ name, so this one has to
+            // win over a lookup of "CACHE".
+            "CACHE-ROOT" => Some("C:\\right".to_string()),
+            "CACHE" => Some("C:\\wrong".to_string()),
+            "TWO WORDS" => Some("C:\\spaced".to_string()),
             _ => None,
         };
         // The three forms os.path.expandvars takes on a Windows path.
@@ -3185,9 +3257,36 @@ mod managed_cli_working_dir_tests {
                 "{value} did not expand the way the CLI guard expands it"
             );
         }
-        // A name this machine does not set, and a lone marker, stay as written.
-        for value in ["%NOT_SET%\\hub", "$NOT_SET\\hub", "100%", "a$b", "${}"] {
-            assert_eq!(expand_windows_vars(value, &lookup), value);
+        assert_eq!(expand_windows_vars("$CACHE-ROOT\\hf", &lookup), "C:\\right\\hf");
+        // A percent name may hold spaces; a dollar name stops at the dot.
+        assert_eq!(expand_windows_vars("%TWO WORDS%\\x", &lookup), "C:\\spaced\\x");
+        assert_eq!(expand_windows_vars("$CACHE.d", &lookup), "C:\\wrong.d");
+        // Doubled markers stand for one character.
+        assert_eq!(expand_windows_vars("100%%", &lookup), "100%");
+        assert_eq!(expand_windows_vars("$$HOME", &lookup), "$HOME");
+        // A quoted run is copied through, so what is inside it is not expanded.
+        assert_eq!(
+            expand_windows_vars("'%LOCALAPPDATA%'\\hf", &lookup),
+            "'%LOCALAPPDATA%'\\hf"
+        );
+        // Unset names, unterminated references and a lone marker stay as written.
+        for value in [
+            "%NOT_SET%\\hub",
+            "$NOT_SET\\hub",
+            "${LOCALAPPDATA\\hf",
+            "%LOCALAPPDATA\\hf",
+            "a$b",
+            "$",
+            "50% off",
+            // Non-ASCII, which \w under re.ASCII does not match: the byte walk
+            // must step over it whole rather than split the character.
+            "caché\\modèles",
+        ] {
+            assert_eq!(
+                expand_windows_vars(value, &lookup),
+                value,
+                "{value} was rewritten and should not have been"
+            );
         }
     }
 

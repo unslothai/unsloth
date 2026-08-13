@@ -40,7 +40,9 @@ fn release_auto_repair() -> bool {
 fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     match managed {
         ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
-            reason == managed::WORKING_DIRECTORY_UNAVAILABLE
+            // Either context failure: the profile the repair needs, or a path
+            // setting the repair would resolve exactly as badly.
+            managed::is_context_reason(reason)
         }
         ManagedProbe::Ready { .. } | ManagedProbe::Missing => false,
     }
@@ -58,8 +60,13 @@ fn stale_auto_repair(managed: &ManagedProbe) -> bool {
 /// needs that same profile. The backend's own reason stays in the log.
 fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     if managed_profile_unreachable(managed) {
-        info!("Desktop preflight: stale backend ({reason}) reported as an unreachable profile");
-        return managed::WORKING_DIRECTORY_UNAVAILABLE.to_string();
+        info!("Desktop preflight: stale backend ({reason}) reported as an unusable managed context");
+        return match managed {
+            ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
+                reason.clone()
+            }
+            _ => managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+        };
     }
     reason.to_string()
 }
@@ -99,8 +106,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
                 disposition: DesktopPreflightDisposition::ManagedStale,
                 // Reinstalling cannot conjure up a home directory, and the repair
                 // itself needs the same one, so do not offer to run it.
-                can_auto_repair: release_auto_repair()
-                    && reason != managed::WORKING_DIRECTORY_UNAVAILABLE,
+                can_auto_repair: release_auto_repair() && !managed::is_context_reason(&reason),
                 reason: Some(reason),
                 port: None,
                 managed_bin: Some(bin),

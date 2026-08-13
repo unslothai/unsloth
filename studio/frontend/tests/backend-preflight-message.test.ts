@@ -8,6 +8,7 @@ import test from "node:test";
 // lives in its own module and is driven directly here.
 import {
   WORKING_DIRECTORY_UNAVAILABLE,
+  PATH_SETTING_UNRESOLVABLE,
   preflightStaleMessage,
 } from "../src/hooks/backend-preflight-message.ts";
 
@@ -72,4 +73,12 @@ test("the roaming-profile cause is offered on Windows and withheld elsewhere", (
       configurable: true,
     });
   }
+});
+
+test("a path setting that cannot be resolved is told apart from an unreachable folder", () => {
+  const message = preflightStaleMessage("managed_stale", PATH_SETTING_UNRESOLVABLE);
+  assert.match(message, /folder settings/);
+  // Not the profile, and not something an update can fix: the value is the fix.
+  assert.doesNotMatch(message, /user folder/);
+  assert.doesNotMatch(message, /update/);
 });

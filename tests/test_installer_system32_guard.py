@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import types
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -320,11 +321,14 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
 
 
 def _expand_windows_vars(value: str, environ: dict[str, str]) -> str:
-    """%NAME% against the fake environment: os.path.expandvars would read the host's."""
-    out = value
-    for name, replacement in environ.items():
-        out = out.replace(f"%{name}%", replacement)
-    return out
+    """The real ntpath.expandvars, against the fake environment.
+
+    Reimplementing it here would test the reimplementation: the guard is given
+    the same function it gets in production, reading the environment the test
+    describes rather than the host's.
+    """
+    with mock.patch.dict(os.environ, environ, clear = True):
+        return ntpath.expandvars(value)
 
 
 def _guard_outcome(
@@ -1247,3 +1251,22 @@ def test_cli_guard_says_which_setting_stopped_the_move():
     assert _message is not None
     assert "path settings" in _message
     assert "user profile" not in _message
+
+
+def test_cli_guard_expands_a_hyphenated_name_the_way_ntpath_does():
+    r"""ntpath counts the hyphen as part of a $ name, so $CACHE-ROOT is one
+    variable and not $CACHE followed by -ROOT. The desktop twin has to agree, or
+    the two layers send the same install to two different folders."""
+    environ_out: dict[str, str] = {}
+    _message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {
+            "CACHE": r"C:\wrong",
+            "CACHE-ROOT": r"C:\right",
+            "HF_HOME": r"$CACHE-ROOT\hf",
+        },
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out["HF_HOME"] == r"C:\right\hf"

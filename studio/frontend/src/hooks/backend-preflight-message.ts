@@ -7,6 +7,10 @@
 /// Mirrors WORKING_DIRECTORY_UNAVAILABLE in studio/src-tauri/src/preflight/managed.rs.
 export const WORKING_DIRECTORY_UNAVAILABLE = "working_directory_unavailable";
 
+/// The folder is reachable; a path setting the user wrote is not resolvable.
+/// Mirrors PATH_SETTING_UNRESOLVABLE in studio/src-tauri/src/preflight/managed.rs.
+export const PATH_SETTING_UNRESOLVABLE = "path_setting_unresolvable";
+
 export function preflightStaleMessage(
   disposition: string,
   reason: string | null,
@@ -25,6 +29,12 @@ export function preflightStaleMessage(
         ? " This usually means a network or roaming profile is not available yet."
         : "";
     return `Unsloth cannot reach your user folder, so it has nowhere to run from.${cause} Reconnect and try again.`;
+  }
+  // Also not an install problem, and a different one from the folder: one of
+  // Unsloth's own path settings names somewhere Windows cannot resolve, so the
+  // fix is in that value rather than in the profile or in an update.
+  if (reason === PATH_SETTING_UNRESOLVABLE) {
+    return "One of Unsloth's folder settings points somewhere that cannot be resolved, so it has nowhere safe to run from. Set it to a full path, such as D:\\unsloth-cache, and try again.";
   }
   if (disposition === "owned_stale") {
     return "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth.";
