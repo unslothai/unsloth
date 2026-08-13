@@ -1328,8 +1328,8 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
-// Memoized on three primitive props: chat-page builds this element inline inside a component
-// that subscribes to stores, so without it a parent render reconciles the whole message list.
+// Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
+// would otherwise reconcile the whole message list.
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
@@ -2045,8 +2045,8 @@ const Composer: FC<{
   const researchThreadClaimed = useResearchRunStore((state) =>
     researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
   );
-  // Derive inside the selector, as useThreadResearchActive does: a bare run selector re-renders
-  // the composer on every streamed research delta.
+  // Derive in the selector, as useThreadResearchActive does: a bare run selector re-renders the
+  // composer on every streamed research delta.
   const isResearchActive = useResearchRunStore((state) => {
     const runId = researchThreadId
       ? state.latestRunByThreadId[researchThreadId]
@@ -5099,8 +5099,7 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  // Two primitives rather than the run object: the composer actions only need the id and the
-  // status, and the run identity changes on every streamed research delta.
+  // Id and status, not the run: run identity changes on every streamed research delta.
   const activeResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
   );

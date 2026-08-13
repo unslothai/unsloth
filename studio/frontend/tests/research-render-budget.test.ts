@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #8483: the desktop app froze during a deep research run. Two of the costs are invisible to a
-// rendering test and only show under a real stream, so they are pinned here at the source: what
-// the run-carrying components subscribe to, and how much work the finished report's markdown
-// commit signs up for. Same shape as drag-costs-no-render.test.ts - assert the cheap path, and
-// assert the expensive one is gone.
+// #8483: the desktop app froze during a deep research run. Two costs only show under a real
+// stream, so they are pinned at the source: what run-carrying components subscribe to, and what
+// the finished report's markdown commit signs up for. Like drag-costs-no-render.test.ts: assert
+// the cheap path, assert the expensive one is gone.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -18,8 +17,8 @@ function source(path: string): string {
 }
 
 test("no research subscriber selects the whole run object", () => {
-  // Each of these re-rendered its subtree on every streamed delta. thread.tsx's
-  // useThreadResearchActive was already correct and is the shape the others now follow.
+  // Each re-rendered its subtree on every streamed delta; thread.tsx's useThreadResearchActive
+  // was already correct and is the shape the others now follow.
   for (const path of [
     "features/chat/chat-page.tsx",
     "components/assistant-ui/thread.tsx",
@@ -61,8 +60,7 @@ test("the report renderer is deferred and its plugins are conditional", () => {
 });
 
 test("deferred readiness belongs to a markdown value, not to the component", () => {
-  // Blanking readiness from a passive effect lands one commit late: the render that first sees a
-  // new document still sees `ready === true`, hands it to Streamdown, and pays the parse twice.
+  // Blanking readiness from a passive effect lands one commit late, so the parse is paid twice.
   // Measured on a 202KB report: a wasted 576ms parse, then a second one, ~1.11s blocked against
   // ~0.66s once readiness is derived during render.
   const preview = source("components/markdown/markdown-preview.tsx");
@@ -84,11 +82,10 @@ test("plugin needs follow the document", () => {
   assert.equal(markdownPluginNeeds("\\[x\\]").math, true);
   // A lone $ is too common in prose (prices, shell prompts) to pull KaTeX in for.
   assert.equal(markdownPluginNeeds("costs $5 to run").math, false);
-  // Nor a balanced pair: the callers this gates install `@streamdown/math`'s bare export, which
-  // pins singleDollarTextMath to false, so `$x^2$` renders literally with the plugin loaded too.
-  // (`markdown-text.tsx` is the one caller that enables it, and it does not use this detector.)
-  // If that ever changes, NEEDS_MATH has to change with it - and "costs $5 and $10" is why a
-  // balanced-pair regex is not the answer.
+  // Nor a balanced pair: these callers install `@streamdown/math`'s bare export, which pins
+  // singleDollarTextMath to false, so `$x^2$` renders literally with the plugin loaded too.
+  // (`markdown-text.tsx` enables it, but does not use this detector.) If that changes, NEEDS_MATH
+  // must change with it - and "costs $5 and $10" is why a balanced-pair regex is not the answer.
   assert.equal(markdownPluginNeeds("the area is $x^2$ per unit").math, false);
   assert.match(
     source("components/markdown/markdown-preview.tsx"),
@@ -96,8 +93,8 @@ test("plugin needs follow the document", () => {
   );
   assert.equal(markdownPluginNeeds("```mermaid\ngraph TD;\n```").mermaid, true);
   assert.equal(markdownPluginNeeds("```python\npass\n```").mermaid, false);
-  // CommonMark opens a fenced block with three-or-more backticks *or* tildes, and allows a
-  // longer fence than three of either. All of these reach the renderer as lang "mermaid".
+  // CommonMark fences with three or more backticks *or* tildes, and allows longer fences. All of
+  // these reach the renderer as lang "mermaid".
   assert.equal(markdownPluginNeeds("~~~mermaid\ngraph TD;\n~~~").mermaid, true);
   assert.equal(markdownPluginNeeds("````mermaid\ngraph TD;\n````").mermaid, true);
   assert.equal(markdownPluginNeeds("~~~~mermaid\ngraph TD;\n~~~~").mermaid, true);

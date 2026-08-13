@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Run `callback` once the main thread is idle, or after `timeout` at the latest.
- *
- * Returns a canceller. Falls back to a short setTimeout where requestIdleCallback is missing
- * (Safari and the WebKitGTK webview the desktop app embeds on Linux), and runs synchronously
- * with no window at all, so callers get the same contract everywhere.
+ * Run `callback` once the main thread is idle, or after `timeout` at the latest; returns a
+ * canceller. Falls back to setTimeout without requestIdleCallback (Safari, the WebKitGTK webview
+ * the desktop app embeds on Linux), and runs synchronously with no window.
  */
 export function scheduleIdleTask(
   callback: () => void,

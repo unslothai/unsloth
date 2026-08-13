@@ -46,10 +46,9 @@ type MarkdownPreviewProps = {
   className?: string;
   plain?: boolean;
   /**
-   * Paint the surrounding UI first and parse on the next idle callback. For documents that
-   * arrive in one piece and are large enough that the parse is a visible stall - a finished
-   * deep research report, above all - the wait is the same either way, but the rest of the
-   * window stays interactive through it.
+   * Parse on the next idle callback so the surrounding UI paints first. For a document that
+   * arrives whole and is big enough to stall - a finished research report - the wait is the same
+   * either way, but the window stays interactive through it.
    */
   defer?: boolean;
 };
@@ -60,9 +59,8 @@ function MarkdownPreviewImpl({
   plain = false,
   defer = false,
 }: MarkdownPreviewProps): ReactElement {
-  // Wiring math and mermaid into a document containing neither still costs a pass over every
-  // node; shiki over a very long document costs more than it is worth. Both are decided here
-  // rather than always-on, because the report lands in a single synchronous commit.
+  // Math and mermaid over a document with neither still cost a pass per node, and shiki over a
+  // very long one costs more than it is worth; the report lands in one synchronous commit.
   const plugins = useMemo<MarkdownPlugins>(() => {
     const needs = markdownPluginNeeds(markdown);
     const next: MarkdownPlugins = {};
@@ -71,11 +69,9 @@ function MarkdownPreviewImpl({
     if (needs.mermaid) next.mermaid = mermaid;
     return next;
   }, [markdown]);
-  // Readiness belongs to a markdown value, not to the component. Resetting it from an effect is
-  // one commit too late: the render that first sees a new document still sees the old `ready`,
-  // so Streamdown parses the new document synchronously and the result is thrown away when the
-  // effect blanks it a moment later - the stall `defer` exists to avoid, paid twice. Deriving
-  // readiness during render keeps a changed document out of Streamdown until its own idle parse.
+  // Readiness belongs to the markdown value, not the component: resetting it from an effect is
+  // one commit late, so the new document is parsed synchronously and thrown away - the stall
+  // `defer` exists to avoid, paid twice. Deriving it during render keeps it out of Streamdown.
   const [readyMarkdown, setReadyMarkdown] = useState<string | null>(null);
   const ready = !defer || readyMarkdown === markdown;
   useEffect(() => {

@@ -317,8 +317,7 @@ const SingleContent = memo(function SingleContent({
       useResearchRunStore.getState().sessions[openResearchRunId]?.run;
     if (openRun && openRun.threadId !== activeThreadId) closeResearchPanel();
   }, [activeThreadId, openResearchRunId, closeResearchPanel]);
-  // A string, not the run: report deltas replace the run object ~12x/s while a research run
-  // streams, and this component owns the thread pane.
+  // A string, not the run: report deltas replace the run ~12x/s, and this owns the thread pane.
   const openResearchThreadId = useResearchRunStore((state) =>
     openResearchRunId
       ? state.sessions[openResearchRunId]?.run.threadId
@@ -1962,8 +1961,8 @@ export function ChatPage({
   const latestResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
   );
-  // The status string, not the run: this subscription lives in ChatPage itself, so selecting
-  // the run object re-rendered the whole page on every streamed research delta.
+  // Status, not the run: this subscribes in ChatPage itself, so a run selector re-rendered the
+  // whole page on every streamed research delta.
   const latestResearchRunStatus = useResearchRunStore((state) =>
     latestResearchRunId
       ? state.sessions[latestResearchRunId]?.run.status

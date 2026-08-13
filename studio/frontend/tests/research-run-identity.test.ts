@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #8483: the desktop app froze while a deep research run streamed its report. One of the costs
-// was that every delta event minted a new run object, so every component selecting the run
-// re-rendered ~12 times a second for the whole synthesis - including ChatPage, which owns the
-// thread pane. The backend deliberately omits the run from those events
-// (_DELTA_ONLY_EVENTS in studio/backend/routes/research_runs.py); the frontend must not
-// reinvent it.
+// #8483: every delta event minted a new run object, so every component selecting the run
+// re-rendered ~12x/s for the whole synthesis - including ChatPage, which owns the thread pane.
+// The backend omits the run from those events by design (_DELTA_ONLY_EVENTS in
+// studio/backend/routes/research_runs.py); the frontend must not reinvent it.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
