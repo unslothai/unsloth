@@ -1056,3 +1056,53 @@ test("a reasoning block quoting one backtick run keeps the next tool call", () =
     ["reasoning", "tool-call", "text"],
   );
 });
+
+test("reasoning survives an empty summary next to populated content", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          output: [
+            // Summaries off: the array is present but empty.
+            { type: "reasoning", id: "rs_1", summary: [], content: [{ type: "reasoning_text", text: "weighed it up" }] },
+            { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "Done." }] },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.deepEqual(
+    parts(conversation, 0).filter((part) => part.type === "reasoning"),
+    [{ type: "reasoning", text: "weighed it up" }],
+  );
+  // A populated summary still wins over content.
+  const both = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf(
+        [
+          {
+            id: "a",
+            parentId: null,
+            role: "assistant",
+            timestamp: 1,
+            output: [
+              { type: "reasoning", summary: [{ type: "summary_text", text: "the summary" }], content: [{ type: "reasoning_text", text: "the raw trace" }] },
+            ],
+          },
+        ],
+        "a",
+      ),
+    }),
+    "fallback",
+  );
+  assert.ok(both);
+  assert.deepEqual(parts(both, 0), [{ type: "reasoning", text: "the summary" }]);
+});

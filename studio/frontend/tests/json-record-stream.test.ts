@@ -417,3 +417,13 @@ test("a complete array is unaffected by the truncation handling", async () => {
   const records = await collect('[{"id":1},{"id":2}]', 2);
   assert.deepEqual(records, [{ id: 1 }, { id: 2 }]);
 });
+
+test("a record after the array's closing bracket is refused, not imported", async () => {
+  // A concatenated or corrupted export must not pass as one array's worth.
+  for (const size of [1, 6, 64]) {
+    await assert.rejects(collect('[{"id":1}]\n{"id":2}\n', size), SyntaxError, `chunk size ${size}`);
+    await assert.rejects(collect('[{"id":1}] garbage', size), SyntaxError, `chunk size ${size}`);
+    // Trailing whitespace is still just the end of the file.
+    assert.deepEqual(await collect('[{"id":1}]  \n\t\n', size), [{ id: 1 }], `chunk size ${size}`);
+  }
+});

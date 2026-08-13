@@ -256,6 +256,15 @@ const PORTABLE_IMAGE = /^(?:https?:|data:)/i;
 /** The three names a Responses content part uses for its text. */
 const TEXT_PART_TYPES = new Set(["input_text", "output_text", "text"]);
 
+/** The text of a Responses reasoning source (`summary` or `content`). */
+function reasoningText(source: unknown): string {
+  if (!Array.isArray(source)) return "";
+  return source
+    .map((part) => (isDict(part) && typeof part.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
+}
+
 /** Built-ins studio names differently from the Responses item they arrive in. */
 const BUILTIN_TOOL_NAMES: Record<string, string> = { shell: "code_execution" };
 
@@ -270,15 +279,12 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     if (!isDict(item)) continue;
 
     if (item.type === "reasoning") {
-      const source = Array.isArray(item.summary)
-        ? item.summary
-        : Array.isArray(item.content)
-          ? item.content
-          : [];
-      const text = source
-        .map((part) => (isDict(part) && typeof part.text === "string" ? part.text : ""))
-        .join("");
-      if (text.trim()) parts.push({ type: "reasoning", text: text.trim() });
+      // `summary` is an empty array whenever summaries are off, so the source
+      // is whichever of the two actually holds text rather than whichever the
+      // item happens to carry.
+      const summary = reasoningText(item.summary);
+      const text = summary || reasoningText(item.content);
+      if (text) parts.push({ type: "reasoning", text });
       continue;
     }
 

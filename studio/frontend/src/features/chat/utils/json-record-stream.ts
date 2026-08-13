@@ -129,6 +129,10 @@ export async function* streamJsonRecords(
   const CLOSE_BRACE = 125; // }
   const OPEN_BRACKET = 91; // [
   const CLOSE_BRACKET = 93; // ]
+  const SPACE = 32;
+  const TAB = 9;
+  const NEWLINE = 10;
+  const RETURN = 13;
 
   let buffer = "";
   let scan = 0;
@@ -180,6 +184,18 @@ export async function* streamJsonRecords(
         }
 
         if (start < 0) {
+          // Past the array's own close, only whitespace belongs to the file. A
+          // record after it means this is not the single export it claims to
+          // be, and importing it would take in data from who knows where.
+          if (sawArrayEnd) {
+            if (code !== SPACE && code !== TAB && code !== NEWLINE && code !== RETURN) {
+              throw new SyntaxError(
+                "The export continues after its closing bracket, so it is not one JSON array.",
+              );
+            }
+            scan++;
+            continue;
+          }
           // Between records: the array's own brackets, separators and whitespace.
           if (code === OPEN_BRACKET && !sawArrayStart) {
             sawArrayStart = true;

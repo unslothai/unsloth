@@ -322,12 +322,18 @@ fn open_selected_import(
         .unwrap_or_else(|| format!("chat-import.{extension}"));
     let file =
         File::open(&path).map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
+    // Size from the handle the token keeps, not from the path: a file swapped in
+    // between the two describes a different object, and this number is what
+    // bounds the streamed read.
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+    if !opened.is_file() {
+        return Err(format!("Chat import is not a file: {}", path.display()));
+    }
+    let size = opened.len();
     let token = registry.register(path, file);
-    Ok(Some(NativeChatImport {
-        name,
-        size: metadata.len(),
-        token,
-    }))
+    Ok(Some(NativeChatImport { name, size, token }))
 }
 
 fn read_selected_training_config(
