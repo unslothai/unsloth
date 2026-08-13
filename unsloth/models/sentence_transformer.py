@@ -21,6 +21,19 @@ from ._utils import (
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
 )
+from .uembed_pooling import (
+    OffsetLastTokenPooling,
+    attach_uembed_input_format,
+    build_eos_post_processor,
+    is_offset_pooling_mode,
+    read_num_eos_tokens,
+)
+from .uembed_sidecar import load_uembed_sparse_sidecar, save_uembed_sparse_sidecar
+from .uembed_wiring import (
+    attach_uembed_sparse_checkpoint,
+    patch_uembed_sparse_encode,
+    restore_uembed_inference_input_format,
+)
 import inspect
 import json
 import os
@@ -45,6 +58,154 @@ import shutil
 
 
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
+
+
+def _ensure_uembed_offset_pooling(
+    modules,
+    num_eos_tokens,
+    hidden_size,
+    pooling_class,
+):
+    """Replace the assembled dense pooling module when a checkpoint appends EOS fillers.
+
+    ``sparse_info.json`` is authoritative: once its EOS count is positive, retaining
+    sentence-transformers' stock pooling would silently return an EOS filler vector.
+    The zero/absent case returns before inspecting the chain, preserving it exactly.
+    """
+    if not num_eos_tokens:
+        return
+
+    candidates = [
+        (name, module)
+        for name, module in modules.items()
+        if isinstance(module, (pooling_class, OffsetLastTokenPooling))
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "Unsloth: this UEmbed checkpoint appends an EOS filler block, but its "
+            f"module chain has {len(candidates)} replaceable pooling modules. Exactly one "
+            "sentence-transformers Pooling or OffsetLastTokenPooling module is required; "
+            "refusing to encode because stock/unknown pooling would silently select an "
+            "EOS filler token."
+        )
+
+    name, pooling = candidates[0]
+    if (
+        isinstance(pooling, OffsetLastTokenPooling)
+        and pooling.num_eos_tokens == num_eos_tokens
+    ):
+        return
+
+    dimension = None
+    for method_name in ("get_embedding_dimension", "get_sentence_embedding_dimension"):
+        get_dimension = getattr(pooling, method_name, None)
+        if callable(get_dimension):
+            dimension = get_dimension()
+            break
+    if not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0:
+        dimension = hidden_size
+    if not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0:
+        raise RuntimeError(
+            "Unsloth: this UEmbed checkpoint requires OffsetLastTokenPooling, but the "
+            "assembled pooling module does not expose a valid embedding dimension. "
+            "Refusing to encode an EOS filler token."
+        )
+
+    modules[name] = OffsetLastTokenPooling(
+        word_embedding_dimension = dimension,
+        num_eos_tokens = num_eos_tokens,
+    )
+
+
+def _assemble_uembed_inference_model(
+    model,
+    model_name,
+    pooling_class,
+    normalize_class,
+    token = None,
+    cache_dir = None,
+    revision = None,
+):
+    """Restore or assemble UEmbed semantics on the native inference load path.
+
+    Merged SentenceTransformer exports serialize their UEmbed modules, so they only need
+    their process-local encode and input-format wrappers restored. A fresh public UEmbed
+    repository has no ``modules.json``: sentence-transformers builds a generic
+    Transformer -> Pooling chain. Positive ``sparse_info.json`` metadata is the trusted
+    opt-in signal for replacing that fallback with the same offset-pooling, normalization,
+    formatter, EOS, and sparse-output semantics used by the normal Unsloth load path.
+    """
+    if patch_uembed_sparse_encode(model):
+        restore_uembed_inference_input_format(model)
+        return True
+
+    num_eos_tokens = read_num_eos_tokens(
+        model_name,
+        token = token,
+        cache_dir = cache_dir,
+        revision = revision,
+    )
+    if num_eos_tokens <= 0:
+        return False
+
+    modules = getattr(model, "_modules", None)
+    if modules is None:
+        raise RuntimeError(
+            "Unsloth: UEmbed metadata was found, but the native SentenceTransformer "
+            "does not expose a module chain to assemble."
+        )
+
+    _ensure_uembed_offset_pooling(
+        modules,
+        num_eos_tokens = num_eos_tokens,
+        hidden_size = None,
+        pooling_class = pooling_class,
+    )
+
+    pooling_names = [
+        name for name, module in modules.items() if isinstance(module, OffsetLastTokenPooling)
+    ]
+    normalize_names = [
+        name for name, module in modules.items() if isinstance(module, normalize_class)
+    ]
+    if len(pooling_names) != 1 or len(normalize_names) > 1:
+        raise RuntimeError(
+            "Unsloth: fresh UEmbed inference assembly requires exactly one pooling "
+            f"module and at most one Normalize module; found pooling={len(pooling_names)}, "
+            f"normalize={len(normalize_names)}."
+        )
+
+    pooling_name = pooling_names[0]
+    if normalize_names:
+        names = list(modules)
+        if names.index(normalize_names[0]) < names.index(pooling_name):
+            raise RuntimeError(
+                "Unsloth: the UEmbed Normalize module appears before dense pooling; "
+                "refusing to assemble a semantically reordered inference chain."
+            )
+    else:
+        names = set(modules)
+        normalize_name = str(len(names))
+        while normalize_name in names:
+            normalize_name = str(int(normalize_name) + 1)
+        rebuilt = OrderedDict()
+        for name, module in modules.items():
+            rebuilt[name] = module
+            if name == pooling_name:
+                rebuilt[normalize_name] = normalize_class()
+        modules.clear()
+        modules.update(rebuilt)
+
+    attach_uembed_sparse_checkpoint(
+        model,
+        model_name,
+        num_eos_tokens = num_eos_tokens,
+        token = token,
+        cache_dir = cache_dir,
+        revision = revision,
+    )
+    restore_uembed_inference_input_format(model)
+    return True
 
 
 def _normalize_save_method(save_method):
@@ -1003,6 +1164,7 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
         module_subfolder = "",
+        processor_kwargs = None,
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
@@ -1085,10 +1247,15 @@ class FastSentenceTransformer(FastModel):
                 else:
                     transformer_kwargs["model_args"] = trust_remote_code_kwargs.copy()
                     transformer_kwargs["config_args"] = trust_remote_code_kwargs.copy()
+                extra_processor_kwargs = dict(processor_kwargs or {})
                 if "processor_kwargs" in transformer_init_params:
-                    transformer_kwargs["processor_kwargs"] = trust_remote_code_kwargs.copy()
+                    resolved_processor_kwargs = trust_remote_code_kwargs.copy()
+                    resolved_processor_kwargs.update(extra_processor_kwargs)
+                    transformer_kwargs["processor_kwargs"] = resolved_processor_kwargs
                 elif "tokenizer_args" in transformer_init_params:
-                    transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
+                    resolved_processor_kwargs = trust_remote_code_kwargs.copy()
+                    resolved_processor_kwargs.update(extra_processor_kwargs)
+                    transformer_kwargs["tokenizer_args"] = resolved_processor_kwargs
 
                 # Build via Transformer.load so the saved modality_config is honored: plain
                 # Transformer(...) makes ST 5.x infer a "message" modality for chat-template
@@ -1213,6 +1380,8 @@ class FastSentenceTransformer(FastModel):
         trust_remote_code = False,
         cache_dir = None,
         revision = None,
+        processor_kwargs = None,
+        num_eos_tokens = None,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules.
 
@@ -1226,6 +1395,7 @@ class FastSentenceTransformer(FastModel):
         modules_json_path = FastSentenceTransformer._module_path(
             model_name, token, cache_dir = cache_dir, revision = revision
         )
+        hidden_size = getattr(model.config, "hidden_size", 768)
 
         if modules_json_path:
             with open(modules_json_path, encoding = "utf8") as f:
@@ -1246,6 +1416,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir,
                         revision,
                         module_subfolder = module_config.get("path") or "",
+                        processor_kwargs = processor_kwargs,
                     )
                     modules[name] = transformer_module
                 else:
@@ -1273,6 +1444,12 @@ class FastSentenceTransformer(FastModel):
                     except Exception as e:
                         print(f"Unsloth Warning: Failed to load module {name} ({class_ref}): {e}")
 
+            _ensure_uembed_offset_pooling(
+                modules,
+                num_eos_tokens = num_eos_tokens,
+                hidden_size = hidden_size,
+                pooling_class = Pooling,
+            )
             return modules, False
 
         # fallback if no modules.json (non sentence-transformers models)
@@ -1289,18 +1466,35 @@ class FastSentenceTransformer(FastModel):
             token,
             cache_dir,
             revision,
+            processor_kwargs = processor_kwargs,
         )
         modules["0"] = transformer_module
-
-        hidden_size = getattr(model.config, "hidden_size", 768)
 
         if pooling_mode == "mean":
             pooling_mode = FastSentenceTransformer._read_pooling_mode(
                 model_name, token, cache_dir = cache_dir, revision = revision
             )
 
-        modules["1"] = Pooling(word_embedding_dimension = hidden_size, pooling_mode = pooling_mode)
+        if is_offset_pooling_mode(pooling_mode):
+            if num_eos_tokens is None:
+                num_eos_tokens = read_num_eos_tokens(
+                    model_name, token = token, cache_dir = cache_dir, revision = revision
+                )
+            modules["1"] = OffsetLastTokenPooling(
+                word_embedding_dimension = hidden_size,
+                num_eos_tokens = num_eos_tokens,
+            )
+        else:
+            modules["1"] = Pooling(
+                word_embedding_dimension = hidden_size, pooling_mode = pooling_mode
+            )
         modules["2"] = Normalize()
+        _ensure_uembed_offset_pooling(
+            modules,
+            num_eos_tokens = num_eos_tokens,
+            hidden_size = hidden_size,
+            pooling_class = Pooling,
+        )
 
         return modules, True
 
@@ -1431,8 +1625,31 @@ class FastSentenceTransformer(FastModel):
     def _apply_torch_compile(model, mode = "default"):
         """Apply torch.compile to a SentenceTransformer model (with an
         accelerate unwrap_model bug workaround)."""
+        inner_model = model[0].auto_model if hasattr(model, "__getitem__") else model
+
+        # Qwen3.5's hybrid GDN/FLA backbone currently produces deterministic but
+        # materially different embeddings under torch.compile. Prefer eager execution.
+        compile_candidate = inner_model
+        while compile_candidate is not None:
+            config = getattr(compile_candidate, "config", None)
+            model_type = getattr(config, "model_type", None)
+            is_qwen3_5 = isinstance(model_type, str) and (
+                model_type == "qwen3_5" or model_type.startswith("qwen3_5_")
+            )
+            if config is None:
+                class_name = type(compile_candidate).__name__
+                is_qwen3_5 = class_name == "Qwen3_5Model" or class_name.startswith(
+                    "Qwen3_5For"
+                )
+            if is_qwen3_5:
+                print(
+                    "Unsloth: torch.compile disabled for Qwen3.5 because compiled "
+                    "embeddings can differ materially from eager results."
+                )
+                return model
+            compile_candidate = getattr(compile_candidate, "_orig_mod", None)
+
         if hasattr(model, "__getitem__"):
-            inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
             if isinstance(getattr(type(model[0]), "auto_model", None), property):
                 model[0].model = compiled
@@ -1474,6 +1691,7 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
+        processor_kwargs = None,
         **kwargs,
     ):
         try:
@@ -1561,6 +1779,15 @@ class FastSentenceTransformer(FastModel):
                 st_kwargs["cache_folder"] = _st_cache
 
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            _assemble_uembed_inference_model(
+                st_model,
+                model_name,
+                pooling_class = Pooling,
+                normalize_class = Normalize,
+                token = token,
+                cache_dir = _st_cache,
+                revision = revision,
+            )
             return st_model
 
         # Load-mode validation already ran before the prefetch above.
@@ -1671,6 +1898,7 @@ class FastSentenceTransformer(FastModel):
                 model_kwargs = model_kwargs,
                 cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
             )
+            patch_uembed_sparse_encode(st_model)
 
             # Store metadata for get_peft_model
             st_model._unsloth_fast_encoder = True
@@ -1721,6 +1949,7 @@ class FastSentenceTransformer(FastModel):
                         inner.save_pretrained(save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
+                save_uembed_sparse_sidecar(self, save_directory)
                 FastSentenceTransformer._add_unsloth_branding(save_directory)
 
             st_model.save_pretrained_merged = types.MethodType(_save_pretrained_merged, st_model)
@@ -1856,6 +2085,19 @@ class FastSentenceTransformer(FastModel):
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
 
+        # UEmbed metadata is the sole opt-in signal. The generic model loader above
+        # already returns the checkpoint's processor when one is required.
+        num_eos_tokens = read_num_eos_tokens(
+            model_name,
+            token = token,
+            cache_dir = kwargs.get("cache_dir")
+            or kwargs.get("cache_folder")
+            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            revision = revision,
+        )
+        if num_eos_tokens > 0:
+            build_eos_post_processor(tokenizer, num_eos_tokens)
+
         from sentence_transformers import SentenceTransformer
 
         modules, no_modules = FastSentenceTransformer._load_modules(
@@ -1872,6 +2114,8 @@ class FastSentenceTransformer(FastModel):
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             # Same revision as the weight load so modules hit the warm (None = default branch).
             revision = revision,
+            processor_kwargs = processor_kwargs,
+            num_eos_tokens = num_eos_tokens,
         )
 
         st_device = device_map
@@ -1881,7 +2125,23 @@ class FastSentenceTransformer(FastModel):
             st_device = None
 
         st_model = SentenceTransformer(modules = modules, device = st_device)
+        patch_uembed_sparse_encode(st_model)
         st_model.no_modules = no_modules
+
+        st_model._unsloth_uembed_instruction = num_eos_tokens > 0
+        if num_eos_tokens > 0:
+            attach_uembed_input_format(st_model[0])
+            attach_uembed_sparse_checkpoint(
+                st_model,
+                model_name,
+                num_eos_tokens = num_eos_tokens,
+                token = token,
+                cache_dir = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                revision = revision,
+            )
+            load_uembed_sparse_sidecar(st_model, model_name)
 
         def _save_pretrained_merged(
             self,
@@ -1949,6 +2209,8 @@ class FastSentenceTransformer(FastModel):
                 self[0].auto_model.save_pretrained_merged(
                     save_directory, tokenizer = tokenizer, **kwargs
                 )
+
+            save_uembed_sparse_sidecar(self, save_directory)
 
             # add Unsloth branding to the generated README
             try:
