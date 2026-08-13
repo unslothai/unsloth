@@ -717,10 +717,8 @@ def test_the_materialized_imatrix_is_never_exported_as_a_model(
 
 
 def test_a_broken_unsloth_zoo_does_not_fail_a_plain_export(monkeypatch, tmp_path):
-    """The scripts pin is an optimisation, so a half-built zoo must not fail the export.
-
-    It raises RuntimeError or AttributeError, which `except ImportError` did not catch.
-    """
+    """The scripts pin is an optimisation, so a half-built zoo must not fail the export: it
+    raises RuntimeError or AttributeError, which `except ImportError` did not catch."""
 
     class _Exploding(types.ModuleType):
         def __getattr__(self, name):

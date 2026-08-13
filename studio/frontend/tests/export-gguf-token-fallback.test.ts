@@ -12,11 +12,9 @@ const { useExportRuntimeStore } = await import(
   "../src/features/export/stores/export-runtime-store.ts"
 );
 
-// A local imatrix export resolves the matrix from a Hub repo, so it needs a credential --
-// but export-page.tsx only sets `token` for a hub push. The GGUF request therefore falls
-// back to the load token, the way the LoRA request already does. Asserting the emitted
-// request body rather than the source text, so a refactor of the same behaviour still passes
-// and a change of behaviour still fails.
+// A local imatrix export resolves the matrix from a Hub repo, but export-page.tsx only sets
+// `token` for a hub push, so the GGUF request falls back to the load token as the LoRA request
+// already does. Asserting the emitted body, not the source, so a refactor still passes.
 
 function params(overrides: Record<string, unknown>) {
   return {

@@ -173,9 +173,8 @@ def test_unsloth_save_has_torchao_registry_and_path():
 
 @pytest.mark.parametrize("wrapper_name", ["_save_pretrained_gguf", "_push_to_hub_gguf"])
 def test_sentence_transformer_gguf_wrappers_forward_imatrix(wrapper_name):
-    # Both wrappers take **kwargs, so the capability probe treats them as supported once
-    # unsloth_zoo can resolve an imatrix; they therefore have to forward the argument rather than
-    # swallow it. The push wrapper runs a second conversion of its own.
+    # Both take **kwargs, so the probe reads them as supported once unsloth_zoo can resolve an
+    # imatrix; they must therefore forward the argument rather than swallow it.
     st = (_BACKEND.parent.parent / "unsloth" / "models" / "sentence_transformer.py").read_text(
         encoding = "utf-8"
     )

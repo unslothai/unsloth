@@ -158,8 +158,8 @@ def _cpu_offloaded_modules(model) -> int:
 def _accepts_by_keyword(params, name):
     """True if `name` is passable as a keyword, not merely named.
 
-    Every call site passes by keyword, so counting a positional-only parameter as support
-    turns a clean refusal into a TypeError.
+    Every call site passes by keyword, so a positional-only parameter is not support: counting
+    it turns a clean refusal into a TypeError.
     """
     import inspect
 
@@ -230,9 +230,8 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
     """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
 
     `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
-    would otherwise relocate an importance matrix as if it were a converted model. The name
-    is derived from the basename, but callers compare the whole path (see `_is_imatrix`): an
-    imatrix named after the quant would otherwise suppress the real output in `model_gguf/`.
+    would otherwise relocate it as if it were a converted model. Callers compare the whole path
+    (see `_is_imatrix`): a basename match would suppress a real output of the same name.
     """
     if imatrix_file is True:
         name = "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
@@ -249,9 +248,8 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
 def _is_imatrix(path, imatrix_path):
     """True when `path` is the materialized imatrix, asked of the filesystem rather than `==`.
 
-    The on-disk spelling is the filesystem's to choose: a folding mount changes case and APFS
-    stores NFD, so `rglob` need not return the name derived from the request. Byte-exact
-    `Path.__eq__` then misses and the imatrix is relocated as if it were a converted model.
+    The on-disk spelling is the filesystem's to choose (a folding mount changes case, APFS
+    stores NFD), so byte-exact `Path.__eq__` misses and the imatrix is relocated as a model.
     """
     if imatrix_path is None:
         return False
@@ -1093,8 +1091,7 @@ class ExportBackend:
                 "Upgrade unsloth and unsloth_zoo, or disable the imatrix option.",
                 None,
             )
-        # Truthiness, as in the guard above: a disabled imatrix must not reach an exporter that
-        # takes no such keyword.
+        # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
         # Resolution reads a Hub repo, so the local save needs the token too -- kept out of
         # imatrix_kw, which the push below shares and already names token= itself.
@@ -1128,8 +1125,7 @@ class ExportBackend:
                 os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
             except Exception:
                 # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or
-                # AttributeError, and this pin is an optimisation, so letting either escape
-                # would fail every GGUF export.
+                # AttributeError, and this pin is an optimisation, not worth failing an export.
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
                         "Unsloth: installed unsloth_zoo does not honor "
