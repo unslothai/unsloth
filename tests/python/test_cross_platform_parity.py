@@ -709,16 +709,16 @@ class TestPinnedIndexClearsUvEnvParity:
             # does not behave in a Windows container or on arm64 as it does on a desktop. Only
             # the binary answering non-zero may block the install.
             body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
-            assert body.count('return "unknown"') == 2, (
-                f"{path.name}: a launch failure and a timeout must both be inconclusive"
-            )
-            assert 'return "failed"' in body and 'return "ok"' in body, (
-                f"{path.name}'s probe must report a real answer as well"
-            )
+            assert (
+                body.count('return "unknown"') == 2
+            ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
+            assert (
+                'return "failed"' in body and 'return "ok"' in body
+            ), f"{path.name}'s probe must report a real answer as well"
             for call in (f"({probe} -Path $stagedUv)", f"({probe} -Path $dst)"):
-                assert f'{call} -eq "failed"' in text, (
-                    f"{path.name} must gate only on a failed verdict at {call}"
-                )
+                assert (
+                    f'{call} -eq "failed"' in text
+                ), f"{path.name} must gate only on a failed verdict at {call}"
             copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
             assert probe_at < copy_at, (
                 f"{path.name} must probe the extracted uv.exe before copying over the "
