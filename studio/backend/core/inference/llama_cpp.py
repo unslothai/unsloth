@@ -699,6 +699,14 @@ def _hf_unreachable() -> bool:
     return hf_unreachable()
 
 
+# Separates "nothing remembered" from a remembered verdict of None (not a media GGUF).
+_MISS = object()
+
+
+# GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
+_GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
+
+
 @contextlib.contextmanager
 def _hf_offline_if_unreachable():
     """Force HF offline for this block only when the Hub is unreachable; restores on exit
@@ -1873,6 +1881,51 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     return sorted(f for f in main_files if boundary.search(f.lower()))
 
 
+def _resolve_variant_gguf_files(
+    hf_repo: str,
+    hf_variant: Optional[str],
+    hf_token: Optional[str] = None,
+) -> tuple[Optional[str], list[str]]:
+    """Which file in ``hf_repo`` this variant means, plus its extra shards.
+
+    Repo listing, then the local HF cache, then a name synthesised from the repo id; every
+    tier fails soft (``(None, [])`` means "no opinion"). Module level, not inside
+    ``_download_gguf``, so the pre-teardown header probe resolves exactly the file the
+    download will open -- two copies of this cascade would let the two drift.
+    """
+    gguf_filename: Optional[str] = None
+    gguf_extra_shards: list[str] = []
+    if not hf_variant:
+        return None, []
+    try:
+        from huggingface_hub import list_repo_files
+
+        files = list_repo_files(hf_repo, token = hf_token)
+        gguf_files = _gguf_files_for_variant(files, hf_variant)
+        if gguf_files:
+            gguf_filename = gguf_files[0]
+            gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
+    except Exception as e:
+        logger.warning(f"Could not list repo files: {e}")
+
+    # Fall back to the local cache when the repo listing is unavailable.
+    if not gguf_filename:
+        cached_name, cached_shards = _cached_variant_resolution(hf_repo, hf_variant)
+        if cached_name:
+            gguf_filename = cached_name
+            gguf_extra_shards = cached_shards
+            logger.info(
+                "Resolved variant %s -> %s from local HF cache",
+                hf_variant,
+                gguf_filename,
+            )
+
+    if not gguf_filename:
+        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+    return gguf_filename, gguf_extra_shards
+
+
 # Below this many B params, draft-mtp regresses vs spec-off (bench in
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
@@ -2718,37 +2771,51 @@ def _extra_args_mtp_draft_path(
     --spec-draft-hf/-hfd/...), else the LLAMA_ARG_SPEC_DRAFT_MODEL/_HF_REPO env,
     else None. An HF repo isn't a local file, so the budget can't size it (falls
     back to the flat reserve), but recognizing it avoids sizing the wrong one."""
-    flags = {
-        "--model-draft",
-        "--spec-draft-model",
-        "-md",
-        "--spec-draft-hf",
-        "-hfd",
-        "-hfrd",
-        "--hf-repo-draft",
-    }
+    return _extra_args_mtp_draft_source(extra_args, env)[0]
+
+
+_HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
+_LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
+
+
+def _extra_args_mtp_draft_source(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[Optional[str], bool]:
+    """The drafter the launch resolves to, and whether it is a repo id.
+
+    The two travel together on purpose. Draft flags are last-wins, so a remote flag
+    followed by a local one leaves a local path as the winner; a caller that asks
+    only "does any remote flag appear" would then price a filesystem path as a
+    Hugging Face repository and charge a reserve for something llama-server will
+    not load. Only the winning flag decides which of the two the value is.
+    """
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[str] = None
+    found_remote = False
     for i, raw in enumerate(args):
         flag = _flag_name(raw)
         _, eq, inline = raw.partition("=")
-        if flag not in flags:
+        if flag not in _HF_DRAFT_FLAGS and flag not in _LOCAL_DRAFT_FLAGS:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if value and not value.startswith("-"):
             found = value
+            found_remote = flag in _HF_DRAFT_FLAGS
     if found is not None:
-        return found
+        return found, found_remote
     e = os.environ if env is None else env
-    return (
-        e.get("LLAMA_ARG_SPEC_DRAFT_MODEL")
-        or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO")
-        # Pre-b8955 spellings, live between the launchable floor (2025-08-30) and the
-        # rename (2026-04-28).
-        or e.get("LLAMA_ARG_MODEL_DRAFT")
-        or e.get("LLAMA_ARG_HFD_REPO")
-        or None
-    )
+    # The value lookup's own precedence; with no flag to read, the env spelling says
+    # local or remote. The last two are pre-b8955 (2025-08-30 to 2026-04-28).
+    for var, remote in (
+        ("LLAMA_ARG_SPEC_DRAFT_MODEL", False),
+        ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", True),
+        ("LLAMA_ARG_MODEL_DRAFT", False),
+        ("LLAMA_ARG_HFD_REPO", True),
+    ):
+        value = e.get(var)
+        if value:
+            return value, remote
+    return None, False
 
 
 def _extra_args_draft_cache_types(
@@ -3310,6 +3377,9 @@ class LlamaCppBackend:
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
         self._is_diffusion: bool = False
+        # Whole header walked? Separates "declares no architecture" from "unreadable".
+        self._gguf_header_parsed: bool = False
+        self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
@@ -3378,6 +3448,8 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
+        # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
+        self._pooling_type: Optional[int] = None
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         self._feed_forward_length: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -4265,6 +4337,19 @@ class LlamaCppBackend:
         if not self._n_experts or not self._n_layers:
             return 0
         return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+
+    _EMBEDDING_POOLING_TYPES = frozenset({1, 2, 3})  # llama_pooling_type MEAN, CLS, LAST
+
+    @property
+    def is_embedding_gguf(self) -> bool:
+        """Whether the loaded GGUF is an embedding model, from its pooling type.
+
+        Only MEAN, CLS and LAST pool into the one vector per sequence that
+        `/v1/embeddings` returns. NONE (0) pools nothing, and RANK (4) is a reranker
+        head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
+        send_embedding reads n_embd_out floats out of it.
+        """
+        return getattr(self, "_pooling_type", None) in self._EMBEDDING_POOLING_TYPES
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -6660,9 +6745,11 @@ class LlamaCppBackend:
             compute = 2 * act_scratch + out_buffer * par
         else:
             # Each extra concurrent slot adds one output buffer (chat decode sizes
-            # ~one logit row per slot; would under-count embeddings/--logits-all,
-            # not run here). Matches measured {1:36,2:492,4:1388,8:3220} MiB.
-            compute = act_scratch + out_buffer * max(0, par - 1)
+            # ~one logit row per slot). Embedding mode outputs the whole first
+            # micro-batch too, so it pays for every slot rather than slots past one.
+            # Matches measured chat {1:36,2:492,4:1388,8:3220} MiB.
+            output_slots = par if self.is_embedding_gguf else max(0, par - 1)
+            compute = act_scratch + out_buffer * output_slots
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
     def _compute_buffer_ctx_bytes(
@@ -7128,6 +7215,179 @@ class LlamaCppBackend:
         if self._gguf_path_is_diffusion(gguf_path, model_identifier):
             raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
 
+    @classmethod
+    def _non_chat_gguf_refusal_for_path(
+        cls, gguf_path: str, model_identifier: Optional[str]
+    ) -> Optional[str]:
+        """``_non_chat_gguf_refusal`` for a file on disk, so it can be raised before Phase 1
+        tears the running model down -- refusing after costs the user their resident chat
+        model to answer a question the header already answers. Same probe-instance trick as
+        ``_gguf_path_is_diffusion``: reading into ``self`` would overwrite the live model's
+        metadata with a file we are about to reject."""
+        probe = object.__new__(cls)
+        probe._model_identifier = model_identifier
+        probe._read_gguf_metadata(gguf_path)
+        return probe._non_chat_gguf_refusal(gguf_path)
+
+    @classmethod
+    def non_chat_gguf_refusal_for_intent(cls, intent) -> Optional[str]:
+        """The header verdict for a resolved load intent, or None.
+
+        ``load_model``'s copy runs before its own teardown, but by then the ROUTE has already
+        evicted a resident Images/Video pipeline via ``acquire_for(CHAT)`` and cancelled the
+        running generations. Asking here first spares both; the in-load checks stay as the
+        backstop for paths that skip the route. Fails open exactly as they do."""
+        try:
+            gguf_path = getattr(intent, "gguf_path", None)
+            hf_repo = getattr(intent, "hf_repo", None)
+            identifier = getattr(intent, "model_identifier", None)
+            if gguf_path and not hf_repo and Path(gguf_path).is_file():
+                return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
+            if hf_repo:
+                hf_variant = getattr(intent, "hf_variant", None)
+                # Same offline window as the download: the probe asks the Hub before reading
+                # any local header, and those calls would otherwise wait out their retry
+                # backoff on an unreachable Hub.
+                with _hf_offline_if_unreachable():
+                    verdict = cls._remote_non_chat_gguf_verdict(
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = getattr(intent, "hf_token", None),
+                        model_identifier = identifier,
+                    )
+                cls._hand_over_route_verdict(hf_repo, hf_variant, verdict)
+                return verdict
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
+        return None
+
+    # Each ask is a repo listing, a cache verification and a range request, every one bounded
+    # at 15s, so the route HANDS OVER what it learned rather than making a slow Hub pay twice.
+    # Written only by the route entry point and taken once by the load it belongs to, so a
+    # verdict can never outlive its load; the age bound only covers a route ask no load
+    # ever came for.
+    _HANDOFF_TTL_S = 120.0
+    _route_verdict_handoff: Optional[
+        tuple[tuple[Optional[str], Optional[str]], Optional[str], float]
+    ] = None
+
+    @classmethod
+    def _take_route_verdict(cls, hf_repo, hf_variant):
+        """The verdict the route just took for this key, or ``_MISS``. Consumed on read."""
+        handoff = cls._route_verdict_handoff
+        if handoff is None:
+            return _MISS
+        key, verdict, at = handoff
+        if key != (hf_repo, hf_variant) or (time.monotonic() - at) >= cls._HANDOFF_TTL_S:
+            return _MISS
+        cls._route_verdict_handoff = None
+        return verdict
+
+    @classmethod
+    def _hand_over_route_verdict(cls, hf_repo, hf_variant, verdict) -> None:
+        cls._route_verdict_handoff = ((hf_repo, hf_variant), verdict, time.monotonic())
+
+    @classmethod
+    def _remote_non_chat_gguf_refusal(
+        cls,
+        *,
+        hf_repo: str,
+        hf_variant: Optional[str],
+        hf_token: Optional[str],
+        model_identifier: Optional[str],
+    ) -> Optional[str]:
+        """``_non_chat_gguf_refusal_for_path`` for a repo load, decided from a header-sized
+        BYTE RANGE instead of the checkpoint, so the verdict lands before Phase 1 tears the
+        resident model down. The Model Hub sends a repo id for every Hub model, so leaving
+        this to the post-download check meant a media GGUF opened into a chat killed the
+        live model to answer a question its own header answers; downloading first would
+        trade the teardown for tens of GB.
+
+        A 256 KiB prefix is decisive for exactly the files this refuses: measured over the
+        Hub, flux / flux2 / cosmos / wan / sd3 finish the KV walk in 144-145 bytes and
+        LTX-2, the largest seen, in 3,987, while a chat model's ``tokenizer.ggml.tokens``
+        pushes its KV block into the megabytes (Qwen3-0.6B 5.93 MB, Llama-3.2-1B 7.82 MB) --
+        so a chat prefix cuts mid-KV, ``_gguf_header_parsed`` stays False and there is no
+        verdict.
+
+        Fails open at every step (no filename, unreachable Hub, a 200 instead of a 206, too
+        short a prefix) since the post-download check is the backstop. It can only make a
+        refusal cheaper, never refuse a load the full-file check would have allowed.
+
+        Takes the route's verdict for this intent when there is one, rather than repeating
+        the listing, cache verification and range request it just paid for."""
+        handed_over = cls._take_route_verdict(hf_repo, hf_variant)
+        if handed_over is not _MISS:
+            logger.debug("Reusing the header verdict the route already took for %s", hf_repo)
+            return handed_over
+        return cls._remote_non_chat_gguf_verdict(
+            hf_repo = hf_repo,
+            hf_variant = hf_variant,
+            hf_token = hf_token,
+            model_identifier = model_identifier,
+        )
+
+    @classmethod
+    def _remote_non_chat_gguf_verdict(
+        cls,
+        *,
+        hf_repo: str,
+        hf_variant: Optional[str],
+        hf_token: Optional[str],
+        model_identifier: Optional[str],
+    ) -> Optional[str]:
+        """The uncached probe: one listing, one cache resolution, one range read."""
+        try:
+            from core.inference.diffusion_compat import (
+                _read_gguf_header,
+                _read_local_header,
+            )
+        except Exception as e:  # noqa: BLE001 -- an unavailable probe is not a verdict
+            logger.debug("GGUF header probe unavailable: %s", e)
+            return None
+        try:
+            gguf_filename, shards = _resolve_variant_gguf_files(hf_repo, hf_variant, hf_token)
+            if not gguf_filename:
+                return None
+            # A cached copy answers this with no request, and is the only thing that can
+            # answer it with the Hub down. Resolved with the SAME precedence AND the same
+            # verification _download_gguf uses -- cached_gguf_for_load at
+            # verify_sizes = True, then the listing's filename -- because that is the file
+            # the load will open. Anything else (a truncated snapshot judged here but
+            # skipped there, a repo that renamed the file for a quant) lets the probe judge
+            # one GGUF and the load open another. verify_sizes fails open on unreachable
+            # metadata, so the probe still answers offline.
+            local = cached_gguf_for_load(hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token)
+            if local is None and not hf_variant:
+                # No variant means cached_gguf_for_load declines outright, so mirror the other
+                # half of _download_gguf: the complete candidate for this filename, size-checked
+                # against its own revision. Never the bare local path -- a candidate the verified
+                # lookup just REJECTED would come straight back through it, and the probe would
+                # judge a truncated snapshot the load is about to redownload.
+                candidate = _cached_complete_candidate(hf_repo, gguf_filename, list(shards))
+                if candidate is not None and _cached_candidate_matches_revision_size(
+                    hf_repo, candidate, hf_token
+                ):
+                    local = candidate[0]
+            prefix = (
+                _read_local_header(local)
+                if local
+                else _read_gguf_header(hf_repo, gguf_filename, hf_token)
+            )
+            # Magic, version and the two counts: anything shorter is not a GGUF at all.
+            if len(prefix) < 24:
+                return None
+            with tempfile.TemporaryDirectory(prefix = "unsloth-gguf-probe-") as probe_dir:
+                # Named after the real file: a GGUF declaring no architecture is judged by
+                # its name, and a temp name would lose the page pointer.
+                probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
+                with open(probe_path, "wb") as handle:
+                    handle.write(prefix)
+                return cls._non_chat_gguf_refusal_for_path(probe_path, model_identifier)
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Non-chat GGUF header probe failed for %s: %s", hf_repo, e)
+            return None
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -7154,6 +7414,7 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
+        self._pooling_type = None
         self._feed_forward_length = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -7173,6 +7434,8 @@ class LlamaCppBackend:
         self._nextn_predict_layers = None
         self._architecture = None
         self._is_diffusion = False
+        self._gguf_header_parsed = False
+        self._gguf_split_index = None
 
         try:
             canvas_seen = False
@@ -7198,6 +7461,7 @@ class LlamaCppBackend:
             # Arch-specific keys added dynamically once we know the arch.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            pooling_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -7208,6 +7472,8 @@ class LlamaCppBackend:
                 _version = struct.unpack("<I", f.read(4))[0]
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
 
+                # Set by the loop's `else` below: True only if no truncation `break` fired.
+                kv_complete = False
                 for _ in range(kv_count):
                     # Tolerate truncated input (e.g. a partial header from an
                     # HTTP byte-range fetch): bail out so the resolver
@@ -7225,11 +7491,25 @@ class LlamaCppBackend:
                         if len(vtype_bytes) < 4:
                             break
                         vtype = struct.unpack("<I", vtype_bytes)[0]
+                        # gguf-split puts the whole metadata block in shard 1 and gives every
+                        # later shard only split.no / split.count / split.tensors.count
+                        # (measured on unsloth/DeepSeek-R1-GGUF: shard 1 has 48 KV pairs from
+                        # general.architecture = "deepseek2", shard 2 has those 3). Read the
+                        # INDEX, not the presence: shard 1 carries these keys too, so presence
+                        # alone would cover a whole set rather than its tail.
+                        if key == "split.no":
+                            width = _GGUF_UINT_WIDTHS.get(vtype)
+                            if width is not None:
+                                raw = f.read(width)
+                                if len(raw) < width:
+                                    break
+                                self._gguf_split_index = int.from_bytes(raw, "little")
+                                continue
                     except (struct.error, UnicodeDecodeError):
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys:
+                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -7246,6 +7526,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.head_count_kv": "n_kv_heads",
                                         f"{arch}.attention.head_count": "n_heads",
                                         f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.pooling_type": "pooling_type",
                                         f"{arch}.feed_forward_length": "feed_forward_length",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -7273,6 +7554,8 @@ class LlamaCppBackend:
                                 )
                                 if key == "diffusion.canvas_length":
                                     canvas_seen = True
+                                if key.endswith(".pooling_type"):
+                                    pooling_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -7312,6 +7595,13 @@ class LlamaCppBackend:
                         # fetch); break so the resolver fallback runs on
                         # what we have.
                         break
+                else:
+                    kv_complete = True
+
+            # GGUF metadata has no key-order contract. Pooling can precede
+            # general.architecture, so bind the buffered value after the sweep.
+            if arch is not None:
+                self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -7367,6 +7657,10 @@ class LlamaCppBackend:
                     self._n_layers,
                     hf_repo_candidates,
                 )
+
+            # Only with the whole walk done does ``_architecture is None`` mean "declares no
+            # architecture" rather than "the read stopped early" -- what the preflight needs.
+            self._gguf_header_parsed = kv_complete
 
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
@@ -7790,36 +8084,10 @@ class LlamaCppBackend:
             )
             hf_repo = resolved_hf_repo
 
-        # Resolve the filename from the variant
-        gguf_filename = None
-        gguf_extra_shards: list[str] = []
-        if hf_variant:
-            try:
-                from huggingface_hub import list_repo_files
-
-                files = list_repo_files(hf_repo, token = hf_token)
-                gguf_files = _gguf_files_for_variant(files, hf_variant)
-                if gguf_files:
-                    gguf_filename = gguf_files[0]
-                    gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
-            except Exception as e:
-                logger.warning(f"Could not list repo files: {e}")
-
-            # Fall back to the local cache when the repo listing is unavailable.
-            if not gguf_filename:
-                cached_name, cached_shards = _cached_variant_resolution(hf_repo, hf_variant)
-                if cached_name:
-                    gguf_filename = cached_name
-                    gguf_extra_shards = cached_shards
-                    logger.info(
-                        "Resolved variant %s -> %s from local HF cache",
-                        hf_variant,
-                        gguf_filename,
-                    )
-
-            if not gguf_filename:
-                repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-                gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+        # Resolve the filename from the variant (shared with the pre-teardown header probe)
+        gguf_filename, gguf_extra_shards = _resolve_variant_gguf_files(
+            hf_repo, hf_variant, hf_token
+        )
 
         # Prefer the existing model. Updates use force=True to fetch a new revision.
         if not force:
@@ -8815,22 +9083,259 @@ class LlamaCppBackend:
     # https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
     # Matched exactly (not a substring) so a chat arch containing "wan"/"sd1"
     # (e.g. "taiwan") isn't misrouted to Images.
-    _DIFFUSION_ARCHES = frozenset(
+    _IMAGE_ARCHES = frozenset(
         (
             "qwen_image",
             "flux",
-            "sd1",
-            "sdxl",
-            "sd3",
-            "aura",
-            "hidream",
-            "cosmos",
-            "ltxv",
-            "hyvid",
-            "wan",
-            "lumina2",
         )
     )
+    # Archs shared by more than one family, so the header alone does NOT say whether the
+    # Images page can run the file: Z-Image's DiT is a Lumina2 derivative, so its GGUFs
+    # declare "lumina2" too (measured on unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q2_K.gguf
+    # and on calcuis/lumina-gguf). ``routes.models._arch_to_task`` resolves these from the
+    # repo id and the filename and tags the rest ``image-diffusion-unsupported``, hiding
+    # them from the Images picker, so the refusal must run the SAME resolution before it
+    # names that page -- e.g. ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf``
+    # declares "lumina2" and resolves to no family ("lumina-2" is not aliased to bare
+    # "lumina"). Mirrors ``routes.models._AMBIGUOUS_DIFFUSION_GGUF_ARCHS``.
+    _AMBIGUOUS_IMAGE_ARCHES = frozenset(("lumina2",))
+    # Text-to-video archs the Video page can offer. Split from the image set so the refusal
+    # names Video: sending a Wan / LTX-2 GGUF to Images is a second dead end.
+    _VIDEO_ARCHES = frozenset(
+        (
+            "ltxv",
+            "wan",
+        )
+    )
+    # Media archs Studio recognises but NO page can run, so the refusal must not promise
+    # one. Mirrors ``routes.models._UNSUPPORTED_DIFFUSION_GGUF_ARCHS``, which tags these
+    # ``image-diffusion-unsupported`` and so hides them from the Images AND Video pickers.
+    #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
+    #     every cosmos repo id and for override="cosmos"), and the published cosmos GGUFs
+    #     are Cosmos-Predict2-14B-Text2Image, which Images cannot assemble either.
+    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the 1.5 GGUFs that do map to
+    #     one are still tagged unsupported (that family ships no ``gguf_repo``).
+    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
+    #     the same reason, so "use the Images page" was always an empty promise.
+    # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
+    # destination. Mirrors the whole set: a partial mirror leaves the same dead end.
+    _UNRUNNABLE_MEDIA_ARCHES = frozenset(
+        (
+            "cosmos",
+            "hyvid",
+            "sd1",
+            "sd3",
+            "sdxl",
+            "aura",
+            "hidream",
+        )
+    )
+    _DIFFUSION_ARCHES = (
+        _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
+    )
+
+    # Not architectures: the literal placeholders gguf-connector writes into
+    # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
+    # calcuis/cosmos-predict2-gguf both declare "pig"); ComfyUI-GGUF special cases the same
+    # two. llama.cpp knows neither, so without this they slip past the arch sets and die in
+    # llama-server as the opaque failure this preflight exists to prevent.
+    _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
+
+    @staticmethod
+    def _video_arch_is_pickable(
+        arch: Optional[str], gguf_path: Optional[str], model_identifier: Optional[str]
+    ) -> bool:
+        """Whether the Video page would actually OFFER this GGUF.
+
+        Same fixed order ``_arch_to_task`` asks in: the ARCHITECTURE first, since some map
+        straight to a family (``detect_video_family("", override = "ltxv")`` resolves LTX-2
+        with no name to go on), then the repo id, then the filename. Whatever resolves must
+        not be an MoE (the GGUF loader cannot assemble those) and must be buildable by the
+        video engine -- bare "wan" resolves nothing and QuantStack/Wan2.2-T2V-A14B-GGUF
+        resolves an MoE, so neither is promised the page."""
+        try:
+            from core.inference.video_families import detect_video_family
+
+            from routes.models import _video_family_buildable
+
+            fam = detect_video_family("", override = (arch or "").strip().lower() or None)
+            if fam is None:
+                for needle in (model_identifier, os.path.basename(gguf_path or "")):
+                    if not needle:
+                        continue
+                    fam = detect_video_family(needle)
+                    if fam is not None:
+                        break
+            if fam is None:
+                return False
+            return not getattr(fam, "is_moe", False) and _video_family_buildable(fam)
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for video arch: %s", e)
+            return True
+
+    @staticmethod
+    def _ambiguous_image_arch_is_pickable(
+        gguf_path: Optional[str], model_identifier: Optional[str]
+    ) -> bool:
+        """Whether the Images page would actually OFFER this shared-arch GGUF.
+
+        The same three questions ``routes.models._arch_to_task`` asks in its
+        ``_AMBIGUOUS_DIFFUSION_GGUF_ARCHS`` branch, over the same evidence (repo id, then
+        filename): does a family resolve, can a GGUF transformer be assembled for it, can an
+        engine on THIS host build it. Both sides must answer alike -- the picker's answer is
+        what decides whether the row the refusal points at exists.
+
+        Imported lazily inside the function since ``routes`` imports this module, so the
+        canonical classifier cannot be imported from here.
+
+        Fails OPEN on a probe error, like every family probe on the listing side: naming the
+        page is a nicety, not worth losing over a broken import."""
+        try:
+            from core.inference.diffusion_engine_router import family_buildable_here
+            from core.inference.diffusion_families import (
+                detect_family_for_pick,
+                family_gguf_loadable,
+            )
+
+            for needle in (model_identifier, os.path.basename(gguf_path or "")):
+                if not needle:
+                    continue
+                fam = detect_family_for_pick(needle)
+                if fam is not None:
+                    return family_gguf_loadable(fam) and family_buildable_here(
+                        fam, model_kind = "gguf"
+                    )
+            return False
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for ambiguous image arch: %s", e)
+            return True
+
+    def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
+        """Why this GGUF cannot be a chat model, decided from its own header BEFORE
+        llama-server is launched; None when there is no such verdict.
+
+        Otherwise a media GGUF opened in a chat runs the whole download-and-launch path only
+        to die in llama-server as "llama-server failed to start", with no hint that the file
+        was never a chat model (the reported Video-model case).
+
+        The header alone is enough to be certain, in two ways:
+
+        * A declared architecture in the image / video sets. llama.cpp has no such
+          architectures, so this is exactly the failure it would hit, one launch earlier.
+        * NO ``general.architecture`` at all -- a mandatory key for anything llama.cpp can
+          load, and Unsloth's video GGUFs (MiniMax-H3) carry a bare tensor header with zero
+          KV pairs, so they never reach the arch test. Gated on ``_gguf_header_parsed`` so a
+          read that FAILED still gets its chance in llama-server.
+
+        Naming the destination page is the point, so when the architecture does not say
+        which it is, the family detectors are asked about the repo id and the filename."""
+        arch = (self._architecture or "").strip().lower()
+        # A declared media arch is the whole answer, and it is KV #0 in every GGUF measured,
+        # so the remote probe's prefix can carry it even where bulkier later metadata leaves
+        # the walk unfinished. The walk still gates the no-architecture fallback below, the
+        # one case where an incomplete read is indistinguishable from declaring nothing.
+        if arch not in self._DIFFUSION_ARCHES and not getattr(self, "_gguf_header_parsed", False):
+            return None
+        if arch in self._PLACEHOLDER_ARCHES:
+            # Names no architecture, so treat it like a GGUF that declares none and let the
+            # name-based branch below name a page.
+            arch = ""
+        if arch:
+            if arch in self._UNRUNNABLE_MEDIA_ARCHES:
+                return (
+                    f"This is an image / video generation GGUF (architecture '{arch}'), "
+                    "which cannot run as a chat model. Unsloth Studio cannot run this "
+                    "architecture at all: neither the Images page nor the Video page "
+                    "accepts it."
+                )
+            if arch in self._VIDEO_ARCHES:
+                # Shared like the image archs: the canonical classifier resolves a
+                # VideoFamily by name and rejects an MoE the GGUF loader cannot assemble,
+                # so "wan" alone does not mean the Video page will list it.
+                if self._video_arch_is_pickable(arch, gguf_path, self._model_identifier):
+                    return (
+                        f"This is a text-to-video GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Video page instead."
+                    )
+                return (
+                    f"This is a text-to-video GGUF (architecture '{arch}'), which cannot "
+                    "run as a chat model. Studio cannot assemble this particular model "
+                    "from a GGUF, so the Video page does not list it either."
+                )
+            if arch in self._IMAGE_ARCHES:
+                return (
+                    f"This is an image-generation GGUF (architecture '{arch}'), which "
+                    "cannot run as a chat model. Open it from the Images page instead."
+                )
+            if arch in self._AMBIGUOUS_IMAGE_ARCHES:
+                if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        f"This is an image-generation GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Images page instead."
+                    )
+                return (
+                    f"This is an image-generation GGUF (architecture '{arch}'), which "
+                    "cannot run as a chat model. Studio could not tell which model family "
+                    f"this file belongs to -- '{arch}' is shared by several -- so the "
+                    "Images page cannot assemble it either."
+                )
+            return None
+
+        # A shard past the first of a gguf-split set declares no architecture (shard 1 holds
+        # it) but is no media GGUF, and llama.cpp's own "model must be loaded with the first
+        # split" is more use than "carries no metadata". Needs split.no > 0 AND nothing
+        # declared: shard 1 carries the split keys too, and a placeholder arch is blanked
+        # above, so a looser test would wave through the very files the placeholder handling
+        # exists to catch. Only reachable with a hand-written variant anyway: every producer
+        # here strips the shard suffix and sorts, landing on shard 1.
+        if self._architecture is None and (self._gguf_split_index or 0) > 0:
+            return None
+
+        # No architecture declared: not loadable by llama-server whatever it is. Say which
+        # page runs it when the identifiers make that clear.
+        needles = [n for n in (self._model_identifier, os.path.basename(gguf_path or "")) if n]
+        # Naming a page answers to the same predicates as the arch branches above: a family
+        # that resolves is not enough, the picker also drops an MoE it cannot assemble and a
+        # family no installed engine can build. So detect first, then ask whether the page
+        # would list it, rather than pointing at a page the model is missing from.
+        try:
+            from core.inference.video_families import detect_video_family
+            if any(detect_video_family(n) is not None for n in needles):
+                if self._video_arch_is_pickable(None, gguf_path, self._model_identifier):
+                    return (
+                        "This is a text-to-video model, not a chat model: its GGUF carries "
+                        "no llama.cpp model metadata, so llama-server cannot load it. Open "
+                        "it from the Video page instead."
+                    )
+                return (
+                    "This is a text-to-video model, not a chat model, and its GGUF carries "
+                    "no llama.cpp model metadata. Studio cannot assemble this particular "
+                    "model from a GGUF either, so the Video page does not list it."
+                )
+        except Exception as e:  # noqa: BLE001 -- naming the page is a nicety, never a gate
+            logger.debug("Video family probe failed during non-chat GGUF preflight: %s", e)
+        try:
+            from core.inference.diffusion_families import detect_family
+            if any(detect_family(n) is not None for n in needles):
+                if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        "This is an image-generation model, not a chat model: its GGUF "
+                        "carries no llama.cpp model metadata, so llama-server cannot load "
+                        "it. Open it from the Images page instead."
+                    )
+                return (
+                    "This is an image-generation model, not a chat model, and its GGUF "
+                    "carries no llama.cpp model metadata. Studio cannot assemble this "
+                    "particular model from a GGUF either, so the Images page does not list "
+                    "it."
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Image family probe failed during non-chat GGUF preflight: %s", e)
+        return (
+            "This GGUF carries no llama.cpp model metadata (no general.architecture), so "
+            "llama-server cannot load it as a chat model. Image and video GGUFs are "
+            "packaged this way -- try the Images or Video page, or pick a chat GGUF."
+        )
 
     # Distro package names for the shared libraries the Linux prebuilt links,
     # so the loader failure below can say what to install.
@@ -9040,12 +9545,43 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
-            if arch in LlamaCppBackend._DIFFUSION_ARCHES:
+            if arch in LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES:
+                return (
+                    f"'{arch}' is an image / video generation GGUF, which llama-server "
+                    "cannot run as a chat/completion model. Unsloth Studio cannot run "
+                    "this architecture at all: neither the Images page nor the Video "
+                    "page accepts it."
+                )
+            if arch in LlamaCppBackend._VIDEO_ARCHES:
+                if LlamaCppBackend._video_arch_is_pickable(arch, gguf_path, model_identifier):
+                    return (
+                        f"'{arch}' is a text-to-video GGUF, which llama-server "
+                        "cannot run as a chat/completion model. Open it from "
+                        "Unsloth's Video page instead of a chat."
+                    )
+                return (
+                    f"'{arch}' is a text-to-video GGUF, which llama-server cannot run as "
+                    "a chat/completion model. Studio cannot assemble this particular "
+                    "model from a GGUF, so the Video page does not list it either."
+                )
+            if arch in LlamaCppBackend._IMAGE_ARCHES or (
+                arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
+                and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
+            ):
                 return (
                     f"'{arch}' is a diffusion (image-generation) GGUF, which "
                     "llama-server cannot run as a chat/completion model. Use "
                     "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
+                )
+            if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
+                # Same shared-arch resolution as the pre-launch refusal: unresolved means
+                # the Images picker tags it image-diffusion-unsupported and hides the row.
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. Unsloth Studio "
+                    f"could not tell which model family this file is -- '{arch}' is "
+                    "shared by several -- so the Images page cannot assemble it either."
                 )
             if is_ollama:
                 return (
@@ -10171,13 +10707,6 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
-            # Kept so a stand-down blamed on the binary can later tell a real update
-            # from the same file still being installed.
-            self._launch_binary_revision = self._binary_revision(binary)
-            # Cleared per load, not only where the fetch runs: a local-file load never
-            # reaches the DFlash fetch, and a verdict left over from the previous model
-            # would make every Apply for this one reload.
-            self._dflash_retry_needed = False
 
             # Every capability answer shaping this launch, latching whether any was a
             # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
@@ -10299,6 +10828,59 @@ class LlamaCppBackend:
             ):
                 raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
 
+            # An image / video GGUF already on disk is refused HERE, before the teardown:
+            # the header answers this without llama-server, so there is no reason to make
+            # the user pay their resident chat model for it.
+            if gguf_path and not hf_repo and Path(gguf_path).is_file():
+                _early_non_chat = self._non_chat_gguf_refusal_for_path(gguf_path, model_identifier)
+                if _early_non_chat:
+                    logger.error(
+                        "Refusing non-chat GGUF before teardown: %s (%s)",
+                        _early_non_chat,
+                        gguf_path,
+                    )
+                    raise ValueError(_early_non_chat)
+
+            # The same refusal for a REPO load, which is what the Model Hub actually sends:
+            # the route resolves every Hub model to hf_repo, so leaving this to the
+            # post-download check killed the live model first in the reported case. The file
+            # does not exist yet, but a header-sized byte range decides it (see
+            # _remote_non_chat_gguf_refusal). When a preflight above already fetched the
+            # file, judge that instead -- same verdict, no request. Fails open into the
+            # post-download check below, which stays as the backstop.
+            if hf_repo:
+                # Same offline guard the download below uses: the probe asks the Hub twice
+                # before reading any local header (the file listing, then the cached
+                # candidate's revision sizes), and each would wait out its retry backoff,
+                # putting two timeouts in front of a cached load that needs no network. The
+                # guard is memoised and only bites when the Hub really is unreachable.
+                with _hf_offline_if_unreachable():
+                    _early_non_chat = (
+                        self._non_chat_gguf_refusal_for_path(
+                            _preflight_model_path, model_identifier
+                        )
+                        if _preflight_model_path
+                        else self._remote_non_chat_gguf_refusal(
+                            hf_repo = hf_repo,
+                            hf_variant = hf_variant,
+                            hf_token = hf_token,
+                            model_identifier = model_identifier,
+                        )
+                    )
+                if _early_non_chat:
+                    logger.error(
+                        "Refusing non-chat GGUF before teardown: %s (%s)",
+                        _early_non_chat,
+                        hf_repo,
+                    )
+                    raise ValueError(_early_non_chat)
+
+            # The probe can take a moment on a slow Hub, so re-read the cancel flag rather
+            # than tearing down a healthy server for a load that was called off.
+            if _load_cancelled():
+                logger.info("Load cancelled before teardown")
+                return False
+
             # ── Phase 1: kill old process (under lock, fast) ──────────
             _replaying_cpu_fallback = intent.cpu_fallback
             with self._lock:
@@ -10306,6 +10888,21 @@ class LlamaCppBackend:
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
+            # Both describe the process just killed, so they are reset HERE rather than
+            # where the binary is resolved: everything above can bail with the old server
+            # still running (a stand-down, a non-chat refusal, a cancel), and resetting on
+            # the way past would tell the next Apply that the resident process launched from
+            # the binary installed now and is owed no DFlash retry -- so an Apply after
+            # `unsloth studio update` or a retryable sidecar failure would dedupe against it
+            # instead of relaunching. Nothing between the two points reads either field.
+            #
+            # Kept so a stand-down blamed on the binary can later tell a real update
+            # from the same file still being installed.
+            self._launch_binary_revision = self._binary_revision(binary)
+            # Cleared per load, not only where the fetch runs: a local-file load never
+            # reaches the DFlash fetch, and a verdict left over from the previous model
+            # would make every Apply for this one reload.
+            self._dflash_retry_needed = False
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -10467,6 +11064,13 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # Backstop for everything the pre-teardown probes fail open on: refuse from the
+            # header rather than watching llama-server die as "failed to start".
+            non_chat = self._non_chat_gguf_refusal(model_path)
+            if non_chat:
+                logger.error("Refusing non-chat GGUF: %s (%s)", non_chat, model_path)
+                raise ValueError(non_chat)
+
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
@@ -10565,6 +11169,25 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
+                if (
+                    self.is_embedding_gguf
+                    and _effective_ubatch is not None
+                    and _effective_ubatch < n_parallel
+                ):
+                    # max(): a degenerate "-b 0" extra resolves to 0, and --parallel 0 is
+                    # rejected at arg parse.
+                    _embedding_slots = max(1, _effective_ubatch)
+                    logger.warning(
+                        "Reducing serving slots from %d to %d: llama-server caps the batch "
+                        "at the %d-token micro-batch under --embedding and aborts when that "
+                        "is below the slot count.",
+                        n_parallel,
+                        _embedding_slots,
+                        _effective_ubatch,
+                    )
+                    n_parallel = _embedding_slots  # allow-slot-clamp: llama-server would abort
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -10774,6 +11397,9 @@ class LlamaCppBackend:
                 _vulkan_explicit_unmatched = False
                 _vulkan_requested_ids: list[int] = []
                 _vulkan_available_ordinals: list[int] = []
+                # Auto dropped the drafter because only the target fit. Bound before the
+                # try: the launch below reads it either way.
+                _spec_dropped_no_vram = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -11016,6 +11642,11 @@ class LlamaCppBackend:
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
+                    # Will a SEPARATE drafter be emitted at all, taken before the CPU
+                    # nulling below. Not mtp_draft_path: extras owning --spec-type return
+                    # before Studio's sidecar becomes --model-draft, which
+                    # _studio_draft_for_budget already encodes.
+                    _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
@@ -11185,43 +11816,18 @@ class LlamaCppBackend:
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
-                    # Flat MTP reserve fraction: used only as the fallback when the
-                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
-                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
-                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
-                    # GPU regardless of draft-offload flags (keep its reserve).
-                    _flat_mtp_engages = _mtp_will_engage and (
-                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    # Nothing speculative on the GPU: the drafter that launches is the
+                    # separate CPU-offloaded one, and a sidecar wins over an embedded head
+                    # (llama.cpp loads the draft model on has_dft()). A head with no
+                    # sidecar is still GPU-resident and still reserved.
+                    _draft_cpu_no_embedded = _draft_on_cpu and (
+                        _separate_draft_launches or not self._nextn_predict_layers
                     )
-                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
-                    # MTP reserves GPU VRAM unless its only drafter is a separate
-                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
-                    # path reserves like the layer path; gate both on this.
-                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
-                    _flat_mtp_reserve = (
-                        _MTP_VRAM_RESERVE_FRAC
-                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
-                        else 0.0
-                    )
-                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
-                    # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
-                    # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
-                    # CUDA/cuBLAS context is discrete-GPU only (not Metal); the mmproj and
-                    # MTP draft-graph buffers exist on every backend.
-                    _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
-                    if effective_is_vision and mmproj_size > 0:
-                        _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
-                    if _mtp_reserves_gpu:
-                        _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
-                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
-
-                    def _subset_model_size(n_gpus: int) -> int:
-                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
-
-                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
-                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
-
+                    # The two tensor -> layer downgrades that need nothing the probe
+                    # decides run BEFORE it: the probe is gated on `not tensor_parallel`
+                    # and must answer for any load that ends up layer-split. Running them
+                    # first also hands it the restored KV type that load will use.
                     def _restore_after_tensor_downgrade():
                         # Restore the quantized KV + extras tensor dropped (layer
                         # split supports them), minus --split-mode.
@@ -11304,6 +11910,293 @@ class LlamaCppBackend:
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
+
+                    # Target pins but the drafter's reserve tips it over: Auto drops the
+                    # drafter rather than pay for speed with context (or a --fit offload,
+                    # where decode collapses ~3x). Priced over the SAME ranked subsets the
+                    # placement loop walks, at the context the target alone would get, so
+                    # it drops only when no placement could have held both. Carried to the
+                    # launch as drafter_no_vram. Skipped under tensor parallelism, whose
+                    # per-device buffer has its own geometry these numbers do not model;
+                    # `tensor_parallel` already reflects the downgrades hoisted above, so
+                    # a request that ends up layer-split IS probed. The pooled tensor
+                    # weight-budget check below still escapes, since it prices the reserve
+                    # this probe may clear and running it first would be circular. The
+                    # gate reads the user's choice, not _mtp_effective, which by here is
+                    # the kind Auto resolved and can no longer tell the two apart.
+                    if (
+                        _mtp_will_engage
+                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                        and not _user_mtp_via_extras
+                        and not _user_draft_via_extras
+                        and not _extra_args_set_spec_type(extra_args)
+                        # A bare --model-draft / --spec-draft-hf sets neither flag above
+                        # (both key off --spec-type), yet llama.cpp loads whatever it
+                        # names anyway: load_model gates the draft on has_dft(). Dropping
+                        # here would free the reserve for a drafter that still loads.
+                        and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        and not _draft_cpu_no_embedded
+                        and not tensor_parallel
+                        and gpus
+                        and effective_ctx > 0
+                        and self._can_estimate_kv()
+                    ):
+
+                        def _probe_frac(drafter: bool) -> float:
+                            # The flat fraction is the reserve whenever _mtp_bytes is 0.
+                            return self._GPU_PIN_VRAM_FRACTION - (
+                                _MTP_VRAM_RESERVE_FRAC
+                                if (drafter and (mtp_overhead_fn is None or _mtp_kv_unsized))
+                                else 0.0
+                            )
+
+                        def _probe_base(drafter: bool, n: int) -> int:
+                            # model_size_fit's terms, before it is built below.
+                            _soft = self._CUDA_CONTEXT_RESERVE_BYTES
+                            if effective_is_vision and mmproj_size > 0:
+                                _soft += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            if drafter:
+                                _soft += self._MTP_DRAFT_COMPUTE_BYTES
+                            return (
+                                model_size
+                                + _compute_buffer_pipeline
+                                + _soft
+                                + max(0, n - 1) * _pipeline_overhead_bytes
+                            )
+
+                        # Fewest GPUs first, ranked by usable VRAM: the same order and
+                        # the same budget the auto placement loop uses, so the answer is
+                        # about placements that loop could actually choose.
+                        def _probe_rank(drafter: bool) -> list:
+                            return sorted(
+                                gpus,
+                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                reverse = True,
+                            )
+
+                        _probe_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
+
+                        def _probe_floor(ranked: list, drafter: bool) -> int:
+                            # Same floor as the placement loop's _auto_min_gpus: a tensor
+                            # downgrade raises _layer_min_gpus to keep the request
+                            # multi-GPU, and a one-GPU placement the loop is forbidden to
+                            # choose must not be the one that saves the drafter.
+                            return max(
+                                1,
+                                min(
+                                    _layer_min_gpus,
+                                    sum(
+                                        1
+                                        for g in ranked
+                                        if _gpu_usable(g, _probe_frac(drafter))
+                                        > _probe_overhead_mib
+                                    )
+                                    or 1,
+                                ),
+                            )
+
+                        # Both rankings: an unsized drafter costs five points of pin
+                        # fraction, which can reorder heterogeneous cards (a busy 80 GB
+                        # can lead at 0.97, an idle 24 GB at 0.92). The placement loop
+                        # sorts under the fraction that load ends up with, so a prefix
+                        # only the drafter's ranking produces is still one it can choose.
+                        # Identical whenever the orders agree, i.e. every uniform machine.
+                        _probe_orders = [_probe_rank(False)]
+                        _ranked_w = _probe_rank(True)
+                        if [id(g) for g in _ranked_w] != [id(g) for g in _probe_orders[0]]:
+                            _probe_orders.append(_ranked_w)
+                        _target_fits_somewhere = False
+                        _both_fit_somewhere = False
+                        _probe_ctx = 0
+                        _probe_need = _probe_have = 0.0
+                        for _probe_ranked in _probe_orders:
+                            if _both_fit_somewhere:
+                                break
+                            _probe_min_gpus = _probe_floor(_probe_ranked, False)
+                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
+                                _subset = _probe_ranked[:_n]
+                                _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
+                                _base_wo = _probe_base(False, _n)
+                                _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
+                                # Explicit context is honored verbatim, so that is what the
+                                # drafter has to fit alongside; Auto gets its own best cap.
+                                _ctx_wo = (
+                                    effective_ctx
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        effective_ctx,
+                                        _budget_wo,
+                                        _base_wo,
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = False,
+                                        mtp_overhead_fn = None,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
+                                )
+                                if _ctx_wo <= 0:
+                                    continue
+                                _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                if _foot_wo > _budget_wo:
+                                    continue
+                                # The pooled figure hides the compute buffer every device
+                                # replicates, so the weakest card may not hold the context
+                                # the pool priced and the placement loop caps to what it
+                                # does. Charging the drafter at the uncapped context
+                                # condemns it at a context this load never reaches. Same
+                                # reserve and cap the auto-context loop below applies, so
+                                # the two cannot disagree. Auto only: an explicit context
+                                # is honored verbatim and overflows to --fit.
+                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
+                                _probe_reserve_at = lambda c, _k = _n: (
+                                    (_pipeline_overhead_bytes if _k > 1 else 0)
+                                    + _cc_bytes(c, _k) // _k
+                                )
+                                if not self._every_gpu_holds_reserve(
+                                    _usable_wo, _probe_reserve_at(_ctx_wo)
+                                ):
+                                    if explicit_ctx:
+                                        # Nothing to cap: this subset cannot hold it, and
+                                        # _select_gpus_split_aware will go to --fit too.
+                                        # Calling it a fit would drop the drafter and then
+                                        # report a pin that never happened.
+                                        continue
+                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                        _ctx_wo, _usable_wo, _probe_reserve_at
+                                    )
+                                    if _ctx_wo <= 0:
+                                        continue
+                                    # Every pooled term shrinks with the context, so this
+                                    # cannot newly fail; re-price rather than lean on it.
+                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                    if _foot_wo > _budget_wo:
+                                        continue
+                                _foot_w = (
+                                    _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
+                                ) / (1024 * 1024)
+                                _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
+                                if not _target_fits_somewhere:
+                                    _target_fits_somewhere = True
+                                    _probe_ctx, _probe_need, _probe_have = (
+                                        _ctx_wo,
+                                        _foot_w,
+                                        _budget_w,
+                                    )
+                                if _foot_w <= _budget_w:
+                                    _both_fit_somewhere = True
+                                    break
+                                # Both do not fit at the target's own context. The loop does
+                                # not move on: it re-caps the context WITH the drafter and
+                                # takes this subset at whatever that leaves. So a smaller
+                                # context holding both here IS the placement the load takes,
+                                # paying for the drafter in context, which is the trade being
+                                # refused. Only if no context fits both does it widen.
+                                _ctx_w = (
+                                    0
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        _ctx_wo,
+                                        _budget_w,
+                                        _probe_base(True, _n),
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = True,
+                                        mtp_overhead_fn = mtp_overhead_fn,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
+                                )
+                                if (
+                                    _ctx_w > 0
+                                    and (
+                                        _probe_base(True, _n)
+                                        + _kv_bytes(_ctx_w)
+                                        + _cc_n(_ctx_w)
+                                        + _mtp_bytes(_ctx_w)
+                                    )
+                                    / (1024 * 1024)
+                                    <= _budget_w
+                                ):
+                                    break
+                        if _target_fits_somewhere and not _both_fit_somewhere:
+                            _spec_dropped_no_vram = True
+                            _mtp_will_engage = False
+                            # Clearing the flag alone leaves the reserve: the _mtp_bytes
+                            # sites are unconditional and _fit_context_to_vram invokes any
+                            # non-None mtp_overhead_fn whatever mtp_engaged says, so the
+                            # fit would still shrink the context for a drafter that no
+                            # longer launches. _mtp_kv_unsized goes with it, or
+                            # _flat_mtp_engages swaps the flat fraction in as replacement.
+                            mtp_overhead_fn = None
+                            _mtp_kv_unsized = False
+                            logger.warning(
+                                "Speculative decoding disabled for this load: the model "
+                                "fits in VRAM at context %d but its drafter does not "
+                                "(needs %.1f GB of a %.1f GB budget, on any GPU subset). "
+                                "Auto keeps the context rather than shrink it for a speed "
+                                "option. Select the drafter in Settings to force it.",
+                                _probe_ctx,
+                                _probe_need / 1024,
+                                _probe_have / 1024,
+                            )
+
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
+
+                    # Flat MTP reserve fraction: used only as the fallback when the
+                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
+                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
+                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
+                    # GPU regardless of draft-offload flags (keep its reserve).
+                    _flat_mtp_engages = _mtp_will_engage and (
+                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    )
+                    # MTP reserves GPU VRAM unless its only drafter is a separate
+                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
+                    # path reserves like the layer path; gate both on this.
+                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                    _flat_mtp_reserve = (
+                        _MTP_VRAM_RESERVE_FRAC
+                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
+                        else 0.0
+                    )
+                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+
+                    # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
+                    # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
+                    # CUDA/cuBLAS context is discrete-GPU only (not Metal); the mmproj and
+                    # MTP draft-graph buffers exist on every backend.
+                    _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
+                    if effective_is_vision and mmproj_size > 0:
+                        _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                    if _mtp_reserves_gpu:
+                        _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
+                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
+
+                    def _subset_model_size(n_gpus: int) -> int:
+                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+
+                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
+                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -11842,6 +12735,10 @@ class LlamaCppBackend:
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
+                # llama-server 501s on /v1/embeddings without this; pooling stays model-default.
+                if self.is_embedding_gguf:
+                    cmd.append("--embedding")
+
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     # Two separate aborts, both reachable from the picker since the input
@@ -12161,6 +13058,7 @@ class LlamaCppBackend:
                     dspark_fit_sized = not use_fit,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
+                    drafter_no_vram = _spec_dropped_no_vram,
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -12502,6 +13400,13 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # The GGUF header controls pooling; ignore inherited defaults.
+                for _pooling_var in (
+                    "LLAMA_ARG_POOLING",
+                    "LLAMA_ARG_RERANKING",
+                    "LLAMA_ARG_EMBEDDINGS",
+                ):
+                    env.pop(_pooling_var, None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
@@ -13527,6 +14432,7 @@ class LlamaCppBackend:
         dspark_fit_sized: bool = True,
         dflash_draft_path: Optional[str] = None,
         dflash_fit_sized: bool = True,
+        drafter_no_vram: bool = False,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -13906,7 +14812,41 @@ class LlamaCppBackend:
         # UD-Q4_K_XL + mmproj-kquant + dflash-kquant, b10342, B200, n_max=2, greedy,
         # ~545 image tokens gave 92.1 -> 114.2 tok/s at 0.646 acceptance with output
         # byte-identical to the drafter-free run.
-        if dspark_draft_path and caps.get("supports_dspark"):
+        # Which drafter Auto would have emitted had VRAM allowed. An MLA model with no
+        # sidecar is already dropped by policy below, and reporting the VRAM reason
+        # would invite forcing MTP at a smaller context: slower than the ngram-mod it
+        # gets. Let it fall through to the MLA branch, which gives the real reason.
+        _no_vram_drops_a_real_drafter = (
+            bool(dspark_draft_path and caps.get("supports_dspark"))
+            or bool(dflash_draft_path and caps.get("supports_dflash"))
+            or not _auto_mla_embedded_mtp
+        )
+        if drafter_no_vram and _no_vram_drops_a_real_drafter:
+            # The fit found room for the target but not for the drafter's reserve,
+            # and reserved nothing for it, so emitting one now would OOM the load.
+            # Same downgrade as the MLA branch below: ngram-mod costs no VRAM, and
+            # spec-off when the build lacks it. The drafter paths stay recorded, so
+            # the UI still names the kind and a repeat Apply still dedupes.
+            self._spec_fallback_reason = "drafter_no_vram"
+            if caps.get("supports_ngram_mod"):
+                logger.info(
+                    "Auto: the drafter does not fit in VRAM alongside the model at this "
+                    "context, so it is dropped and ngram-mod (zero-VRAM) takes its "
+                    "place. Choose the drafter in the Speculative Decoding dropdown to "
+                    "force it at a smaller context."
+                )
+                _emit_ngram_mod()
+            else:
+                # spec-off: --spec-type ngram-mod is not a value this build's enum
+                # carries, and llama-server aborts on one it cannot parse rather than
+                # ignoring it. Mirrors the MLA and sub-3B branches below.
+                logger.info(
+                    "Auto: the drafter does not fit in VRAM alongside the model at this "
+                    "context, so speculative decoding is disabled (this llama-server "
+                    "does not advertise ngram-mod). Choose the drafter in the "
+                    "Speculative Decoding dropdown to force it at a smaller context."
+                )
+        elif dspark_draft_path and caps.get("supports_dspark"):
             # DSpark first: load_model only hands a sidecar down once it has one
             # this binary can launch, and it beats every other Auto outcome for
             # this architecture (1.84x on 4x B200, 1.91x on one). Without it these
@@ -14230,6 +15170,7 @@ class LlamaCppBackend:
             self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
+            self._pooling_type = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None
