@@ -23,7 +23,9 @@ test("all max-output cap callers pass the selected connection override", () => {
   );
   assert.match(
     runtime,
-    /getExternalMaxOutputTokens\([\s\S]*?provider\?\.maxOutputTokens/,
+    // Inside the `if (provider)` guard, so the optional chain is gone: an
+    // unresolved provider must not clamp at all, rather than clamp to the fallback.
+    /if \(provider\) \{[\s\S]*?getExternalMaxOutputTokens\([\s\S]*?provider\.maxOutputTokens/,
   );
   assert.match(
     adapter,
@@ -71,7 +73,11 @@ test("preset application clamps live Max Tokens to the active external cap", () 
 
   assert.match(
     settings,
-    /function applyPresetParamsWithinCurrentLimits\([\s\S]*?if \(!isExternalModel\) return nextParams;[\s\S]*?Math\.min\(nextParams\.maxTokens, maxTokensMax\)/,
+    // The provider guard is part of the shape: without a resolved provider the cap
+    // is the 32,768 fallback, and applying a preset there would lower the value for
+    // good. `custom-provider-max-output-tokens-guards.test.ts` covers the same rule
+    // at the other two clamp sites.
+    /function applyPresetParamsWithinCurrentLimits\([\s\S]*?if \(!isExternalModel \|\| activeExternalProvider == null\) return nextParams;[\s\S]*?Math\.min\(nextParams\.maxTokens, maxTokensMax\)/,
   );
   assert.match(
     settings,

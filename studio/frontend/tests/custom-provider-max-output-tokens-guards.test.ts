@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -154,4 +155,28 @@ test("an entry saved by an older install loads without gaining a cap", () => {
   const [reloaded] = loadExternalProviders();
   assert.equal(reloaded.backendProviderType, "openai");
   assert.equal(reloaded.maxOutputTokens, 384000);
+});
+
+// The same guard has to hold everywhere a cap is applied, not just in the effect:
+// a preset applied, or a checkpoint selected, while the provider is unresolved would
+// otherwise lower the value permanently. Source-level assertions, since neither call
+// site is reachable without a DOM.
+test("every clamp site waits for a resolved provider", () => {
+  const settings = readFileSync(
+    new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    settings,
+    /function applyPresetParamsWithinCurrentLimits\([\s\S]*?if \(!isExternalModel \|\| activeExternalProvider == null\) return nextParams;/,
+  );
+
+  const store = readFileSync(
+    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    store,
+    /if \(provider\) \{\s*const cap = getExternalMaxOutputTokens\(\s*provider\.providerType/,
+  );
 });

@@ -798,7 +798,10 @@ export function ChatSettingsPanel({
     presetParams: Parameters<typeof applyPresetParams>[1],
   ): InferenceParams {
     const nextParams = applyPresetParams(params, presetParams);
-    if (!isExternalModel) return nextParams;
+    // Same reason the clamp effect waits for a resolved provider: with none,
+    // `maxTokensMax` is the 32,768 fallback rather than this connection's real cap,
+    // and applying a preset then would lower the value for good.
+    if (!isExternalModel || activeExternalProvider == null) return nextParams;
     return {
       ...nextParams,
       maxTokens: Math.min(nextParams.maxTokens, maxTokensMax),
