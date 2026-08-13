@@ -269,7 +269,11 @@ def _run_child(
     load = None,
     transcribe = None,
 ):
-    """Drive run_stt_worker over in-process queues and collect its responses."""
+    """Drive run_stt_worker over in-process queues and collect its responses.
+
+    The bootstrap handshake is asserted here and dropped, so each test reads the
+    answers to its own commands.
+    """
     cmd_queue: queue.Queue = queue.Queue()
     resp_queue: queue.Queue = queue.Queue()
     cancel_event = threading.Event()
@@ -295,7 +299,8 @@ def _run_child(
     responses = []
     while not resp_queue.empty():
         responses.append(resp_queue.get_nowait())
-    return responses, cancel_event
+    assert responses and responses[0] == {"type": "ready"}
+    return responses[1:], cancel_event
 
 
 def test_child_reports_the_loaded_model_then_transcribes_then_exits(monkeypatch):
@@ -800,6 +805,156 @@ def test_a_child_killed_by_a_signal_keeps_its_crash_instead_of_falling_back(monk
         handle.start("/cached/model", "cpu", "float32")
 
     assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
+
+
+class _NativeCrashProcess:
+    """A child that bootstraps and then dies inside the native model load.
+
+    Runs the real child entrypoint, whose load neither returns nor reports
+    anything, exactly as a fault in native code does not; the process is then
+    simply gone. Its exit code is positive because Windows has no signals to
+    report a fault with (0xC0000005 reads as 3221225477), which is what a child
+    that never bootstrapped looks like from the exit code alone.
+    """
+
+    def __init__(self, kwargs, faulted: threading.Event) -> None:
+        self.pid = 4244
+        self.exitcode = None
+        self._kwargs = kwargs
+        self._faulted = faulted
+
+    def start(self):
+        thread = threading.Thread(
+            target = worker_module.run_stt_worker,
+            kwargs = self._kwargs,
+            daemon = True,
+        )
+        thread.start()
+
+    def is_alive(self):
+        if self._faulted.is_set():
+            self.exitcode = 3221225477  # 0xC0000005, STATUS_ACCESS_VIOLATION
+            return False
+        return True
+
+    def join(self, _timeout = None):
+        return None
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+class _NativeCrashContext:
+    """Spawns a child that comes up and then faults in the model load."""
+
+    def __init__(self, faulted: threading.Event) -> None:
+        self._faulted = faulted
+        self._queues: list = []
+
+    def Queue(self):
+        made: queue.Queue = queue.Queue()
+        self._queues.append(made)
+        return made
+
+    def Event(self):
+        return threading.Event()
+
+    def Process(self, **kwargs):
+        cmd_queue, resp_queue = self._queues[0], self._queues[1]
+        process = _NativeCrashProcess(
+            {
+                "cmd_queue": cmd_queue,
+                "resp_queue": resp_queue,
+                "cancel_event": threading.Event(),
+                "config": {},
+            },
+            self._faulted,
+        )
+        self._process = process
+        return process
+
+
+def _fault_in_the_native_load(monkeypatch, faulted: threading.Event, forever: threading.Event):
+    def _fault(*_args, **_kwargs):
+        # A fault in native code reports nothing and never comes back.
+        faulted.set()
+        forever.wait(30)
+        raise AssertionError("the crashed child was resumed")
+
+    monkeypatch.setattr(worker_module, "load_whisper", _fault)
+
+
+def test_a_child_that_crashed_in_the_load_is_not_read_as_a_host_that_cannot_spawn(monkeypatch):
+    # A native crash under the load kills the child with a positive exit code on
+    # Windows, where there are no signals. That child bootstrapped, so spawn
+    # works here: reading it as a host that cannot spawn would answer a crash by
+    # repeating the same native load inside the backend.
+    faulted = threading.Event()
+    forever = threading.Event()
+    monkeypatch.setattr(worker_module, "_CTX", _NativeCrashContext(faulted))
+    _fault_in_the_native_load(monkeypatch, faulted, forever)
+
+    handle = WhisperWorker()
+    try:
+        with pytest.raises(SttWorkerError) as caught:
+            handle.start("/cached/model", "cpu", "float32")
+    finally:
+        forever.set()
+
+    assert faulted.is_set()
+    assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
+
+
+def test_a_crash_in_the_child_load_is_never_repeated_inside_the_backend(monkeypatch):
+    # The in-process fallback exists for a host that cannot bring a child up. A
+    # load that crashes the child crashes the backend the same way, and the
+    # backend is the process the user is talking to.
+    from core.inference.stt_sidecar import WhisperSttSidecar
+
+    faulted = threading.Event()
+    forever = threading.Event()
+    monkeypatch.setattr(worker_module, "_CTX", _NativeCrashContext(faulted))
+    _fault_in_the_native_load(monkeypatch, faulted, forever)
+    monkeypatch.setattr(
+        worker_module.InProcessWhisperEngine,
+        "start",
+        lambda *_args, **_kwargs: pytest.fail("no in-process load after a crash in the child"),
+    )
+
+    try:
+        with pytest.raises(SttWorkerError):
+            WhisperSttSidecar(keep_alive_seconds = 0)._build_model(
+                "/cached/model", "cpu", "float32", threading.Event()
+            )
+    finally:
+        forever.set()
+
+
+def test_the_child_says_it_is_ready_before_it_touches_a_command(monkeypatch):
+    # The handshake is what separates a host that cannot spawn from a child that
+    # failed at something, so it has to precede even a load that fails.
+    cmd_queue: queue.Queue = queue.Queue()
+    resp_queue: queue.Queue = queue.Queue()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(worker_module, "load_whisper", boom)
+    cmd_queue.put(
+        {"type": "load", "snapshot_path": "/cached/model", "device": "cpu", "dtype": "float32"}
+    )
+    worker_module.run_stt_worker(
+        cmd_queue = cmd_queue,
+        resp_queue = resp_queue,
+        cancel_event = threading.Event(),
+        config = {},
+    )
+
+    assert resp_queue.get_nowait() == {"type": "ready"}
+    assert resp_queue.get_nowait()["kind"] == "RuntimeError"
 
 
 def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeypatch):

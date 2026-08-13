@@ -198,6 +198,9 @@ def run_stt_worker(
 
     Returning ends the process, which is the only way to give the CUDA context
     back, so a failed load and an unload both exit rather than idle.
+
+    Answers "ready" before touching a command, which is what tells the parent a
+    fresh interpreter came up here.
     """
     import os
 
@@ -211,6 +214,14 @@ def run_stt_worker(
         )
     except Exception as exc:  # noqa: BLE001 - logging setup must not fail dictation
         logger.debug("STT worker logging setup failed: %s", exc)
+
+    # Say this interpreter is up before any model work is attempted. Without it
+    # the parent has only the exit code to go on, and Windows has no signals to
+    # report a fault with: a native crash inside the model load ends the child
+    # with a positive status there exactly as a child that never bootstrapped
+    # does. Reading that crash as a host that cannot spawn moves the same
+    # crashing load into the backend, which the backend does not survive.
+    _send(resp_queue, {"type": "ready"})
 
     engine = None
     while True:
@@ -307,7 +318,8 @@ class WhisperWorker:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
-        # Whether the child ever answered, which is what separates a host that
+        # Whether the child ever answered. Its first word is the "ready"
+        # handshake, sent before any model work, so this separates a host that
         # cannot bring a child up from a child that failed at something.
         self._answered = False
         self.device: Optional[str] = None
@@ -421,10 +433,16 @@ class WhisperWorker:
         which the caller answers by loading in process, not by trying the same
         thing again on another device.
 
-        The loop only ever exits zero once it is running, so a positive exitcode
-        with nothing said is a child that never got that far. A signal death
-        (the box under memory pressure, a driver fault) and any child that did
-        answer keep their own error.
+        The child says "ready" before it touches a command, so a positive
+        exitcode with nothing said at all is a child that never got that far.
+        The handshake is what makes this safe on Windows, where there are no
+        signals and a native fault surfaces as a positive status
+        (STATUS_ACCESS_VIOLATION reads as 3221225477) rather than the negative
+        exitcode POSIX reports one with: a crash inside the model load would
+        otherwise read as a host that cannot spawn, and be answered by running
+        that same load in the backend. A signal death (the box under memory
+        pressure, a driver fault) and any child that did answer keep their own
+        error.
         """
         if self._answered or not isinstance(exc, SttWorkerError):
             return False
