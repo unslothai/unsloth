@@ -73,9 +73,7 @@ def spawned(monkeypatch):
     replaced; ``raising = False`` is what lets the Windows branch be exercised
     from Linux at all.
     """
-    calls = types.SimpleNamespace(
-        run = [], popen = [], startfile = [], popen_error = None
-    )
+    calls = types.SimpleNamespace(run = [], popen = [], startfile = [], popen_error = None)
 
     def fake_run(cmd, **kwargs):
         calls.run.append(list(cmd))
@@ -306,9 +304,7 @@ def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
     assert spawned.popen == [], "the sandbox root must never be opened"
 
 
-def test_a_missing_launcher_is_reported_as_a_missing_launcher(
-    native_linux, spawned, tmp_path
-):
+def test_a_missing_launcher_is_reported_as_a_missing_launcher(native_linux, spawned, tmp_path):
     """``xdg-open`` is absent on a headless or minimal host, and ``Popen``
     raises ``FileNotFoundError`` for the LAUNCHER exactly as it does for a
     missing target.

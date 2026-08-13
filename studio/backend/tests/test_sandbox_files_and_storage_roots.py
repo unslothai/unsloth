@@ -4922,9 +4922,7 @@ def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, 
     monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: None)
 
     asyncio.new_event_loop().run_until_complete(
-        inference.reveal_sandbox_dir(
-            "_", request = None, token = None, session = "thread/with/slashes"
-        )
+        inference.reveal_sandbox_dir("_", request = None, token = None, session = "thread/with/slashes")
     )
     assert asked == ["thread/with/slashes"], "the placeholder segment was resolved instead"
 
@@ -4983,14 +4981,14 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
     ):
         with pytest.raises(HTTPException) as caught:
             asyncio.new_event_loop().run_until_complete(
-                inference.reveal_sandbox_dir(
-                    "_", request = None, token = None, session = probe
-                )
+                inference.reveal_sandbox_dir("_", request = None, token = None, session = probe)
             )
         assert caught.value.status_code == 404, probe
         resolved = inference._sandbox_dir_for(probe, create = False)
         assert not os.path.exists("/etc/.unsloth_sandbox")
-        assert Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists(), probe
+        assert (
+            Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists()
+        ), probe
     assert opened == [], "a refused id must never reach the file manager"
 
 
@@ -5002,8 +5000,13 @@ def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
     """
     from routes.inference import router
 
-    scope = {"type": "http", "method": "GET", "path": "/sandbox/thread-1/reveal",
-             "headers": [], "root_path": ""}
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/sandbox/thread-1/reveal",
+        "headers": [],
+        "root_path": "",
+    }
     matched = [r for r in router.routes if r.matches(scope)[0].name == "FULL"]
     assert [r.endpoint.__name__ for r in matched] == ["serve_sandbox_file"]
 
