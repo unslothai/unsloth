@@ -27,10 +27,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import types
 
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
+from utils import hardware
 from utils.hardware import amd
 
 
@@ -74,14 +77,76 @@ def test_the_visibility_mask_is_honoured(rocm, monkeypatch):
     assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(1, 8192, 16384)]
 
 
-def test_a_unified_memory_apu_keeps_its_host_reserve(rocm, monkeypatch):
-    """Same shared-pool treatment as the torch branch: total 0, reserve taken."""
-    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
-    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8192))
-    monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: _payload((0, 0, 65536)))
-    ((idx, free_mib, total_mib),) = LlamaCppBackend._get_gpu_memory_amd_smi()
-    assert (idx, total_mib) == (0, 0)  # shared pool reports no VRAM total
-    assert 0 < free_mib < 8192  # capped at system RAM, then reserved against
+class TestAUnifiedMemoryApuDefersToTorch:
+    """amd-smi reports only the dedicated VRAM carve-out on a unified-memory APU;
+    HIP reports the GTT pool the models actually run in. ``hardware.py::
+    _apply_unified_memory_correction`` already adopts torch's larger total over
+    amd-smi's for the System tab for exactly this reason.
+
+    The field shape: a 128 GiB Strix Halo (gfx1151) whose BIOS carves out 8 GiB of
+    "VRAM". Sizing the GGUF fit off that slice cuts context or drops the model to
+    CPU, so this branch must hand the whole host back to the torch one rather than
+    answer from a different memory scope than the branch it replaces.
+    """
+
+    @pytest.fixture
+    def strix_halo(self, rocm, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 98304)
+        )
+        # amd-smi: 1 GiB used of the 8 GiB dedicated slice.
+        monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: _payload((0, 1024, 8192)))
+
+    def test_the_amd_smi_branch_declines(self, strix_halo):
+        assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
+
+    def test_the_probe_still_reports_the_gtt_pool(self, strix_halo, monkeypatch):
+        """End to end: _get_gpu_memory must return the torch branch's figure, not
+        the carve-out. 100 GiB free GTT, capped at 96 GiB system RAM, less the
+        1 GiB host reserve, and total 0 because that "total" is system RAM."""
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary: False)
+        )
+
+        def _no_nvidia_smi(*args, **kwargs):
+            raise FileNotFoundError("nvidia-smi")
+
+        monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
+        torch_mod = types.ModuleType("torch")
+        torch_mod.cuda = types.SimpleNamespace(
+            is_available = lambda: True,
+            device_count = lambda: 1,
+            mem_get_info = lambda *a: (100 * 1024**3, 128 * 1024**3),
+        )
+        monkeypatch.setitem(sys.modules, "torch", torch_mod)
+        monkeypatch.setattr(
+            hardware, "trusted_mem_get_info", lambda *a, **k: (100 * 1024**3, 128 * 1024**3)
+        )
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 98304 - 1024, 0)]
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        lambda rows: rows,  # a bare JSON array
+        lambda rows: {"gpu_data": rows},  # newer versions
+        lambda rows: {"gpus": rows},
+        lambda rows: {"gpu": rows},
+        lambda rows: rows[0],  # the single-GPU dict get_primary_gpu_utilization takes
+    ],
+)
+def test_every_amd_smi_envelope_shape_is_read(rocm, monkeypatch, envelope):
+    """The single-GPU dict carries its own numeric "gpu" id, so reading that key as
+    the device list yields the id itself and enumerating an int raises TypeError.
+    ``_get_gpu_memory_amd_smi`` swallows that and falls back to
+    ``torch.cuda.mem_get_info``, recreating the very HIP context this branch exists
+    to avoid."""
+    monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: envelope(_payload((0, 4096, 24576))))
+    assert amd.get_gpu_vram_mib() == {0: (20480, 24576)}
+    assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
 
 @pytest.mark.parametrize(

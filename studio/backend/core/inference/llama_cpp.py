@@ -6045,8 +6045,8 @@ class LlamaCppBackend:
     ) -> list[tuple[int, int, int]]:
         """ROCm free/total VRAM per PHYSICAL gpu id via amd-smi, else ``[]``.
 
-        Same index space, shared-pool treatment and arch gate as the torch branch of
-        ``_get_gpu_memory``, read from a child process instead. Reading VRAM through
+        Same index space and arch gate as the torch branch of ``_get_gpu_memory``,
+        read from a child process instead. Reading VRAM through
         ``torch.cuda.mem_get_info`` creates a HIP primary context that the backend
         never gives back (~700 MiB measured), and the GGUF models this sizes run in a
         llama-server CHILD, so that VRAM is lost for the life of the process to
@@ -6056,6 +6056,8 @@ class LlamaCppBackend:
         through to torch exactly as before. A gate that drops every card answers
         ``[]`` too, and torch then gates identically to the same empty list, so the
         one context this still costs is on the arm already headed for the CPU.
+        A visible unified-memory APU answers ``[]`` as well: amd-smi sees only its
+        dedicated VRAM carve-out, not the GTT pool the torch branch measures.
         """
         try:
             import torch
@@ -6076,27 +6078,29 @@ class LlamaCppBackend:
             if not vram:
                 return []
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            if unified_ids:
+                # amd-smi reports only the dedicated VRAM carve-out on a
+                # unified-memory APU, while HIP reports the far larger GTT pool the
+                # models actually run in: on a 128GiB Strix Halo with an 8GiB BIOS
+                # carve-out amd-smi says 8GiB and torch says ~100GiB. Handing the
+                # GGUF fitter the slice would cut context or push the model to CPU.
+                # utils/hardware/hardware.py::_apply_unified_memory_correction
+                # adopts torch's total over amd-smi's for the System tab for the
+                # same reason. Defer the WHOLE host rather than mix two memory
+                # scopes: dropping only the APU would remove it from placement, and
+                # the two branches of _get_gpu_memory must not disagree.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: unified-memory APU(s) "
+                    f"{sorted(unified_ids)} report only their dedicated VRAM slice"
+                )
+                return []
             arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
             gpus: list[tuple[int, int, int]] = []
             for idx in sorted(vram):
                 if not arch_keeps(idx):
                     continue
-                raw_mib, total_mib = vram[idx]
-                shared = idx in unified_ids
-                if shared:
-                    # As in the torch branch: system RAM is the real ceiling on a
-                    # shared pool, so cap before taking the host reserve.
-                    avail = LlamaCppBackend._available_system_memory_mib()
-                    if avail is not None:
-                        raw_mib = min(raw_mib, avail)
-                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
-                if free_mib < raw_mib:
-                    logger.info(
-                        f"ROCm device {idx} is a unified-memory APU sharing system "
-                        f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
-                        f"({raw_mib}->{free_mib}MiB usable)"
-                    )
-                gpus.append((idx, free_mib, 0 if shared else total_mib))
+                free_mib, total_mib = vram[idx]
+                gpus.append((idx, free_mib, total_mib))
             return gpus
         except Exception as e:
             logger.debug(f"amd-smi GPU probe failed: {e}")

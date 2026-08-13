@@ -369,11 +369,22 @@ def _gpu_entries(data: Any) -> list[tuple[int, dict]]:
     A JSON array, a dict under "gpu_data"/"gpus"/"gpu", or a guarded
     scalar/string fallback. The id is amd-smi's own, falling back to the
     enumeration index when it is missing or unparseable.
+
+    An envelope key only counts when its value is really a list. A single-GPU
+    response is a bare dict carrying its own numeric ``"gpu"`` id (the shape
+    ``get_primary_gpu_utilization`` also handles); reading that key as the
+    envelope yields the id itself, and enumerating an int raises TypeError
+    instead of falling back to treating the dict as the one entry.
     """
-    if isinstance(data, list):
+    if isinstance(data, dict):
+        gpu_list: Any = [data]
+        for _key in ("gpu_data", "gpus", "gpu"):
+            _value = data.get(_key)
+            if isinstance(_value, list):
+                gpu_list = _value
+                break
+    elif isinstance(data, list):
         gpu_list = data
-    elif isinstance(data, dict):
-        gpu_list = data.get("gpu_data", data.get("gpus", data.get("gpu", [data])))
     else:
         gpu_list = [data]
 
