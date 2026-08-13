@@ -1419,7 +1419,10 @@ def canonical_hostname(raw: str) -> str:
     except ValueError:
         raise invalid from None
     labels = []
-    for label in host.strip(".").split("."):
+    # Only the one root dot an FQDN may end with is removed. Stripping dots
+    # generally would turn a mistyped ".example.com" into the apex domain and
+    # provision a record nobody asked for.
+    for label in (host[:-1] if host.endswith(".") else host).split("."):
         if not label:
             raise invalid
         try:
@@ -1786,8 +1789,12 @@ def _run_login(
                 reader.join(timeout = 2.0)
             with suppress(Exception):
                 proc.stdout.close()
-            record.pop("login_pid", None)
-            record.pop("login_token", None)
+            if proc.poll() is not None:
+                # A child that outlived termination is still able to write the
+                # certificate, and these two fields are the only thing that can
+                # name it afterwards.
+                record.pop("login_pid", None)
+                record.pop("login_token", None)
             _write(_RECORD, record)
 
     text = "".join(seen)

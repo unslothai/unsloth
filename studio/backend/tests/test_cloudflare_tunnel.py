@@ -1917,6 +1917,10 @@ def test_a_record_created_outside_the_requested_zone_is_refused(cf):
         "st#p.example.com",
         "example",
         "",
+        # A leading dot shortens the name to the apex domain the user only meant
+        # to put a subdomain under.
+        ".example.com",
+        "example.com..",
         # The stdlib IDNA codec maps this to "fass.de", a separate registration,
         # rather than encoding it. The A-label form below is the way in.
         "studio.faß.de",
@@ -2158,6 +2162,32 @@ def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
     assert seen["login_pid"] == 999_000 and seen["login_token"]
     assert seen["login_token"] == cf.spawned_with
     assert ct._read(ct._RECORD) is None
+
+
+def test_a_login_that_ignores_termination_stays_named_in_the_record(cf, monkeypatch):
+    # Terminating is best effort, so cancelling a login that ignores it must not
+    # clear the pid and token: that is the same unowned certificate again, only
+    # reached before cleanup rather than during it.
+    class Unkillable(FakeLogin):
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout = None):
+            return None
+
+    cf.login = lambda: Unkillable(None)
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: True)
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(ct.os, "kill", lambda *_a: None)
+
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision(cancelled = lambda: True)
+    assert excinfo.value.code == "cancelled"
+    record = ct._read(ct._RECORD)
+    assert (record["login_pid"], record["login_token"]) == (999_000, cf.spawned_with)
 
 
 def test_a_login_child_that_will_not_die_keeps_the_record_that_names_it(cf, monkeypatch):
