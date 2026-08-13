@@ -388,9 +388,48 @@ def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
 @pytest.mark.parametrize(
     "env",
     [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": " cpu "},
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "\tCPU\n"},
+        {"UNSLOTH_TORCH_INDEX_URL": " https://download.pytorch.org/whl/cpu "},
+        {"UNSLOTH_TORCH_INDEX_URL": " https://mirror.internal/whl/cpu?token=abc "},
+    ],
+)
+def test_a_padded_cpu_pin_is_still_a_request_not_a_fault(block, tmp_path, env):
+    """get_torch_index_url (install.sh:3272) and Trim-IndexPathSlashes (setup.ps1:863) both trim
+    before resolving, so a padded " cpu " really does install the CPU wheel. Leaving the spaces
+    only in this copy would accuse the host on every later `studio update`, where
+    UNSLOTH_TORCH_BACKEND is unset -- the false alarm this whole check exists to avoid."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "   "},
+        {"UNSLOTH_TORCH_INDEX_URL": "\t\n"},
+    ],
+)
+def test_a_whitespace_only_pin_is_not_a_gpu_pin(block, tmp_path, env):
+    """A whitespace-only override is unset to install.sh (install.sh:3952) and to
+    Get-PinnedTorchIndexUrl's IsNullOrWhiteSpace. Untrimmed it leaves a non-empty leaf, and a
+    non-empty leaf is read as a GPU pin below, which overrides the arch gate and accuses an
+    unwheeled arch that is behaving exactly as designed."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1010", env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
         {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.4"},
         {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128"},
         {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.internal/whl/cpu-private"},
+        {"UNSLOTH_TORCH_INDEX_FAMILY": " cu128 "},
     ],
 )
 def test_a_gpu_pin_is_still_reconciled(block, tmp_path, env):

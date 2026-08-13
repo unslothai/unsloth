@@ -1919,6 +1919,15 @@ _setup_torch_hip=""
 # fast-path branch and unset on a fresh install. EXACT cpu leaf only: a cu128 or rocm pin still
 # expects a GPU.
 _setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+# Trim before anything else, parity with get_torch_index_url (install.sh:3272) and
+# Trim-IndexPathSlashes (setup.ps1:863), which both trim first. The installer accepts a padded
+# " cpu " and installs the CPU wheel, so keeping the spaces here would fail the cpu exclusion and
+# accuse a host that asked for CPU torch. It also has to land: a whitespace-only value is unset to
+# install.sh, and a leaf of spaces is non-empty, which reads as a GPU pin below and overrides the
+# arch gate. Leading/trailing only -- a value with inner spaces is not a pin shape any installer
+# here accepts, and stripping those would rewrite a URL rather than normalise it.
+_setup_gpucheck_pin="${_setup_gpucheck_pin#"${_setup_gpucheck_pin%%[![:space:]]*}"}"
+_setup_gpucheck_pin="${_setup_gpucheck_pin%"${_setup_gpucheck_pin##*[![:space:]]}"}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin%%\#*}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin%%\?*}"
 while [ "${_setup_gpucheck_pin%/}" != "$_setup_gpucheck_pin" ]; do
