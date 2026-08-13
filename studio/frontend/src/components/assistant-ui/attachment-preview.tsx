@@ -17,7 +17,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import {
   type AttachmentText,
@@ -168,7 +167,9 @@ const AttachmentTextDialog: FC<
     if (state.status !== "ready" || !preview) {
       return "Reading file";
     }
-    const lines = countAttachmentTextLines(state.text);
+    // Counting the capped text, not state.text: a sent attachment keeps its
+    // full payload in memory and splitting all of it would stall the webview.
+    const lines = countAttachmentTextLines(preview.text);
     return [
       source.file ? formatBytes(source.file.size) : null,
       `${lines} ${lines === 1 ? "line" : "lines"}`,
@@ -201,11 +202,11 @@ const AttachmentTextDialog: FC<
               <Spinner className="size-5 text-muted-foreground" />
             </div>
           ) : preview?.text.trim() ? (
-            <ScrollArea className="max-h-[60dvh]">
+            <div className="overlay-scrollbar-gutter max-h-[60dvh] overflow-y-auto">
               <pre className="whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-relaxed">
                 {preview.text}
               </pre>
-            </ScrollArea>
+            </div>
           ) : (
             <div className="px-4 py-6 text-muted-foreground text-sm">
               {state.status === "error"
