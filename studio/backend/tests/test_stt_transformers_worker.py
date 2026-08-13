@@ -511,6 +511,59 @@ def test_a_cancelled_load_that_never_answers_is_killed_rather_than_waited_on(mon
     assert handle.is_alive() is False
 
 
+def test_the_cancel_grace_is_not_followed_by_a_second_shutdown_wait(monkeypatch):
+    # The grace IS the graceful shutdown: a child too busy inside from_pretrained to
+    # read the cancel event is equally too busy to read a shutdown command, so giving
+    # it another _SHUTDOWN_TIMEOUT_SECONDS would block the waiting training run for
+    # twice the documented 10 seconds.
+    monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
+
+    class _Recording(_FakeProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.joins = []
+
+        def join(self, timeout = None):
+            self.joins.append(timeout)
+
+    process = _Recording()
+    handle = _wired_worker(process)
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(SttLoadCancelledError):
+        handle._await("loaded", 30.0, cancel_event, "load")
+
+    # No graceful join, no shutdown command queued for a child that cannot read it.
+    assert worker_module._SHUTDOWN_TIMEOUT_SECONDS not in process.joins
+    assert process.terminated is True
+    assert handle.is_alive() is False
+
+
+def test_closing_a_handle_normally_still_asks_the_child_to_exit_first(monkeypatch):
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
+
+    class _Recording(_FakeProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.joins = []
+
+        def join(self, timeout = None):
+            self.joins.append(timeout)
+            self._alive = False  # an idle child consumes the shutdown and exits
+
+    process = _Recording()
+    handle = _wired_worker(process)
+    cmd_queue = handle._cmd_queue
+
+    handle.close()
+
+    assert cmd_queue.get_nowait() == {"type": "shutdown"}
+    assert process.joins[0] == worker_module._SHUTDOWN_TIMEOUT_SECONDS
+    assert process.terminated is False
+
+
 def test_closing_the_handle_ends_the_child_and_drops_its_pid(monkeypatch):
     forgotten = []
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda pid: forgotten.append(pid))

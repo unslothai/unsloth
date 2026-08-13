@@ -391,18 +391,26 @@ class WhisperWorker:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
-    def close(self) -> None:
-        """Stop the child, which is what actually returns its accelerator memory."""
+    def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> None:
+        """Stop the child, which is what actually returns its accelerator memory.
+
+        graceful_timeout is how long the child gets to consume the queued
+        shutdown and exit by itself. Zero means that wait has already been
+        spent elsewhere -- the cancel grace in _await -- so go straight to
+        terminate rather than restart the clock on a caller that is already
+        out of patience.
+        """
         process = self._process
         self._process = None
         self.cancel()  # unblock a generation before asking the loop to exit
         if process is not None:
             try:
-                if process.is_alive() and self._cmd_queue is not None:
+                if graceful_timeout > 0 and process.is_alive() and self._cmd_queue is not None:
                     self._cmd_queue.put({"type": "shutdown"})
             except (OSError, ValueError):
                 pass
-            process.join(_SHUTDOWN_TIMEOUT_SECONDS)
+            if graceful_timeout > 0:
+                process.join(graceful_timeout)
             if process.is_alive():
                 logger.warning("STT worker %s did not exit; terminating", process.pid)
                 process.terminate()
@@ -448,7 +456,10 @@ class WhisperWorker:
                 elif time.monotonic() >= cancel_deadline:
                     # A load inside from_pretrained never sees the event, and the
                     # memory is wanted now, so stop asking and end the process.
-                    self.close()
+                    # The grace WAS the graceful shutdown, and a child too busy
+                    # to read the cancel is too busy to read a shutdown command,
+                    # so terminate rather than wait _SHUTDOWN_TIMEOUT_SECONDS more.
+                    self.close(graceful_timeout = 0.0)
                     self._raise_cancelled(phase)
             try:
                 response = self._resp_queue.get(timeout = _POLL_SECONDS)

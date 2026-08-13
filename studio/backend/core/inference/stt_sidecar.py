@@ -1018,6 +1018,22 @@ def _engine_is_alive(engine) -> bool:
         return False
 
 
+def _close_engine(engine) -> None:
+    """End the worker behind an engine handle, if it has one.
+
+    Ending the worker is what returns its accelerator context; dropping the
+    handle and emptying the cache cannot. A plain object (tests, or a future
+    in-process engine) has no close and needs none.
+    """
+    close = getattr(engine, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception as exc:  # noqa: BLE001 - a stuck worker must not block the unload
+        logger.warning("Could not stop the STT worker: %s", exc)
+
+
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
@@ -1222,14 +1238,7 @@ class WhisperSttSidecar:
         self._engine = None
         self._model_id = None
         self._device = None
-        close = getattr(engine, "close", None)
-        if close is not None:
-            # Ending the worker is what returns its accelerator context;
-            # dropping the model and emptying the cache cannot.
-            try:
-                close()
-            except Exception as exc:  # noqa: BLE001 - a stuck worker must not block the unload
-                logger.warning("Could not stop the STT worker: %s", exc)
+        _close_engine(engine)
         del engine
         _clear_device_cache(device)
 
@@ -1391,6 +1400,12 @@ class WhisperSttSidecar:
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
+                # cancel_pending_load() does not wait for the model lock, so the
+                # cancel can land between start() coming back with a live child
+                # and the check that rejects it. Nothing installed the candidate,
+                # and dropping the handle does not end the process holding the
+                # context that training is waiting for, so close it here.
+                _close_engine(candidate)
                 candidate = None
                 if resident_released:
                     # _release_engine_locked already collected, and the candidate was dropped

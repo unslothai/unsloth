@@ -531,6 +531,47 @@ def test_unload_stops_the_worker_process(monkeypatch):
     assert sidecar.loaded_model is None
 
 
+def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkeypatch):
+    # cancel_pending_load() deliberately does not wait for the model lock, so it can
+    # land after start() has already come back with a live child. Nothing installed
+    # that child, and dropping the handle does not end the process holding the
+    # accelerator context the training run is waiting for, so the load must close it.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    workers = []
+
+    class LateCancelWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closed = False
+            workers.append(self)
+
+        def start(self, _snapshot_path, device, _dtype_name, _cancel_event = None):
+            # The load succeeded; the cancel arrives a moment later.
+            self.device = device
+            assert sidecar.cancel_pending_load() is True
+
+        def is_alive(self):
+            return not self.closed
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", LateCancelWorker, raising = True
+    )
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert workers[0].closed is True
+    assert sidecar.loaded_model is None
+    assert sidecar.is_loading() is False
+
+
 def test_model_cache_preflight_uses_shared_offline_resolver(monkeypatch):
     seen = []
     monkeypatch.setattr(
