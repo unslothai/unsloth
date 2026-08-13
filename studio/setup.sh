@@ -1654,10 +1654,12 @@ fi
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
     # a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
-    # resolves from the mirror while LATEST_VER came from pypi.org, so the strict
-    # check would fail a correct update -- skip it when a custom index is active
+    # resolves from the mirror while LATEST_VER came from pypi.org, so version
+    # comparisons are muted when a custom index is active. The missing-package
+    # check below still runs: a pass that leaves nothing installed is broken on
+    # any index.
     _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
-    if [ -n "${LATEST_VER:-}" ] && [ -z "$_CUSTOM_INDEX" ]; then
+    if [ -n "${LATEST_VER:-}" ]; then
         # __MISSING__ only when the metadata positively reports no such package: a
         # probe that merely crashed must not read as "not installed" and fail setup
         POST_VER=$("$VENV_DIR/bin/python" -c "
@@ -1751,6 +1753,8 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
             setup_fail 1 "update ran but $_PKG_NAME is not installed (expected $LATEST_VER)"
         elif [ -z "$POST_VER" ]; then
             step "python" "could not verify $_PKG_NAME version after update (expected $LATEST_VER)" "$C_WARN"
+        elif [ -n "$_CUSTOM_INDEX" ]; then
+            substep "$_PKG_NAME $POST_VER present (custom package index; PyPI compare skipped)"
         else
             # older-but-successful is a resolver outcome (constraints, config-file
             # mirrors, wheels for this platform), not an install failure: pypi.org's

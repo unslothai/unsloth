@@ -4779,13 +4779,15 @@ if ($stackExit -ne 0) {
 }
 
 # a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
-# resolves from the mirror while $LatestVer came from pypi.org, so the strict
-# check would fail a correct update -- skip it when a custom index is active
+# resolves from the mirror while $LatestVer came from pypi.org, so version
+# comparisons are muted when a custom index is active. The missing-package check
+# below still runs: a pass that leaves nothing installed is broken on any index.
 $_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
-if ($LatestVer -and -not $_customIndex) {
+if ($LatestVer) {
     # __MISSING__ only when the metadata positively reports no such package: a probe
-    # that merely crashed must not read as "not installed" and fail setup
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; _v = next((d.version for d in m.distributions() if (d.metadata['Name'] or '').lower() == '$_PkgName'.lower()), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
+    # that merely crashed must not read as "not installed" and fail setup. Names are
+    # PEP 503-normalized on both sides, matching importlib.metadata's own lookup.
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = ($PostVer -eq $LatestVer)
     if (-not $_updateOk -and $PostVer -and $PostVer -ne "__MISSING__") {
@@ -4887,6 +4889,8 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
         Exit-SetupFailure "update ran but $_PkgName is not installed (expected $LatestVer)"
     } elseif (-not $PostVer) {
         substep "[WARN] could not verify $_PkgName version after update (expected $LatestVer)" "Yellow"
+    } elseif ($_customIndex) {
+        substep "$_PkgName $PostVer present (custom package index; PyPI compare skipped)"
     } else {
         # older-but-successful is a resolver outcome (constraints, config-file
         # mirrors, wheels for this platform), not an install failure: pypi.org's
