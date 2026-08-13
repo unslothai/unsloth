@@ -1002,3 +1002,48 @@ def test_a_call_over_budget_is_replayed_with_its_result(executed):
         message["tool_call_id"] for message in replayed if message.get("role") == "tool"
     }
     assert answered == {"call_1", "call_2"}
+
+
+def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(executed):
+    """The loop relays the provider's own tool_calls delta, so the client paints
+    a card for every call it announces. A repeat is answered with a nudge and
+    never executed, which left that card running for the rest of the answer and
+    then reading as a tool that returned nothing.
+
+    The terminal event has to carry the id the provider streamed: a repeated
+    call is exactly the one the loop renames to keep the replayed history
+    unambiguous, and a card is never keyed on the renamed id.
+    """
+    repeat = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "function": {"name": "web_search", "arguments": '{"query":"a"}'},
+                    }
+                ]
+            }
+        ),
+        _sse(finish = "tool_calls"),
+        _DONE,
+    ]
+    transport = FakeTransport(
+        [
+            list(repeat),
+            list(repeat),
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert len(executed) == 1
+    ends = _events(lines, "tool_end")
+    assert len(ends) == 2
+    assert [end["tool_call_id"] for end in ends] == ["call_a", "call_a"]
+    assert ends[1]["result"].startswith("Studio did not run this call")
+    # Skipping is not executing: the card is closed without a second start.
+    assert len(_events(lines, "tool_start")) == 1
+    assert _visible_text(lines) == "done"

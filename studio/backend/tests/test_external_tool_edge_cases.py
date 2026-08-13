@@ -1089,10 +1089,17 @@ def test_disallowed_call_still_gets_a_tool_result_message(executed):
     )
     lines = _run(transport, tools = [WEB])
 
-    # Every announced call is closed out, on the wire and in the replay. A loop
-    # that declines to announce a disabled call at all is fine; announcing one
-    # and never closing it is not.
-    assert len(_events(lines, "tool_end")) == len(_events(lines, "tool_start"))
+    # Every announced call is closed out, on the wire and in the replay. The
+    # announcement is the provider's own tool_calls delta, which this loop
+    # relays, so a disabled call is closed by a terminal event of its own and
+    # not by a start it never had.
+    ends = _events(lines, "tool_end")
+    starts = _events(lines, "tool_start")
+    assert len(ends) >= len(starts)
+    assert {event["tool_call_id"] for event in starts} <= {
+        event["tool_call_id"] for event in ends
+    }
+    assert [event["tool_call_id"] for event in ends] == ["c1"]
     replays = [
         request["messages"]
         for request in transport.requests

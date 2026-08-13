@@ -68,6 +68,16 @@ _TOOL_BUDGET_EXHAUSTED = (
 
 _TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
 
+# Card text for a call the controller decides not to run. The client has already
+# painted a card from the provider's own tool_calls delta by the time that is
+# known, so it needs a short result of its own; the long model-facing nudge stays
+# in the conversation.
+_TOOL_SKIPPED = {
+    "duplicate": "Studio did not run this call because an identical one had already completed.",
+    "disabled": _TOOL_DISABLED,
+    "render_html_repeat": "Studio did not run this call because render_html already ran.",
+}
+
 # Verbatim from the local loops: the last pass answers instead of asking for more.
 _BUDGET_EXHAUSTED_NUDGE = (
     "You have used all available tool calls. Based on everything you have found "
@@ -308,6 +318,11 @@ class _Turn:
             if normalized is None:
                 continue
             if normalized["id"] in seen:
+                # The client keyed the card it painted on the id the provider
+                # streamed, so keep that one for the events aimed at the card.
+                # Never replayed upstream: the conversation carries the
+                # de-duplicated id, which is the whole point of the rename.
+                normalized["stream_id"] = normalized["id"]
                 normalized["id"] = f"{normalized['id']}_{self.round}_{position}"
             seen.add(normalized["id"])
             out.append(normalized)
@@ -662,7 +677,9 @@ async def stream_with_studio_tools(
                     {
                         "type": "tool_end",
                         "tool_name": call["function"]["name"],
-                        "tool_call_id": call["id"],
+                        # The card, so the streamed id; the replay below keeps
+                        # the de-duplicated one.
+                        "tool_call_id": call.get("stream_id") or call["id"],
                         "result": _TOOL_BUDGET_EXHAUSTED,
                         "provenance": {"source": "local", "round_id": round_id},
                     }
@@ -699,6 +716,24 @@ async def stream_with_studio_tools(
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
                 noop_messages.append(completion.model_message())
+                # The provider's own tool_calls delta for this call was relayed
+                # verbatim while it streamed and the client paints a card from
+                # it. Nothing else closes that card, so without a terminal event
+                # it spins for the rest of the answer and then settles as a tool
+                # that ran and returned nothing. Keyed on the id the provider
+                # streamed, since a repeated call is exactly the one renamed
+                # above for the replay.
+                yield _sse(
+                    {
+                        "type": "tool_end",
+                        "tool_name": decision.tool_name,
+                        "tool_call_id": call.get("stream_id") or decision.tool_call_id,
+                        "result": _TOOL_SKIPPED.get(
+                            decision.action, "Studio did not run this call."
+                        ),
+                        "provenance": decision.provenance,
+                    }
+                )
                 continue
             assistant_call = decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
