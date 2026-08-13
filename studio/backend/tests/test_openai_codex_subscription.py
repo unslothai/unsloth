@@ -1186,3 +1186,10 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
     # are no longer the tail of the conversation.
     assert replayed[-1]["role"] == "user"
     assert "provide your final answer now" in replayed[-1]["content"]
+    # An unexecuted overflow call still has to appear in the assistant message:
+    # a role=tool result whose id has no matching tool_call is rejected by
+    # strict OpenAI-compatible servers and over-counts responses on Gemini.
+    assistant = [message for message in replayed if message["role"] == "assistant"][-1]
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
+    answered = {message["tool_call_id"] for message in replayed if message["role"] == "tool"}
+    assert answered == {call["id"] for call in assistant["tool_calls"]}

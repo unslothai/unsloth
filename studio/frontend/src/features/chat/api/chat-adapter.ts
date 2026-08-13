@@ -5045,6 +5045,13 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                      // Hosted-only: the Studio catalog has no image tool, so
+                      // this is not the double-up the branch below guards
+                      // against. Omitting it made the Images pill a no-op on
+                      // any turn that also enabled a Studio tool.
+                      ...(imageGenerationEnabledForThisTurn
+                        ? ["image_generation"]
+                        : []),
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,

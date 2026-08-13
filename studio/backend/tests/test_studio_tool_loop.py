@@ -913,3 +913,92 @@ def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
     assert call["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
     assert call["function"]["name"] == "web_search"
     assert json.loads(call["function"]["arguments"]) == {"query": "u"}
+
+
+def test_the_unlimited_sentinel_is_not_capped_at_a_fixed_turn_count(executed):
+    """9999 documents "no limit"; a fixed 25-turn headroom silently truncated it.
+
+    A long agentic run that keeps executing distinct calls used to stop at ~35
+    provider turns with no final answer. A run that executes nothing is still
+    stopped by the fruitless-turn bound.
+    """
+    turns = 50
+    script = []
+    for index in range(1, turns + 1):
+        script.append(
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": f"call_{index}",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": json.dumps({"query": f"q{index}"}),
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish="tool_calls"),
+                _DONE,
+            ]
+        )
+    script.append([_sse({"content": "final"}), _sse(finish="stop"), _DONE])
+    transport = FakeTransport(script, heals=False)
+
+    lines = _run(transport, max_calls=9999)
+
+    assert len(executed) == turns
+    assert "final" in _visible_text(lines)
+
+
+def test_a_call_over_budget_is_replayed_with_its_result(executed):
+    """A role=tool result needs a matching tool_call in the assistant message.
+
+    Without the pairing a strict OpenAI-compatible server rejects the follow-up
+    history outright, so the run never reaches its final answer.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"a"}',
+                                },
+                            },
+                            {
+                                "index": 1,
+                                "id": "call_2",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"b"}',
+                                },
+                            },
+                        ]
+                    }
+                ),
+                _sse(finish="tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
+        ],
+        heals=False,
+    )
+    _run(transport, max_calls=1)
+
+    assert len(executed) == 1
+    replayed = transport.requests[1]["messages"]
+    assistant = [message for message in replayed if message.get("role") == "assistant"][-1]
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
+    answered = {
+        message["tool_call_id"] for message in replayed if message.get("role") == "tool"
+    }
+    assert answered == {"call_1", "call_2"}

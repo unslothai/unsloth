@@ -13,12 +13,24 @@ endpoints and the hosted APIs alike.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import threading
 
 from collections.abc import AsyncIterator
 from typing import Any
 
 from core.inference.external_provider import ExternalProviderClient
+
+
+# /inference/cancel and the model-load path only set a threading.Event, so an
+# asyncio consumer has to poll it. Same interval as _await_cancel_then_close.
+_CANCEL_POLL_S = 0.05
+
+
+async def _await_cancel(cancel_event: threading.Event) -> None:
+    while not cancel_event.is_set():
+        await asyncio.sleep(_CANCEL_POLL_S)
 
 
 class OAICompatTransport:
@@ -64,14 +76,58 @@ class OAICompatTransport:
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
-        # stream_chat_completion has no cancel_event parameter: cancellation is
-        # driven by the route closing this generator, which propagates as
-        # GeneratorExit through the httpx stream context.
-        return self._client.stream_chat_completion(
-            messages = messages,
-            model = self._model,
-            tools = tools,
-            tool_choice = tool_choice,
-            continue_final_message = continue_final_message,
-            **self._request_kwargs,
+        return self._cancellable(
+            self._client.stream_chat_completion(
+                messages = messages,
+                model = self._model,
+                tools = tools,
+                tool_choice = tool_choice,
+                continue_final_message = continue_final_message,
+                **self._request_kwargs,
+            ),
+            cancel_event,
         )
+
+    @staticmethod
+    async def _cancellable(
+        upstream: AsyncIterator[str], cancel_event: threading.Event
+    ) -> AsyncIterator[str]:
+        """Relay ``upstream``, ending as soon as ``cancel_event`` is set.
+
+        ``stream_chat_completion`` takes no cancel_event, and /inference/cancel
+        and the model-load path only set the flag: nothing else can reach the
+        provider socket. Without this race the read stays parked until the
+        provider emits again, so Stop keeps consuming billed tokens and a model
+        load waits behind a stalled upstream. Cancelling the pending read raises
+        inside the upstream generator at its own await, which runs the ``finally``
+        that closes the httpx response; calling aclose() here instead would hit
+        "generator already executing".
+        """
+        iterator = upstream.__aiter__()
+        watcher = asyncio.ensure_future(_await_cancel(cancel_event))
+        try:
+            while not cancel_event.is_set():
+                read = asyncio.ensure_future(iterator.__anext__())
+                try:
+                    await asyncio.wait({read, watcher}, return_when = asyncio.FIRST_COMPLETED)
+                except BaseException:
+                    read.cancel()
+                    raise
+                if not read.done():
+                    read.cancel()
+                    with contextlib.suppress(BaseException):
+                        await read
+                    return
+                try:
+                    line = read.result()
+                except StopAsyncIteration:
+                    return
+                yield line
+        finally:
+            watcher.cancel()
+            # The pre-existing teardown: the route or the loop closing this
+            # generator still reaches the provider stream through here.
+            aclose = getattr(upstream, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):
+                    await aclose()

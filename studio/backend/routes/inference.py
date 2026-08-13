@@ -2271,6 +2271,22 @@ def _request_has_api_key(request: Any) -> bool:
     return _request_api_key_token(request) is not None
 
 
+# Provider-hosted builtins the Studio loop has no local equivalent for.
+# web_search / web_fetch / code_execution each map onto a local tool, so
+# forwarding those would bill the same work twice; image generation does not,
+# and withholding it disabled the Images toggle on every turn that also
+# enabled a Studio tool.
+_HOSTED_ONLY_EXTERNAL_TOOLS = ("image_generation",)
+
+
+def _hosted_only_enabled_tools(enabled_tools: Any) -> Optional[list[str]]:
+    """Keep only the hosted tools the Studio loop does not replace."""
+    if not isinstance(enabled_tools, list) or not enabled_tools:
+        return None
+    kept = [name for name in _HOSTED_ONLY_EXTERNAL_TOOLS if name in enabled_tools]
+    return kept or None
+
+
 def _request_is_internal_workflow(request: Any) -> bool:
     """True only for Studio's own workflow keys (Deep Research, data recipes).
 
@@ -11809,14 +11825,16 @@ async def _proxy_to_external_provider(
             # The Studio loop owns the tool surface for this turn. The caller's
             # own catalog is dropped for the same reason the Codex path drops it
             # (the model would return calls this server is not authorized to
-            # run), and enabled_tools is withheld so the provider's hosted
-            # builtins do not double up on the local web_search.
+            # run), and the hosted builtins that duplicate a local tool are
+            # withheld so they do not double up on the local web_search. The
+            # ones with no local equivalent still have to reach the provider:
+            # dropping image_generation left its toggle lit with no effect.
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
-                    enabled_tools = None,
+                    enabled_tools = _hosted_only_enabled_tools(payload.enabled_tools),
                     stream = True,
                     **_provider_kwargs,
                 ),

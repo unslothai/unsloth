@@ -81,3 +81,27 @@ def test_a_failing_storage_probe_withholds_saved_credentials(monkeypatch):
 
     monkeypatch.setattr(route_mod.auth_storage, "is_internal_api_key", _boom)
     assert _request_is_internal_workflow(_Request(f"Bearer {API_KEY_PREFIX}x")) is False
+
+
+@pytest.mark.parametrize(
+    "enabled_tools, expected",
+    [
+        (["web_search", "python", "image_generation"], ["image_generation"]),
+        (["web_search", "python"], None),
+        (["image_generation"], ["image_generation"]),
+        # The loop runs the local web and code tools; forwarding the hosted ones
+        # would bill a second provider-side search for the same turn.
+        (["web_search", "web_fetch", "code_execution"], None),
+        ([], None),
+        (None, None),
+    ],
+)
+def test_only_hosted_tools_without_a_local_equivalent_reach_the_provider(enabled_tools, expected):
+    """Images plus any Studio tool must keep the hosted image tool.
+
+    The frontend sends one enabled_tools list for both surfaces, so withholding
+    all of it left the Images toggle lit with nothing behind it.
+    """
+    from routes.inference import _hosted_only_enabled_tools
+
+    assert _hosted_only_enabled_tools(enabled_tools) == expected

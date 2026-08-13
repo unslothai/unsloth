@@ -498,7 +498,11 @@ async def stream_with_studio_tools(
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
     # nudge and final-answer passes that legitimately execute nothing.
-    max_provider_turns = (25 if unlimited else max(1, remaining)) + 2 * MAX_ACT_REPROMPTS + 4
+    # The unlimited sentinel keeps the local loops' bound rather than a fixed 25:
+    # a long agentic run that kept executing distinct calls was being cut off
+    # mid-session with no final answer. A run that executes nothing is still
+    # stopped by _MAX_FRUITLESS_TURNS, so this never trades turns forever.
+    max_provider_turns = max(1, min(remaining, 9999)) + 2 * MAX_ACT_REPROMPTS + 4
 
     while not cancel_event.is_set():
         if provider_turns >= max_provider_turns:
@@ -663,6 +667,21 @@ async def stream_with_studio_tools(
                         "provenance": {"source": "local", "round_id": round_id},
                     }
                 )
+                # The result has to answer a tool_call in the assistant message
+                # replayed upstream. Leaving the call out put a role="tool"
+                # message with no matching id in the history: a strict
+                # OpenAI-compatible server rejects that outright, and Gemini
+                # counts it as one functionResponse more than functionCalls, so
+                # the follow-up turn never returns the final answer.
+                exhausted_call: dict[str, Any] = {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": dict(call["function"]),
+                }
+                exhausted_extra = call.get("extra_content")
+                if isinstance(exhausted_extra, dict) and exhausted_extra:
+                    exhausted_call["extra_content"] = exhausted_extra
+                assistant_tool_calls.append(exhausted_call)
                 tool_messages.append(
                     {
                         "role": "tool",
