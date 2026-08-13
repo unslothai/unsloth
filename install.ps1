@@ -113,6 +113,11 @@ function Install-UnslothStudio {
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
+    # Same reason, and this one caches a decision about the machine: a policy added or
+    # removed between two runs in one console, or a replaced launcher under a hash rule,
+    # would otherwise be answered from the first run's probe.
+    $script:ShimLaunchBlockedCache = $null
+    $script:ShimLaunchBlockedPath = $null
 
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
@@ -1115,7 +1120,7 @@ public static class UnslothStudioFinalPathV2
     # Written into every generated bin\unsloth.cmd and required by every ownership
     # check that accepts one. Mirrored in scripts/uninstall.ps1 and studio/setup.ps1.
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
-    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 
     # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
     # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
@@ -1354,14 +1359,31 @@ public static class UnslothStudioFinalPathV2
                 substep "cannot write $shimCmd, a directory is in the way" "Yellow"
                 return
             }
+            # A run killed between the write and the rename leaves its temp file behind,
+            # and the next run has a different PID and would never look at it. Swept
+            # before the unchanged-content return below, which is the path an interrupted
+            # install takes on its way out. Only this file's own temps, only ones no
+            # live process is still writing.
+            Get-ChildItem -LiteralPath $ShimDir -Filter "unsloth.cmd.*.tmp" -File `
+                -ErrorAction SilentlyContinue | ForEach-Object {
+                $ownerPid = 0
+                if ([int]::TryParse(($_.Name -replace '^unsloth\.cmd\.', '' -replace '\.tmp$', ''),
+                                    [ref]$ownerPid) -and $ownerPid -eq $PID) { return }
+                if ($ownerPid -gt 0 -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { return }
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
             $content = Get-UnslothCmdShimContent -ShimDir $ShimDir -PythonPath $PythonPath
+            $desired = (New-Object System.Text.UTF8Encoding($false)).GetBytes($content)
+            # Bytes, not ReadAllText: that strips a BOM before comparing and PowerShell's
+            # -eq is case insensitive, so a BOM-prefixed file (which cmd.exe reads as part
+            # of the first command) would be declared unchanged and left broken forever.
             if (Test-Path -LiteralPath $shimCmd -PathType Leaf) {
-                $existing = [System.IO.File]::ReadAllText($shimCmd)
-                if ($existing -eq $content) { return }
+                $existing = [System.IO.File]::ReadAllBytes($shimCmd)
+                if (@(Compare-Object $existing $desired -SyncWindow 0).Count -eq 0) { return }
             }
             # Publish by rename so a shell reading it mid-install never sees half a file.
             $tmp = "$shimCmd.$PID.tmp"
-            [System.IO.File]::WriteAllText($tmp, $content, (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::WriteAllBytes($tmp, $desired)
             try {
                 Move-Item -LiteralPath $tmp -Destination $shimCmd -Force -ErrorAction Stop
             } finally {
@@ -1727,18 +1749,23 @@ exit 0
             # and rewriting identical bytes moves its timestamp for no reason. A re-run
             # has to be a true no-op on disk.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+            # Bytes including the BOM, not ReadAllText: that decodes and discards the
+            # preamble, so a BOM-less launcher written by an older installer would be
+            # called unchanged and never gain the BOM 5.1 needs to decode it.
+            $desiredLauncher = $utf8Bom.GetPreamble() + $utf8Bom.GetBytes($launcherContent)
             $launcherUnchanged = $false
             if (Test-Path -LiteralPath $launcherPs1 -PathType Leaf) {
                 try {
+                    $existingLauncher = [System.IO.File]::ReadAllBytes($launcherPs1)
                     $launcherUnchanged =
-                        ([System.IO.File]::ReadAllText($launcherPs1) -eq $launcherContent)
+                        (@(Compare-Object $existingLauncher $desiredLauncher -SyncWindow 0).Count -eq 0)
                 } catch {
                     # Unreadable is not "unchanged"; fall through and rewrite it.
                     $launcherUnchanged = $false
                 }
             }
             if (-not $launcherUnchanged) {
-                [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+                [System.IO.File]::WriteAllBytes($launcherPs1, $desiredLauncher)
             }
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
@@ -1950,7 +1977,18 @@ exit 0
         # this an install predating the .cmd never gets one -- and that population is
         # exactly the one that needs the escape hatch.
         # No-op when the bytes already match, and never fatal.
+        # Created, not required: installers older than the shim directory never made
+        # one, and those are precisely the installs that reach this branch through
+        # `unsloth studio update` and never see the full installer again. Requiring
+        # it here left them without the escape hatch forever. Directory creation is
+        # idempotent, and a failure to create it must not fail an update, so the
+        # write stays inside the same non-fatal helper.
         $ShortcutShimDir = Join-Path $StudioHome "bin"
+        try {
+            [System.IO.Directory]::CreateDirectory($ShortcutShimDir) | Out-Null
+        } catch {
+            substep "could not create $ShortcutShimDir`: $($_.Exception.Message)" "Yellow"
+        }
         if (Test-Path -LiteralPath $ShortcutShimDir -PathType Container) {
             Write-UnslothCmdShim -ShimDir $ShortcutShimDir -PythonPath $ShortcutPython
         }

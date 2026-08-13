@@ -639,7 +639,7 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
         "-X",
         "utf8",
         "-c",
-        "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
+        "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()",
         "--version",
     ]
@@ -798,3 +798,55 @@ def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studi
     # POSIX proves a CLI with the console script itself; nothing changes there.
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     assert not studio._managed_cli_package_present(python)
+
+
+def test_a_candidate_that_vanishes_mid_copy_does_not_stop_the_next_one(
+    monkeypatch, studio, tmp_path
+):
+    """The header check and the copy open the file separately.
+
+    Antivirus taking the first candidate in that gap says nothing about the rest,
+    and giving up there turned a recoverable install into a failed update.
+    """
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    backup = scripts / "unsloth.exe.update-backup"
+    legacy = scripts / "unsloth.exe.deleteme"
+    backup.write_bytes(b"MZ-backup")
+    legacy.write_bytes(ORIGINAL_LAUNCHER)
+
+    real_copy = studio._WindowsLauncherUpdateTransaction._atomic_copy
+
+    def flaky_copy(source, destination):
+        if source == backup:
+            raise OSError(5, "Access is denied")
+        return real_copy(source, destination)
+
+    monkeypatch.setattr(
+        studio._WindowsLauncherUpdateTransaction, "_atomic_copy", staticmethod(flaky_copy)
+    )
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER, "the second candidate was never tried"
+
+
+def test_every_candidate_failing_is_still_an_error(monkeypatch, studio, tmp_path, capsys):
+    """Parity guard: trying them all must not become swallowing them all."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    (scripts / "unsloth.exe.update-backup").write_bytes(b"MZ-backup")
+
+    def always_fails(source, destination):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(
+        studio._WindowsLauncherUpdateTransaction, "_atomic_copy", staticmethod(always_fails)
+    )
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    assert "could not recover" in capsys.readouterr().err

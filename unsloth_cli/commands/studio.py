@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Sequence
+from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate
@@ -179,7 +179,7 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
 # $script:UnslothCliTrampoline in install.ps1, which carries the full rationale for
 # both halves and for the deliberate absence of -I.
 _WINDOWS_CLI_ENTRYPOINT = (
-    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 )
 
@@ -3938,18 +3938,27 @@ class _WindowsLauncherUpdateTransaction:
         # unusable, and the backup beside it can repair either.
         if self._is_valid_pe(self.launcher):
             return
+        last_error: Optional[Tuple[Path, OSError]] = None
         for recovery in (self.backup, self.stale, self.legacy_backup, self.shim):
             if recovery is not None and self._is_valid_pe(recovery):
                 try:
                     self._atomic_copy(recovery, self.launcher)
                 except OSError as exc:
-                    typer.echo(
-                        f"Error: could not recover {self.launcher} from {recovery}: {exc}",
-                        err = True,
-                    )
-                    typer.echo(f"Manual recovery copy retained at: {recovery}", err = True)
-                    raise typer.Exit(1)
+                    # Try the next copy. The header check and the copy open the file
+                    # separately, so antivirus taking a candidate in between is a race
+                    # this loop can lose without the others being unusable, and giving
+                    # up on the first one turned a recoverable install into a failure.
+                    last_error = (recovery, exc)
+                    continue
                 return
+        if last_error is not None:
+            recovery, exc = last_error
+            typer.echo(
+                f"Error: could not recover {self.launcher} from {recovery}: {exc}",
+                err = True,
+            )
+            typer.echo(f"Manual recovery copy retained at: {recovery}", err = True)
+            raise typer.Exit(1)
 
     @staticmethod
     def _files_match(left: Path, right: Path) -> bool:

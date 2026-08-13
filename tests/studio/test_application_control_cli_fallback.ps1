@@ -25,7 +25,7 @@ $install = Join-Path $repo "install.ps1"
 # Written out for the same reason as the trampoline: an edit on either side has to fail a
 # check rather than be copied into the expectation. This one gates a recursive delete.
 $ShimMarker = "unsloth-studio-managed-launcher"
-$Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+$Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 
 function Get-FunctionText {
     param([string] $Path, [string] $Name)
@@ -61,7 +61,7 @@ Check "extraction kept the utf8 pin"       ($cmdlineFn -match '-X')
 Check "extraction kept the classifier call" ($invokeFn -match 'Test-ApplicationControlBlock')
 Check "extraction kept the walk-up"        ($relFn -match '\.\.')
 Check "extraction kept the dp0 prefix"     ($contentFn -match '%~dp0')
-Check "extraction kept the compare"        ($writeFn -match '\$existing -eq \$content')
+Check "extraction kept the compare"        ($writeFn -match 'Compare-Object \$existing \$desired')
 Check "extraction kept the probe start"    ($probeFn -match 'ProcessStartInfo')
 Check "extraction kept the content marker" ($shimFileFn -match 'from unsloth_cli import app')
 Check "extraction kept the exe test"       ($preferFn -match 'ShimExe')
@@ -314,6 +314,39 @@ try {
     Invoke-Write $binDir $pyPath | Out-Null
     Check "stale content is replaced"  (-not ((Get-Content -Raw -LiteralPath $cmdPath) -match 'stale'))
 
+    # Byte identical except for a leading BOM. ReadAllText strips it before comparing,
+    # so a text compare calls this file unchanged and leaves cmd.exe reading the BOM as
+    # part of `@echo off` forever.
+    $withBom = [byte[]](0xEF, 0xBB, 0xBF) + $firstBytes
+    [System.IO.File]::WriteAllBytes($cmdPath, $withBom)
+    Invoke-Write $binDir $pyPath | Out-Null
+    Check "a BOM-prefixed shim is rewritten" (-not (Compare-Object ([System.IO.File]::ReadAllBytes($cmdPath)) $firstBytes))
+
+    # Case is the other thing -eq ignores. Same reasoning: cmd is case insensitive for
+    # commands but the trampoline it carries is Python, where SYS is not sys.
+    [System.IO.File]::WriteAllText($cmdPath, ((Get-Content -Raw -LiteralPath $cmdPath).ToUpperInvariant()))
+    Invoke-Write $binDir $pyPath | Out-Null
+    Check "an upper-cased shim is rewritten"  (-not (Compare-Object ([System.IO.File]::ReadAllBytes($cmdPath)) $firstBytes))
+
+    # A run killed between the write and the rename leaves its temp behind, and the next
+    # run has a different PID. Nothing else would ever collect it.
+    $orphan = Join-Path $binDir "unsloth.cmd.999999.tmp"
+    [System.IO.File]::WriteAllText($orphan, "half written")
+    Invoke-Write $binDir $pyPath | Out-Null
+    Check "an orphaned temp file is swept"    (-not (Test-Path -LiteralPath $orphan))
+    Check "sweeping did not disturb the shim" (-not (Compare-Object ([System.IO.File]::ReadAllBytes($cmdPath)) $firstBytes))
+
+    # ...but only ours, and only when its owner is gone. A live PID's temp belongs to a
+    # concurrent install that is about to rename it.
+    $live = Join-Path $binDir "unsloth.cmd.$PID.tmp"
+    [System.IO.File]::WriteAllText($live, "in flight")
+    $foreignTemp = Join-Path $binDir "something-else.tmp"
+    [System.IO.File]::WriteAllText($foreignTemp, "not ours")
+    Invoke-Write $binDir $pyPath | Out-Null
+    Check "a live PID's temp is left alone"   (Test-Path -LiteralPath $live)
+    Check "an unrelated temp is left alone"   (Test-Path -LiteralPath $foreignTemp)
+    Remove-Item -LiteralPath $live, $foreignTemp -Force
+
     # A directory in the way is reported, not thrown out of the installer.
     $blockedDir = Join-Path $tmp "bin2"
     $null = New-Item -ItemType Directory -Path (Join-Path $blockedDir "unsloth.cmd") -Force
@@ -347,15 +380,25 @@ Check "the exe existence gate remains" ($installText -match '\$UnslothExe = Join
 Write-Host "the launcher and the shortcuts are rewritten only when they change"
 # A reinstall and every `unsloth studio update` regenerate both. Rewriting identical bytes
 # moves their timestamps, which is the churn the idempotency contract exists to prevent.
-Check "launch-studio.ps1 is content-compared" (
-    $installText -match '(?s)\$launcherUnchanged =\s*\(\[System\.IO\.File\]::ReadAllText\(\$launcherPs1\) -eq \$launcherContent\)')
-Check "and skipped when unchanged"            ($installText -match '(?s)if \(-not \$launcherUnchanged\) \{\s*\[System\.IO\.File\]::WriteAllText\(\$launcherPs1')
+# Bytes, including the BOM. ReadAllText decodes the preamble away and PowerShell's -eq
+# is case insensitive, so a text compare calls a BOM-less launcher written by an older
+# installer unchanged and it never gains the BOM Windows PowerShell 5.1 needs.
+Check "launch-studio.ps1 is compared as bytes" (
+    $installText -match '(?s)\$launcherUnchanged =\s*\(@\(Compare-Object \$existingLauncher \$desiredLauncher -SyncWindow 0\)\.Count -eq 0\)')
+Check "the BOM is part of what is compared"    ($installText -match '\$utf8Bom\.GetPreamble\(\) \+ \$utf8Bom\.GetBytes\(\$launcherContent\)')
+Check "and skipped when unchanged"             ($installText -match '(?s)if \(-not \$launcherUnchanged\) \{\s*\[System\.IO\.File\]::WriteAllBytes\(\$launcherPs1')
 Check "the .lnk is saved only when changed"   ($installText -match '(?s)if \(-not \$shortcutUnchanged\) \{.*?\$shortcut\.Save\(\)')
 
 Write-Host "the escape hatch reaches installs that only ever run an update"
 # `unsloth studio update` drives install.ps1 through -ShortcutsOnly and returns before the
 # main shim block, so without this an install made before the .cmd existed never gets one.
 Check "-ShortcutsOnly writes the .cmd" ($installText -match '(?s)if \(\$ShortcutsOnly\) \{.*?Write-UnslothCmdShim -ShimDir \$ShortcutShimDir.*?New-StudioShortcuts')
+# An installer older than the shim directory never created one, and `unsloth studio
+# update` is the only route those installs ever take back into install.ps1. Testing
+# only that the write appears in the branch missed that it was conditional on a
+# directory that population does not have.
+Check "-ShortcutsOnly creates the bin dir first" (
+    $installText -match '(?s)if \(\$ShortcutsOnly\) \{.*?\[System\.IO\.Directory\]::CreateDirectory\(\$ShortcutShimDir\).*?Write-UnslothCmdShim -ShimDir \$ShortcutShimDir')
 Check "PATH accepts either launcher"   ($installText -match '(?s)\$ShimUsable = \(Test-Path -LiteralPath \$ShimExe -PathType Leaf\) -or\s*\(Test-Path -LiteralPath \$ShimCmd -PathType Leaf\)')
 Check "and the env-mode export too"    ($installText -match "StudioRedirectMode -eq 'env' -and \`$ShimUsable")
 

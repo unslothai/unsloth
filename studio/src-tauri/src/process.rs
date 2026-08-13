@@ -960,34 +960,49 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
 
     let bases = [new_base, old_base];
 
+    // Three passes rather than one, because a migration interrupted by an open
+    // handle can leave HALF of either layout behind (install.ps1 says so where it
+    // renames the tree), and layout order alone then picks the half that cannot
+    // run. Preference is by usefulness first, layout second:
+    //
+    //   1. a launcher with the interpreter beside it -- a complete environment;
+    //   2. Windows only, an interpreter with no launcher -- quarantine takes the
+    //      unsigned stub and leaves a working install, and nothing executes the
+    //      stub any more, so its absence no longer means "not installed";
+    //   3. a launcher with no interpreter -- useless to every caller here, but it
+    //      is what this function answered before, and its error message names the
+    //      missing interpreter, which is more use than "not installed".
+    //
+    // The returned path is the canonical handle whether or not the file exists:
+    // every Windows caller reaches the CLI through its parent directory.
     for base in &bases {
         #[cfg(unix)]
         let bin = base.join("bin").join("unsloth");
         #[cfg(windows)]
         let bin = base.join("Scripts").join("unsloth.exe");
 
-        if bin.exists() {
+        #[cfg(unix)]
+        let complete = bin.exists();
+        #[cfg(windows)]
+        let complete = bin.exists() && base.join("Scripts").join("python.exe").exists();
+
+        if complete {
             return Some(bin);
         }
     }
 
-    // Second pass, Windows only. Nothing runs the console script any more, so its
-    // absence no longer means there is no install: antivirus quarantine takes the
-    // unsigned stub and leaves a perfectly working environment behind. Answering
-    // None there would report "not installed" for a Studio the interpreter can
-    // still start, and this finder gates the backend, the updater and the
-    // install-status probe. The returned path stays the canonical handle whether or
-    // not the file is there: every Windows caller reaches the CLI through its
-    // parent directory.
-    //
-    // Separate from the first pass rather than folded into it, because an
-    // interrupted migration can leave a half-built new environment beside a working
-    // legacy .venv. Accepting a bare python.exe in layout order would then target
-    // the broken one and never look at the legacy install that still has a launcher.
     #[cfg(windows)]
     for base in &bases {
         if base.join("Scripts").join("python.exe").exists() {
             return Some(base.join("Scripts").join("unsloth.exe"));
+        }
+    }
+
+    #[cfg(windows)]
+    for base in &bases {
+        let bin = base.join("Scripts").join("unsloth.exe");
+        if bin.exists() {
+            return Some(bin);
         }
     }
 
@@ -1013,7 +1028,21 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// console script honours. `-I` implies `-E`, which discarded PYTHONPATH,
 /// PYTHONWARNINGS, PYTHONHASHSEED, PYTHONPROFILEIMPORTTIME and user
 /// site-packages, an observable difference on machines with no policy at all.
-/// The comprehension is a no-op under -P or PYTHONSAFEPATH.
+///
+/// The safe_path guard is why the comprehension is not simply `x not in (...)`.
+/// Under -P or PYTHONSAFEPATH there is no implicit `-c` entry to remove, so
+/// whatever sits at sys.path[0] is an explicit PYTHONPATH entry the console
+/// script would have honoured; a PYTHONPATH that starts at the working
+/// directory was measured selecting a different package before and after.
+/// getattr, not sys.flags.safe_path: the attribute is 3.11+ and this repo
+/// supports 3.9.
+///
+/// -X utf8 is the one deliberate divergence from the console script, and it
+/// predates this work: the shipped updater already spelled it this way, and
+/// mangled setup output on a non-UTF-8 console code page is what it exists to
+/// prevent (see tests/python/test_windows_setup_output_encoding.py). Under an
+/// explicit PYTHONUTF8=0 the child therefore runs in UTF-8 mode where the stub
+/// would not have.
 ///
 /// sys.argv[0] is assigned before the import because unsloth_cli decides at
 /// import time whether it is the console script, which gates the Windows UTF-8
@@ -1022,7 +1051,7 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// slightly cleaner here rather than matching byte for byte.
 #[cfg(windows)]
 pub(crate) const WINDOWS_CLI_ENTRYPOINT: &str =
-    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
 
 /// The program and argument vector that run the managed CLI without executing
 /// `bin` itself. On non-Windows platforms `bin` is a plain script with a
@@ -1234,6 +1263,40 @@ mod tests {
 
         // Once the new layout has its own launcher, layout order takes over again.
         fs::write(new_scripts.join("unsloth.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_scripts.join("unsloth.exe"))
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // The other half of the same interruption: the new layout kept the launcher and
+    // the legacy one kept the interpreter. Returning the new launcher there fails
+    // later with "Managed Python interpreter not found beside Unsloth" while a
+    // usable environment sits in the other base.
+    #[cfg(windows)]
+    #[test]
+    fn a_complete_legacy_environment_beats_a_launcher_with_no_interpreter() {
+        let studio = temp_studio_dir("split-migration");
+        let new_scripts = studio.join("unsloth_studio").join("Scripts");
+        let old_scripts = studio.join(".venv").join("Scripts");
+        fs::create_dir_all(&new_scripts).unwrap();
+        fs::create_dir_all(&old_scripts).unwrap();
+        fs::write(new_scripts.join("unsloth.exe"), "").unwrap();
+        fs::write(old_scripts.join("python.exe"), "").unwrap();
+        fs::write(old_scripts.join("unsloth.exe"), "").unwrap();
+
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_scripts.join("unsloth.exe")),
+            "a complete environment must win over a launcher that cannot start"
+        );
+
+        // With nothing usable anywhere, still answer what this function always
+        // answered: the caller's error then names the missing interpreter.
+        fs::remove_file(old_scripts.join("python.exe")).unwrap();
+        fs::remove_file(old_scripts.join("unsloth.exe")).unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
             Some(new_scripts.join("unsloth.exe"))
@@ -1543,9 +1606,17 @@ pub fn start_backend(
     // The program actually spawned, not the console script it resolved from. This
     // line is what a user attaches to an issue, and naming the stub would point
     // every Application Control report at a binary we never start.
+    // Same shape as before, so a support log reads the same on every platform; only
+    // the program differs, and only where the interpreter is what actually starts.
     let start_line = format!(
-        "Starting backend: {:?} {:?}",
-        invocation.program, invocation.args
+        "Starting backend: {:?} {}",
+        invocation.program,
+        invocation
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     let mut cmd = invocation.to_command();
     let pending_owner = match crate::desktop_backend_owner::new_pending_owner() {

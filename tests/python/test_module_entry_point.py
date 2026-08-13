@@ -38,7 +38,7 @@ import pytest
 # unsloth_cli/commands/studio.py. Spelled out rather than imported so an edit on
 # any one side of the language boundary fails this test.
 TRAMPOLINE = (
-    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 )
 
@@ -78,7 +78,7 @@ def _installed_package_dir() -> Path | None:
         [
             *INTERPRETER,
             "-c",
-            "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
+            "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
             "import unsloth_cli; print(os.path.dirname(unsloth_cli.__file__))",
         ]
     )
@@ -346,4 +346,56 @@ def test_the_module_docstring_documents_the_user_site_exception():
     assert "pip install --user" in source
     assert "-I implies -s" in source
     # The escape hatch it points at has to be the real one.
-    assert "sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]" in source
+    assert "sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]" in source
+
+
+@requires_console_script
+@requires_this_checkout_installed
+def test_safe_path_leaves_an_explicit_pythonpath_alone(tmp_path):
+    """Under -P / PYTHONSAFEPATH there is no implicit entry to strip.
+
+    Python then puts the first PYTHONPATH entry at sys.path[0], and the console
+    script honours it. A filter that removed index 0 regardless would import a
+    different package than the console script for the same environment, which is
+    the one thing this change is not allowed to do. Measured before the guard
+    existed: the console script loaded the shadow, the trampoline did not.
+    """
+    shadow = tmp_path / "shadow"
+    (shadow / "unsloth_cli").mkdir(parents = True)
+    (shadow / "unsloth_cli" / "__init__.py").write_text(
+        "raise SystemExit('SHADOWED')\n", encoding = "utf-8"
+    )
+    env = dict(os.environ)
+    env["PYTHONSAFEPATH"] = "1"
+    env["PYTHONPATH"] = str(shadow)
+
+    reference = _run(_console_argv("--version"), env = env)
+    trampoline = _run(_trampoline_argv("--version"), env = env)
+
+    assert trampoline.returncode == reference.returncode
+    assert trampoline.stdout == reference.stdout
+    assert trampoline.stderr == reference.stderr
+
+
+@requires_console_script
+@requires_this_checkout_installed
+def test_the_working_directory_is_still_stripped_without_safe_path(tmp_path):
+    """The other half: the guard must not disarm the filter it guards."""
+    shadow = tmp_path / "shadow"
+    (shadow / "unsloth_cli").mkdir(parents = True)
+    (shadow / "unsloth_cli" / "__init__.py").write_text(
+        "raise SystemExit('SHADOWED')\n", encoding = "utf-8"
+    )
+    env = dict(os.environ)
+    env.pop("PYTHONSAFEPATH", None)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        _trampoline_argv("--version"),
+        capture_output = True,
+        timeout = 120,
+        env = env,
+        cwd = shadow,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.startswith(b"unsloth "), result.stdout
