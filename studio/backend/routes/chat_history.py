@@ -1167,9 +1167,7 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
         # rejected NaN or Infinity made the 400 handler itself unrenderable and the
         # caller got a 500 for a request the validator had already refused. It also
         # bounds a multi-megabyte value being quoted back.
-        raise HTTPException(
-            status_code = 400, detail = safe_validation_errors(exc.errors())
-        ) from exc
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
