@@ -14,7 +14,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
-import { useChatSearchIndex } from "../hooks/use-chat-search-index";
+import {
+  cachedChatSearchIndexIsEmpty,
+  useChatSearchIndex,
+} from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
 
 // Rows mounted while the dialog animates open; the rest follow once it settles,
@@ -60,7 +63,7 @@ export function ChatSearchDialog() {
   const setOpen = useChatSearchStore((s) => s.setOpen);
   const close = useChatSearchStore((s) => s.close);
   const navigate = useNavigate();
-  const { items, loading, ready } = useChatSearchIndex(isOpen);
+  const { items, loading } = useChatSearchIndex(isOpen);
   const [query, setQuery] = useState("");
   // Filtering scans every conversation's text, so keep it off the keystroke path.
   const deferredQuery = useDeferredValue(query);
@@ -68,6 +71,9 @@ export function ChatSearchDialog() {
   // over a reopened dialog whose input is empty.
   const activeQuery = query === "" ? "" : deferredQuery;
   const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
+  // The dialog is centered, so the list height is decided once per open and held for that
+  // whole open: only an index already known to be empty starts compact.
+  const [compactList, setCompactList] = useState(cachedChatSearchIndexIsEmpty);
 
   // Reset during the opening render rather than in an effect: Radix mounts the portal as
   // this render commits, and an effect would trim rows only after React had already built
@@ -79,6 +85,7 @@ export function ChatSearchDialog() {
     if (isOpen) {
       setQuery("");
       setRowLimit(INITIAL_ROW_COUNT);
+      setCompactList(cachedChatSearchIndexIsEmpty());
     }
   }
 
@@ -143,13 +150,7 @@ export function ChatSearchDialog() {
         <CommandList
           className={cn(
             "cmd-native-scrollbar hover-scrollbar p-1",
-            // Hold the height steady from the opening render: the dialog is centered, so a
-            // list that grows as results arrive or filter re-lays it out mid-animation.
-            // `ready` is false until an index has been built, which keeps the first open of
-            // a session reserved rather than starting compact and expanding.
-            !ready || items.length > 0
-              ? "h-[420px] max-h-[60dvh]"
-              : "max-h-[420px]",
+            compactList ? "max-h-[420px]" : "h-[420px] max-h-[60dvh]",
           )}
         >
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">

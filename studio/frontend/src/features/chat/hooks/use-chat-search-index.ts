@@ -216,29 +216,39 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
 // once and revalidates in place instead of collapsing back to the empty state.
 let cachedIndex: ChatSearchItem[] | null = null;
 
+// Whether a build has already established that the history is empty, readable during render
+// so the dialog can size itself before its opening paint.
+export function cachedChatSearchIndexIsEmpty(): boolean {
+  return cachedIndex !== null && cachedIndex.length === 0;
+}
+
 export function useChatSearchIndex(enabled: boolean): {
   items: ChatSearchItem[];
   loading: boolean;
-  ready: boolean;
 } {
   const [items, setItems] = useState<ChatSearchItem[]>(() => cachedIndex ?? []);
-  // Whether an index has been built, known from the first render so the dialog can
-  // reserve its height before the initial build resolves.
-  const [ready, setReady] = useState(() => cachedIndex !== null);
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
+
+  // Opening onto an invalidated cache must not paint the previous rows, so discard them in
+  // the opening render rather than in the effect that rebuilds, which runs after the commit.
+  const [wasEnabled, setWasEnabled] = useState(enabled);
+  if (enabled !== wasEnabled) {
+    setWasEnabled(enabled);
+    if (enabled && cachedIndex === null) {
+      if (items.length > 0) setItems([]);
+      if (!loading) setLoading(true);
+    }
+  }
 
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
       // History can change while the dialog is closed, so drop the cache rather
-      // than reopening onto rows for chats that no longer exist.
+      // than reopening onto rows for chats that no longer exist. Only the cache is
+      // touched: clearing state would also re-render for every streaming chunk.
       const invalidate = () => {
-        // The event fires per streaming chunk, so skip the render when there is nothing cached.
-        if (cachedIndex === null) return;
         cachedIndex = null;
-        setItems([]);
-        setReady(false);
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
       return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
@@ -263,7 +273,6 @@ export function useChatSearchIndex(enabled: boolean): {
           // only clears once no rebuild is still queued.
           if (debounceTimer === null) rebuildPending = false;
           setItems(result);
-          setReady(true);
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
@@ -290,15 +299,12 @@ export function useChatSearchIndex(enabled: boolean): {
       cancelled = true;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       // Closing before a history change was rebuilt cancels that rebuild, so the snapshot
-      // left behind is known stale and must not survive into the next open.
-      if (rebuildPending) {
-        cachedIndex = null;
-        setItems([]);
-        setReady(false);
-      }
+      // left behind is known stale and must not survive into the next open. The rendered
+      // rows stay put: clearing them here would tear the list down inside the exit animation.
+      if (rebuildPending) cachedIndex = null;
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     };
   }, [enabled]);
 
-  return { items, loading, ready };
+  return { items, loading };
 }
