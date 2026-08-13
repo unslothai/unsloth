@@ -3309,14 +3309,11 @@ def test_explicit_tool_opt_out_does_not_trip_the_confirm_guard():
         "type": "function",
         "function": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
     }
-    assert _local_tool_loop_opted_out(
-        req(max_tool_calls_per_message = 0, tools = [client_tool]), "vllm"
-    ) is False
+    assert (
+        _local_tool_loop_opted_out(req(max_tool_calls_per_message = 0, tools = [client_tool]), "vllm")
+        is False
+    )
     # an empty tools list is still "no client tools": a zero budget opts out.
-    assert _local_tool_loop_opted_out(
-        req(max_tool_calls_per_message = 0, tools = []), "vllm"
-    ) is True
+    assert _local_tool_loop_opted_out(req(max_tool_calls_per_message = 0, tools = []), "vllm") is True
     # tool_choice="none" stays an opt-out even with client tools: no call can happen.
-    assert _local_tool_loop_opted_out(
-        req(tool_choice = "none", tools = [client_tool]), "vllm"
-    ) is True
+    assert _local_tool_loop_opted_out(req(tool_choice = "none", tools = [client_tool]), "vllm") is True
