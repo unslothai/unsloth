@@ -2794,11 +2794,10 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
 
 
 def test_delete_cached_rechecks_the_load_guard_after_reserving_the_scope(monkeypatch):
-    # The guard runs before begin_delete reserves the repo, and resolving the cache-key case sits
-    # between the two. A load starting in that gap publishes its claim too late for the guard to
-    # see, and begin_delete cannot see it either: video and image loads download directly rather
-    # than through a registry claim, so nothing marks them active. Deleting anyway unlinks blobs
-    # out from under the running load. The second read is what refuses it.
+    # The first guard runs before begin_delete reserves the repo, so a load starting in that gap
+    # publishes its claim too late to be seen, and begin_delete misses it too: video and image
+    # loads download directly rather than through a registry claim. Deleting anyway unlinks blobs
+    # under the running load, so the second read is what refuses it.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der

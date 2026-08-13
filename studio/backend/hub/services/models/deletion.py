@@ -820,12 +820,10 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        # Re-derived now that the scope is reserved, the same way only_if_orphan re-derives its
-        # own answer below. The guard above ran before the reservation existed, so a load that
-        # started in between published its claim too late to be seen, and begin_delete cannot see
-        # it either: image and video loads pull their weights directly rather than through a
-        # registry claim, so nothing marks them active. Without this the claim is checked and then
-        # deleted around, which is the check-then-act the reservation exists to close.
+        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer
+        # below. The first read ran before the reservation existed, so a load starting in
+        # between published its claim too late to be seen, and begin_delete misses it too:
+        # image and video loads download directly rather than through a registry claim.
         try:
             blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
         except Exception as e:
