@@ -759,7 +759,12 @@ def _install_fake_mlx(monkeypatch, working_set_bytes):
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
 
 
-def _install_fake_psutil(monkeypatch, *, total, available = None):
+def _install_fake_psutil(
+    monkeypatch,
+    *,
+    total,
+    available = None,
+):
     """psutil stub. The budget reads both, so a test must pin both to be
     machine-independent: with only `total` stubbed, `available` came from the
     host running the suite."""
