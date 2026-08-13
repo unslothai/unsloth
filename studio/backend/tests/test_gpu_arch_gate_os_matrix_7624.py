@@ -1797,7 +1797,12 @@ class TestUnifiedMemoryOptOut:
             vendor = "amd",
         )
 
-    def _load(self, tmp_path, monkeypatch, env_extra = None):
+    def _load(
+        self,
+        tmp_path,
+        monkeypatch,
+        env_extra = None,
+    ):
         return _run_auto_load(
             monkeypatch,
             tmp_path,
@@ -1818,25 +1823,19 @@ class TestUnifiedMemoryOptOut:
         self, tmp_path, monkeypatch, probe_env, value
     ):
         """setdefault kept the user's "0", which ggml then read as enabled."""
-        _cmd, env = self._load(
-            tmp_path, monkeypatch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": value}
-        )[0]
+        _cmd, env = self._load(tmp_path, monkeypatch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": value})[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     @pytest.mark.parametrize("value", ["1", "2", "true", "on"])
     def test_a_truthy_user_value_still_wins(self, tmp_path, monkeypatch, probe_env, value):
         """Only the off spellings are intercepted; anything else is passed through
         untouched, ownership included."""
-        _cmd, env = self._load(
-            tmp_path, monkeypatch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": value}
-        )[0]
+        _cmd, env = self._load(tmp_path, monkeypatch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": value})[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == value
 
     def test_the_disable_switch_keeps_it_unset(self, tmp_path, monkeypatch, probe_env):
         """The switch users can find, mirroring UNSLOTH_DISABLE_DC_TUNING."""
-        _cmd, env = self._load(
-            tmp_path, monkeypatch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}
-        )[0]
+        _cmd, env = self._load(tmp_path, monkeypatch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"})[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_the_disable_switch_also_clears_an_inherited_value(
@@ -1854,9 +1853,7 @@ class TestUnifiedMemoryOptOut:
     def test_a_non_one_disable_value_does_nothing(self, tmp_path, monkeypatch, probe_env):
         """Exact "1", like the DC switch. A guard that fired on any value would
         make the name itself a trap, which is the bug being fixed."""
-        _cmd, env = self._load(
-            tmp_path, monkeypatch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}
-        )[0]
+        _cmd, env = self._load(tmp_path, monkeypatch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"})[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_the_opt_out_survives_a_retry_onto_an_apu(self, tmp_path, monkeypatch, probe_env):

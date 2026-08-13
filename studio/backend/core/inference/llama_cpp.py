@@ -13973,7 +13973,9 @@ class LlamaCppBackend:
                     # ggml reads presence, not value, so passing a user's "0" through
                     # would ENABLE the thing they turned off (#8651). Only absence is off.
                     if env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None) is not None:
-                        logger.info("Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY")
+                        logger.info(
+                            "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"
+                        )
                 elif not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
                     _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
