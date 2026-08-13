@@ -254,6 +254,66 @@ def test_identity_probe_rekeys_a_timestamp_preserving_replacement(tmp_path, monk
     assert len(runs) == 2
 
 
+def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
+    tmp_path, monkeypatch
+):
+    # A genuine sd.cpp that cannot load an adjacent shared library exits 127 from the dynamic
+    # loader with nothing identifying on either stream. That is a CompletedProcess, not an
+    # exception, so it would otherwise be cached as a definitive "not stable-diffusion.cpp"
+    # against a file that never changed -- and installing the missing library would not get it
+    # re-probed until Studio restarted.
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            stdout = "",
+            stderr = "sd: error while loading shared libraries: libggml.so: cannot open",
+            returncode = 127,
+        ),
+    )
+    assert find_sd_cpp_binary() is None
+    assert eng._IDENTITY_MEMO == {}
+
+    # The library is back. Same file, so the same key -- it must be probed again, not answered.
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            stdout = "stable-diffusion.cpp version unknown\n", stderr = "", returncode = 0
+        ),
+    )
+    assert find_sd_cpp_binary() == str(candidate)
+
+
+def test_identity_probe_memoizes_an_identifying_build_that_exits_nonzero(tmp_path, monkeypatch):
+    # The other half: older builds print usage and exit 1. Identifying output settles the question
+    # whatever the exit code, so that verdict is decisive and worth keeping.
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    runs = []
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda cmd, **_k: (
+            runs.append(cmd),
+            types.SimpleNamespace(
+                stdout = "usage: sd\n --negative-prompt P\n --cfg-scale S\n --steps N\n",
+                stderr = "",
+                returncode = 1,
+            ),
+        )[1],
+    )
+    assert find_sd_cpp_binary() == str(candidate)
+    assert find_sd_cpp_binary() == str(candidate)
+    assert len(runs) == 1
+
+
 def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypatch):
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
@@ -733,9 +793,9 @@ def test_native_generation_timeout_matches_the_ui_settle_window():
 
     assert NATIVE_GENERATION_TIMEOUT_S == 6 * 60 * 60
     for fn in (SdCppEngine.generate, SdCppEngine.upscale):
-        assert (
-            inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S
-        ), fn.__name__
+        assert inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S, (
+            fn.__name__
+        )
     # The resident-server path shares the same ceiling, applied per request (see test_server_generate_splits_batches_above_server_limit).
     assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S
 

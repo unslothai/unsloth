@@ -283,11 +283,17 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
     revision -- discovery runs on every load and ``ensure_sd_cpp_binary`` alone resolves twice, so
     without this a candidate that hangs costs its full timeout again on each one.
 
-    Only a verdict the probe actually PRODUCED is memoized. A timeout or a failed spawn leaves the
-    file untouched, so its key does not change either, and remembering that "no" would blacklist a
-    genuine build for the life of the process over one slow ``--help`` under disk or memory
-    pressure. Same rule as ``utils.node_runtime``, which memoizes only an adequate result so a
-    runtime installed after the first probe is still picked up.
+    Only a DECISIVE verdict is memoized, because the key cannot see the difference. A timeout, a
+    failed spawn, or a non-zero exit with nothing identifying in the output are all "could not
+    tell", and none of them touches the file, so its key is unchanged -- caching that "no" would
+    blacklist a genuine build for the life of the process over one slow ``--help`` under memory
+    pressure, or over a missing shared library the user then installs. Same rule as
+    ``utils.node_runtime``, which memoizes only an adequate result so a runtime installed after the
+    first probe is still picked up.
+
+    A clean exit that simply is not stable-diffusion.cpp IS decisive, which is the case that
+    matters: Debian/Ubuntu's ``sd`` answers ``--help`` with rc 0, so the candidate this exists to
+    stop re-executing is still probed exactly once.
     """
     key = _identity_key(binary)
     if key is not None:
@@ -295,7 +301,7 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
             cached = _IDENTITY_MEMO.get(key)
         if cached is not None:
             return cached
-    probed = True
+    returncode = None
     try:
         result = subprocess.run(
             [binary, "--help"],
@@ -309,11 +315,14 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
             **windows_hidden_subprocess_kwargs(),
         )
         help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+        returncode = result.returncode
     except (OSError, subprocess.SubprocessError):
         help_text = ""
-        probed = False
     identified = help_text_identifies_sd_cpp(help_text)
-    if key is not None and probed:
+    # Identifying output settles it whatever the exit code (old builds print usage and exit 1).
+    # Otherwise only a clean exit is evidence of anything; rc 127 from the dynamic loader is not.
+    decisive = identified or returncode == 0
+    if key is not None and decisive:
         with _IDENTITY_MEMO_LOCK:
             if len(_IDENTITY_MEMO) >= _IDENTITY_MEMO_MAX:
                 _IDENTITY_MEMO.clear()
