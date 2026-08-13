@@ -987,10 +987,9 @@ def _detect_windows_gfx_arch() -> str | None:
                         f"PyTorch wheels do not cover, {_tail}"
                     )
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
-                    # (#8458 ran an RX 580 through it). Saying WHEN matters -- the
-                    # variable picks the bundle at install time. PowerShell syntax
-                    # because this branch is Windows-only: a pasted VAR=value parses
-                    # there as a command name and sets nothing.
+                    # (#8458 ran an RX 580 through it). PowerShell syntax because this
+                    # branch is Windows-only: a pasted VAR=value parses there as a
+                    # command name and sets nothing.
                     _safe_print(
                         "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
                         '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
@@ -1048,10 +1047,8 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 
 # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
 # and Polaris 10/20/30 (unslothai#8529, #8458). Deliberately SEPARATE from
-# _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route to a wheel index. It exists so
-# the installer can name the arch instead of advising a HIP SDK install or an
-# UNSLOTH_ROCM_GFX_ARCH override that cannot work. AMD's TheRock ships RDNA 1 wheels,
-# but not on the repo.amd.com indexes routed here, and never gfx803.
+# _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route to a wheel index. AMD's TheRock
+# ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
 # Every (?!0) guard stops "RX 570" swallowing "RX 5700", so each row is correct on its
 # own regardless of order. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids
 # for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12

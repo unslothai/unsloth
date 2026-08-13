@@ -1900,9 +1900,8 @@ elif [ "$_setup_amd_detected" = true ]; then
     # The KFD sysfs fallback above detects the GPU with neither rocminfo nor amd-smi, so it
     # leaves _setup_mkt empty -- and a runtime-less host is precisely the one this report
     # exists for. lspci still names the card there, the source install.sh already reads.
-    # Deliberately NOT written back into _setup_mkt: the supported table keys on that
-    # variable and would start feeding --rocm-gfx to the prebuilt and whisper commands
-    # on the KFD path. This one is messaging only.
+    # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
+    # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
         if [ -n "$1" ]; then
             _setup_unsupported_gfx_from_name "$1"
@@ -1938,7 +1937,7 @@ EOF
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
-        # NotImplementedError at import (unsloth/device_type.py), as the arms below say.
+        # NotImplementedError at import (unsloth/device_type.py).
         # Both lines are false under an explicit index pin, which install_python_stack.py
         # honours for any arch, so a pinned run says what it is doing instead.
         if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then

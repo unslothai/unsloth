@@ -2674,9 +2674,9 @@ if ($HasNvidiaSmi) {
     step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
     # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
-    # NotImplementedError at import (unsloth/device_type.py) -- no training path at all.
-    # The Vulkan setter is single-quoted so PowerShell prints $env:... rather than
-    # expanding it; a pasted VAR=value resolves as a command name here and sets nothing.
+    # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+    # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+    # VAR=value resolves as a command name here and sets nothing.
     # Both claims are conditional: an explicit index pin is honoured for any arch, and
     # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
     # is published, so the usual advice would abort the next update instead of helping.

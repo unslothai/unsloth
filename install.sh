@@ -3375,8 +3375,7 @@ get_torch_index_url() {
                 # may well have wheels, and nothing has looked at it yet.
                 echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
-                # Torch ends here, llama.cpp does not. `export`, and saying WHEN, are both
-                # load-bearing: the variable picks the bundle at install time, and a bare
+                # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare
                 # assignment never reaches the re-run (the unslothai#8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
                 echo "$_base/cpu"; return
@@ -4502,7 +4501,7 @@ case "$TORCH_INDEX_URL" in
                 # lands here whenever the 7900's ROCm is too old, and blaming the 5700
                 # would replace the upgrade advice with advice that is false for the card
                 # that caused the fallback. _infer_linux_amd_gfx_arch scans every display
-                # adapter, so a covered answer clears this one. Messaging only.
+                # adapter, so a covered answer clears this one.
                 _covered_disp_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null) || _covered_disp_gfx=""
                 if [ -n "$_covered_disp_gfx" ] && _amd_arch_index_family_for_gfx "$_covered_disp_gfx" >/dev/null 2>&1; then
                     _unsup_disp_gfx=""

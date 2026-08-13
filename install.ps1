@@ -3732,9 +3732,9 @@ exit 0
         # unknown" arm below: the arch is known here, and that arm's advice cannot
         # succeed on this GPU (unslothai#8529).
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
-        # NotImplementedError at import (unsloth/device_type.py) -- no training path at all.
-        # The Vulkan setter is single-quoted so PowerShell prints $env:... rather than
-        # expanding it; a pasted VAR=value resolves as a command name here and sets nothing.
+        # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+        # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+        # VAR=value resolves as a command name here and sets nothing.
         # Both claims below are conditional, and both conditions are read here rather than
         # asserted: an explicit index pin reaches the ROCm install path further down even
         # for an arch Unsloth has no wheels for, and Windows ARM64 has no Vulkan bundle at
