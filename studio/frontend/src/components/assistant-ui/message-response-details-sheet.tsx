@@ -428,6 +428,11 @@ export const MessageResponseDetailsSheet: FC<{
               mono
             />
             <DetailRow
+              label="Prompt speed"
+              value={formatRate(asNumber(serverTimings?.prompt_per_second))}
+              mono
+            />
+            <DetailRow
               label="Generation"
               value={formatMs(asNumber(serverTimings?.predicted_ms))}
               mono
