@@ -3186,7 +3186,12 @@ def _full_model_checkpoint_bytes(model, state_dict = None):
     which is how the 20GB Kaggle working directory fills instead.
     """
     try:
-        if state_dict:
+        # `is not None`, matching `unsloth_generic_save`, which forwards the
+        # dict on exactly that test. An explicitly empty one therefore reaches
+        # `save_pretrained` and writes no tensors at all, so sizing the resident
+        # model there would price tens of gigabytes for a save that writes none
+        # and move it off persistent Kaggle storage for nothing.
+        if state_dict is not None:
             total = 0
             for tensor in state_dict.values():
                 tensor = getattr(tensor, "data", tensor)
@@ -3249,6 +3254,46 @@ def _destination_holds_torchao_staging(destination, need_bytes, staging_bytes):
         return free >= need_bytes + staging_bytes
     except Exception:
         return True
+
+
+def _warn_if_sibling_filesystem_is_short(save_directory, suffix, sibling_bytes):
+    """Say so when the quantized sibling lands on a disk nobody measured.
+
+    Compressed and torchao exports build their output lexically, as
+    `save_directory + "-<suffix>"`, so the sibling is a child of the PARENT of
+    `save_directory`. That is the same filesystem the preflight probed, unless
+    `save_directory` is itself a symlink or a mount point. When it is, the
+    probe answers for the target and the sibling is written on the other side:
+    a `model` symlinked into a roomy /tmp passes here while `model-fp8` fills
+    a 20GB working directory.
+
+    A warning rather than a different redirect, for the same reason as the
+    staging one. `kaggle_tmp_redirect` relocates `save_directory`, and the
+    caller derives the sibling from whatever this function returns, so a
+    redirect already moves both. The uncovered case is the one where NO
+    redirect fires, and there is nothing to cancel there.
+    """
+    try:
+        if sibling_bytes <= 0 or not suffix:
+            return
+        sibling = f"{save_directory}-{suffix}"
+        # The directory the sibling is created IN, which is what has the space.
+        holder = os.path.dirname(os.path.abspath(sibling)) or "."
+        if _same_filesystem(holder, save_directory):
+            return
+        free = free_bytes(holder)
+        if free is None or free >= sibling_bytes:
+            return
+        print(
+            f"Unsloth: `{holder}` has {free / 1024**3:.1f}GB free and the quantized "
+            f"`{os.path.basename(sibling)}` needs about {sibling_bytes / 1024**3:.1f}GB there.\n"
+            f"`{save_directory}` resolves to a different filesystem, and the sibling is "
+            f"written next to the name rather than next to the target, so the room at "
+            f"`{save_directory}` does not help.\n"
+            f"Save to a path on the roomy filesystem itself rather than through a link."
+        )
+    except Exception:
+        return
 
 
 def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
@@ -3355,19 +3400,33 @@ def _preflight_merge_disk(
         # `tempfile` resolves to. Zero for every other export, which stages
         # nothing.
         staging = 0
+        # The lexical suffix the quantized sibling is written under, so the
+        # filesystem holding it can be measured separately below.
+        sibling_suffix = ""
+        sibling_bytes = 0
+        # What `merge_and_overwrite_lora` will be asked to write HERE, which is
+        # the only part its `free * 0.95` guard measures. Split out from `need`
+        # because the reserve belongs on this and on nothing else: charging it
+        # around the whole estimate relocates an export that fits, and on
+        # Kaggle that means moving it to a /tmp the kernel does not keep.
+        merge_here = 0 if full_model_lora else need
         if torchao is not None:
             # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
             # directory rather than `save_directory`, so the only thing landing
-            # here is the 8-bit sibling.
+            # here is the 8-bit sibling, and no merge guard runs against this
+            # filesystem at all.
             staging = need
+            merge_here = 0
             # No ignore list: `_unsloth_save_torchao` quantizes with a bare
             # `Float8WeightOnlyConfig()` / `Int8WeightOnlyConfig()`. Charging it
             # the compressed recipe's exclusions would over-count, and
             # over-counting relocates an export that fits into a /tmp Kaggle
             # does not keep as notebook output.
             need = _quantized_sibling_bytes(model, need, _TORCHAO_SIBLING_WEIGHT_BITS)
+            sibling_suffix = torchao[1]
+            sibling_bytes = need
         elif compressed is not None:
-            need += _quantized_sibling_bytes(
+            sibling_bytes = _quantized_sibling_bytes(
                 model,
                 need,
                 _compressed_scheme_weight_bits(compressed[0]),
@@ -3375,7 +3434,13 @@ def _preflight_merge_disk(
                 # 16 bits: the vision tower, linear attention, MTP, MoE gates.
                 _compressed_ignore_patterns(model),
             )
-        need = math.ceil(need / _MERGE_FREE_SPACE_RESERVE)
+            sibling_suffix = compressed[2]
+            need += sibling_bytes
+        # The reserve raises the ask for the merge alone, and the rest is added
+        # at face value. `max` rather than a sum of the two halves: the sibling
+        # coexists with the merge, so the peak is the whole estimate, and it
+        # must also clear the merge's own reserved figure.
+        need = max(need, math.ceil(merge_here / _MERGE_FREE_SPACE_RESERVE))
         new_directory, message = kaggle_tmp_redirect(
             save_directory,
             need_bytes = need,
@@ -3386,11 +3451,14 @@ def _preflight_merge_disk(
     if message is not None:
         if not _destination_holds_torchao_staging(new_directory, need, staging):
             _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
+            _warn_if_sibling_filesystem_is_short(save_directory, sibling_suffix, sibling_bytes)
             return save_directory
         print(message)
         _warn_if_torchao_staging_filesystem_is_short(new_directory, staging)
+        _warn_if_sibling_filesystem_is_short(new_directory, sibling_suffix, sibling_bytes)
         return new_directory
     _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
+    _warn_if_sibling_filesystem_is_short(save_directory, sibling_suffix, sibling_bytes)
     return save_directory
 
 
@@ -3857,7 +3925,16 @@ def _preflight_gguf_disk(
             # never cause a refusal the aggregate would have allowed.
             reserved = min(need, math.ceil(checkpoint_here / _MERGE_FREE_SPACE_RESERVE))
             need_here = max(need_here, reserved)
-            need_here_with_cache = max(need_here_with_cache, reserved)
+            # The cache copy is written BEFORE the merge and is still there when
+            # the guard runs, so it comes off the free space the guard measures.
+            # It rides on top of the reserved figure rather than beside it: a
+            # 16GB checkpoint with a 14GB cache on 30.5GB free passes a `max`
+            # asking 30GB, and then the merge sees 16.5GB and refuses 16GB under
+            # its own 5%. Added instead, this band drops the pre-warm, which is
+            # the optional half, rather than failing the export.
+            need_here_with_cache = max(
+                need_here_with_cache, reserved + max(0, need_with_cache - need)
+            )
         # The intermediate conversion is written to the working directory and
         # only moved to the sibling afterwards, so when that working directory
         # is on THIS filesystem the checkpoint and the conversion are on it

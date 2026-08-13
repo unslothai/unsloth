@@ -43,13 +43,27 @@ GB = 1024**3
 
 
 def _with_merge_headroom(n_bytes):
-    """What the merge preflight asks for, given a raw output size.
+    """What `merge_and_overwrite_lora` needs free to write `n_bytes` of merge.
 
     unsloth_zoo's merge guard compares against `int(free * 0.95)`, so the
     preflight has to ask for the same effective figure. The 0.95 is written
     out rather than read from `S`, so dropping the headroom fails here.
     """
     return math.ceil(n_bytes / 0.95)
+
+
+def _merge_preflight_ask(total_bytes, merge_bytes):
+    """What the merge preflight asks for, given what lands where.
+
+    The reserve belongs on the merge alone, because that is the only artefact
+    `merge_and_overwrite_lora` writes and the only one its guard measures. A
+    quantized sibling beside it, a torchao sibling with the merge staged in a
+    temp directory, and a full-model `"lora"` save written straight through
+    `save_pretrained` are all charged at face value. Reserving around the whole
+    estimate instead moves an export that fits, and on Kaggle "moves" means
+    into a /tmp the kernel does not keep as notebook output.
+    """
+    return max(math.ceil(total_bytes), _with_merge_headroom(merge_bytes))
 
 
 class _FakeModel:
@@ -507,7 +521,7 @@ class TestMergeSizing:
     def test_every_compressed_export_sizes_its_sibling(self, sized, save_method, expected_gb):
         """`_unsloth_save_compressed_tensors` keeps the merge AND the sibling."""
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
-        assert sized == [pytest.approx(_with_merge_headroom(expected_gb * GB))]
+        assert sized == [pytest.approx(_merge_preflight_ask(expected_gb * GB, 10 * GB))]
 
     def test_an_unsupported_near_miss_is_left_to_its_own_error(self, sized):
         """`_normalize_compressed_method` raises on these; the message is downstream."""
@@ -521,10 +535,11 @@ class TestMergeSizing:
         """The torchao path merges into a temp dir, not into `save_directory`.
 
         So `save_directory` holds the 8-bit sibling only, and pricing the
-        16-bit merge there as well would move an export that fits.
+        16-bit merge there as well would move an export that fits. No merge
+        guard runs against this filesystem either, so no reserve is charged.
         """
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
-        assert sized == [_with_merge_headroom(5 * GB)]
+        assert sized == [_merge_preflight_ask(5 * GB, 0)]
 
     def test_the_embeddings_are_not_priced_as_quantized(self, sized):
         """Weight-only schemes quantize `Linear` only.
@@ -535,17 +550,17 @@ class TestMergeSizing:
         model = _ModelWithEmbeddings(input_numel = 1024**3, output_numel = 1024**3 // 2)
         # 10GB merge, 3GB of it embeddings -> 7GB at 8 bits + 3GB copied.
         S._preflight_merge_disk(model, "model", "fp8")
-        assert sized == [_with_merge_headroom(10 * GB + 3 * GB + int(3.5 * GB))]
+        assert sized == [_merge_preflight_ask(10 * GB + 3 * GB + int(3.5 * GB), 10 * GB)]
 
     def test_tied_embeddings_are_counted_once(self, sized):
         model = _ModelWithEmbeddings(input_numel = 1024**3, tied = True)
         S._preflight_merge_disk(model, "model", "fp8")
-        assert sized == [_with_merge_headroom(10 * GB + 2 * GB + 4 * GB)]
+        assert sized == [_merge_preflight_ask(10 * GB + 2 * GB + 4 * GB, 10 * GB)]
 
     def test_a_model_that_does_not_answer_is_sized_as_before(self, sized):
         """The old whole-model arithmetic, so this can only ever ask for more."""
         S._preflight_merge_disk(_FakeModel(), "model", "fp8")
-        assert sized == [_with_merge_headroom(15 * GB)]
+        assert sized == [_merge_preflight_ask(15 * GB, 10 * GB)]
 
     def test_the_torchao_merge_really_is_staged_elsewhere(self):
         """The sizing above is only right while this stays true."""
@@ -689,10 +704,12 @@ class TestTheRecipesIgnoredModulesStay16Bit:
         S._preflight_merge_disk(self._vlm(), "model", "fp8")
         # 2GB embeddings + 1GB vision tower stay 16-bit; the other 7GB go to 8.
         expected = 10 * GB + _sibling_bytes(10 * GB, 3 * GB, 8)
-        assert sized == [_with_merge_headroom(expected)]
+        assert sized == [_merge_preflight_ask(expected, 10 * GB)]
         # And strictly more than the embeddings-only figure this replaces, which
         # is the whole point: the old estimate was short.
-        assert sized[0] > _with_merge_headroom(10 * GB + _sibling_bytes(10 * GB, 2 * GB, 8))
+        assert sized[0] > _merge_preflight_ask(
+            10 * GB + _sibling_bytes(10 * GB, 2 * GB, 8), 10 * GB
+        )
 
     def test_the_vision_tower_is_counted_once(self):
         """`re:.*\\.visual\\..*` matches the tower's children, not just the tower."""
@@ -703,7 +720,7 @@ class TestTheRecipesIgnoredModulesStay16Bit:
     def test_a_torchao_export_is_charged_none_of_them(self, sized):
         """torchao quantizes with no ignore list, so charging these over-counts."""
         S._preflight_merge_disk(self._vlm(), "model", "torchao_fp8")
-        assert sized == [_with_merge_headroom(_sibling_bytes(10 * GB, 2 * GB, 8))]
+        assert sized == [_merge_preflight_ask(_sibling_bytes(10 * GB, 2 * GB, 8), 0)]
 
     def test_an_lm_head_module_is_not_counted_twice(self):
         """`lm_head` is both `get_output_embeddings()` and an ignored name."""
@@ -831,8 +848,9 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         monkeypatch.setattr(S, "_same_filesystem", lambda left, right: True)
         return target, free
 
-    # 10GB merge -> a 5GB sibling, asked for with the 5% merge headroom.
-    _SIBLING = _with_merge_headroom(5 * GB)
+    # 10GB merge -> a 5GB sibling. No headroom: the merge is staged in a temp
+    # directory, so no merge guard ever measures this filesystem.
+    _SIBLING = 5 * GB
 
     def test_room_for_the_sibling_alone_is_not_enough(self, redirected):
         target, free = redirected
@@ -980,7 +998,7 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         return free
 
     def test_a_short_staging_filesystem_is_named(self, separate, capsys):
-        separate["staging"] = self._STAGING - 1
+        separate["staging"] = _with_merge_headroom(self._STAGING) - 1
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         out = capsys.readouterr().out
         assert "TMPDIR" in out
@@ -1007,7 +1025,7 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert "TMPDIR" in capsys.readouterr().out
 
-        separate["staging"] = _with_merge_headroom(self._STAGING) - 1
+        separate["staging"] = self._STAGING - 1
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert "TMPDIR" in capsys.readouterr().out
 
@@ -1276,7 +1294,7 @@ class TestFullModelSavedAsLora:
         model = self._float32_model()
         expected = sum(p.numel() * p.element_size() for p in model.parameters())
         S._preflight_merge_disk(model, "model", "lora")
-        assert sized == [_with_merge_headroom(expected)]
+        assert sized == [_merge_preflight_ask(expected, 0)]
 
     def test_it_is_sized_at_the_tensors_own_dtype(self, sized):
         """Four bytes per parameter for fp32, not the two a merge writes."""
@@ -1284,7 +1302,7 @@ class TestFullModelSavedAsLora:
         n_parameters = sum(p.numel() for p in model.parameters())
         assert S._full_model_checkpoint_bytes(model) == n_parameters * 4
         S._preflight_merge_disk(model, "model", "lora")
-        assert sized == [_with_merge_headroom(n_parameters * 4)]
+        assert sized == [_merge_preflight_ask(n_parameters * 4, 0)]
 
     def test_a_sixteen_bit_model_is_sized_at_two_bytes(self):
         import torch
@@ -1352,16 +1370,36 @@ class TestFullModelSavedAsLora:
         n_parameters = sum(p.numel() for p in model.parameters())
         assert S._full_model_checkpoint_bytes(model, state_dict) == n_parameters * 4
         S._preflight_merge_disk(model, "model", "lora", state_dict = state_dict)
-        assert sized == [_with_merge_headroom(n_parameters * 4)]
+        assert sized == [_merge_preflight_ask(n_parameters * 4, 0)]
 
-    @pytest.mark.parametrize("state_dict", [None, {}])
-    def test_no_state_dict_still_measures_the_model(self, sized, state_dict):
-        """Both spellings of "the caller passed nothing" keep the old answer."""
+    def test_no_state_dict_measures_the_model(self, sized):
+        """`None` is the only spelling of "the caller passed nothing"."""
         model = self._float32_model()
         n_parameters = sum(p.numel() for p in model.parameters())
-        assert S._full_model_checkpoint_bytes(model, state_dict) == n_parameters * 4
-        S._preflight_merge_disk(model, "model", "lora", state_dict = state_dict)
-        assert sized == [_with_merge_headroom(n_parameters * 4)]
+        assert S._full_model_checkpoint_bytes(model, None) == n_parameters * 4
+        S._preflight_merge_disk(model, "model", "lora", state_dict = None)
+        assert sized == [_merge_preflight_ask(n_parameters * 4, 0)]
+
+    def test_an_explicitly_empty_state_dict_is_not_no_state_dict(self, sized):
+        """`{}` is a caller's answer, and the answer is "write nothing".
+
+        `unsloth_generic_save` forwards the dict on `state_dict is not None`,
+        so an empty one reaches `save_pretrained` and no model tensors are
+        written at all. This selected on truthiness and priced the resident
+        model instead, which on Kaggle moves a save that writes nothing off
+        persistent storage and into a /tmp the kernel does not keep.
+        """
+        model = self._float32_model()
+        assert S._full_model_checkpoint_bytes(model, {}) == 0
+        assert S._preflight_merge_disk(model, "model", "lora", state_dict = {}) == "model"
+        assert sized == [], "nothing is written, so nothing is asked for"
+
+    def test_the_writer_really_forwards_an_empty_dict(self):
+        """The sizing above is only right while this stays true."""
+        import inspect
+
+        source = inspect.getsource(S.unsloth_generic_save)
+        assert 'if state_dict is not None:\n            _save_kwargs["state_dict"] = state_dict' in source
 
     def test_both_call_sites_forward_the_dict(self, monkeypatch):
         """A parameter nothing passes measures nothing.
