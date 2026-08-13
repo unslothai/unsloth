@@ -17,7 +17,6 @@ export const ru = {
     searchAriaLabel: "Поиск: {noun}",
     modelSourceAriaLabel: "Источник модели",
     hubSectionAriaLabel: "Раздел Hub",
-    pickModelFile: "Выбрать файл модели на диске",
     modelDropped: "Больше не предлагается",
     modelDroppedByProvider: "{provider} · больше не предлагается",
     modelDisabled: "Не включена",
@@ -421,6 +420,12 @@ export const ru = {
         launchAtLogin: "Запускать Unsloth при входе в систему",
         launchAtLoginDescription:
           "Запускает Unsloth в фоновом режиме при входе в систему. Приложение остаётся в строке меню или системном трее, пока вы его не откроете.",
+
+        closeToTray: "Закрывать в системный трей",
+        closeToTrayDescription:
+          "Оставлять Unsloth и его сервер работающими в фоне при закрытии главного окна.",
+        closeToTraySaveError:
+          "Не удалось обновить настройку закрытия в системный трей.",
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
       },
@@ -720,6 +725,39 @@ export const ru = {
         free: "{value} свободно",
         total: "{value} всего",
       },
+      llamaBackend: {
+        title: "Движок инференса GGUF",
+        label: "Вычислительный бэкенд",
+        description: "Бэкенд, на котором llama.cpp выполняет модели GGUF.",
+        runningOn: "Сейчас llama.cpp работает на {backend}.",
+        hint: "Устанавливает сборку llama.cpp для этого бэкенда и сохраняет выбор при обновлениях. Пригодится, если автоматический выбор падает или драйвер видеокарты его не поддерживает. Показаны только бэкенды, для которых есть сборка под этот компьютер; на обучение это не влияет.",
+        autoWith: "Автоматически ({backend})",
+        apply: "Применить",
+        applying: "Установка...",
+        applyHint: "Скачает новую сборку и перезапустит llama.cpp. Загруженная модель будет выгружена.",
+        applyHintWithSize: "Скачает {size} и перезапустит llama.cpp. Загруженная модель будет выгружена.",
+        switchedTo: "Теперь llama.cpp работает на {backend}.",
+        switchFailed: "Не удалось изменить бэкенд llama.cpp.",
+        switchInterrupted: "Переключение было прервано до завершения.",
+        envLocked: "Значение {backend} задано переменной окружения UNSLOTH_LLAMA_CPP_BACKEND, она важнее этой настройки.",
+        backends: {
+          auto: "Автоматически",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Управляемая установка llama.cpp не найдена, поэтому менять нечего.",
+          localLink: "llama.cpp, это локальный каталог, который вы подключили сами, и Unsloth его не заменяет.",
+          sourceBuild: "Этот llama.cpp собран из исходников, его бэкенд нельзя переключить отсюда.",
+          unresolved: "Не удалось проверить доступные бэкенды. Проверьте подключение и повторите попытку.",
+        },
+        // Не отображается: дополнительные слова для поиска по настройкам.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
+      },
       modelMemory: {
         title: "Память модели",
         keepResident: "Держать модель в памяти GPU",
@@ -936,11 +974,13 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортировать файл экспорта в формате JSONL, NDJSON или CSV в раздел «Недавние».",
+        "Импортируйте экспорт Open WebUI, JSONL, NDJSON или CSV в Недавние.",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
       importedChatCount: "Импортировано диалогов в «Недавние»: {count}.",
+      importingChats: "Импорт чатов: пока {count} ({percent}%)...",
+      importedChatCountPartial: "Импортировано {count} бесед в Недавние; {failed} не удалось сохранить.",
       importFailed: "Импорт не удался.",
       clearHistory: "Очистить историю чатов",
       clearHistoryDescription: "Удалить историю чатов с этого устройства.",

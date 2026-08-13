@@ -39,11 +39,14 @@ const setCheckpoint = () =>
 
 test("selecting a Codex checkpoint keeps deep research", () => {
   const body = setCheckpoint();
+  // Main settled on externalModelSupportsStudioTools for this; the property under test is
+  // that the clamp is provider-aware and computed once, not which helper answers it.
   assert.match(
     body,
-    /const clampsDeepResearch = externalCheckpointRefusesDeepResearch\(modelId\);/,
+    /const clampsDeepResearch =\s*isExternalModelId\(modelId\) && !externalModelSupportsStudioTools\(modelId\);/,
   );
-  // Every deep-research write in the setter goes through the provider-aware clamp.
+  // Every deep-research write in the setter goes through that one clamp rather than
+  // re-testing the id, which is what switched it off for capable providers.
   for (const line of body.split("\n")) {
     if (!/deepResearch/i.test(line)) continue;
     assert.doesNotMatch(

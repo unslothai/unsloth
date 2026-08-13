@@ -197,7 +197,7 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
     install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
     setup_rows = _sh_name_arch_rows(
         (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8"),
-        var = "_setup_gfx",
+        var = "_sup_gfx_out",
     )
     assert setup_rows, "no name->arch case table found in studio/setup.sh"
     assert install_rows == setup_rows, (

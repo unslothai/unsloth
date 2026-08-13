@@ -16,7 +16,11 @@ import {
   recoverDroppedDiffusionSplit,
   shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import {
+  externalModelSupportsStudioTools,
+  isExternalModelId,
+  parseExternalModelId,
+} from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
@@ -2379,10 +2383,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // stale persisted local id would race the freshly-loaded model. See
       // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      // Codex runs deep research, so clamp only the external providers that
-      // cannot. saveBool now reaches the backend, and clamping on every external
-      // id would write the preference off for every browser on the install.
-      const clampsDeepResearch = externalCheckpointRefusesDeepResearch(modelId);
+      // Only disarm research for a connection that cannot drive it. Gating on the id
+      // prefix alone silently switched it off for capable providers too, and saveBool
+      // now reaches the backend, so that would write the preference off for every
+      // browser on the install. Hoisted because all three writes below share it.
+      const clampsDeepResearch =
+        isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId);
       if (clampsDeepResearch) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
@@ -2400,12 +2406,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        const cap = getExternalMaxOutputTokens(
-          provider?.providerType,
-          parsed?.modelId,
-        );
-        if (nextMaxTokens > cap) {
-          nextMaxTokens = cap;
+        // Only when the connection is known. A checkpoint restored before the
+        // provider store hydrates would otherwise read the 32,768 fallback and lower
+        // a value nothing puts back. No provider means unknown, not 32,768.
+        if (provider) {
+          const cap = getExternalMaxOutputTokens(
+            provider.providerType,
+            parsed?.modelId,
+            provider.maxOutputTokens,
+          );
+          if (nextMaxTokens > cap) {
+            nextMaxTokens = cap;
+          }
         }
       }
       const nextGgufVariant = ggufVariant ?? null;
@@ -2450,8 +2462,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to an external provider that cannot run Deep Research
-        // disables it; a local model or Codex keeps the preference.
+        // Switching to a connection whose provider cannot run Studio's tool
+        // loop disables Deep Research; a capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
     }),

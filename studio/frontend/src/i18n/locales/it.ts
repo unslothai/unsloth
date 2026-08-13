@@ -406,6 +406,12 @@ export const it = {
         launchAtLogin: "Avvia Unsloth all'accesso",
         launchAtLoginDescription:
           "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+
+        closeToTray: "Chiudi nell'area di notifica",
+        closeToTrayDescription:
+          "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
+        closeToTraySaveError:
+          "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
@@ -705,6 +711,39 @@ export const it = {
         free: "Disponibili: {value}",
         total: "Totale: {value}",
       },
+      llamaBackend: {
+        title: "Motore di inferenza GGUF",
+        label: "Backend di calcolo",
+        description: "Il backend che llama.cpp usa per eseguire i modelli GGUF.",
+        runningOn: "llama.cpp è in esecuzione su {backend}.",
+        hint: "Installa la build di llama.cpp per questo backend e la mantiene tra un aggiornamento e l'altro. Utile se la scelta automatica va in crash o se il driver della GPU non la supporta. Sono elencati solo i backend con una build per questa macchina; l'addestramento non cambia.",
+        autoWith: "Automatico ({backend})",
+        apply: "Applica",
+        applying: "Installazione...",
+        applyHint: "Scarica la nuova build e riavvia llama.cpp. Il modello caricato verrà scaricato.",
+        applyHintWithSize: "Scarica {size} e riavvia llama.cpp. Il modello caricato verrà scaricato.",
+        switchedTo: "Ora llama.cpp è in esecuzione su {backend}.",
+        switchFailed: "Impossibile cambiare il backend di llama.cpp.",
+        switchInterrupted: "Il cambio è stato interrotto prima del completamento.",
+        envLocked: "Impostato su {backend} dalla variabile d'ambiente UNSLOTH_LLAMA_CPP_BACKEND, che ha la precedenza su questa opzione.",
+        backends: {
+          auto: "Automatico",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Nessuna installazione di llama.cpp gestita da Unsloth, quindi non c'è un backend da cambiare.",
+          localLink: "llama.cpp è una cartella locale collegata da te, quindi Unsloth non la sostituirà.",
+          sourceBuild: "Questo llama.cpp è stato compilato dai sorgenti, quindi il backend non è modificabile da qui.",
+          unresolved: "Non è stato possibile controllare i backend disponibili. Verifica la connessione e riprova.",
+        },
+        // Non visualizzato: termini aggiuntivi per la ricerca nelle impostazioni.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inferenza cuda rocm hip vulkan metal cpu gpu acceleratore prebuilt cambiare motore",
+      },
       modelMemory: {
         title: "Memoria del modello",
         keepResident: "Mantieni il modello nella memoria della GPU",
@@ -923,11 +962,13 @@ export const it = {
       exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
-        "Importa nei Recenti un'esportazione JSONL, NDJSON o CSV.",
+        "Importa un export Open WebUI, JSONL, NDJSON o CSV in Recenti.",
       importChatsAction: "Importa",
       importNoConversations: "Nessuna conversazione trovata nel file.",
       importedOneChat: "1 conversazione importata nei Recenti.",
       importedChatCount: "{count} conversazioni importate nei Recenti.",
+      importingChats: "Importazione chat: {count} finora ({percent}%)...",
+      importedChatCountPartial: "Importate {count} conversazioni in Recenti; {failed} non sono state salvate.",
       importFailed: "Importazione non riuscita.",
       clearHistory: "Cancella la cronologia delle chat",
       clearHistoryDescription:
@@ -1199,7 +1240,6 @@ export const it = {
     searchAriaLabel: "Cerca {noun}",
     modelSourceAriaLabel: "Origine del modello",
     hubSectionAriaLabel: "Sezione Hub",
-    pickModelFile: "Scegli un file del modello dal disco",
     modelDropped: "Non più offerto",
     modelDroppedByProvider: "{provider} · non più offerto",
     modelDisabled: "Non attivato",

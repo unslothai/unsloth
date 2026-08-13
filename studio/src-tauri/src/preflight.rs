@@ -34,10 +34,43 @@ fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
+/// Whether the managed install sits on a profile the app cannot reach:
+/// `Unavailable` if the binary was never looked up, `Stale` if it has nowhere to run.
+fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
+    match managed {
+        ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
+            // Either context failure: repair needs the same profile or path setting.
+            managed::is_context_reason(reason)
+        }
+        ManagedProbe::Ready { .. } | ManagedProbe::Missing => false,
+    }
+}
+
+/// Repair reinstalls through the managed CLI, which needs the profile the probe
+/// just failed to reach, and stops a backend that still answers to do it.
+fn stale_auto_repair(managed: &ManagedProbe) -> bool {
+    release_auto_repair() && !managed_profile_unreachable(managed)
+}
+
+/// What to tell the user about a stale backend: the unreachable profile wins,
+/// since the frontend answers every other reason with "update", which needs it.
+fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
+    if managed_profile_unreachable(managed) {
+        info!("Desktop preflight: stale backend ({reason}) reported as an unusable managed context");
+        return match managed {
+            ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
+                reason.clone()
+            }
+            _ => managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+        };
+    }
+    reason.to_string()
+}
+
 fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
     match managed {
         ManagedProbe::Ready { bin } | ManagedProbe::Stale { bin, .. } => Some(bin.clone()),
-        ManagedProbe::Missing => None,
+        ManagedProbe::Missing | ManagedProbe::Unavailable { .. } => None,
     }
 }
 
@@ -67,14 +100,23 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
+                // The repair needs the same home directory, so do not offer it.
+                can_auto_repair: release_auto_repair() && !managed::is_context_reason(&reason),
                 reason: Some(reason),
                 port: None,
-                can_auto_repair: release_auto_repair(),
                 managed_bin: Some(bin),
             },
             ManagedProbe::Missing => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::NotInstalled,
                 reason: None,
+                port: None,
+                can_auto_repair: false,
+                managed_bin: None,
+            },
+            // Not "install Unsloth": the install may exist on an unmounted profile.
+            ManagedProbe::Unavailable { reason } => DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::ManagedStale,
+                reason: Some(reason),
                 port: None,
                 can_auto_repair: false,
                 managed_bin: None,
@@ -101,9 +143,9 @@ fn choose_owned_preflight(
         },
         OwnedBackendReadiness::Stale { reason } => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::OwnedStale,
-            reason: Some(reason.clone()),
+            reason: Some(stale_reason(managed, reason)),
             port: Some(owned.port),
-            can_auto_repair: release_auto_repair(),
+            can_auto_repair: stale_auto_repair(managed),
             managed_bin: managed_bin_for_result(managed),
         },
     }
@@ -154,9 +196,9 @@ fn choose_ownerless_spawned_preflight(
         (Some(owned_port), BackendProbe::Old { port, reason }) if owned_port == *port => {
             DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::OwnedStale,
-                reason: Some(reason.clone()),
+                reason: Some(stale_reason(managed, reason)),
                 port: Some(*port),
-                can_auto_repair: release_auto_repair(),
+                can_auto_repair: stale_auto_repair(managed),
                 managed_bin: managed_bin_for_result(managed),
             }
         }
@@ -410,6 +452,18 @@ mod tests {
                 false,
                 None,
             ),
+            // An unreachable profile is not a missing install.
+            (
+                ManagedProbe::Unavailable {
+                    reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+                },
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::ManagedStale,
+                None,
+                Some(managed::WORKING_DIRECTORY_UNAVAILABLE),
+                false,
+                None,
+            ),
         ];
 
         for (managed, backend, disposition, port, reason, can_auto_repair, managed_bin) in cases {
@@ -419,6 +473,84 @@ mod tests {
             assert_eq!(result.reason.as_deref(), reason);
             assert_eq!(result.can_auto_repair, can_auto_repair);
             assert_eq!(result.managed_bin, managed_bin);
+        }
+    }
+
+    #[test]
+    fn repair_is_withheld_from_stale_backends_on_an_unreachable_profile() {
+        let bin = PathBuf::from("/managed/unsloth");
+        let unreachable = [
+            ManagedProbe::Unavailable {
+                reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+            },
+            ManagedProbe::Stale {
+                bin: bin.clone(),
+                reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+            },
+        ];
+        let reachable = [
+            ManagedProbe::Ready { bin: bin.clone() },
+            ManagedProbe::Missing,
+            ManagedProbe::Stale {
+                bin: bin.clone(),
+                reason: "cli_unusable".to_string(),
+            },
+        ];
+
+        let owned = |managed: &ManagedProbe| {
+            choose_owned_preflight(
+                managed,
+                &VerifiedOwnedBackend {
+                    owner: crate::desktop_backend_owner::test_owner_state("root", "token", 8000),
+                    port: 8000,
+                    backend_pid: 2,
+                    generation: 3,
+                    readiness: OwnedBackendReadiness::Stale {
+                        reason: "backend_outdated".to_string(),
+                    },
+                },
+            )
+        };
+        let ownerless = |managed: &ManagedProbe| {
+            choose_ownerless_spawned_preflight(
+                managed,
+                &BackendProbe::Old {
+                    port: 8000,
+                    reason: "backend_outdated".to_string(),
+                },
+                Some(8000),
+            )
+        };
+
+        for managed in &unreachable {
+            assert!(managed_profile_unreachable(managed), "{managed:?}");
+            assert!(!stale_auto_repair(managed), "{managed:?}");
+            // Repair would stop a working backend for an install that cannot run.
+            for result in [owned(managed), ownerless(managed)] {
+                assert_eq!(result.disposition, DesktopPreflightDisposition::OwnedStale);
+                assert_eq!(result.port, Some(8000));
+                assert!(!result.can_auto_repair, "{managed:?}");
+                // The frontend answers "backend_outdated" with "update", which needs
+                // the profile.
+                assert_eq!(
+                    result.reason.as_deref(),
+                    Some(managed::WORKING_DIRECTORY_UNAVAILABLE),
+                    "{managed:?}"
+                );
+            }
+        }
+
+        for managed in &reachable {
+            assert!(!managed_profile_unreachable(managed), "{managed:?}");
+            assert_eq!(stale_auto_repair(managed), release_auto_repair());
+            for result in [owned(managed), ownerless(managed)] {
+                assert_eq!(result.can_auto_repair, release_auto_repair(), "{managed:?}");
+                assert_eq!(
+                    result.reason.as_deref(),
+                    Some("backend_outdated"),
+                    "{managed:?}"
+                );
+            }
         }
     }
 

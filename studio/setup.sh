@@ -37,11 +37,10 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
-#                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
-#                           selects Vulkan even when CUDA or ROCm is detected.
-#                           "hip"/"rocm" keeps the detected HIP backend and opts
-#                           out of automatic Vulkan fallback.
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
+#                           "hip", or "rocm". Concrete values select and persist a
+#                           backend across updates; "auto" restores detection.
+#                           Overrides Studio's Settings > System selection.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -1478,17 +1477,287 @@ _setup_http_get_timed() {
     fi
 }
 
+# ── uv from a pinned release ──
+# Same archive and destination as astral's installer, but it fetches a data file with a
+# pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# Bumping the version means bumping every hash:
+#   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
+#
+# Only the four mainstream targets are pinned; the rest fall through to the existing path
+# rather than risk a binary for the wrong triple.
+_SETUP_UV_PINNED_VERSION="0.12.1"
+
+# Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
+# run the GNU build", and astral drops to its musl-static archive below its floor.
+_setup_uv_glibc_minor() {
+    _sugm_line=$( (ldd --version 2>/dev/null || true) | head -1 )
+    case "$_sugm_line" in *[Mm]usl*) return 1 ;; esac
+    _sugm_ver=$(printf '%s\n' "$_sugm_line" | awk '{print $NF}')
+    case "$_sugm_ver" in
+        2.[0-9]*) : ;;
+        *) _sugm_ver=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}') ;;
+    esac
+    case "$_sugm_ver" in 2.[0-9]*) : ;; *) return 1 ;; esac
+    _sugm_minor=${_sugm_ver#2.}
+    _sugm_minor=${_sugm_minor%%.*}
+    case "$_sugm_minor" in "" | *[!0-9]*) return 1 ;; esac
+    echo "$_sugm_minor"
+    return 0
+}
+
+_setup_uv_pinned_asset() {
+    _supa_os=$(uname -s 2>/dev/null || echo unknown)
+    _supa_arch=$(uname -m 2>/dev/null || echo unknown)
+    case "$_supa_os" in
+        Linux)
+            # A 32-bit userland on a 64-bit kernel still reports x86_64 from uname.
+            [ "$(getconf LONG_BIT 2>/dev/null || echo 0)" = "64" ] || return 1
+            _supa_glibc=$(_setup_uv_glibc_minor) || return 1
+            case "$_supa_arch" in
+                x86_64|amd64)
+                    [ "$_supa_glibc" -ge 17 ] 2>/dev/null || return 1
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                aarch64|arm64)
+                    [ "$_supa_glibc" -ge 28 ] 2>/dev/null || return 1
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        Darwin)
+            # Rosetta 2 reports x86_64 from a translated shell; astral reads the same sysctl.
+            if [ "$_supa_arch" = "x86_64" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+                _supa_arch=arm64
+            fi
+            case "$_supa_arch" in
+                x86_64)
+                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                arm64|aarch64)
+                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+_setup_uv_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    fi
+}
+
+# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
+# `timeout` exists (stock macOS has none).
+_setup_uv_probe_exec() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
+    else
+        "$1" --version >/dev/null 2>&1 </dev/null
+    fi
+}
+
+# The function's own cleanup only runs when it returns, so an interrupt left the unpacked
+# archive behind plus a staging file inside a directory on PATH. No trap is active here (the
+# gitignore EXIT trap is cleared well above), so the pinned install owns these four for its
+# duration and hands them back on the way out.
+_setup_uv_cleanup_temporaries() {
+    [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE2:-}" ] && rm -f "$_SIUP_STAGE2" 2>/dev/null || true
+}
+
+_setup_uv_on_signal() {
+    trap - EXIT HUP INT TERM
+    _setup_uv_cleanup_temporaries
+    exit "$1"
+}
+
+# The PATH a new shell inherits, captured before the uv destination can be prepended to it.
+_SETUP_LOGIN_PATH="$PATH"
+_SIUP_WORK=""
+_SIUP_STAGE=""
+_SIUP_STAGE2=""
+
+_setup_install_uv_pinned() {
+    _siup_spec=$(_setup_uv_pinned_asset) || return 1
+    [ -n "$_siup_spec" ] || return 1
+    _siup_asset=${_siup_spec%% *}
+    _siup_want=${_siup_spec##* }
+    command -v tar >/dev/null 2>&1 || return 1
+    [ -n "$(_setup_uv_sha256 /dev/null)" ] || return 1
+    [ -n "${HOME:-}" ] || return 1
+
+    # astral's full destination priority, including the XDG_DATA_HOME tier that sits between
+    # XDG_BIN_HOME and the home default. Dropping it would leave uv under ~/.local/bin on a
+    # host that configured an XDG location, where no later shell looks for it.
+    _siup_dest="${UV_INSTALL_DIR:-${UV_UNMANAGED_INSTALL:-${XDG_BIN_HOME:-}}}"
+    if [ -z "$_siup_dest" ] && [ -n "${XDG_DATA_HOME:-}" ]; then _siup_dest="$XDG_DATA_HOME/../bin"; fi
+    [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
+    # 2>/dev/null, as install.sh does: a speculative attempt whose failure falls back.
+    _siup_work=$(mktemp -d 2>/dev/null) || return 1
+    _SIUP_WORK="$_siup_work"
+    trap _setup_uv_cleanup_temporaries EXIT
+    trap '_setup_uv_on_signal 129' HUP
+    trap '_setup_uv_on_signal 130' INT
+    trap '_setup_uv_on_signal 143' TERM
+    _siup_rc=1
+    # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
+    # restricted network sets one because the public hosts are unreachable, so trying those first
+    # would stall instead of falling through.
+    if [ -n "${UV_DOWNLOAD_URL:-}" ]; then
+        _siup_bases="${UV_DOWNLOAD_URL%/}"
+    elif [ -n "${INSTALLER_DOWNLOAD_URL:-}" ]; then
+        _siup_bases="${INSTALLER_DOWNLOAD_URL%/}"
+    elif [ -n "${UV_INSTALLER_GHE_BASE_URL:-}" ]; then
+        _siup_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
+        _siup_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    else
+        _siup_bases="https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION
+https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    fi
+    for _siup_base in $_siup_bases; do
+        _setup_http_get "$_siup_base/$_siup_asset" > "$_siup_work/$_siup_asset" 2>/dev/null || continue
+        [ -s "$_siup_work/$_siup_asset" ] || continue
+        [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
+        tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
+        mkdir -p "$_siup_dest" 2>/dev/null || break
+        # Stage both, then publish both, as install.sh does: the renames sit next to each
+        # other so the pair is replaced as one.
+        _siup_ready=1
+        for _siup_exe in uv uvx; do
+            # `mv f d` moves f INTO d and reports success, and a searchable directory passes -x
+            # too, so a directory called uv at the destination would look like a published
+            # binary and skip the fallback. The installer already refuses one for its own shim.
+            if [ -d "$_siup_dest/$_siup_exe" ]; then _siup_ready=0; break; fi
+            _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
+            if [ -z "$_siup_src" ]; then _siup_ready=0; break; fi
+            # cp writes through a symlinked destination, and a per-process staging name keeps
+            # two racing installers from publishing each other's half-written file.
+            _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || { _siup_ready=0; break; }
+            if [ "$_siup_exe" = "uv" ]; then _SIUP_STAGE="$_siup_stage"; else _SIUP_STAGE2="$_siup_stage"; fi
+            if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then _siup_ready=0; break; fi
+            # 0755, not +x: the staging file carries the umask default and +x only adds execute
+            # where read was allowed, so umask 077 would leave uv unusable for every other
+            # account. astral ships these 0755.
+            chmod 0755 "$_siup_stage" 2>/dev/null || true
+            # Validate before publishing: the rename destroys the incumbent, so a binary that
+            # cannot run here must never replace one that could.
+            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
+        done
+        if [ "$_siup_ready" = "1" ] &&
+           mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
+           mv -f "$_SIUP_STAGE2" "$_siup_dest/uvx" 2>/dev/null; then
+            _siup_rc=0
+        fi
+        rm -f "$_SIUP_STAGE" "$_SIUP_STAGE2" 2>/dev/null || true
+        _SIUP_STAGE=""
+        _SIUP_STAGE2=""
+        break
+    done
+    rm -rf "$_siup_work"
+    _SIUP_WORK=""
+    _SIUP_STAGE=""
+    _SIUP_STAGE2=""
+    trap - EXIT HUP INT TERM
+    # The staged binary already answered --version above, before it replaced anything.
+    [ -x "$_siup_dest/uv" ] || _siup_rc=1
+    if [ "$_siup_rc" = "0" ]; then
+        export PATH="$_siup_dest:$PATH"
+        _setup_persist_uv_path "$_siup_dest"
+    fi
+    return "$_siup_rc"
+}
+
+# astral's installer wrote a profile line for whichever destination it chose. This replaces that
+# installer, so setup.sh run directly (local or Colab) has to do the same or the export above
+# dies with this shell and every later run reinstalls uv. Both of astral's opt-outs apply, and
+# fish is handled on its own terms since it reads none of the POSIX rc files.
+# Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
+# expansion is off for the walk and restored afterwards.
+_setup_path_has_dir() {
+    _sphd_glob=on
+    case $- in *f*) _sphd_glob=off ;; esac
+    set -f
+    _sphd_found=1
+    _sphd_old_ifs="$IFS"
+    IFS=:
+    for _sphd_entry in $1; do
+        if [ "$_sphd_entry" = "$2" ]; then _sphd_found=0; break; fi
+    done
+    IFS="$_sphd_old_ifs"
+    [ "$_sphd_glob" = on ] && set +f
+    return "$_sphd_found"
+}
+
+_setup_persist_uv_path() {
+    _supp_dir="$1"
+    [ -n "$_supp_dir" ] || return 0
+    [ -n "${HOME:-}" ] || return 0
+    [ -z "${UV_NO_MODIFY_PATH:-}" ] || return 0
+    [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
+    # The PATH a new shell inherits, not the one this process has already prepended to, and
+    # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
+    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
+    # file, and it is written regardless of the current shell for the same reason.
+    _supp_fish_dir="$HOME/.config/fish/conf.d"
+    if mkdir -p "$_supp_fish_dir" 2>/dev/null; then
+        _supp_fish="$_supp_fish_dir/unsloth.fish"
+        # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
+        _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
+        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
+            echo "# Added by Unsloth setup" >> "$_supp_fish"
+            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+        fi
+    fi
+    # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
+    # /opt/uv-old when we want /opt/uv, and PYTHONPATH=/opt/uv are none of them, and taking any
+    # for an entry leaves the next shell unable to resolve uv.
+    _supp_path_line='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
+    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
+    # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
+    # terminated by the shell that reads it.
+    _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # Every startup file astral's installer wired, because it is the installer this replaced:
+    # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
+    # file for the shell that happens to be running would leave a bash user whose .bash_profile
+    # does not source .bashrc, or anyone who later switches shells, without uv on PATH.
+    for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                         "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+        if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
+        # are not PATH entries, and taking one for an entry leaves the next shell without uv.
+        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+            | grep -E "$_supp_path_line" \
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
+        echo '' >> "$_supp_profile"
+        echo '# Added by Unsloth setup' >> "$_supp_profile"
+        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+    done
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
-    if _is_verbose; then
+    _SETUP_UV_PINNED_OK=false
+    if _setup_install_uv_pinned; then
+        _SETUP_UV_PINNED_OK=true
+    elif _is_verbose; then
         _setup_http_get https://astral.sh/uv/install.sh | sh
     else
         _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
-    export PATH="$HOME/.local/bin:$PATH"
+    # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
+    # own destination first, and prepending here would let a stale ~/.local/bin/uv shadow the
+    # 0.12.1 we just verified, so the rest of setup would run the wrong one.
+    [ "$_SETUP_UV_PINNED_OK" = true ] || export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
 fi
 
@@ -1787,6 +2056,30 @@ if [ "$_setup_torch_is_xpu" = true ]; then
     run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
 fi
+# The supported name table, as a matcher so the report below can ask it about a PEER adapter
+# without disturbing $_setup_gfx. Kept in sync with install.sh (and the PS nameArchTable).
+# gfx1102 before gfx1100 so the spaceless "RX 7700S" lands on gfx1102 (case has no lookahead).
+_setup_supported_gfx_from_name() {
+    _sup_gfx_in="$1"
+    _sup_gfx_out=""
+    case "$_sup_gfx_in" in
+        *9070*|*9080*|*"R9700"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
+        *9060*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
+        *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _sup_gfx_out="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
+        *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
+        *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
+        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+    esac
+    [ -n "$_sup_gfx_out" ] || return 1
+    printf '%s\n' "$_sup_gfx_out"
+}
+
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -1815,8 +2108,9 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
         # missing but the kernel exposes the GPU, so the source-build gate
-        # below does not drop them to a CPU llama.cpp build. No gfx arch is
-        # available from this path; name-based inference handles it.
+        # below does not drop them to a CPU llama.cpp build. Neither a gfx arch
+        # nor a marketing name is available from this path, so the report below
+        # reads lspci rather than _setup_mkt when it needs to name the card.
         _setup_amd_detected=true
     fi
 fi
@@ -1838,23 +2132,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
-        # Kept in sync with the table in install.sh (and the PS nameArchTable).
-        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
-        # gfx1102 (bash case has no negative lookahead like the PS tables).
-        case "$_setup_mkt" in
-            *9070*|*9080*|*"R9700"*)                                                                       _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
-            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
-            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
-            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
-            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
-            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _setup_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
-        esac
+        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -1869,8 +2147,88 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
+    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+    # and Polaris 10/20/30 (unslothai#8529). Kept apart from the inference table above on
+    # purpose: it only words the report below, never selects a wheel index or prebuilt.
+    # AMD's TheRock ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here,
+    # and never gfx803. Order is load-bearing: `case` has no negative lookahead, so the
+    # RDNA 1 arms must precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
+    # Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
+    # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 is left out.
+    # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi, lspci)
+    # spells these names as pci.ids does.
+    _setup_unsupported_gfx_from_name() {
+        case "$1" in
+            *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
+            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
+            *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
+            *"RX 470"|*"RX 470"[!0]*|*"RX 480"|*"RX 480"[!0]*|*"RX 570"|*"RX 570"[!0]*|*"RX 580"|*"RX 580"[!0]*|*"RX 590"|*"RX 590"[!0]*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
+            *) return 1 ;;
+        esac
+    }
+    # The KFD sysfs fallback above detects the GPU with neither rocminfo nor amd-smi, so it
+    # leaves _setup_mkt empty -- and a runtime-less host is precisely the one this report
+    # exists for. lspci still names the card there, the source install.sh already reads.
+    # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
+    # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
+    _setup_unsupported_gfx_any() {
+        # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
+        # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
+        # Only when lspci can answer: with no adapter list there is no peer to find, and
+        # suppressing there would silence the single-card host this report exists for.
+        _setup_unsup_pci=""
+        if command -v lspci >/dev/null 2>&1; then
+            _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            while IFS= read -r _setup_unsup_ln; do
+                [ -n "$_setup_unsup_ln" ] || continue
+                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                    return 1
+                fi
+            done <<EOF
+$_setup_unsup_pci
+EOF
+        fi
+        # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
+        # from rocminfo) used to end the lookup here, so the lspci scan below never ran
+        # and the report fell through to the plain "AMD ROCm" line this change replaces.
+        if [ -n "$1" ] && _setup_unsup_named=$(_setup_unsupported_gfx_from_name "$1"); then
+            echo "$_setup_unsup_named"
+            return 0
+        fi
+        [ -n "$_setup_unsup_pci" ] || return 1
+        while IFS= read -r _setup_unsup_ln; do
+            [ -n "$_setup_unsup_ln" ] || continue
+            if _setup_unsup_hit=$(_setup_unsupported_gfx_from_name "$_setup_unsup_ln"); then
+                echo "$_setup_unsup_hit"
+                return 0
+            fi
+        done <<EOF
+$_setup_unsup_pci
+EOF
+        return 1
+    }
     if [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
+    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
+        step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
+        # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+        # NotImplementedError at import (unsloth/device_type.py).
+        # Both lines are false under an explicit index pin, which install_python_stack.py
+        # honours for any arch, so a pinned run says what it is doing instead.
+        # Whitespace-trimmed, as get_torch_index_url trims them: a blank value is unset
+        # there, so treating it as a pin would drop the CPU warning for nothing.
+        # Distinct name: _setup_pin is the XPU block's, and these are globals in POSIX sh.
+        _setup_unsup_pin="${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+        _setup_unsup_pin=$(printf '%s' "$_setup_unsup_pin" | tr -d '[:space:]')
+        if [ -n "$_setup_unsup_pin" ]; then
+            substep "The torch index you pinned is used as given, so torch is whatever it publishes."
+        else
+            substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
+            substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
+        fi
+        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+        substep "it afterwards has no effect until you install or update again."
     else
         step "gpu" "AMD ROCm"
     fi
@@ -1916,16 +2274,17 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
-_explicit_vulkan_source_build=false
+_explicit_llama_source_backend=""
 if [ "$_HOST_SYSTEM" != "Darwin" ]; then
     case "$_source_backend_choice" in
-        vulkan) _explicit_vulkan_source_build=true ;;
-        cpu|hip|rocm) ;;
+        hip) _explicit_llama_source_backend="rocm" ;;
+        cpu|cuda|rocm|vulkan) _explicit_llama_source_backend="$_source_backend_choice" ;;
+        auto) ;;
         *)
             case "$_source_legacy_force_vulkan" in
-                1|true|yes|on) _explicit_vulkan_source_build=true ;;
+                1|true|yes|on) _explicit_llama_source_backend="vulkan" ;;
             esac
             ;;
     esac
@@ -2099,10 +2458,10 @@ fi
 
 if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
     : # local directory linked above; skip prebuilt install
-elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
-    setup_fail 1 "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+elif [ -n "$_explicit_llama_source_backend" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    step "llama.cpp" "$_explicit_llama_source_backend was explicitly requested, but this installation requires a source build" "$C_ERR"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND"
+    setup_fail 1 "$_explicit_llama_source_backend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
@@ -2148,40 +2507,26 @@ else
         # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
-    # The normalized override affects llama.cpp only, not the training backend.
-    _llama_backend="$_source_backend_choice"
-    _legacy_force_vulkan="$_source_legacy_force_vulkan"
-    _explicit_vulkan_backend=false
-    case "$_llama_backend" in
+    # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself, and it
+    # is also the only side that can see a choice recorded in the install marker,
+    # so forwarding a second copy from here could only ever disagree with it. The
+    # override affects llama.cpp alone, not the training backend.
+    case "$_source_backend_choice" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
-            else
-                _PREBUILT_CMD+=(--force-cpu)
             fi
             ;;
         vulkan)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
-                _PREBUILT_CMD+=(--llama-backend vulkan)
-                _explicit_vulkan_backend=true
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
-        ""|auto|hip|rocm) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+        ""|auto|cuda|hip|rocm) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_source_backend_choice' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
-    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
-        case "$_llama_backend" in
-            cpu|vulkan|hip|rocm) ;;
-            *)
-                case "$_legacy_force_vulkan" in
-                    1|true|yes|on) _explicit_vulkan_backend=true ;;
-                esac
-                ;;
-        esac
-    fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
@@ -2221,13 +2566,22 @@ else
         substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
         _LLAMA_CPP_NO_SPACE=true
         _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
-        # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-        # request, and it leaves _LLAMA_CPP_DEGRADED false, so without this the
-        # run reports success on the backend the user asked to replace.
-        if [ "$_explicit_vulkan_backend" = true ]; then
-            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
-            setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+        # A preserved server may not satisfy an explicit backend request, and it
+        # leaves _LLAMA_CPP_DEGRADED false. Never report success on an unverified
+        # backend after the requested replacement ran out of space.
+        if [ -n "$_explicit_llama_source_backend" ]; then
+            step "llama.cpp" "$_explicit_llama_source_backend was explicitly requested, so the installer will not keep an unverified existing backend" "$C_ERR"
+            setup_fail 1 "$_explicit_llama_source_backend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
         fi
+    elif [ "$_PREBUILT_STATUS" -eq 5 ]; then
+        step "llama.cpp" "selected backend could not be installed" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "prebuilt update failed; existing install restored"
+        fi
+        substep "check the error above, choose another backend, or retry"
+        setup_fail 1 "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -2235,14 +2589,11 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        if [ "$_explicit_vulkan_backend" = true ]; then
-            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
-            substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
-            setup_fail 1 "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
-        else
-            substep "falling back to source build"
-            _NEED_LLAMA_SOURCE_BUILD=true
-        fi
+        # Exit 2 means no concrete backend was in play: a request the installer
+        # could not honour -- named here or recorded in the install marker, which
+        # this script cannot see -- exits 5 above instead.
+        substep "falling back to source build"
+        _NEED_LLAMA_SOURCE_BUILD=true
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"

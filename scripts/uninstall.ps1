@@ -4,13 +4,13 @@
 # Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
 # Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
-# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+# Usage: run -Help. The web one-liner is in that help text and is not repeated here, since
+# AMSI scans this file in full before any of it runs and nothing reads the header.
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
-    # Reset at entry: `irm ... | iex` defines this function in the caller's session, so a
+    # Reset at entry: a piped web run defines this function in the caller's session, so a
     # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
@@ -183,15 +183,43 @@ Environment:
         }
     }
 
+    # Is this bin\unsloth.cmd the launcher install.ps1 wrote, or just a file with that
+    # name? The distinction decides whether a directory gets deleted recursively, so a
+    # name alone is not enough -- `unsloth.cmd` is a plausible wrapper for anyone who
+    # ships an unsloth-based tool, and pointing UNSLOTH_STUDIO_HOME at such a project
+    # must not hand its whole tree to _RemovePath.
+    #
+    # The trampoline is the marker: install.ps1 bakes that exact expression into the
+    # shim, no other file has a reason to carry it, and it survives every layout the
+    # shim has (relative %~dp0 or an absolute cross-volume path, unsloth_studio or the
+    # legacy .venv). Bounded read: the real shim is a few hundred bytes.
+    function _IsUnslothCmdShim {
+        param([string]$Path)
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+        try {
+            $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+            if ($item.Length -gt 8192) { return $false }
+            $text = [System.IO.File]::ReadAllText($Path)
+        } catch {
+            # Unreadable proves nothing, and "proves nothing" must not mean "delete it".
+            return $false
+        }
+        return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
+    }
+
     # A path is an Unsloth-owned root iff one of install.ps1's sentinels exists:
     #   <root>\share\studio.conf, <root>\unsloth_studio\.unsloth-studio-owned,
-    #   or <root>\bin\unsloth.exe.
+    #   <root>\bin\unsloth.exe, or a <root>\bin\unsloth.cmd this installer wrote.
+    # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
+    # machines whose Application Control policy denies the generated console script. An
+    # install whose .exe was removed by that policy's quarantine still owns its root.
     function _IsStudioRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
+        if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
         return $false
     }
 
