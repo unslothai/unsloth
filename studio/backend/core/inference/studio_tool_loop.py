@@ -100,7 +100,7 @@ _MAX_FRUITLESS_TURNS = 2
 
 
 def _sse(payload: dict[str, Any]) -> str:
-    return "data: " + json.dumps(payload, separators=(",", ":"))
+    return "data: " + json.dumps(payload, separators = (",", ":"))
 
 
 def _is_done_sentinel(line: str) -> bool:
@@ -200,7 +200,7 @@ class ToolLoopTransport(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ToolLoopRun:
     """Everything about the request that the loop, not the transport, needs."""
 
@@ -212,7 +212,7 @@ class ToolLoopRun:
     continue_final_message: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ToolLoopPolicy:
     tools: list[dict[str, Any]]
     max_calls: int
@@ -229,12 +229,12 @@ class ToolLoopPolicy:
 class _Turn:
     """Accumulated state for one provider turn."""
 
-    by_index: dict[Any, dict[str, Any]] = field(default_factory=dict)
-    order: list[Any] = field(default_factory=list)
+    by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
+    order: list[Any] = field(default_factory = list)
     last_index: int | None = None
     round: int = 0
-    healed: list[dict[str, Any]] = field(default_factory=list)
-    text: list[str] = field(default_factory=list)
+    healed: list[dict[str, Any]] = field(default_factory = list)
+    text: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
 
@@ -294,7 +294,7 @@ class _Turn:
         for position, call in enumerate(
             [self.by_index[key] for key in self.order] + list(self.healed)
         ):
-            normalized = _normalized_call(call, fallback_id=f"call_{self.round}_{position}")
+            normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
             if normalized is None:
                 continue
             if normalized["id"] in seen:
@@ -475,8 +475,8 @@ async def stream_with_studio_tools(
     # ledger the local loops keep, so an external model cannot spend the budget
     # repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
-        tools=tools,
-        auto_heal_tool_calls=policy.auto_heal is not False,
+        tools = tools,
+        auto_heal_tool_calls = policy.auto_heal is not False,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
@@ -498,7 +498,7 @@ async def stream_with_studio_tools(
             # without bound when nothing ever executes.
             break
         provider_turns += 1
-        turn = _Turn(round=provider_turns)
+        turn = _Turn(round = provider_turns)
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()
@@ -516,10 +516,10 @@ async def stream_with_studio_tools(
             turn_tool_choice = "auto"
 
         generator = transport.stream(
-            messages=conversation,
-            tools=active_tools if tools_available else None,
-            tool_choice=turn_tool_choice,
-            cancel_event=cancel_event,
+            messages = conversation,
+            tools = active_tools if tools_available else None,
+            tool_choice = turn_tool_choice,
+            cancel_event = cancel_event,
         )
         try:
             async for line in generator:
@@ -704,12 +704,12 @@ async def stream_with_studio_tools(
                         # on its own write and the Allow / Deny buttons paint before
                         # the stream blocks waiting for the answer.
                         done, _pending = await asyncio.wait(
-                            {waiter}, timeout=_TOOL_APPROVAL_FLUSH_DELAY_S
+                            {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
                         )
                         while not done:
                             yield _SSE_KEEPALIVE
                             done, _pending = await asyncio.wait(
-                                {waiter}, timeout=TOOL_HEARTBEAT_INTERVAL_S
+                                {waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S
                             )
                     finally:
                         if not waiter.done():
@@ -748,7 +748,7 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call=decision) -> str:
+            def _invoke(output_callback: Any, call = decision) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -765,9 +765,9 @@ async def stream_with_studio_tools(
             # the card, and a heartbeat so a long call cannot idle the stream out.
             tool_stream = stream_tool_execution(
                 _invoke,
-                tool_name=name,
-                tool_call_id=call_id,
-                cancel_event=cancel_event,
+                tool_name = name,
+                tool_call_id = call_id,
+                cancel_event = cancel_event,
             )
             outcome: dict[str, Any] = {}
             step_task: Any = None
@@ -817,7 +817,7 @@ async def stream_with_studio_tools(
             "role": "assistant",
             # Markup never replays: the call is carried structurally below.
             "content": strip_tool_markup(
-                "".join(turn.text), final=True, enabled_tool_names=allowed_tool_names
+                "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
         if turn.reasoning_extra:
@@ -829,7 +829,7 @@ async def stream_with_studio_tools(
             append_assistant_turn(
                 conversation,
                 assistant_message,
-                continue_final_message=run.continue_final_message,
+                continue_final_message = run.continue_final_message,
             )
         conversation.extend(tool_messages)
         # Deferred to after the results so a no-op never splits a call from them,

@@ -110,8 +110,7 @@ def test_registry_default_still_hides_self_hosted_presets():
 def test_registry_include_hidden_returns_presets_flagged():
     """``include_hidden=true`` is how a bundle that *does* know asks."""
     entries = {
-        entry["provider_type"]: entry
-        for entry in list_available_providers(include_hidden = True)
+        entry["provider_type"]: entry for entry in list_available_providers(include_hidden = True)
     }
     for preset in SELF_HOSTED_PRESETS:
         assert preset in entries, f"{preset} missing from include_hidden payload"
@@ -130,8 +129,7 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
     """Asking for hidden rows must not perturb the rows the old bundle reads."""
     default_rows = list_available_providers()
     widened = {
-        entry["provider_type"]: entry
-        for entry in list_available_providers(include_hidden = True)
+        entry["provider_type"]: entry for entry in list_available_providers(include_hidden = True)
     }
     for row in default_rows:
         assert row == widened[row["provider_type"]]
@@ -200,9 +198,7 @@ def test_unknown_provider_types_degrade_closed(provider_type):
 
 def test_capability_flag_agrees_with_the_registry_entry():
     for entry in list_available_providers(include_hidden = True):
-        assert entry["supports_studio_tools"] is provider_runs_local_tools(
-            entry["provider_type"]
-        )
+        assert entry["supports_studio_tools"] is provider_runs_local_tools(entry["provider_type"])
 
 
 # ── 1c. no DB migration ──────────────────────────────────────────────
