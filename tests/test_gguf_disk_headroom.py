@@ -451,18 +451,67 @@ def test_unrelated_training_artifacts_are_never_deleted(tmp_path, monkeypatch, s
 
 def test_the_shards_the_index_names_are_the_ones_reclaimed(tmp_path, monkeypatch, save_mod):
     """`save_pretrained` writes an index naming its shards, so when there is one
-    it decides rather than the naming convention."""
+    it decides rather than the naming convention.
+
+    The fixture is a whole shard set under a stem the convention misses, because
+    that is the only shape an index is ever written in: a save shards or it does
+    not, and an unsharded one writes no index at all.
+    """
     merge, gguf, bases = _layout(tmp_path, merge_gb = 30, base_gb = 60)
-    odd = Path(merge) / "weights-part-a.safetensors"
-    with open(odd, "wb") as fh:
-        fh.truncate(int(20 * GB))
+    odd = [Path(merge) / f"weights-part-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    for shard in odd:
+        with open(shard, "wb") as fh:
+            fh.truncate(int(10 * GB))
     (Path(merge) / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {"a.weight": "weights-part-a.safetensors"}})
+        json.dumps({"weight_map": {f"w{i}": s.name for i, s in enumerate(odd)}})
     )
     _with_free(monkeypatch, save_mod, 1)
     freed = _reclaim(save_mod, merge, gguf, bases)
     assert freed > 20 * GB
-    assert not odd.exists(), "the index named this shard and it was left behind"
+    for shard in odd:
+        assert not shard.exists(), "the index named this shard and it was left behind"
+
+
+def test_a_stale_safetensors_index_does_not_widen_the_deletion(tmp_path, monkeypatch, save_mod):
+    """The hazard the index read creates, and the reason it is validated.
+
+    transformers writes an index only when a save shards, and its stale-shard
+    sweep never removes one. So an unsharded merge lands in a directory that
+    still holds an earlier save's index, and reading that index hands whatever it
+    names -- including files under a stem this helper otherwise protects -- to a
+    permanent delete.
+    """
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    theirs = Path(merge) / "users_own-00001-of-00002.safetensors"
+    theirs.write_bytes(b"an earlier save under a stem the convention protects")
+    (Path(merge) / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00002-of-00002.safetensors",
+            "c": theirs.name,
+        }})
+    )
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+    assert theirs.exists(), "a stale index widened the deletion onto a foreign stem"
+    assert not [f for f in os.listdir(merge) if f.startswith("model-")]
+
+
+def test_an_index_missing_shards_it_names_is_not_trusted(tmp_path, monkeypatch, save_mod):
+    """`of-00003` promises three shards. Two means this is not that set, so the
+    naming convention decides and the odd stem is left alone."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    theirs = Path(merge) / "leftover-00001-of-00003.safetensors"
+    theirs.write_bytes(b"one shard of a set that is no longer whole")
+    (Path(merge) / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {
+            "a": theirs.name,
+            "b": "leftover-00002-of-00003.safetensors",
+        }})
+    )
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+    assert theirs.exists(), "a partial shard set was read as the merge"
 
 
 def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, save_mod):

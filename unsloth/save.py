@@ -3525,6 +3525,11 @@ _MERGE_WEIGHT_NAME = re.compile(r"^(model|consolidated)(-\d{5}-of-\d{5})?\.safet
 # earlier save in the other serialization, which transformers leaves in place,
 # and reading it would hand its shards to the deletion.
 _WEIGHT_INDEX_NAMES = ("model.safetensors.index.json",)
+# One shard of a sharded save, under any stem. Only ever applied to names an
+# index already listed -- on its own this is far too wide, and dropping it from
+# the matcher above is exactly what stopped a user's `backup-00001-of-00002`
+# being read as the merge.
+_INDEX_SHARD_NAME = re.compile(r"^(?P<stem>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})\.safetensors$")
 
 
 def _merge_weight_files(model_directory, names):
@@ -3545,11 +3550,49 @@ def _merge_weight_files(model_directory, names):
             with open(os.path.join(model_directory, index_name), encoding = "utf-8") as index_file:
                 weight_map = json.load(index_file).get("weight_map") or {}
             # Basenames: only this directory is listed, so a path never matches.
-            indexed.update(os.path.split(str(shard))[-1] for shard in weight_map.values())
+            listed = {os.path.split(str(shard))[-1] for shard in weight_map.values()}
         except (OSError, ValueError, AttributeError):
             # A missing or malformed index just means the names decide instead.
             continue
+        if _is_one_whole_shard_set(listed, names):
+            indexed.update(listed)
     return sorted(n for n in names if n in indexed or _MERGE_WEIGHT_NAME.match(n))
+
+
+def _is_one_whole_shard_set(listed, names):
+    """Does this index describe one complete shard set that is all still here?
+
+    The index is the one way a name the convention misses still gets reclaimed,
+    which makes it the one way a file the convention *protects* gets deleted. An
+    index left behind by an earlier save is the case that matters: transformers
+    writes one only when a save shards, and its stale sweep never removes an
+    index (`model.safetensors.index` does not match the shard shape it looks
+    for), so an unsharded merge lands beside a previous save's index and inherits
+    whatever that one names.
+
+    A live index is self-consistent in a way a stale one has no reason to be: it
+    lists `-00001-of-000NN` through `-000NN-of-000NN` under a single stem, and
+    every shard is on disk because the save just wrote them. Requiring that
+    rejects a mixed or partial listing, which is what a stale index beside a
+    fresh save looks like, while still reclaiming a sharded merge written under
+    a stem `_MERGE_WEIGHT_NAME` does not know.
+    """
+    if not listed:
+        return False
+    stems, totals = set(), set()
+    for name in listed:
+        shard = _INDEX_SHARD_NAME.match(name)
+        if shard is None:
+            return False
+        stems.add(shard.group("stem"))
+        totals.add(shard.group("total"))
+    if len(stems) != 1 or len(totals) != 1:
+        return False
+    # `of-000NN` states the count outright, so a listing missing shards -- or
+    # naming extra ones -- is not the set it claims to be.
+    if len(listed) != int(totals.pop()):
+        return False
+    return listed <= set(names)
 
 
 def _free_merge_if_disk_is_tight(
