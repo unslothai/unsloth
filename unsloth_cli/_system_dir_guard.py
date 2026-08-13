@@ -510,7 +510,15 @@ def pin_relative_sys_path(
     return pinned
 
 
-def _anchor_list_entry(name, entry, cwd, pathmod, abspath, expandvars, expanduser = None):
+def _anchor_list_entry(
+    name,
+    entry,
+    cwd,
+    pathmod,
+    abspath,
+    expandvars,
+    expanduser = None,
+):
     """One entry of a path list, anchored, or left as written.
 
     An empty PYTHONPATH component means the working directory itself, which is
