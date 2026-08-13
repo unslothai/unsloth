@@ -137,6 +137,19 @@ def _redact_shaped(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{REDACTED}"
 
 
+# A cookie header is name=value pairs. _COOKIE_RE takes the whole rest of the
+# line, so without this "Cookie: not sent because the origin is cross-site" is
+# 20-odd characters and the length shortcut reads it as a token. That line is a
+# diagnosis, and masking it hides the thing being diagnosed.
+_COOKIE_PAIR_RE = re.compile(r"^[A-Za-z0-9_.\-]+=\S")
+
+
+def _redact_cookie(match: re.Match[str]) -> str:
+    if not _COOKIE_PAIR_RE.match(match.group(3).strip()):
+        return match.group(0)
+    return f"{match.group(1)}{match.group(2)}{REDACTED}"
+
+
 def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
@@ -148,7 +161,7 @@ def redact_log_text(text: str) -> str:
     # the scheme and leave the credential behind it in the clear.
     text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
     text = _SCHEME_RE.sub(_redact_shaped, text)
-    text = _COOKIE_RE.sub(_redact_shaped, text)
+    text = _COOKIE_RE.sub(_redact_cookie, text)
     text = _KV_RE.sub(_redact_kv, text)
     text = _FLAG_RE.sub(_redact_kv, text)
     try:

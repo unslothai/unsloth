@@ -207,3 +207,25 @@ def test_the_reader_redacts_so_a_caller_cannot_forget(tmp_path):
     path = tmp_path / "a.log"
     path.write_text("using hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345 now\n")
     assert "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345" not in read_tail(path).lines[0]
+
+
+def test_a_burst_larger_than_one_response_is_delivered_not_dropped(tmp_path):
+    """The response used to keep the NEWEST 2000 lines while advancing the
+    cursor past all of them, so a model load that logged more than that between
+    two polls lost the head of its own failure, and said dropped_bytes = 0."""
+    path = tmp_path / "a.log"
+    path.write_text("x\n")
+    cursor = read_tail(path).cursor
+    with open(path, "a", encoding = "utf-8") as handle:
+        for i in range(3000):
+            handle.write(f"appended{i}\n")
+
+    first = read_since(path, cursor)
+    assert len(first.lines) == 2000
+    assert first.lines[0] == "appended0", "the oldest of the burst must not be discarded"
+    assert first.more_pending is True
+
+    second = read_since(path, first.cursor)
+    assert second.lines == [f"appended{i}" for i in range(2000, 3000)]
+    assert second.more_pending is False
+    assert read_since(path, second.cursor).lines == []

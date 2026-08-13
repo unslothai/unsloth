@@ -129,3 +129,29 @@ def test_redaction_is_idempotent(line):
 
 def test_an_empty_line_is_safe():
     assert redact_log_text("") == ""
+
+
+COOKIE_PROSE = [
+    "Cookie: disabled by the browser",
+    "Cookie: not sent because the origin is cross-site",
+    "Set-Cookie: cleared on logout",
+]
+
+
+@pytest.mark.parametrize("line", COOKIE_PROSE)
+def test_a_cookie_diagnosis_is_not_mistaken_for_a_cookie(line):
+    """The cookie rule takes the whole rest of the line, so prose longer than
+    the token-length shortcut was being masked. A line explaining why a cookie
+    was not sent is the diagnosis, not the secret."""
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
+    "line,secret",
+    [
+        ("Cookie: unsloth_ui_session=abc123def456xyz", "abc123def456xyz"),
+        ("Set-Cookie: session=abc123def456xyz; HttpOnly", "abc123def456xyz"),
+    ],
+)
+def test_a_real_cookie_pair_is_still_masked(line, secret):
+    assert secret not in redact_log_text(line)

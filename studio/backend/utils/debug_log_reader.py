@@ -25,7 +25,7 @@ from utils.log_redaction import redact_log_text
 
 BLOCK_BYTES = 65_536
 DEFAULT_TAIL_LINES = 1_000
-MAX_TAIL_LINES = 5_000
+MAX_TAIL_LINES = 2_000  # == MAX_LINES_PER_RESPONSE: a larger ?lines= was silently capped
 # /api is not gzipped (GZipMiddleware is scoped to the assets sub-app), so this
 # is what actually goes on the wire on the first paint.
 MAX_TAIL_BYTES = 1_048_576
@@ -44,6 +44,7 @@ class ReadResult:
     reset_reason: Optional[str] = None
     dropped_bytes: int = 0
     truncated_head: bool = False
+    more_pending: bool = False
     size_bytes: int = 0
 
 
@@ -200,8 +201,23 @@ def read_since(
         consumed = last_newline + 1
         body = data[:consumed]
 
+    # Cap by BYTES, before decoding, so the cursor can stop where the response
+    # stops. Slicing the decoded lines instead threw away the oldest of a burst
+    # while still advancing the cursor past them, so a model load that logged
+    # more than MAX_LINES_PER_RESPONSE lines between two polls lost the head of
+    # its own failure, and the response said dropped_bytes = 0. The remainder is
+    # not lost now, it arrives on the next poll.
+    newline_count = body.count(b"\n")
+    if newline_count > MAX_LINES_PER_RESPONSE:
+        cut = -1
+        for _ in range(MAX_LINES_PER_RESPONSE):
+            cut = body.find(b"\n", cut + 1)
+        consumed = cut + 1
+        body = body[:consumed]
+        result.more_pending = True
+
     lines, truncated = _split_lines(body, drop_partial_head = result.dropped_bytes > 0)
     result.truncated_head = truncated
-    result.lines = _redact(lines[-MAX_LINES_PER_RESPONSE:])
+    result.lines = _redact(lines)
     result.cursor = encode_cursor(current_key, start + consumed)
     return result
