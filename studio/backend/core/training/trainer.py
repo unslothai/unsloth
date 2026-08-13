@@ -194,31 +194,56 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     return {"subfolder": "LLM"}
 
 
-def _dataset_has_audio_feature(dataset) -> Optional[bool]:
-    """Whether `dataset`'s own schema carries a real Audio column. None if it cannot tell.
+def _dataset_has_audio_column(dataset) -> Optional[bool]:
+    """Whether `dataset` really carries audio. None when it cannot be told.
 
     The trainer learns "this dataset has audio" from `is_dataset_audio`, which the client
     fills from the format check's `is_audio`. That flag is set by a column-NAME keyword
     match (`audio|speech|wav|waveform|sound`) which never inspects the value, so a text
-    dataset with a column called `audio` holding filenames reports audio. Refusing such a
-    run would take away a text path that works today, so the loaded dataset's schema gets
-    the last word.
+    dataset with a column called `audio` holding prose reports audio. Refusing such a run
+    would take away a text path that works today, so the dataset itself gets the last word.
 
-    None for a DatasetDict, an iterable dataset, or anything without `.features`: those
-    cannot answer, and an unreadable model probe is still the more likely explanation, so
-    the caller keeps refusing unless this says False outright.
+    Two questions, in cost order, because the schema alone gets this wrong in both
+    directions:
+
+    1. An ``Audio`` feature is audio, decided without reading a row.
+    2. Otherwise look at the values. An audio column loaded from JSON/CSV is a
+       ``Value("string")`` of paths until the preprocessor casts it -- ``_preprocess_snac_dataset``
+       does exactly that -- so trusting the schema would call a real audio dataset textual
+       and hand it to the text path this guard exists to prevent.
+
+    None for a DatasetDict, a schema-less iterable dataset, or a row that cannot be read:
+    those cannot answer, and an unreadable model probe is still the likelier explanation,
+    so the caller keeps refusing unless this says False outright.
     """
     try:
         from datasets.features.audio import Audio
     except Exception:  # noqa: BLE001 - datasets missing or too old to have the feature
         return None
+
     features = getattr(dataset, "features", None)
     if not features:
         return None
     try:
-        return any(isinstance(f, Audio) for f in features.values())
+        if any(isinstance(f, Audio) for f in features.values()):
+            return True
     except Exception:  # noqa: BLE001 - a mapping that is not a features dict
         return None
+
+    # No Audio feature, so nothing here decodes: reading one row is cheap and cannot hit
+    # the missing-FFmpeg path that decoding an Audio column would.
+    try:
+        from utils.datasets.format_detection import _AUDIO_EXTENSIONS, _is_audio_value
+
+        row = next(iter(dataset))
+        for value in row.values():
+            if _is_audio_value(value):
+                return True
+            if isinstance(value, str) and value.lower().endswith(_AUDIO_EXTENSIONS):
+                return True
+    except Exception:  # noqa: BLE001 - unreadable row, empty dataset, odd row type
+        return None
+    return False
 
 
 class UnslothTrainer:
@@ -365,6 +390,35 @@ class UnslothTrainer:
             )
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
+
+        # The probe above and the tokenizer load are separate reads of the same repo, so a
+        # transient timeout or 5xx can leave the probe inconclusive while the download that
+        # follows succeeds. The files are in the cache now, so ask again rather than refuse
+        # a run later claiming tokenizer_config.json could not be read when it just was.
+        # Only a still-inconclusive answer is kept: a definitive one replaces it, and
+        # detect_audio_type_checked caches only definitive results, so this costs a cache
+        # hit on the common path.
+        if not self._audio_type_known:
+            retried_type, retried_known = detect_audio_type_checked(
+                lookup_name,
+                hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
+            )
+            if retried_known:
+                self._audio_type, self._audio_type_known = retried_type, True
+                if self._audio_type == "audio_vlm":
+                    self.is_audio = False
+                    self.is_audio_vlm = is_dataset_audio
+                    self._audio_type = None
+                else:
+                    self.is_audio = self._audio_type is not None
+                    self.is_audio_vlm = False
+                logger.info(
+                    "pre_detect retry after tokenizer load: audio_type=%s, is_audio=%s",
+                    self._audio_type,
+                    self.is_audio,
+                )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         """Add callback for training progress updates"""
@@ -2908,15 +2962,18 @@ class UnslothTrainer:
             # getattr: this method is also driven against lightweight stand-ins that set
             # only the attributes they exercise, and a probe that never ran is not an
             # inconclusive one, so both defaults leave the guard closed.
-            # The schema check is the tiebreaker on _is_dataset_audio, which arrives from
+            # The dataset check is the tiebreaker on _is_dataset_audio, which arrives from
             # the client and is true on a column-NAME match alone -- see
-            # _dataset_has_audio_feature. Only a positive "no Audio column here" reopens
-            # the text path; unknown still refuses.
+            # _dataset_has_audio_column. Only a positive "no audio here" reopens the text
+            # path; unknown still refuses.
+            # raw/CPT is exempt: that branch reads the text column and ignores any audio
+            # one by design, so it is not the unsafe audio-to-text fallback this guards.
             if (
                 not self._audio_type
                 and not getattr(self, "_audio_type_known", True)
                 and getattr(self, "_is_dataset_audio", False)
-                and _dataset_has_audio_feature(dataset) is not False
+                and not raw_text_mode
+                and _dataset_has_audio_column(dataset) is not False
             ):
                 raise RuntimeError(
                     "Could not determine whether this model is an audio model: its "

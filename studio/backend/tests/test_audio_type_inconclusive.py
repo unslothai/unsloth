@@ -55,6 +55,7 @@ def _run(
     trainer,
     monkeypatch,
     dataset = None,
+    format_type = "auto",
 ):
     from hub.utils import dataset_cache
 
@@ -76,6 +77,7 @@ def _run(
     )
     return trainer.load_and_format_dataset(
         "org/dataset",
+        format_type = format_type,
         dataset_local_files_only = True,
         dataset_local_path = "/cache/snapshot",
     )
@@ -119,20 +121,28 @@ def test_the_trainer_probes_with_the_checked_variant():
 def test_every_probe_site_records_whether_it_was_definitive():
     # A site that reassigns _audio_type without its flag leaves the flag describing
     # the previous probe, which is worse than not having it.
-    text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
+    lines = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8").splitlines()
     sites = [
-        l for l in text.splitlines() if "detect_audio_type_checked(" in l and "import" not in l
+        i for i, l in enumerate(lines)
+        if "detect_audio_type_checked(" in l and "import" not in l
     ]
     assert sites, "no probe sites found"
-    for line in sites:
-        assert "self._audio_type_known" in line, line.strip()
+    for i in sites:
+        # Within the call's own statement or just after it: the retry site unpacks into
+        # locals first so a still-inconclusive answer cannot overwrite a good earlier one.
+        window = "\n".join(lines[i : i + 25])
+        assert "self._audio_type_known" in window, lines[i].strip()
 
 
 class _TypedDataset(_Dataset):
-    """A dataset that reports a real `features` schema, as a loaded HF dataset does."""
+    """A dataset with a real `features` schema and rows, as a loaded HF dataset has."""
 
-    def __init__(self, features):
+    def __init__(self, features, rows = None):
         self.features = features
+        self._rows = rows if rows is not None else [{"audio": "hello", "text": "hi"}]
+
+    def __iter__(self):
+        return iter(self._rows)
 
 
 def _audio_features():
@@ -172,3 +182,92 @@ def test_a_dataset_that_cannot_report_a_schema_is_still_refused(monkeypatch):
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     assert _run(trainer, monkeypatch, dataset = _Dataset()) is None
     assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
+
+
+def test_a_path_backed_audio_column_is_still_refused(monkeypatch):
+    # An audio dataset loaded from JSON or CSV carries its audio as a Value("string") of
+    # paths until the preprocessor casts it -- _preprocess_snac_dataset does exactly that.
+    # Trusting the schema alone would call such a dataset textual and hand it to the very
+    # text path this guard exists to prevent, so the values decide when the schema cannot.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    dataset = _TypedDataset(
+        _text_features(), rows = [{"audio": "clips/utt_0001.wav", "text": "hello"}]
+    )
+    assert _run(trainer, monkeypatch, dataset = dataset) is None
+    assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
+
+
+def test_a_raw_text_run_is_never_refused(monkeypatch):
+    # raw/CPT reads the text column and ignores any audio one by design, so it is not the
+    # unsafe audio-to-text fallback this guard targets. Refusing it would remove a valid
+    # way to pretrain on transcripts.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    _run(
+        trainer,
+        monkeypatch,
+        dataset = _TypedDataset(_audio_features()),
+        format_type = "raw",
+    )
+    # The stub cannot drive the whole raw-text branch, so assert the claim itself: the
+    # guard did not fire. Anything it reports past this point is the stub, not the guard.
+    reported = " ".join(trainer.errors)
+    assert "tokenizer_config.json" not in reported, f"raw-text run was refused: {reported}"
+
+
+def test_a_transient_probe_failure_is_rechecked_after_the_tokenizer_loads(monkeypatch):
+    # The probe and the tokenizer load are two reads of the same repo, so a timeout or 5xx
+    # can leave the probe inconclusive while the download right after it succeeds. Without
+    # a recheck the run is refused later claiming tokenizer_config.json is unreadable when
+    # it has just been read.
+    import core.training.trainer as trainer_mod
+
+    answers = [(None, False), ("whisper", True)]
+    calls = []
+
+    def fake_probe(*a, **kw):
+        calls.append(a[0] if a else None)
+        return answers[min(len(calls) - 1, len(answers) - 1)]
+
+    monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", fake_probe)
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+
+    class _Proc:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            return object()
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoProcessor", _Proc, raising = False)
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
+
+    trainer = UnslothTrainer()
+    trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
+
+    assert len(calls) == 2, "the probe was not retried after the tokenizer load"
+    assert trainer._audio_type == "whisper"
+    assert trainer._audio_type_known is True
+    assert trainer.is_audio is True
+
+
+def test_a_probe_that_stays_inconclusive_is_not_overwritten(monkeypatch):
+    # The retry only replaces a definitive answer. A second inconclusive read must leave
+    # the flag False so the guard still protects the run.
+    import core.training.trainer as trainer_mod
+
+    monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", lambda *a, **kw: (None, False))
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+
+    class _Proc:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            return object()
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
+
+    trainer = UnslothTrainer()
+    trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
+    assert trainer._audio_type_known is False
+    assert trainer._audio_type is None
