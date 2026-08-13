@@ -214,6 +214,17 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   assert.doesNotMatch(body.slice(start, end), /update\(/);
 });
 
+test("an argument the backend would refuse blocks the load button", () => {
+  // Painting it red is not enough: the panel owns the button, and starting a load
+  // that validate_extra_args refuses turns a visible objection into a failed load.
+  const flat = pageSource.replace(/\s+/g, " ");
+  assert.match(flat, /const loadable = extraArgsAreLoadable\(diagnostics\)/);
+  assert.match(flat, /onExtraArgsLoadableChange=\{setExtraArgsLoadable\}/);
+  assert.match(flat, /!extraArgsLoadable \|\|/);
+  // And the objection leaves with the row, or a model with no box could never load.
+  assert.match(flat, /return \(\) => onLoadableChange\(true\)/);
+});
+
 test("a config that never read the stored value is not sent as a clear", () => {
   const overrides = readFileSync(
     fileURLToPath(

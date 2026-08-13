@@ -67,6 +67,7 @@ import {
 } from "../api/model-overrides";
 import {
   diagnoseExtraArgs,
+  extraArgsAreLoadable,
   formatExtraArgs,
   parseExtraArgs,
 } from "../model-config/llama-extra-args";
@@ -878,6 +879,7 @@ function GgufAdvancedSettings({
   gpuLayersInputRef,
   moeLayersInputRef,
   overrideKeys,
+  onExtraArgsLoadableChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -892,6 +894,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
   /** Which stored entries the extra-arguments row reads, most specific first. */
   overrideKeys: readonly string[];
+  onExtraArgsLoadableChange: (loadable: boolean) => void;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1195,6 +1198,7 @@ function GgufAdvancedSettings({
           config={config}
           update={update}
           overrideKeys={overrideKeys}
+          onLoadableChange={onExtraArgsLoadableChange}
         />
       )}
     </>
@@ -1214,10 +1218,12 @@ function ExtraArgsRow({
   config,
   update,
   overrideKeys,
+  onLoadableChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   overrideKeys: readonly string[];
+  onLoadableChange: (loadable: boolean) => void;
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
   // What is typed, which is not what is stored: the stored value is argv tokens, so
@@ -1291,6 +1297,16 @@ function ExtraArgsRow({
 
   const diagnostics = diagnoseExtraArgs(text, catalog);
   const tokenCount = parseExtraArgs(text).tokens.length;
+
+  // The panel owns the Load button, and an error here is one validate_extra_args
+  // would refuse. Reported up rather than only painted red, so the load is not
+  // started just to come back as a failure.
+  const loadable = extraArgsAreLoadable(diagnostics);
+  useEffect(() => {
+    onLoadableChange(loadable);
+    // On unmount the row's objection goes with it: a diffusion model has no box.
+    return () => onLoadableChange(true);
+  }, [loadable, onLoadableChange]);
 
   const commit = (next: string) => {
     setText(next);
@@ -1433,6 +1449,9 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
+  // Raised by the extra-arguments row when what is typed is something
+  // validate_extra_args would refuse, so the load is not started to fail.
+  const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =
@@ -1965,6 +1984,7 @@ export function ModelConfigPage({
                   modelOverrideKey(configId, target.ggufVariant),
                   configId,
                 ]}
+                onExtraArgsLoadableChange={setExtraArgsLoadable}
               />
             )}
 
@@ -2049,6 +2069,7 @@ export function ModelConfigPage({
             disabled={
               stagedMetadataPending ||
               budgetSettling ||
+              !extraArgsLoadable ||
               (isActiveModel &&
                 atBaseline &&
                 !rememberChanged &&
