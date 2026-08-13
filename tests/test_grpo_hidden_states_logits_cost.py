@@ -218,7 +218,11 @@ def test_a_positionally_bound_width_is_not_worked_around_via_the_other_name():
     a second full forward bought for nothing. Give up instead.
     """
 
-    def forward(input_ids = None, logits_to_keep = 0, **kwargs): ...
+    def forward(
+        input_ids = None,
+        logits_to_keep = 0,
+        **kwargs,
+    ): ...
 
     kwargs = {}
     name = _minimise_logits_kwarg(_sig(forward), ("x", 512), kwargs)
