@@ -1639,3 +1639,45 @@ def test_cancel_mid_tool_drains_the_worker_before_closing():
 
     asyncio.run(_run())
     assert started.is_set()
+
+
+def test_injected_cancel_event_reaches_the_tool():
+    """The route registers this event so Stop can reach a running tool."""
+    route_event = threading.Event()
+    seen = {}
+
+    def _execute(name, arguments, **kwargs):
+        seen["cancel_event"] = kwargs["cancel_event"]
+        return "ok"
+
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "python", "arguments": "{}"},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "done."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                cancel_event = route_event,
+                execute_tool = _execute,
+            )
+        )
+    )
+    assert seen["cancel_event"] is route_event

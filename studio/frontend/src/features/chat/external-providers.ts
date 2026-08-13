@@ -302,15 +302,18 @@ export function providerStudioToolsEnabled(
   provider: ExternalProviderConfig | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  if (
-    !provider ||
-    providerModelSupportsStudioTools(provider.providerType, modelId) !== true
-  ) {
-    return false;
+  if (!provider) return false;
+  const capability = providerModelSupportsStudioTools(
+    provider.providerType,
+    modelId,
+  );
+  if (capability === false) return false;
+  // a self-hosted type still resolves through the static fallback while the registry
+  // capability cache is empty, so an opted-in connection keeps sending its tools.
+  if (supportsProviderLocalTools(provider.providerType)) {
+    return providerLocalToolsEnabled(provider);
   }
-  return providerTypeSupportsStudioTools(provider.providerType) === true
-    ? providerLocalToolsEnabled(provider)
-    : true;
+  return capability === true;
 }
 
 /** OpenAI-compat custom types that may expose GET /v1/models. */

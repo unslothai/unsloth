@@ -564,6 +564,7 @@ async def stream_chat_completion_with_local_tools(
     rag_scope: Any = None,
     tool_choice: Any = None,
     execute_tool: Optional[Callable[..., str]] = None,
+    cancel_event: Optional[threading.Event] = None,
     **stream_kwargs: Any,
 ) -> AsyncGenerator[str, None]:
     """Stream a provider response, executing local tool calls in between.
@@ -609,7 +610,9 @@ async def stream_chat_completion_with_local_tools(
     tools = neutralize_tool_descriptions(tools)
     controller = ToolLoopController(tools = tools, auto_heal_tool_calls = auto_heal_tool_calls)
     all_tool_names = set(_tool_names(tools))
-    cancel_event = threading.Event()
+    # the route owns it when Stop has to reach a running tool through /inference/cancel.
+    if cancel_event is None:
+        cancel_event = threading.Event()
     usage_totals: dict[str, Any] = {}
     # 9999+ is the local loops' "no limit" sentinel.
     effective_timeout = (

@@ -11749,7 +11749,12 @@ async def _proxy_to_external_provider(
         continue_final_message = _continue_final_message(payload),
     )
 
+    # Stop only reaches a running local tool through /inference/cancel when a proxy
+    # swallows the browser's fetch abort, so this loop's event must be registered.
+    local_cancel_event = threading.Event() if local_tools else None
+
     async def _stream():
+        cancel_scope = ExitStack()
         if local_tools:
             from core.inference.external_tool_loop import (
                 DEFAULT_MAX_TOOL_ITERATIONS,
@@ -11780,6 +11785,7 @@ async def _proxy_to_external_provider(
                 nudge_tool_calls = payload.nudge_tool_calls,
                 rag_scope = payload.rag_scope,
                 tool_choice = payload.tool_choice,
+                cancel_event = local_cancel_event,
                 **_provider_stream_kwargs,
             )
         else:
@@ -11795,6 +11801,12 @@ async def _proxy_to_external_provider(
                 fast_mode = payload.fast_mode,
                 stream = payload.stream,
                 **_provider_stream_kwargs,
+            )
+        if local_cancel_event is not None:
+            cancel_scope.enter_context(
+                _TrackedCancel.for_payload(
+                    local_cancel_event, payload, payload.cancel_id, payload.session_id
+                )
             )
         try:
             sent_done = False
@@ -11848,6 +11860,7 @@ async def _proxy_to_external_provider(
             except RuntimeError:
                 pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
             await client.close()
+            cancel_scope.close()
 
     return StreamingResponse(
         _stream(),

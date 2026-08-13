@@ -127,3 +127,25 @@ test("an unknown connection syncs to the off default", () => {
   assert.equal(merged.enableLocalTools, undefined);
   assert.equal(providerLocalToolsEnabled(merged), false);
 });
+
+test("an empty capability cache still honors the self-hosted opt-in", () => {
+  // the registry fetch can fail or land after first paint; the picker already
+  // falls back for these types, so the payload gate has to agree.
+  setProviderModelCapabilities("vllm", undefined);
+  assert.equal(
+    providerStudioToolsEnabled(
+      provider("vllm", { enableLocalTools: true }),
+      "qwen3-14b",
+    ),
+    true,
+  );
+  assert.equal(providerStudioToolsEnabled(provider("vllm"), "qwen3-14b"), false);
+  // a hosted provider has no fallback, so it stays off until the registry loads.
+  assert.equal(
+    providerStudioToolsEnabled(
+      provider("openai", { enableLocalTools: true }),
+      "gpt-5",
+    ),
+    false,
+  );
+});
