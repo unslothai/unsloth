@@ -36,16 +36,18 @@ from hub.schemas.downloads import (
 from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
 from utils.datasets_availability import require_datasets_http
 
-# Every endpoint here reads or writes a Hugging Face dataset, so the gate is on the
-# router rather than repeated per route. It only ever fires in the ARM64
-# inference-only tier, where the datasets library is not installed at all
-# (issue #8495); anywhere else datasets_available() is True and this costs a dict
-# lookup. Without it each of these answers 500 from a lazy `from datasets import`
-# several frames down.
-router = APIRouter(dependencies = [Depends(require_datasets_http)])
+router = APIRouter()
+
+# Per route, not on the router: only the endpoints whose service actually reaches
+# `from datasets import` are gated. cache_inventory and downloads work from the
+# filesystem and huggingface_hub, so listing caches, reclaiming their disk space and
+# managing download jobs keep working in the ARM64 inference-only tier -- which is the
+# tier that still downloads models (issue #8495). Where it does fire it replaces a 500
+# from a lazy import several frames down; anywhere else it costs a dict lookup.
+needs_datasets = Depends(require_datasets_http)
 
 
-@router.post("/upload", response_model = UploadDatasetResponse)
+@router.post("/upload", response_model = UploadDatasetResponse, dependencies = [needs_datasets])
 async def upload_dataset(
     file: UploadFile | None = File(None),
     native_path_lease: str | None = Form(None, alias = "nativePathLease"),
@@ -54,7 +56,7 @@ async def upload_dataset(
     return await local.upload_dataset_response(file, native_path_lease)
 
 
-@router.get("/local", response_model = LocalDatasetsResponse)
+@router.get("/local", response_model = LocalDatasetsResponse, dependencies = [needs_datasets])
 def list_local_datasets(
     current_subject: str = Depends(get_current_subject),
 ) -> LocalDatasetsResponse:
@@ -70,7 +72,7 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
     return await cache_inventory.list_cached_datasets_response()
 
 
-@router.post("/local-options", response_model = LocalDatasetOptionsResponse)
+@router.post("/local-options", response_model = LocalDatasetOptionsResponse, dependencies = [needs_datasets])
 def get_local_dataset_options(
     request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
 ) -> LocalDatasetOptionsResponse:
@@ -86,7 +88,7 @@ async def delete_cached_dataset(
     return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 
 
-@router.get("/download-progress", response_model = DownloadProgressResponse)
+@router.get("/download-progress", response_model = DownloadProgressResponse, dependencies = [needs_datasets])
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
@@ -100,7 +102,7 @@ async def get_dataset_download_progress(
     )
 
 
-@router.post("/download", response_model = DatasetDownloadStartResponse, status_code = 202)
+@router.post("/download", response_model = DatasetDownloadStartResponse, status_code = 202, dependencies = [needs_datasets])
 async def download_dataset(
     body: DownloadDatasetRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
@@ -145,7 +147,7 @@ async def get_dataset_transport_status(
     return await downloads.get_dataset_transport_status_response(repo_id)
 
 
-@router.post("/check-format", response_model = CheckFormatResponse)
+@router.post("/check-format", response_model = CheckFormatResponse, dependencies = [needs_datasets])
 def check_format(
     request: CheckFormatRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
@@ -154,7 +156,7 @@ def check_format(
     return formatting.check_format_response(request, hf_token)
 
 
-@router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
+@router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse, dependencies = [needs_datasets])
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
     hf_token: Optional[str] = Depends(get_hf_token),

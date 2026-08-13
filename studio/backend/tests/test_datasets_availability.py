@@ -196,10 +196,11 @@ class TestStartupDoesNotNeedDatasets:
 
 
 class TestRoutesAreGated:
-    def test_hub_datasets_router_is_gated(self):
+    def test_hub_dataset_endpoints_are_gated(self):
+        """Per endpoint now, not on the router: see TestOnlyDatasetRoutesAreGated."""
         source = (_BACKEND / "hub" / "routes" / "datasets.py").read_text(encoding = "utf-8")
         assert "require_datasets_http" in source
-        assert "APIRouter(dependencies = [Depends(require_datasets_http)])" in source
+        assert "needs_datasets = Depends(require_datasets_http)" in source
 
     @pytest.mark.parametrize("route", ['"/start"', '"/diffusion/start"'])
     def test_training_start_routes_are_gated(self, route):
@@ -456,3 +457,39 @@ class TestTheGateReopensAfterAnInstall:
         monkeypatch.setattr(datasets_availability, "_probe", lambda: calls.append(1) or True)
         assert datasets_availability.datasets_available() is True
         assert calls == []
+
+
+class TestOnlyDatasetRoutesAreGated:
+    """The tier still downloads models, so it still accumulates dataset caches.
+
+    Gating the whole hub router took away the endpoints that reclaim that disk space
+    and manage download jobs, none of which touch the datasets library.
+    """
+
+    @staticmethod
+    def _source() -> str:
+        return (_BACKEND / "hub" / "routes" / "datasets.py").read_text(encoding = "utf-8")
+
+    def test_the_router_itself_is_not_gated(self):
+        source = self._source()
+        assert "router = APIRouter()" in source
+        assert "APIRouter(dependencies" not in source
+
+    @pytest.mark.parametrize("path", ["/upload", "/local", "/local-options", "/download",
+                                      "/check-format", "/ai-assist-mapping"])
+    def test_dataset_paths_keep_the_gate(self, path):
+        source = self._source()
+        decorator = source[source.index(f'"{path}"') : ]
+        assert "needs_datasets" in decorator[: decorator.index("\ndef ") if "\ndef " in decorator[:400] else 400]
+
+    @pytest.mark.parametrize("path", ["/cached", "/download/cancel", "/download-status",
+                                      "/active-downloads", "/transport-status"])
+    def test_cache_and_download_paths_stay_open(self, path):
+        source = self._source()
+        for index in range(len(source)):
+            index = source.find(f'"{path}"', index)
+            if index == -1:
+                break
+            line_end = source.index("\n", index)
+            assert "needs_datasets" not in source[index:line_end], path
+            break

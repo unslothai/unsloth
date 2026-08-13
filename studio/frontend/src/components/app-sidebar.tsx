@@ -675,8 +675,12 @@ export function AppSidebar() {
   // that first reply, so re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
     // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
-    const selfHealSettled =
-      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+    // datasets_unavailable joins mlx_unavailable: the 503 tells the user to install
+    // datasets, and the backend re-probes so health can clear without a restart. Read
+    // once, this row would stay disabled until a reload anyway.
+    const recoverable =
+      chatOnlyReason === "mlx_unavailable" || chatOnlyReason === "datasets_unavailable";
+    const selfHealSettled = !chatOnly || (!recoverable && !detectionDeferred);
     // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
     // wait at most once per page load, so a host that detects slower than that keeps the
     // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
