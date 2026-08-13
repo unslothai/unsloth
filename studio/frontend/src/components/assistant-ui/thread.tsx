@@ -168,7 +168,10 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { updateStoredChatThread } from "@/features/chat/utils/chat-history-storage";
+import {
+  getStoredChatThread,
+  updateStoredChatThread,
+} from "@/features/chat/utils/chat-history-storage";
 import {
   dictationSendBlocked,
   shouldSubmitDictation,
@@ -6269,9 +6272,27 @@ const AssistantActionBar: FC = () => {
                     toast.info("No content to save.");
                     return;
                   }
-                  const title =
-                    aui.threadListItem().getState().title ?? "reply";
-                  void saveMarkdownAsProjectSource(activeProjectId, text, title);
+                  const state = aui.threadListItem().getState();
+                  const title = state.title ?? "reply";
+                  // activeProjectId can lag a thread switch while the stored
+                  // thread loads; resolve the destination from this thread.
+                  const remoteId =
+                    state.remoteId ||
+                    useChatRuntimeStore.getState().activeThreadId;
+                  void (async () => {
+                    const thread = remoteId
+                      ? await getStoredChatThread(remoteId).catch(() => null)
+                      : null;
+                    if (!thread?.projectId) {
+                      toast.info("This chat isn't in a project.");
+                      return;
+                    }
+                    await saveMarkdownAsProjectSource(
+                      thread.projectId,
+                      text,
+                      title,
+                    );
+                  })();
                 }}
                 className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
               >
