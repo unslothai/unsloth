@@ -4290,9 +4290,7 @@ def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch)
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
-    mcp_servers_db.create_server(
-        id = "a3f9c1d2e4b6f807", display_name = "GitHub", url = "https://a/m"
-    )
+    mcp_servers_db.create_server(id = "a3f9c1d2e4b6f807", display_name = "GitHub", url = "https://a/m")
 
     tool_name = "mcp__a3f9c1d2e4b6f807__create_issue"
     args = {"title": "Bug", "body": "x" * 400}
@@ -4338,8 +4336,6 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
             max_tool_iterations = 1,
         )
     )
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert len(provisional) == 1, events
     assert "mcp_server" not in provisional[0]["provenance"]
