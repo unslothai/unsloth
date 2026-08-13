@@ -1143,8 +1143,8 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
     assert syspath == [
         r"C:\Python\Lib",
         r"C:\Windows\System32\lib",
-        # The empty entry is the script's own directory rule, not a path to pin.
-        "",
+        # An empty entry means the working directory, which is about to change.
+        r"C:\Windows\System32",
         # join, not normpath: the same spelling the environment pinning uses.
         r"C:\Windows\System32\.\plugins",
     ]
@@ -1168,3 +1168,48 @@ def test_cli_guard_leaves_a_bracketed_directory_alone_only_where_it_is_json():
     assert environ_out["UNSLOTH_LLAMA_CPP_PATH"] == r"C:\Windows\System32\[llama]"
     assert environ_out["UNSLOTH_STUDIO_HOME"] == r"C:\Windows\System32\%data%"
     assert environ_out["MLX_HOSTFILE"] == "[llama]"
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("typer") is None, reason = "typer is not installed"
+)
+def test_cli_guard_reads_the_invocation_not_the_hosts_argv():
+    """A host that imports the app and calls it never touches sys.argv, so the
+    callback has to classify the arguments Click was given: `studio --api-only`
+    from a host whose own argv says `train --dataset .\\d.json`, and the reverse."""
+    from typer.testing import CliRunner
+
+    import unsloth_cli
+
+    seen: list[list[str]] = []
+    original = unsloth_cli._check_working_directory
+    unsloth_cli._check_working_directory = lambda argv, environ, platform, **kw: (
+        seen.append(list(argv)) or (None, None, False)
+    )
+    try:
+        CliRunner().invoke(unsloth_cli.app, ["studio", "--help"])
+        CliRunner().invoke(unsloth_cli.app, ["train", "--help"])
+    finally:
+        unsloth_cli._check_working_directory = original
+    assert seen == [["studio", "--help"], ["train", "--help"]]
+
+
+def test_cli_guard_pins_the_token_path_and_the_special_pythonpath_entries():
+    r"""HF_TOKEN_PATH is where huggingface_hub reads the credential file, and
+    PYTHONPATH has two spellings that follow the process: an empty component means
+    the working directory, and `~` is never expanded there."""
+    environ_out: dict[str, str] = {}
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {
+            "HF_TOKEN_PATH": r"secrets\token",
+            "PYTHONPATH": r";~\plugins;C:\shared\lib",
+        },
+        environ_out = environ_out,
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+    assert environ_out["HF_TOKEN_PATH"] == r"C:\Windows\System32\secrets\token"
+    assert environ_out["PYTHONPATH"] == (
+        r"C:\Windows\System32;C:\Windows\System32\~\plugins;C:\shared\lib"
+    )

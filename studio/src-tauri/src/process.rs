@@ -1140,6 +1140,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    // huggingface_hub resolves the credential file from here; a relative value
+    // would follow the child and silently lose access to gated repos.
+    "HF_TOKEN_PATH",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
@@ -1211,6 +1214,7 @@ const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE"];
 /// "%data%" is legal and every other name is read as one.
 const EXPANDED_ENV: &[&str] = &[
     "HF_HOME",
+    "HF_TOKEN_PATH",
     "HF_HUB_CACHE",
     "HUGGINGFACE_HUB_CACHE",
     "HF_ASSETS_CACHE",
@@ -1222,28 +1226,53 @@ const EXPANDED_ENV: &[&str] = &[
 /// mode; anchoring one would turn it into a real allowlisted directory.
 const TOGGLE_ENV: &[&str] = &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"];
 
-/// %NAME% against the process environment, the way Windows itself would.
+/// %NAME%, $NAME and ${NAME} against the process environment.
 ///
 /// The twin of the expansion `unsloth_cli/_system_dir_guard.py` gets from
-/// os.path.expandvars. A name this machine does not set is left as written,
-/// which is also what expandvars does.
+/// os.path.expandvars, which on Windows paths takes all three forms, so all
+/// three are taken here or the two layers would disagree about the folder. A
+/// name this machine does not set is left as written, which is what expandvars
+/// does as well.
 fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
+    let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(start) = rest.find('%') {
-        let after = &rest[start + 1..];
-        let Some(end) = after.find('%') else { break };
-        let name = &after[..end];
-        match (name.is_empty(), lookup(name)) {
-            (false, Some(expanded)) => {
-                out.push_str(&rest[..start]);
-                out.push_str(&expanded);
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &value[index..];
+        let (name, consumed) = match bytes[index] {
+            b'%' => match rest[1..].find('%') {
+                Some(end) if end > 0 => (&rest[1..1 + end], 1 + end + 1),
+                _ => (&rest[..0], 0),
+            },
+            b'$' if rest[1..].starts_with('{') => match rest.find('}') {
+                Some(end) if end > 2 => (&rest[2..end], end + 1),
+                _ => (&rest[..0], 0),
+            },
+            b'$' => {
+                let end = rest[1..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .map_or(rest.len(), |offset| offset + 1);
+                if end > 1 {
+                    (&rest[1..end], end)
+                } else {
+                    (&rest[..0], 0)
+                }
             }
-            _ => out.push_str(&rest[..start + 1 + end + 1]),
+            _ => (&rest[..0], 0),
+        };
+        if consumed == 0 {
+            let step = value[index..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&value[index..index + step]);
+            index += step;
+            continue;
         }
-        rest = &after[end + 1..];
+        match lookup(name) {
+            Some(expanded) => out.push_str(&expanded),
+            // Unset: the reference is kept exactly as it was written.
+            None => out.push_str(&value[index..index + consumed]),
+        }
+        index += consumed;
     }
-    out.push_str(rest);
     out
 }
 
@@ -1337,6 +1366,19 @@ fn relative_override_pins_from(
         for entry in raw.split(';') {
             let original = entry.trim().to_string();
             let entry = expanded(name, &original);
+            // PYTHONPATH has two spellings that follow the process rather than
+            // the caller: an empty component means the working directory itself,
+            // and a leading `~` is never expanded there, so Python reads
+            // `~\plugins` as an ordinary relative folder.
+            if *name == "PYTHONPATH" && (entry.is_empty() || entry.starts_with('~')) {
+                let anchored = if entry.is_empty() {
+                    cwd.clone()
+                } else {
+                    cwd.join(&entry)
+                };
+                entries.push(anchored.to_string_lossy().into_owned());
+                continue;
+            }
             if entry.is_empty() || entry.starts_with('~') || is_fully_qualified(&entry) {
                 entries.push(entry);
                 continue;
@@ -3123,6 +3165,54 @@ mod managed_cli_working_dir_tests {
         );
         assert!(is_fully_qualified("\\\\?\\unc\\server\\profiles\\me"));
         assert!(is_fully_qualified("\\\\?\\UNC\\server\\profiles\\me"));
+    }
+
+    #[test]
+    fn every_spelling_expandvars_takes_is_expanded_here_too() {
+        let lookup = |name: &str| match name {
+            "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
+            _ => None,
+        };
+        // The three forms os.path.expandvars takes on a Windows path.
+        for value in [
+            "%LOCALAPPDATA%\\hf",
+            "$LOCALAPPDATA\\hf",
+            "${LOCALAPPDATA}\\hf",
+        ] {
+            assert_eq!(
+                expand_windows_vars(value, &lookup),
+                "C:\\Users\\me\\AppData\\Local\\hf",
+                "{value} did not expand the way the CLI guard expands it"
+            );
+        }
+        // A name this machine does not set, and a lone marker, stay as written.
+        for value in ["%NOT_SET%\\hub", "$NOT_SET\\hub", "100%", "a$b", "${}"] {
+            assert_eq!(expand_windows_vars(value, &lookup), value);
+        }
+    }
+
+    #[test]
+    fn the_pythonpath_spellings_that_follow_the_process_are_anchored() {
+        // An empty component is the working directory, and `~` is never expanded
+        // in PYTHONPATH, so Python reads it as an ordinary relative folder.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name| match name {
+                "PYTHONPATH" => Some(";~\\plugins;C:\\shared\\lib".to_string()),
+                _ => None,
+            },
+            |_| None,
+        )
+        .unwrap();
+        let expected = format!(
+            "{};{};C:\\shared\\lib",
+            cwd.to_string_lossy(),
+            cwd.join("~\\plugins").to_string_lossy()
+        );
+        assert_eq!(pins, vec![("PYTHONPATH", PathBuf::from(expected))]);
     }
 
     #[test]

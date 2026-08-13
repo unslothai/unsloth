@@ -343,6 +343,9 @@ _RELATIVE_PATH_ENV = (
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    # huggingface_hub resolves the credential file from here; a relative value
+    # would follow the child and silently lose access to gated repos.
+    "HF_TOKEN_PATH",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
@@ -399,7 +402,7 @@ def pin_relative_overrides(
         # whole list means.
         entries = raw.split(_PATH_LIST_SEPARATOR)
         anchored_entries = [
-            _anchor(name, e.strip(), cwd, pathmod, abspath, expandvars) or e for e in entries
+            _anchor_list_entry(name, e, cwd, pathmod, abspath, expandvars) for e in entries
         ]
         if anchored_entries != entries:
             environ[name] = _PATH_LIST_SEPARATOR.join(anchored_entries)
@@ -430,6 +433,7 @@ _EXPANDED_ENV = frozenset(
         "HF_HUB_CACHE",
         "HUGGINGFACE_HUB_CACHE",
         "HF_ASSETS_CACHE",
+        "HF_TOKEN_PATH",
         "XDG_CACHE_HOME",
         "SENTENCE_TRANSFORMERS_HOME",
     )
@@ -459,29 +463,45 @@ def pin_relative_sys_path(
 ):
     """Anchor the relative import roots this interpreter is already carrying.
 
-    sys.path holds PYTHONPATH entries as written, and an empty string means the
-    working directory itself, so both move with a chdir. The empty entry is left
-    alone on purpose: it is the script's own directory rule, and the desktop
-    commands run no script from the folder being left.
+    sys.path holds PYTHONPATH entries as written, so the same two spellings that
+    follow the process rather than the caller reach it: an empty entry means the
+    working directory itself, and a leading `~` is never expanded there.
     """
     if syspath is None:
         import sys as _sys
         syspath = _sys.path
     pinned = []
     for index, entry in enumerate(syspath):
-        if not isinstance(entry, str) or not entry.strip():
+        if not isinstance(entry, str):
             continue
         try:
-            anchored = _anchor("PYTHONPATH", entry.strip(), cwd, pathmod, abspath)
+            anchored = _anchor_list_entry("PYTHONPATH", entry, cwd, pathmod, abspath, None)
         except Exception:
             # Best effort, unlike the environment: an import root this process
             # already holds is not worth refusing the move over, and refusing is
             # how the login start broke in the first place.
             continue
-        if anchored is not None:
+        if anchored != entry:
             syspath[index] = anchored
             pinned.append(anchored)
     return pinned
+
+
+def _anchor_list_entry(name, entry, cwd, pathmod, abspath, expandvars):
+    """One entry of a path list, anchored, or left as written.
+
+    PYTHONPATH has two spellings the ordinary rules would leave behind, and both
+    follow the process rather than the caller: an empty component means the
+    working directory itself, and a leading `~` is not expanded there, so Python
+    reads `~\\plugins` as an ordinary relative folder.
+    """
+    entry = entry.strip()
+    if name == "PYTHONPATH":
+        if not entry:
+            return cwd
+        if entry.startswith("~"):
+            return pathmod.join(cwd, entry)
+    return _anchor(name, entry, cwd, pathmod, abspath, expandvars) or entry
 
 
 def _anchor(

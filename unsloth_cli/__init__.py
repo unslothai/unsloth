@@ -74,9 +74,36 @@ def show_version(value: bool):
         raise typer.Exit()
 
 
+_ARGV_META_KEY = "unsloth.invocation_args"
+
+try:
+    from typer.core import TyperGroup as _TyperGroup
+except Exception:  # pragma: no cover - a typer without the public group class
+    _TyperGroup = None
+
+if _TyperGroup is not None:
+
+    class _ArgvCapturingGroup(_TyperGroup):
+        """Remember the tokens this invocation was given.
+
+        Click hands the group its full argument list here and then keeps the
+        tail on the child context, where the callback below cannot see it. Both
+        `app(args = [...])` and CliRunner reach this, so a library call is
+        classified by its own arguments rather than by the host's argv.
+        """
+
+        def parse_args(self, ctx, args):
+            ctx.meta.setdefault(_ARGV_META_KEY, list(args))
+            return super().parse_args(ctx, args)
+
+else:  # pragma: no cover
+    _ArgvCapturingGroup = None
+
+
 app = typer.Typer(
     help = "Command-line interface for Unsloth training, inference, and export.",
     context_settings = {"help_option_names": ["-h", "--help"]},
+    **({"cls": _ArgvCapturingGroup} if _ArgvCapturingGroup is not None else {}),
 )
 
 
@@ -88,18 +115,17 @@ def _invocation_args(ctx):
     own argv happened to look like a desktop command would move the process out
     from under the caller's relative paths.
 
-    Click hands the callback the subcommand it is about to run, and from 8.2 on
-    it keeps the tail to itself. Where the tail is unknown it is assumed to hold
-    a path, so an invocation this function cannot read in full is refused rather
-    than relocated. The `unsloth` console script never reaches here: it is
-    classified at import, from the real argv, before any command is imported.
+    The `unsloth` console script never reaches here: it is classified at import,
+    from the real argv, before any command is imported.
     """
+    captured = ctx.meta.get(_ARGV_META_KEY)
+    if captured is not None:
+        return list(captured)
     if not ctx.invoked_subcommand:
         return _sys.argv[1:]
-    tail = [*(getattr(ctx, "args", None) or [])]
-    # "..." stands in for a tail Click did not expose. It is not a flag, which is
-    # what marks an invocation as carrying a caller's path.
-    return [ctx.invoked_subcommand, *(tail or ["..."])]
+    # No capture and no tail to read: assume the tail holds a path, so an
+    # invocation that cannot be read in full is refused rather than relocated.
+    return [ctx.invoked_subcommand, *(list(getattr(ctx, "args", None) or []) or ["..."])]
 
 
 @app.callback()
