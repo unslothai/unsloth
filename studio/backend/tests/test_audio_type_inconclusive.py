@@ -274,3 +274,101 @@ def test_a_probe_that_stays_inconclusive_is_not_overwritten(monkeypatch):
     trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
     assert trainer._audio_type_known is False
     assert trainer._audio_type is None
+
+
+def test_a_null_first_audio_value_does_not_decide_the_dataset(monkeypatch):
+    # A JSON/CSV audio dataset can carry a null or malformed first value and real paths
+    # after it; the audio preprocessors skip such a row rather than fail. Judging on row 0
+    # alone would call the dataset textual and restore the text fallback this guards.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    dataset = _TypedDataset(
+        _text_features(),
+        rows = [
+            {"audio": None, "text": "hello"},
+            {"audio": "", "text": "there"},
+            {"audio": "clips/utt_0003.wav", "text": "world"},
+        ],
+    )
+    assert _run(trainer, monkeypatch, dataset = dataset) is None
+    assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
+
+
+def test_rows_that_offer_no_usable_value_are_unknown_not_textual(monkeypatch):
+    # All-null candidate values answer neither way, and unknown must keep refusing.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    dataset = _TypedDataset(
+        _text_features(), rows = [{"audio": None, "text": None}, {"audio": None, "text": None}]
+    )
+    assert _run(trainer, monkeypatch, dataset = dataset) is None
+    assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
+
+
+def test_the_retry_reloads_the_processor_when_it_discovers_whisper(monkeypatch):
+    # The loader is chosen from the audio type, so a retry that flips the answer to
+    # whisper has already stored an AutoTokenizer. _preprocess_whisper_dataset reads
+    # .feature_extractor and .tokenizer off the processor, so every sample would be
+    # skipped and the run would fail with "No valid examples after Whisper preprocessing".
+    import core.training.trainer as trainer_mod
+
+    answers = [(None, False), ("whisper", True)]
+    calls = []
+
+    def fake_probe(*a, **kw):
+        calls.append(1)
+        return answers[min(len(calls) - 1, len(answers) - 1)]
+
+    monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", fake_probe)
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+
+    loaded: list[str] = []
+
+    class _Processor:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            loaded.append("processor")
+            return object()
+
+    class _Tokenizer:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            loaded.append("tokenizer")
+            return object()
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoProcessor", _Processor, raising = False)
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
+
+    trainer = UnslothTrainer()
+    trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
+
+    assert trainer._audio_type == "whisper"
+    assert loaded == ["tokenizer", "processor"], (
+        f"expected a processor reload once the retry found whisper, got {loaded}"
+    )
+
+
+def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
+    # A retry that confirms the same type must not pay for a second load.
+    import core.training.trainer as trainer_mod
+
+    monkeypatch.setattr(
+        trainer_mod, "detect_audio_type_checked", lambda *a, **kw: (None, True)
+    )
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+
+    loaded: list[str] = []
+
+    class _Tokenizer:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            loaded.append("tokenizer")
+            return object()
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
+
+    trainer = UnslothTrainer()
+    trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
+    assert loaded == ["tokenizer"], f"tokenizer loaded more than once: {loaded}"

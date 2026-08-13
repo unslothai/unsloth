@@ -194,6 +194,12 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     return {"subfolder": "LLM"}
 
 
+# How many rows _dataset_has_audio_column sniffs when the schema cannot answer. Enough to
+# see past a leading null or malformed value, small enough to stay free on a streamed
+# dataset, where each row is pulled over the network.
+_AUDIO_SNIFF_ROWS = 16
+
+
 def _dataset_has_audio_column(dataset) -> Optional[bool]:
     """Whether `dataset` really carries audio. None when it cannot be told.
 
@@ -230,19 +236,33 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     except Exception:  # noqa: BLE001 - a mapping that is not a features dict
         return None
 
-    # No Audio feature, so nothing here decodes: reading one row is cheap and cannot hit
-    # the missing-FFmpeg path that decoding an Audio column would.
+    # No Audio feature, so nothing here decodes: reading rows is cheap and cannot hit the
+    # missing-FFmpeg path that decoding an Audio column would.
+    #
+    # Several rows, not one. A JSON/CSV audio dataset can carry a null or malformed first
+    # value and real paths after it, and the audio preprocessors skip such a row rather
+    # than fail, so judging on row 0 alone would call that dataset textual and hand it to
+    # the text path. A row that offers no usable value at all is not evidence either way:
+    # only a row that HAS values, none of which look like audio, can answer False.
     try:
         from utils.datasets.format_detection import _AUDIO_EXTENSIONS, _is_audio_value
-        row = next(iter(dataset))
-        for value in row.values():
-            if _is_audio_value(value):
-                return True
-            if isinstance(value, str) and value.lower().endswith(_AUDIO_EXTENSIONS):
-                return True
+
+        saw_a_usable_value = False
+        for index, row in enumerate(dataset):
+            if index >= _AUDIO_SNIFF_ROWS:
+                break
+            for value in row.values():
+                if _is_audio_value(value):
+                    return True
+                if isinstance(value, str) and value.strip():
+                    saw_a_usable_value = True
+                    if value.lower().endswith(_AUDIO_EXTENSIONS):
+                        return True
+                elif value is not None and not isinstance(value, str):
+                    saw_a_usable_value = True
     except Exception:  # noqa: BLE001 - unreadable row, empty dataset, odd row type
         return None
-    return False
+    return False if saw_a_usable_value else None
 
 
 class UnslothTrainer:
@@ -364,29 +384,32 @@ class UnslothTrainer:
 
         # Load tokenizer/processor (CPU only, no VRAM)
         # Whisper needs AutoProcessor; others AutoTokenizer (CSM loads its own inline).
-        if self._audio_type == "whisper":
-            from transformers import AutoProcessor
-            self.tokenizer = AutoProcessor.from_pretrained(
-                lookup_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
-                local_files_only = local_files_only,
-                revision = model_revision,
-            )
-        else:
-            from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                lookup_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
-                local_files_only = local_files_only,
-                revision = model_revision,
-                # Spark-TTS keeps only BiCodec, config.yaml and the source tree at its repo
-                # root; the tokenizer lives under LLM/, the same subfolder _load_model loads
-                # weights from. Reading the root finds no vocab and fails to build a backend
-                # tokenizer, blaming a missing sentencepiece that is installed and irrelevant.
-                **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
-            )
+        def _load_tokenizer_for_detected_type():
+            if self._audio_type == "whisper":
+                from transformers import AutoProcessor
+                self.tokenizer = AutoProcessor.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+            else:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                    # Spark-TTS keeps only BiCodec, config.yaml and the source tree at its repo
+                    # root; the tokenizer lives under LLM/, the same subfolder _load_model loads
+                    # weights from. Reading the root finds no vocab and fails to build a backend
+                    # tokenizer, blaming a missing sentencepiece that is installed and irrelevant.
+                    **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+                )
+
+        _load_tokenizer_for_detected_type()
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
 
@@ -398,6 +421,7 @@ class UnslothTrainer:
         # detect_audio_type_checked caches only definitive results, so this costs a cache
         # hit on the common path.
         if not self._audio_type_known:
+            previous_type = self._audio_type
             retried_type, retried_known = detect_audio_type_checked(
                 lookup_name,
                 hf_token,
@@ -418,6 +442,18 @@ class UnslothTrainer:
                     self._audio_type,
                     self.is_audio,
                 )
+                # The loader and its kwargs are chosen from the type, so a retry that
+                # changes the answer has left the wrong object in self.tokenizer: whisper
+                # needs an AutoProcessor, and _preprocess_whisper_dataset reads
+                # .feature_extractor and .tokenizer off it. Spark-TTS likewise needs its
+                # LLM/ subfolder. Load again for the type we now believe.
+                if self._audio_type != previous_type:
+                    _load_tokenizer_for_detected_type()
+                    logger.info(
+                        "Reloaded tokenizer for %s after detection changed to %s",
+                        model_name,
+                        self._audio_type,
+                    )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         """Add callback for training progress updates"""
