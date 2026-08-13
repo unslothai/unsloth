@@ -397,6 +397,21 @@ Check "the generated launcher runs the interpreter" ($installText -match '\$stud
 # file on purpose: it is still generated, still shimmed, just never started.
 Check "no call operator on the exe"    (-not ($installText -match '&\s*\$UnslothExe'))
 Check "no Start-Process on the exe"    (-not ($installText -match 'Start-Process -FilePath \$UnslothExe'))
+
+# A policy DENIES the launcher and leaves it on disk; antivirus QUARANTINES it, deleting it
+# out of a venv that still runs. Nothing past this point starts it, so its absence must not
+# abort the install for exactly the machines this change is for.
+Write-Host "a quarantined launcher does not abort the install"
+Check "absence asks the interpreter first" (
+    $installText -match '(?s)if \(-not \(Test-Path -LiteralPath \$UnslothExe\)\) \{.*?Invoke-ManagedUnslothCli -Python \$VenvPython -Arguments @\("--version"\)')
+Check "and only then gives up" (
+    $installText -match '(?s)if \(\$cliImportable\) \{.*?\} else \{.*?Exit-InstallFailure "unsloth CLI was not installed correctly"')
+Check "a venv with no interpreter at all still fails" (
+    $installText -match '(?s)\$cliImportable = \$false\s*\n\s*if \(Test-Path -LiteralPath \$VenvPython\)')
+# Anti-vacuity: the guidance for a genuinely CLI-less wheel has to survive, since that is
+# the case this check was written for and the one the fallback must not swallow.
+Check "the older-unsloth guidance is still there" (
+    $installText -match 'an older unsloth version was installed that does not include the Unsloth CLI')
 # ...and it is still installed and still hardlinked, or every unaffected machine regresses.
 Check "the exe is still hardlinked"    ($installText -match 'New-Item -ItemType HardLink -Path \$ShimExe -Target \$UnslothExe')
 Check "the exe existence gate remains" ($installText -match '\$UnslothExe = Join-Path \$VenvDir "Scripts\\unsloth\.exe"')

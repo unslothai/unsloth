@@ -5213,14 +5213,31 @@ exit 0
     step "setup" "running unsloth studio setup..."
     # Tested, never executed: pip generates the console script whatever the policy says
     # about running it, so it stays the cheapest "this wheel shipped the CLI" signal.
+    #
+    # Cheapest, but no longer required. A policy DENIES this file and leaves it on disk,
+    # so it answers there, but antivirus QUARANTINES it, deleting it out of a venv that
+    # is otherwise perfectly able to run. Nothing after this point executes it -- the
+    # setup handoff, the shortcuts and bin\unsloth.cmd all go through $VenvPython -- so
+    # failing here would refuse to install or repair Studio for exactly the machines
+    # this change is for. Ask the interpreter instead, and only then give up.
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path -LiteralPath $UnslothExe)) {
-        Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
-        Write-StudioLine "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
-        Write-StudioLine "        Expected: $UnslothExe" -ForegroundColor Yellow
-        Write-StudioLine "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
-        Write-StudioLine "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
-        return (Exit-InstallFailure "unsloth CLI was not installed correctly")
+        $cliImportable = $false
+        if (Test-Path -LiteralPath $VenvPython) {
+            # The trampoline's own import, so this answers for what actually launches.
+            Invoke-ManagedUnslothCli -Python $VenvPython -Arguments @("--version")
+            $cliImportable = ($script:ManagedUnslothCliExit -eq 0)
+        }
+        if ($cliImportable) {
+            substep "the generated unsloth.exe is gone (antivirus quarantine); the managed CLI still runs." "Yellow"
+        } else {
+            Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
+            Write-StudioLine "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
+            Write-StudioLine "        Expected: $UnslothExe" -ForegroundColor Yellow
+            Write-StudioLine "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
+            Write-StudioLine "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
+            return (Exit-InstallFailure "unsloth CLI was not installed correctly")
+        }
     }
     # This is the file the handoff actually starts, so it gets its own check rather
     # than being discovered as a launch failure halfway through setup.

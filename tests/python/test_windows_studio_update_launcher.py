@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import shutil
 import subprocess
 import sys
@@ -649,7 +650,11 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())",
         "--version",
     ]
-    assert calls[1][1]["timeout"] == 10
+    # The launcher probe gets 10s, a process start. This one has to import the whole
+    # CLI package first, so it gets the import probe's ceiling instead.
+    assert calls[0][1]["timeout"] == 10
+    assert calls[1][1]["timeout"] == studio._MANAGED_CLI_IMPORT_PROBE_TIMEOUT
+    assert calls[1][1]["timeout"] > calls[0][1]["timeout"]
 
 
 def test_a_policy_block_with_a_broken_package_still_fails(monkeypatch, studio, tmp_path):
@@ -811,9 +816,10 @@ def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
 def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studio, tmp_path):
     """What `studio run` checks instead of the deleted stub, and only on Windows.
 
-    ``python.exe`` here is a plain file, so the import probe cannot run and the
-    on-disk layout is what answers -- the deliberate fallback for an interpreter
-    that produces no verdict at all.
+    The layout is the fallback for one specific no-verdict case, a probe that
+    timed out, so that is what is simulated here. A probe that could not START
+    the interpreter is a different answer and is covered separately: the re-exec
+    runs that same interpreter, so the layout cannot excuse it.
     """
     scripts = tmp_path / "Scripts"
     site_packages = tmp_path / "Lib" / "site-packages"
@@ -822,6 +828,10 @@ def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studi
     python = scripts / "python.exe"
     python.write_bytes(b"python")
 
+    def timed_out(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd = "probe", timeout = 60)
+
+    monkeypatch.setattr(studio.subprocess, "run", timed_out)
     monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
     assert not studio._managed_cli_package_present(python)
 
@@ -966,6 +976,60 @@ def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
     # assertion above is about the shape and not about the fixture being broken.
     (package / "__init__.py").write_text("app = None\n", encoding = "utf-8")
     assert studio._managed_cli_package_present(python)
+
+
+def test_a_probe_that_cannot_start_the_interpreter_fails_closed(monkeypatch, studio, tmp_path):
+    """No verdict is not the same as no problem, and the two causes differ.
+
+    The re-exec this gate stands in front of runs the same interpreter, so an
+    interpreter that will not start means the re-exec will not either, and the
+    on-disk layout cannot say otherwise. The caller strips .bootstrap_password
+    before that re-exec on a headless public launch, so passing here would leave
+    a public Studio with no login page and no plaintext recovery credential.
+    """
+    scripts = tmp_path / "Scripts"
+    site_packages = tmp_path / "Lib" / "site-packages"
+    scripts.mkdir(parents = True)
+    (site_packages / "unsloth_cli").mkdir(parents = True)
+    python = scripts / "python.exe"
+    python.write_bytes(b"python")
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+
+    # The layout says yes, so any pass below is the fallback and not the layout
+    # being empty.
+    assert studio._managed_cli_site_packages_layout(python)
+
+    def blocked(*_args, **_kwargs):
+        raise OSError(1260, "An Application Control policy has blocked this file")
+
+    monkeypatch.setattr(studio.subprocess, "run", blocked)
+    assert not studio._managed_cli_package_present(python)
+
+    # A timeout is the other kind of no verdict, and it keeps the fallback: slow
+    # is not broken, a cold venv under an antivirus scan is exactly this, and the
+    # re-exec has no timeout of its own to trip over.
+    def slow(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd = "probe", timeout = 60)
+
+    monkeypatch.setattr(studio.subprocess, "run", slow)
+    assert studio._managed_cli_package_present(python)
+
+
+def test_the_interpreter_fallback_waits_as_long_as_the_import_probe(studio):
+    """--version through the trampoline is an import, not a process start.
+
+    The launcher's 10 seconds is sized for spawning a built executable. Here the
+    same call has to import the whole CLI package, which is the work the import
+    probe's ceiling is deliberately generous for, and under the antivirus scan
+    that produced the quarantine this path exists to survive, the short ceiling
+    would call a healthy update broken and roll it back once per candidate.
+    """
+    transaction = studio._WindowsLauncherUpdateTransaction
+    source = inspect.getsource(transaction._interpreter_health_error)
+    assert "_MANAGED_CLI_IMPORT_PROBE_TIMEOUT" in source
+    assert "_VERSION_TIMEOUT_SECONDS" not in source
+    # And the two are actually different, so the assertion above is not vacuous.
+    assert studio._MANAGED_CLI_IMPORT_PROBE_TIMEOUT > transaction._VERSION_TIMEOUT_SECONDS
 
 
 def test_the_import_probe_performs_the_trampolines_own_import(studio):

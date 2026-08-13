@@ -378,12 +378,23 @@ def _managed_cli_package_present(python: Path) -> bool:
             # Windows launch must not flash a console window (issue #8490's sibling).
             **_windows_hidden_subprocess_kwargs(),
         )
-    except (OSError, subprocess.SubprocessError):
-        # The probe itself never produced a verdict (no interpreter, a policy
-        # block, a hang). That is not evidence of a broken package, so fall back
-        # to the on-disk layout rather than aborting a venv quarantine only
-        # half broke -- the failure this whole fallback exists to remove.
+    except subprocess.TimeoutExpired:
+        # Slow is not broken. A cold venv under an antivirus scan can take longer
+        # than the probe waits, and the re-exec this gate stands in front of has
+        # no timeout at all, so it would still come up. Fall back to the on-disk
+        # layout rather than aborting an install that works -- the failure this
+        # whole fallback exists to remove.
         return _managed_cli_site_packages_layout(python)
+    except (OSError, subprocess.SubprocessError):
+        # No verdict for a different reason: the interpreter would not start at
+        # all (missing, or denied by an Application Control policy). The re-exec
+        # runs THAT interpreter, so it is going to fail the same way, and the
+        # on-disk layout cannot say otherwise. Fail closed, because the caller
+        # strips .bootstrap_password on a headless public launch before it
+        # re-execs: passing here would leave a public Studio with no login page
+        # and no plaintext recovery credential, which is worse than telling the
+        # user to re-run setup.
+        return False
     return probe.returncode == 0
 
 
@@ -4255,11 +4266,21 @@ class _WindowsLauncherUpdateTransaction:
                 _managed_cli_argv(python, "--version", isolated = True),
                 check = False,
                 capture_output = True,
-                timeout = self._VERSION_TIMEOUT_SECONDS,
+                # The import probe's ceiling, not the launcher's. --version on the
+                # launcher is a process start; here it is a bare interpreter start
+                # plus the whole CLI package import, which is exactly the work
+                # _MANAGED_CLI_IMPORT_PROBE_TIMEOUT is generous for. Under the
+                # antivirus scan that produced the quarantine this path exists to
+                # survive, the launcher's 10 seconds would call a healthy update
+                # broken and roll it back, once per recovery candidate.
+                timeout = _MANAGED_CLI_IMPORT_PROBE_TIMEOUT,
                 **_windows_hidden_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired:
-            return f"the managed Python CLI timed out after {self._VERSION_TIMEOUT_SECONDS} seconds"
+            return (
+                f"the managed Python CLI timed out after "
+                f"{_MANAGED_CLI_IMPORT_PROBE_TIMEOUT} seconds"
+            )
         except OSError as exc:
             return f"the managed Python CLI could not run --version ({exc})"
         if result.returncode != 0:

@@ -949,6 +949,33 @@ pub(crate) fn force_kill_process_tree(
     info!("{} process tree force stopped", label);
 }
 
+/// Whether a Windows venv's site-packages still holds something the CLI trampoline
+/// could import.
+///
+/// The dist-info is accepted alongside the package directory, and for the same reason
+/// `_managed_cli_site_packages_layout` in unsloth_cli/commands/studio.py accepts it: a
+/// PEP 660 editable install of the checkout leaves a .pth and a `unsloth-*.dist-info`
+/// here and no `unsloth_cli/` at all. Ranking that below an empty new layout would send
+/// every capability probe at the interpreter with nothing to import.
+///
+/// It cannot prove the package imports, and does not try to. This runs on the launch
+/// path, so it stays filesystem-only; the two Python-side probes that DO run an import
+/// are the ones allowed to spawn an interpreter.
+#[cfg(windows)]
+fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> bool {
+    if site_packages.join("unsloth_cli").exists() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(site_packages) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("unsloth-") && name.ends_with(".dist-info")
+    })
+}
+
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
@@ -1005,7 +1032,7 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
     #[cfg(windows)]
     for base in &bases {
         if base.join("Scripts").join("python.exe").exists()
-            && base.join("Lib").join("site-packages").join("unsloth_cli").exists()
+            && windows_site_packages_carries_the_cli(&base.join("Lib").join("site-packages"))
         {
             return Some(base.join("Scripts").join("unsloth.exe"));
         }
@@ -1406,6 +1433,50 @@ mod tests {
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
             Some(old_base.join("Scripts").join("unsloth.exe"))
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // An editable install of the checkout leaves a .pth and a dist-info in
+    // site-packages and no unsloth_cli/ directory at all, so a package-directory test
+    // alone would rank a working legacy venv below an empty new one. The Python side
+    // accepts the dist-info for this exact shape; this side has to agree.
+    #[cfg(windows)]
+    #[test]
+    fn an_editable_install_counts_as_carrying_the_package() {
+        let studio = temp_studio_dir("stubless-editable");
+        let new_base = studio.join("unsloth_studio");
+        let old_base = studio.join(".venv");
+        for base in [&new_base, &old_base] {
+            fs::create_dir_all(base.join("Scripts")).unwrap();
+            fs::write(base.join("Scripts").join("python.exe"), "").unwrap();
+            fs::create_dir_all(base.join("Lib").join("site-packages")).unwrap();
+        }
+
+        let legacy_site_packages = old_base.join("Lib").join("site-packages");
+        fs::create_dir_all(legacy_site_packages.join("unsloth-2026.8.1.dist-info")).unwrap();
+        fs::write(legacy_site_packages.join("__editable__.unsloth.pth"), "").unwrap();
+
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe")),
+            "an editable install has a package to import and must outrank an empty venv"
+        );
+
+        // Unrelated metadata is not this package. A dist-info for something else must
+        // not make an empty venv look installed.
+        fs::create_dir_all(
+            new_base
+                .join("Lib")
+                .join("site-packages")
+                .join("unsloth_zoo-2026.8.1.dist-info"),
+        )
+        .unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe")),
+            "a dist-info for another distribution must not count"
         );
 
         fs::remove_dir_all(studio).unwrap();
