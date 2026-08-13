@@ -1290,6 +1290,7 @@ _LOGIN_URL_RE = re.compile(r"https://\S*cloudflare\.com/argotunnel\S*")
 _TUNNEL_ID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _CREDENTIALS_RE = re.compile(r"credentials written to (.+?\.json)", re.IGNORECASE)
 _ROUTE_ADVICE = "overwrite any existing DNS records for this hostname."
+_ROUTE_ADDED_RE = re.compile(r"added cname (\S+) which will route", re.IGNORECASE)
 
 _CLI_TIMEOUT = 60.0
 # cloudflared drains in-flight requests for thirty seconds before it goes.
@@ -1852,9 +1853,17 @@ def _route_hostname(record: dict, binary: str, name: str, hostname: str) -> None
     record["route_attempted"] = True
     _write(_RECORD, record)
     result = _cli(binary, "route", "dns", name, hostname)
-    if result.returncode == 0:
-        return
     text = _output(result)
+    if result.returncode == 0:
+        # A hostname outside the authorized zone is not refused: cloudflared takes
+        # it as a label inside that zone and reports success having created a
+        # record that can never serve what was asked for. The route is kept on the
+        # record so the name it did create is still accounted for. Only a reported
+        # name that disagrees is evidence; reporting none is not.
+        created = _ROUTE_ADDED_RE.search(text)
+        if created and created.group(1).rstrip(".").lower() != hostname.lower():
+            raise ProvisioningError("hostname_not_authorized", hostname)
+        return
     lowered = text.lower()
     if any(marker in lowered for marker in _ROUTE_AUTHORIZATION_FAILURES):
         record.pop("route_attempted", None)

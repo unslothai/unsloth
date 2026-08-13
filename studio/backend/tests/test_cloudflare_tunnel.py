@@ -1915,6 +1915,34 @@ def test_a_dns_conflict_is_refused_and_leaves_nothing_to_clean_up(cf):
     assert not (ct.state_root() / f"{_TUNNEL_ID}.json").exists()
 
 
+def test_a_record_created_outside_the_requested_zone_is_refused(cf):
+    # Authorizing the wrong zone does not fail the route. cloudflared takes the
+    # hostname as a label inside the zone it was given and reports success, so the
+    # name it says it created is the only thing that distinguishes the two.
+    cf.route_outcome = (0, f"Added CNAME {_HOST}.example.net which will route to this tunnel")
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert (excinfo.value.code, excinfo.value.detail) == ("hostname_not_authorized", _HOST)
+    assert ct.read_identity() is None
+    # The route did succeed here, unlike the refusals cloudflared reports itself,
+    # so the name it created has to stay accounted for rather than be forgotten.
+    assert ct.orphaned_hostnames() == [_HOST]
+    assert ct._read(ct._RECORD) is None
+    assert len(cf.deleted) == 1
+
+
+@pytest.mark.parametrize(
+    "reported",
+    # A trailing root label is the same name, and a version that reports nothing
+    # must not be read as a mismatch.
+    ["Added CNAME " + _HOST + ". which will route to this tunnel", "", "done"],
+)
+def test_a_route_that_matches_or_says_nothing_is_accepted(cf, reported):
+    cf.route_outcome = (0, reported)
+    _provision()
+    assert ct.read_identity()["hostname"] == _HOST
+
+
 @pytest.mark.parametrize(
     "message",
     [
