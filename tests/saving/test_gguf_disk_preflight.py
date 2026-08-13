@@ -70,6 +70,20 @@ class _FakeModel:
     """Not a PeftModel; the preflight is called with an explicit needs_merge."""
 
 
+class _ModelWithLayers:
+    """The `.model.layers` layout `unsloth_save_model` rebuilds a dict for.
+
+    Anything else takes its generic fallback, which hands the caller's
+    dictionary to `save_pretrained` untouched.
+    """
+
+    class _Inner:
+        layers = ()
+
+    def __init__(self):
+        self.model = self._Inner()
+
+
 class _FakeAdapterModel:
     """Stands in for a PeftModel: monkeypatch `S.PeftModel` onto this class.
 
@@ -1545,8 +1559,12 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
         )
         assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
 
-    def test_only_the_generic_call_site_says_the_dict_is_followed(self, monkeypatch):
-        """Driven rather than read, so a body that never wires it in fails."""
+    def test_each_call_site_says_what_its_writer_does_with_the_dict(self, monkeypatch):
+        """Driven rather than read, so a body that never wires it in fails.
+
+        `unsloth_save_model` rebuilds the dictionary only on the path that
+        walks `.model.layers`, so that is the model this asks about.
+        """
         import torch
 
         seen = []
@@ -1554,7 +1572,13 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             S,
             "_preflight_merge_disk",
             lambda *args, **kwargs: (
-                seen.append(kwargs.get("forwards_state_dict", False)) or args[1]
+                seen.append(
+                    (
+                        kwargs.get("forwards_state_dict", False),
+                        kwargs.get("writes_model_verbatim", False),
+                    )
+                )
+                or args[1]
             ),
         )
         for function in (
@@ -1563,13 +1587,13 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
         ):
             with contextlib.suppress(Exception):
                 function(
-                    self._model(),
+                    _ModelWithLayers(),
                     "model",
                     tokenizer = None,
                     save_method = "merged_16bit",
                     state_dict = {"weight": torch.zeros(4)},
                 )
-        assert seen == [False, True]
+        assert seen == [(False, False), (True, False)]
 
     def test_the_writers_really_differ(self):
         """The split above is only right while these two stay as they are."""
@@ -2794,3 +2818,371 @@ class TestWhetherTheMergeCanBeReclaimed:
 
         monkeypatch.setattr(S.os, "listdir", boom)
         assert S._merge_reclamation_is_possible("model") is False
+
+
+class TestTheGenericFallbackCopiesWhatItHolds:
+    """`unsloth_save_model` rebuilds a dictionary for ONE architecture layout.
+
+    Everything else -- GPT-2 style, custom heads, anything without
+    `.model.layers` -- falls to the generic branch, which calls
+    `save_pretrained(**save_pretrained_settings)` with the caller's dictionary
+    still in it and with no cast at all. So the checkpoint is that
+    dictionary's own bytes at its own dtypes, and a supplied fp32 dictionary
+    is twice what a 16-bit merge would have been.
+    """
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        return asked
+
+    @staticmethod
+    def _fp32_dict(numel = 4 * 1024**3 // 4):
+        import torch
+        return {"model.embed_tokens.weight": torch.zeros(numel, dtype = torch.float32)}
+
+    def test_the_dispositions_split_on_the_layout(self):
+        import torch
+
+        assert S._merge_writer_disposition(torch.nn.Linear(8, 8), "merged_16bit") == (True, True)
+        assert S._merge_writer_disposition(_ModelWithLayers(), "merged_16bit") == (False, False)
+
+    def test_a_supplied_dict_is_written_uncast(self, sized):
+        """4GB of fp32 stays 4GB here, where a cast would have called it 2GB."""
+        import torch
+
+        state_dict = self._fp32_dict()
+        S._preflight_merge_disk(
+            torch.nn.Linear(8, 8),
+            "model",
+            "merged_16bit",
+            state_dict = state_dict,
+            forwards_state_dict = True,
+            writes_model_verbatim = True,
+        )
+        assert S._cast_16bit_state_dict_bytes(state_dict) == 2 * GB
+        assert sized == [_merge_preflight_ask(4 * GB, 0)]
+
+    def test_no_dict_is_the_resident_model_at_its_own_dtype(self, sized):
+        """A bare `save_pretrained` casts nothing, so fp32 parameters cost four bytes."""
+        import torch
+
+        model = torch.nn.Linear(1024, 1024, bias = False, dtype = torch.float32)
+        S._preflight_merge_disk(
+            model,
+            "model",
+            "merged_16bit",
+            forwards_state_dict = True,
+            writes_model_verbatim = True,
+        )
+        assert sized == [_merge_preflight_ask(1024 * 1024 * 4, 0)]
+
+    def test_nothing_is_reserved_for_a_merge_that_never_runs(self, sized):
+        """No `merge_and_overwrite_lora` here, so no `free * 0.95` either."""
+        import torch
+
+        S._preflight_merge_disk(
+            torch.nn.Linear(8, 8),
+            "model",
+            "merged_16bit",
+            state_dict = self._fp32_dict(),
+            forwards_state_dict = True,
+            writes_model_verbatim = True,
+        )
+        assert sized == [4 * GB], "a reserve would round this up"
+
+    def test_an_adapter_is_left_exactly_as_it_was(self, sized, monkeypatch):
+        """A PeftModel in that branch writes adapters, not a checkpoint."""
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        S._preflight_merge_disk(
+            _FakeAdapterModel(),
+            "model",
+            "merged_16bit",
+            state_dict = self._fp32_dict(),
+            forwards_state_dict = True,
+            writes_model_verbatim = True,
+        )
+        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+        assert S._merge_writer_disposition(_FakeAdapterModel(), "merged_16bit") == (False, False)
+
+    def test_the_writer_really_still_forwards_it(self):
+        """The split above is only right while `unsloth_save_model` stays as it is."""
+        import inspect
+
+        source = inspect.getsource(S.unsloth_save_model)
+        assert 'or (not hasattr(model, "model") or not hasattr(internal_model.model, "layers"))' in source
+        assert "model.save_pretrained(**save_pretrained_settings)" in source
+
+
+class TestASpecialExportStagesFromTheSuppliedDict:
+    """compressed-tensors and torchao merge through `unsloth_generic_save` too.
+
+    Both hand it `save_method = "merged_16bit"` and the caller's dictionary, so
+    that dictionary is what the kept (compressed) or staged (torchao) merge
+    costs. Sizing the resident model there prices a checkpoint that is not the
+    one being written.
+    """
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(S, "_unquantized_parameter_bytes", lambda model, patterns = (): 0)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        return asked
+
+    @staticmethod
+    def _dict(gigabytes = 8):
+        import torch
+        return {
+            "model.embed_tokens.weight": torch.zeros(
+                gigabytes * 1024**3 // 2, dtype = torch.float16
+            )
+        }
+
+    def test_a_compressed_export_measures_the_dict(self, sized):
+        """8GB of merge plus its fp8 sibling, not the 10GB resident model."""
+        import torch
+
+        S._preflight_merge_disk(
+            torch.nn.Linear(8, 8),
+            "model",
+            "fp8",
+            state_dict = self._dict(8),
+            forwards_state_dict = True,
+        )
+        assert sized == [_merge_preflight_ask(8 * GB + 4 * GB, 8 * GB)]
+
+    def test_a_torchao_export_measures_the_dict(self, sized):
+        """The staging merge is the dict; only the 8-bit sibling lands here."""
+        import torch
+
+        S._preflight_merge_disk(
+            torch.nn.Linear(8, 8),
+            "model",
+            "torchao_fp8",
+            state_dict = self._dict(8),
+            forwards_state_dict = True,
+        )
+        assert sized == [_merge_preflight_ask(4 * GB, 0)]
+
+    def test_the_special_methods_forward_without_casting_twice(self):
+        import torch
+
+        for method in ("fp8", "mxfp4", "torchao_fp8", "torchao_int8"):
+            assert S._merge_writer_disposition(torch.nn.Linear(8, 8), method) == (True, False), (
+                method
+            )
+
+    def test_both_special_writers_really_pass_the_dict_on(self):
+        import inspect
+
+        for function in (S._unsloth_save_compressed_tensors, S._unsloth_save_torchao):
+            source = inspect.getsource(function)
+            assert "unsloth_generic_save(" in source
+            assert "merge_kwargs" in source
+        entrypoint = inspect.getsource(S.unsloth_save_pretrained_merged)
+        assert entrypoint.count("state_dict = state_dict,") >= 2
+
+
+class TestTheGgufPreflightIsToldTheModelDtype:
+    """`estimate_gguf_export_bytes` drops a requested output that EQUALS the
+    initial conversion, so naming the wrong dtype hides a whole checkpoint.
+
+    A bf16 model asked for `["f16", "q4_k_m"]` writes a bf16 intermediate AND
+    a separate f16 file. Told "f16", the estimate charges one 16-bit file
+    where the export writes two.
+    """
+
+    class _Config:
+        def __init__(self, dtype):
+            self.torch_dtype = dtype
+            self.dtype = dtype
+            self._name_or_path = "unsloth/model"
+
+    class _Model:
+        def __init__(self, config):
+            self.config = config
+
+    @pytest.fixture(autouse = True)
+    def bf16_hardware(self, monkeypatch):
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: True)
+
+    def test_a_bfloat16_model_reports_bf16(self):
+        import torch
+
+        assert S._gguf_source_dtype(self._Model(self._Config(torch.bfloat16))) == "bf16"
+        assert S._gguf_source_dtype(self._Model(self._Config("bfloat16"))) == "bf16"
+
+    def test_a_float16_model_reports_f16(self):
+        import torch
+
+        assert S._gguf_source_dtype(self._Model(self._Config(torch.float16))) == "f16"
+
+    def test_hardware_without_bf16_falls_back_like_the_exporter(self, monkeypatch):
+        import torch
+
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: False)
+        assert S._gguf_source_dtype(self._Model(self._Config(torch.bfloat16))) == "f16"
+
+    def test_an_unreadable_model_reports_the_exporters_own_fallback(self):
+        assert S._gguf_source_dtype(_FakeModel()) == "f16"
+
+    def test_the_wrong_dtype_undercounts_a_whole_checkpoint(self, monkeypatch):
+        """The zoo estimator, transcribed at the top of this file, priced for real."""
+        n = 8_190_735_360  # Qwen3-8B logical parameters
+
+        def estimate(
+            model = None,
+            quantization_methods = (),
+            first_conversion = "f16",
+            needs_merge = True,
+            n_parameters = None,
+            base_cache_copy = False,
+        ):
+            bits = {"f16": 16.0, "bf16": 16.0, "q4_k_m": 4.9}
+            total = n * 2 if needs_merge else 0
+            total += int(n * bits[first_conversion] / 8)
+            for method in dict.fromkeys(quantization_methods):
+                if method != first_conversion:
+                    total += int(n * bits[method] / 8)
+            return total
+
+        asked = []
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
+        monkeypatch.setattr(S, "free_bytes", lambda path: 1000 * GB)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(
+            S,
+            "_fallback_checkpoint_extra_bytes",
+            lambda model: asked.append(None) or 0,
+        )
+        wrong = estimate(quantization_methods = ["f16", "q4_k_m"], first_conversion = "f16")
+        right = estimate(quantization_methods = ["f16", "q4_k_m"], first_conversion = "bf16")
+        assert (right - wrong) == n * 2
+        assert round((right - wrong) / GB, 1) == 15.3
+
+    def test_the_call_site_resolves_it(self, monkeypatch):
+        """Driven, so a preflight left on its "f16" default fails here."""
+        import torch
+
+        seen = []
+        monkeypatch.setattr(
+            S,
+            "_preflight_gguf_disk",
+            lambda **kwargs: (seen.append(kwargs.get("model_dtype")) or (kwargs["save_directory"], True)),
+        )
+        with contextlib.suppress(Exception):
+            S.unsloth_save_pretrained_gguf(
+                self._Model(self._Config(torch.bfloat16)),
+                "model",
+                # Any object gets past the "GGUF needs a tokenizer" check and
+                # dies well after the preflight, which is the point.
+                tokenizer = object(),
+                quantization_method = ["f16", "q4_k_m"],
+            )
+        assert seen == ["bf16"], "the preflight has to be told what the exporter will use"
+
+
+class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
+    """`save_directory` is a mount; `~/.cache` and the `_gguf` sibling are not.
+
+    Then the cached base model is written to the sibling's filesystem, and
+    charging it to the checkpoint's both drops a pre-warm that had room and
+    lets the sibling check accept `need_sibling` alone on a disk the base is
+    about to land on.
+
+    Numbers: a 60GB checkpoint, a 40GB sibling, a 60GB cache copy.
+    """
+
+    CHECKPOINT = 60 * GB
+    SIBLING = 40 * GB
+    CACHE = 60 * GB
+
+    @pytest.fixture
+    def split(self, monkeypatch):
+        # The cache is looked up through `_hub_cache_directory`, whose answer
+        # is a real path on this machine, so it is the DEFAULT of the device
+        # map rather than an entry in it. Patching the resolver instead would
+        # let a build that never calls it pass.
+        state = {"here": 1000 * GB, "there": 1000 * GB, "cache_device": 2}
+        devices = {"model": 1, "model_gguf": 2, "work": 2}
+
+        def estimate(**kwargs):
+            total = 0
+            if kwargs.get("needs_merge", True):
+                total += self.CHECKPOINT
+            if kwargs.get("base_cache_copy", False):
+                total += self.CACHE
+            if kwargs.get("quantization_methods"):
+                total += self.SIBLING
+            return total
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: state["there"] if str(path).endswith("_gguf") else state["here"],
+        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(
+            S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
+        )
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def _preflight(self):
+        return S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", first_conversion = "bf16")
+
+    def test_a_sibling_that_cannot_also_hold_the_cache_drops_the_prewarm(self, split, capsys):
+        """40GB of GGUF fits in 60GB; 40GB plus a 60GB base does not."""
+        split.update(there = 60 * GB)
+        assert self._preflight() == ("model", False)
+        assert "Skipping the Hugging Face cache pre-warm" in capsys.readouterr().out
+
+    def test_a_sibling_with_room_for_both_keeps_it(self, split):
+        split.update(there = 120 * GB)
+        assert self._preflight() == ("model", True)
+
+    def test_the_checkpoint_is_not_charged_for_bytes_written_elsewhere(self, split):
+        """60GB of checkpoint on a 63.2GB mount, with the cache on the other disk."""
+        split.update(here = math.ceil(self.CHECKPOINT / 0.95), there = 1000 * GB)
+        assert self._preflight() == ("model", True)
+
+    def test_a_cache_on_this_filesystem_is_still_charged_here(self, split):
+        """The premise reversed: nothing about the old accounting was wrong there."""
+        split.update(
+            cache_device = 1, here = math.ceil(self.CHECKPOINT / 0.95), there = 1000 * GB
+        )
+        assert self._preflight() == ("model", False)
+
+    def test_an_unresolvable_cache_is_charged_where_it_always_was(self, split, monkeypatch):
+        monkeypatch.setattr(S, "_hub_cache_directory", lambda: None)
+        split.update(here = math.ceil(self.CHECKPOINT / 0.95), there = 1000 * GB)
+        assert self._preflight() == ("model", False)
+
+    def test_the_resolver_follows_the_same_cache_the_prewarm_downloads_into(self):
+        import inspect
+
+        prewarm = inspect.getsource(S._prewarm_base_model_hub_cache)
+        assert "from unsloth_zoo.hf_cache import _active_caches" in prewarm
+        assert "_active_caches" in inspect.getsource(S._hub_cache_directory)

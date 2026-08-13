@@ -2397,12 +2397,15 @@ def unsloth_save_pretrained_merged(
     # kernel is measured in terabytes. Relative paths under /kaggle/working that
     # do not fit move there; absolute paths, hub pushes and every non-Kaggle
     # machine are untouched.
+    _forwards_state_dict, _writes_model_verbatim = _merge_writer_disposition(self, save_method)
     save_directory = _preflight_merge_disk(
         self,
         save_directory,
         save_method,
         push_to_hub = push_to_hub,
         state_dict = state_dict,
+        forwards_state_dict = _forwards_state_dict,
+        writes_model_verbatim = _writes_model_verbatim,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
@@ -2472,6 +2475,8 @@ def unsloth_save_pretrained_merged(
     del arguments["self"]
     del arguments["_compressed"]
     del arguments["_torchao"]
+    del arguments["_forwards_state_dict"]
+    del arguments["_writes_model_verbatim"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -3362,6 +3367,54 @@ def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
         return
 
 
+def _merge_writer_disposition(model, save_method):
+    """What `save_pretrained_merged`'s writer does with a supplied `state_dict`.
+
+    Returns `(forwards, verbatim)` for the `_preflight_merge_disk` arguments of
+    the same meaning. Three writers sit behind that one entrypoint and they do
+    not agree:
+
+      - a compressed-tensors or torchao export hands the dictionary to
+        `unsloth_generic_save(save_method = "merged_16bit")`, which casts every
+        floating entry to two bytes and writes it. That checkpoint is the
+        staging (torchao) or kept (compressed) merge, so it is sized from the
+        dictionary, not from the resident model,
+      - `unsloth_save_model` on an architecture that walks `.model.layers`
+        rebuilds the dictionary from the merged layers and drops whatever it
+        was handed, so sizing the caller's would price a save that is not
+        happening,
+      - `unsloth_save_model` on any other architecture takes its generic
+        fallback and calls `save_pretrained(**save_pretrained_settings)` with
+        the caller's dictionary untouched AND uncast, so the bytes written are
+        the dictionary's own, at its own dtypes.
+
+    Never raises: an unreadable model or an unrecognised method reports the
+    conservative `(False, False)`, which is the behaviour before this existed.
+    """
+    method = str(save_method).lower().strip().replace("-", "_").replace(" ", "_")
+    try:
+        compressed = _normalize_compressed_method(method)
+        torchao = _normalize_torchao_method(method)
+    except Exception:
+        return False, False
+    if compressed is not None or torchao is not None:
+        return True, False
+    if method != "merged_16bit":
+        return False, False
+    # A PeftModel in the generic fallback writes ADAPTERS and not a checkpoint,
+    # so it keeps the sizing it has rather than being priced a full model.
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return False, False
+    try:
+        # The same predicate `unsloth_save_model` dispatches on, and no other.
+        takes_generic_fallback = not hasattr(model, "model") or not hasattr(
+            getattr(model, "model", None), "layers"
+        )
+    except Exception:
+        return False, False
+    return (True, True) if takes_generic_fallback else (False, False)
+
+
 def _preflight_merge_disk(
     model,
     save_directory,
@@ -3369,6 +3422,7 @@ def _preflight_merge_disk(
     push_to_hub = False,
     state_dict = None,
     forwards_state_dict = False,
+    writes_model_verbatim = False,
 ):
     """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
 
@@ -3384,9 +3438,18 @@ def _preflight_merge_disk(
 
     `forwards_state_dict` says the writer behind this call hands a supplied
     `state_dict` to `save_pretrained` for a 16-bit save rather than building
-    its own. Only `unsloth_generic_save` does: `unsloth_save_model` rebuilds
-    the dictionary from the merged layers and drops whatever it was given, so
-    sizing the caller's there would price a save that is not happening.
+    its own, casting its floating entries to two bytes on the way, as
+    `unsloth_generic_save` does. `unsloth_save_model`'s merge path instead
+    rebuilds the dictionary from the merged layers and drops whatever it was
+    given, so sizing the caller's there would price a save that is not
+    happening.
+
+    `writes_model_verbatim` says the writer copies what it holds to
+    `save_pretrained` with no cast at all, which is `unsloth_save_model`'s
+    generic architecture fallback. Then the checkpoint is the dictionary's own
+    bytes, at its own dtypes, or the resident parameters' own bytes when no
+    dictionary was supplied, and never two bytes per logical parameter.
+    `_merge_writer_disposition` decides both for the public entrypoint.
     """
     if push_to_hub:
         return save_directory
@@ -3417,6 +3480,9 @@ def _preflight_merge_disk(
     # it ends up holding. A PeftModel goes to `merge_and_overwrite_lora`, which
     # takes no state dict at all, so only the non-PEFT case follows it.
     supplied_dict = state_dict if (forwards_state_dict and not is_peft) else None
+    # Same reason the dict is only followed for a non-PEFT model: a PeftModel
+    # never reaches the fallback that would copy one verbatim.
+    verbatim = bool(writes_model_verbatim) and not is_peft
     if compressed is None and torchao is None and method != "merged_16bit" and not full_model_lora:
         return save_directory
     try:
@@ -3432,9 +3498,14 @@ def _preflight_merge_disk(
         # writes more. Sizing the model there redirects a nearly empty save off
         # persistent Kaggle storage, or leaves a larger one to fill the working
         # filesystem.
-        if full_model_lora:
+        #
+        # A compressed or torchao export writes that same 16-bit checkpoint
+        # through the same `unsloth_generic_save`, as its staging (torchao) or
+        # kept (compressed) merge, so the dictionary decides its size too and
+        # not only a literal `merged_16bit` request.
+        if full_model_lora or verbatim:
             need = _full_model_checkpoint_bytes(model, state_dict)
-        elif method == "merged_16bit" and supplied_dict is not None:
+        elif supplied_dict is not None:
             need = _cast_16bit_state_dict_bytes(supplied_dict)
         else:
             need = model_16bit_bytes(model)
@@ -3453,7 +3524,10 @@ def _preflight_merge_disk(
         # because the reserve belongs on this and on nothing else: charging it
         # around the whole estimate relocates an export that fits, and on
         # Kaggle that means moving it to a /tmp the kernel does not keep.
-        merge_here = 0 if full_model_lora else need
+        # The generic fallback is a bare `save_pretrained` with no merge and no
+        # guard behind it, exactly like the full-model `lora` fallback, so it
+        # reserves nothing either.
+        merge_here = 0 if (full_model_lora or verbatim) else need
         if torchao is not None:
             # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
             # directory rather than `save_directory`, so the only thing landing
@@ -3488,7 +3562,7 @@ def _preflight_merge_disk(
         new_directory, message = kaggle_tmp_redirect(
             save_directory,
             need_bytes = need,
-            what = "model checkpoint" if full_model_lora else "16-bit merge",
+            what = "model checkpoint" if (full_model_lora or verbatim) else "16-bit merge",
         )
     except Exception:
         return save_directory
@@ -3754,6 +3828,66 @@ def _merge_reclamation_is_possible(save_directory):
         return False
 
 
+def _hub_cache_directory():
+    """Where `_prewarm_base_model_hub_cache` downloads the base model.
+
+    Resolved from the live environment exactly as the pre-warm does, and not
+    from huggingface_hub's frozen constants, so a runtime cache redirect is
+    followed here too. Falls back to the constant, then to None, and None
+    leaves every caller charging the cache where it charged it before.
+    """
+    try:
+        from unsloth_zoo.hf_cache import _active_caches
+        cache = _active_caches()[1]
+        if cache is not None:
+            return str(cache)
+    except Exception:
+        pass
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return str(HF_HUB_CACHE) or None
+    except Exception:
+        return None
+
+
+def _gguf_source_dtype(model):
+    """The initial-conversion dtype `save_to_gguf` will derive from the model.
+
+    `estimate_gguf_export_bytes` omits a requested output that EQUALS the
+    initial conversion, because that file is already on disk and gets no
+    quantize pass. So the preflight has to name the same dtype the export
+    will: told "f16" for a bf16 model asked for `["f16", "q4_k_m"]`, it charges
+    the f16 file as the intermediate and nothing else, while `save_to_gguf`
+    writes a bf16 intermediate AND a separate f16 output. That is one whole
+    checkpoint unaccounted for (15.3GB on Qwen3-8B).
+
+    Mirrors `save_to_gguf` step for step: `dtype_from_config`, mapped to the
+    f16 / bf16 names it uses, then the same drop to f16 on hardware with no
+    bf16. Returns "f16" whenever anything cannot be read, which is the same
+    fallback the exporter prints and takes.
+    """
+    try:
+        model_dtype = dtype_from_config(model.config)
+        if type(model_dtype) is str:
+            dtype = "bf16" if model_dtype == "bfloat16" else "f16"
+        elif model_dtype == torch.bfloat16:
+            dtype = "bf16"
+        else:
+            dtype = "f16"
+    except Exception:
+        return "f16"
+    if dtype == "bf16":
+        try:
+            if not torch.cuda.is_bf16_supported():
+                return "f16"
+        except Exception:
+            # `save_to_gguf` calls this unguarded, so a raise here means no
+            # export happens at all and the figure never gets used. "f16" is
+            # the same width either way; only the name has to match.
+            return "f16"
+    return dtype
+
+
 def _preflight_gguf_disk(
     model,
     save_directory,
@@ -3932,6 +4066,10 @@ def _preflight_gguf_disk(
 
     need_here = need
     need_here_with_cache = need_with_cache
+    # Set only where the base-model cache turns out to share the sibling's
+    # filesystem: the GGUF files themselves fit there, a cached base as well
+    # does not, and dropping the optional half beats failing the export.
+    sibling_prewarm_ok = True
     if separate_storage:
         # `need_sibling` is the same estimate without the checkpoint, so the
         # difference is the checkpoint and nothing else. An estimator that
@@ -3951,8 +4089,27 @@ def _preflight_gguf_disk(
         # The cache copy is not part of the merge and is not what the zoo
         # guard measures, so it rides on top of the checkpoint rather than
         # being reserved itself.
+        #
+        # It also does not necessarily land HERE. `save_directory` being a
+        # mount onto another disk is the whole premise of this branch, and
+        # then `~/.cache` and the lexical `_gguf` sibling both stay on the
+        # parent disk. Charging the checkpoint's filesystem for bytes written
+        # to the sibling's drops a pre-warm that had room and, worse, lets the
+        # sibling check accept `need_sibling` alone on a filesystem the base
+        # model is about to be downloaded onto. Unresolvable leaves it charged
+        # here, which is where it was charged before.
         cache_extra = max(0, need_with_cache - need)
-        need_here_with_cache = checkpoint_here + cache_extra
+        cache_here = cache_extra
+        cache_sibling = 0
+        if cache_extra > 0:
+            cache_directory = _hub_cache_directory()
+            if cache_directory is not None and _on_separate_filesystems(
+                cache_directory, save_directory
+            ):
+                cache_here = 0
+                if _shares_filesystem(cache_directory, gguf_directory):
+                    cache_sibling = cache_extra
+        need_here_with_cache = checkpoint_here + cache_here
         writes_a_lora_merge = isinstance(model, (PeftModel, PeftModelForCausalLM))
         if writes_a_lora_merge and needs_merge and need_sibling > 0 and checkpoint_here > 0:
             # Four conditions, each removing a way to charge for a guard that
@@ -3977,7 +4134,7 @@ def _preflight_gguf_disk(
             # asking 30GB, and then the merge sees 16.5GB and refuses 16GB under
             # its own 5%. Added instead, this band drops the pre-warm, which is
             # the optional half, rather than failing the export.
-            need_here_with_cache = max(need_here_with_cache, reserved + cache_extra)
+            need_here_with_cache = max(need_here_with_cache, reserved + cache_here)
         # The intermediate conversion is written to the working directory and
         # only moved to the sibling afterwards, so when that working directory
         # is on THIS filesystem the checkpoint and the conversion are on it
@@ -4001,7 +4158,7 @@ def _preflight_gguf_disk(
         ):
             need_here = max(need_here, checkpoint_here + need_conversion)
             need_here_with_cache = max(
-                need_here_with_cache, checkpoint_here + need_conversion + cache_extra
+                need_here_with_cache, checkpoint_here + need_conversion + cache_here
             )
         # Not gated on the sibling being the TIGHTER of the two any more.
         # Now that the checkpoint is charged only its own portion, a sibling
@@ -4019,6 +4176,8 @@ def _preflight_gguf_disk(
                 f"point `save_directory` at a path whose parent directory has the room.\n"
                 f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
             )
+        if cache_sibling > 0 and gguf_free < need_sibling + cache_sibling:
+            sibling_prewarm_ok = False
     elif (
         merge_is_disposable
         and needs_merge
@@ -4075,7 +4234,15 @@ def _preflight_gguf_disk(
             )
 
     if free is None or free >= need_here_with_cache:
-        return save_directory, True
+        if not sibling_prewarm_ok and prewarm_possible:
+            print(
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
+                f"cache is on the same filesystem as `{gguf_directory}`, which has "
+                f"{gguf_free / 1024**3:.1f}GB free: enough for the GGUF files "
+                f"(~{need_sibling / 1024**3:.1f}GB) but not for a cached copy of the base "
+                f"model as well. The next export will download the base again."
+            )
+        return save_directory, sibling_prewarm_ok
 
     if free >= need_here:
         if prewarm_possible:
@@ -4302,6 +4469,9 @@ def unsloth_save_pretrained_gguf(
             save_directory = save_directory,
             quantization_method = quantization_method,
             first_conversion = first_conversion,
+            # Resolved here rather than left at the default, because the
+            # default says "f16" and the export asks the config.
+            model_dtype = _gguf_source_dtype(self),
             has_imatrix = _imatrix_is_enabled(imatrix_file),
             needs_merge = _gguf_writes_16bit_checkpoint(self),
             # The same flag `save_to_gguf` reclaims on. Where a non-PEFT model
