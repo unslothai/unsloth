@@ -3544,3 +3544,108 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
         assert self.WORK in out
         assert "38.1GB free" in out
         assert "~30.5GB" in out
+
+
+class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
+    """One filesystem for the export, another for the Hugging Face cache.
+
+    `HF_HOME` on a data volume is the ordinary layout on a machine with more
+    than one disk, and then the cached base is never written to the disk the
+    export lands on. Charging it there anyway drops the pre-warm on a disk
+    that had room for everything written to it, and the next export downloads
+    the whole base again - the exact re-download the pre-warm exists to stop.
+    The split branch already asks this question; the single-filesystem one
+    did not.
+
+    Numbers: a 60GB checkpoint, 40GB of quants, a 60GB cached base, 120GB
+    free. The export needs 100GB here and fits; only the fictitious cache
+    copy takes it to 160GB.
+    """
+
+    CHECKPOINT = 60 * GB
+    QUANTS = 40 * GB
+    CACHE = 60 * GB
+    ELSEWHERE = "/hf_cache"
+
+    @pytest.fixture
+    def state(self, monkeypatch):
+        state = {"free": 120 * GB, "cache_device": 2}
+        devices = {"model": 1, "model_gguf": 1, "work": 1}
+
+        def estimate(**kwargs):
+            total = 0
+            if kwargs.get("needs_merge", True):
+                total += self.CHECKPOINT
+            if kwargs.get("base_cache_copy", False):
+                total += self.CACHE
+            if kwargs.get("quantization_methods"):
+                total += self.QUANTS
+            return total
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
+        monkeypatch.setattr(S, "free_bytes", lambda path: state["free"])
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(
+            S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
+        )
+        monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.ELSEWHERE)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def _preflight(self, **kwargs):
+        return S._preflight_gguf_disk(
+            _FakeModel(), "model", "q4_k_m", first_conversion = "bf16", **kwargs
+        )
+
+    def test_the_export_is_not_split_across_filesystems(self, state):
+        """The premise: this is the single-filesystem branch, not the split one."""
+        assert S._on_separate_filesystems("model", "model_gguf") is False
+        assert S._on_separate_filesystems(self.ELSEWHERE, "model") is True
+
+    def test_a_cache_elsewhere_keeps_the_prewarm(self, state, capsys):
+        """100GB of export on 120GB free; the 60GB cache is on another disk."""
+        assert self._preflight() == ("model", True)
+        assert "Skipping the Hugging Face cache pre-warm" not in capsys.readouterr().out
+
+    def test_a_cache_on_this_filesystem_still_drops_it(self, state, capsys):
+        """The premise reversed: nothing was wrong about the accounting there."""
+        state.update(cache_device = 1)
+        assert self._preflight() == ("model", False)
+        assert "Skipping the Hugging Face cache pre-warm" in capsys.readouterr().out
+
+    def test_room_for_both_keeps_it(self, state):
+        state.update(cache_device = 1, free = 160 * GB)
+        assert self._preflight() == ("model", True)
+
+    def test_an_unresolvable_cache_is_charged_where_it_always_was(self, state, monkeypatch):
+        monkeypatch.setattr(S, "_hub_cache_directory", lambda: None)
+        assert self._preflight() == ("model", False)
+
+    def test_no_prewarm_means_no_charge_either_way(self, state, monkeypatch):
+        """Colab returns before the pre-warm, so the cache costs nothing."""
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", True)
+        state.update(cache_device = 1)
+        assert self._preflight() == ("model", True)
+
+    def test_an_export_that_does_not_fit_is_still_refused(self, state):
+        """Only the pre-warm decision reads this figure, so no refusal moves."""
+        state.update(free = 99 * GB)
+        with pytest.raises(RuntimeError) as error:
+            self._preflight()
+        assert "100.0GB" in str(error.value)
+
+    def test_a_reclaimed_merge_charges_the_cache_where_it_lands(self, state, monkeypatch):
+        """The peak branch takes the same figure, so it needs the same answer.
+
+        60GB merge phase against 40GB of quants peaks at 60GB, not 100GB.
+        """
+        monkeypatch.setattr(S, "_merge_reclamation_is_possible", lambda directory: True)
+        state.update(free = 80 * GB)
+        assert self._preflight(merge_is_disposable = True) == ("model", True)
+        state.update(cache_device = 1)
+        assert self._preflight(merge_is_disposable = True) == ("model", False)

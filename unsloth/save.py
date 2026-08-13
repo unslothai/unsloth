@@ -4110,8 +4110,6 @@ def _preflight_gguf_disk(
         _gguf_model_input_directory(model, save_directory)
     )
 
-    need_here = need
-    need_here_with_cache = need_with_cache
     # Cleared where the base-model cache turns out to share a filesystem that
     # has room for what the export writes there but not for a cached base as
     # well: dropping the optional half beats failing the export. The message
@@ -4125,6 +4123,24 @@ def _preflight_gguf_disk(
     # the pre-warm cannot run, which is what leaves every branch below inert.
     cache_extra = max(0, need_with_cache - need)
     cache_directory = _hub_cache_directory() if cache_extra > 0 else None
+    # The cache copy lands wherever the cache is, which is not necessarily the
+    # filesystem holding `save_directory` - `HF_HOME` on a data volume is the
+    # ordinary layout on a machine with more than one disk. Charging it here
+    # anyway drops the pre-warm on a disk that had room for everything written
+    # to it, and the next export downloads the whole base again, which is the
+    # exact re-download the pre-warm exists to stop. It only ever LOWERS the
+    # figure, and only the pre-warm decision reads it, so no export that fit
+    # before is refused now. Unresolvable leaves it charged here, where it was
+    # charged before. The split branch asks the same of the sibling below.
+    cache_here = cache_extra
+    if (
+        cache_extra > 0
+        and cache_directory is not None
+        and _on_separate_filesystems(cache_directory, save_directory)
+    ):
+        cache_here = 0
+    need_here = need
+    need_here_with_cache = need + cache_here
     if separate_storage:
         # `need_sibling` is the same estimate without the checkpoint, so the
         # difference is the checkpoint and nothing else. An estimator that
@@ -4151,17 +4167,15 @@ def _preflight_gguf_disk(
         # parent disk. Charging the checkpoint's filesystem for bytes written
         # to the sibling's drops a pre-warm that had room and, worse, lets the
         # sibling check accept `need_sibling` alone on a filesystem the base
-        # model is about to be downloaded onto. Unresolvable leaves it charged
-        # here, which is where it was charged before.
-        cache_here = cache_extra
+        # model is about to be downloaded onto. `cache_here` above has already
+        # answered the first half; the sibling is the half only this branch has.
         cache_sibling = 0
-        if cache_extra > 0:
-            if cache_directory is not None and _on_separate_filesystems(
-                cache_directory, save_directory
-            ):
-                cache_here = 0
-                if _shares_filesystem(cache_directory, gguf_directory):
-                    cache_sibling = cache_extra
+        if (
+            cache_extra > 0
+            and cache_here == 0
+            and _shares_filesystem(cache_directory, gguf_directory)
+        ):
+            cache_sibling = cache_extra
         need_here_with_cache = checkpoint_here + cache_here
         writes_a_lora_merge = isinstance(model, (PeftModel, PeftModelForCausalLM))
         if writes_a_lora_merge and needs_merge and need_sibling > 0 and checkpoint_here > 0:
@@ -4264,7 +4278,7 @@ def _preflight_gguf_disk(
             # refused here. The cache copy is not what gets reclaimed, so it
             # rides on top of the peak exactly as it rode on top of the sum.
             need_here = peak
-            need_here_with_cache = peak + max(0, need_with_cache - need)
+            need_here_with_cache = peak + cache_here
 
     # The intermediate conversion is written to the process CWD, not into
     # `save_directory` and not into the `_gguf` sibling, and only afterwards
