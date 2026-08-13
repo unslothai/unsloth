@@ -632,9 +632,7 @@ def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError(24, "Too many open files")
-        return _FakeSpawnContext(
-            _FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True})
-        )
+        return _FakeSpawnContext(_FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True}))
 
     monkeypatch.setattr(multiprocessing, "get_context", _get_context)
     monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
