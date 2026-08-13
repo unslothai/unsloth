@@ -128,7 +128,12 @@ def test_help_text_is_coerced_to_a_string(monkeypatch, value):
 # --help parser rather than a stub of it.
 
 
-def _probe_with_help(monkeypatch, tmp_path, help_text: str, returncode: int = 0):
+def _probe_with_help(
+    monkeypatch,
+    tmp_path,
+    help_text: str,
+    returncode: int = 0,
+):
     """Run the real capability probe over a canned --help."""
     import types
 

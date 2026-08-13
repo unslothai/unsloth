@@ -509,7 +509,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kept, dropped = drop_managed_flags(stored_extra_args)
         if dropped:
             from loggers import get_logger
-
             get_logger(__name__).warning(
                 "model_override.dropped_managed_flags flags=%s", ", ".join(dropped)
             )

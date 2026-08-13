@@ -198,9 +198,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     return out
 
 
-def drop_managed_flags(
-    args: Optional[Iterable[str]],
-) -> tuple[list[str], list[str]]:
+def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[str]]:
     """Split stored args into what still loads and the flag names removed.
 
     For the paths that CARRY OVER an existing value rather than receive a new one.
@@ -217,7 +215,12 @@ def drop_managed_flags(
     """
     tokens = [str(raw) for raw in (args or [])]
 
-    def _takes_next(index: int, token: str, flag: str, source: list = None) -> bool:
+    def _takes_next(
+        index: int,
+        token: str,
+        flag: str,
+        source: list = None,
+    ) -> bool:
         """True when the token's value is the NEXT token rather than its own.
 
         ``source`` defaults to the input list; the trimming loop passes the list it

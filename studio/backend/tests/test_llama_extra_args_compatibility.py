@@ -136,9 +136,7 @@ def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
         model_fields_set: set = set()
 
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
-    resolved = inference_route._resolve_inherited_extra_args(
-        _Request(), _Config(), "local/x", None
-    )
+    resolved = inference_route._resolve_inherited_extra_args(_Request(), _Config(), "local/x", None)
 
     # --numa surviving is the point: the previous behaviour returned [] on any
     # refusal, so one name added to the denylist took every other flag with it.
@@ -152,7 +150,9 @@ def test_the_override_save_carries_over_without_refusing(monkeypatch):
 
     saved: dict = {}
     stored = {"llama_extra_args": ["--slot-save-path", "/tmp/slots", "--numa", "distribute"]}
-    monkeypatch.setattr(settings_route, "get_model_override", lambda _id: dict(stored), raising = False)
+    monkeypatch.setattr(
+        settings_route, "get_model_override", lambda _id: dict(stored), raising = False
+    )
     import utils.openai_auto_switch_settings as oas
 
     monkeypatch.setattr(oas, "get_model_override", lambda _id: dict(stored))
@@ -196,7 +196,6 @@ def test_the_auto_switch_path_sanitizes_a_legacy_override(monkeypatch):
 
 def test_the_auto_switch_path_leaves_a_clean_override_alone():
     from utils.openai_auto_switch_settings import model_override_load_kwargs
-
     kwargs = model_override_load_kwargs(
         {"llama_extra_args": ["--numa", "distribute"]}, is_gguf = True
     )

@@ -49,11 +49,7 @@ ACCELERATORS = [
     ("cpu-only", False, []),
 ]
 
-MATRIX = [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}")
-    for p in PLATFORMS
-    for a in ACCELERATORS
-]
+MATRIX = [pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS]
 
 
 def _apply_platform(monkeypatch, platform) -> None:
@@ -132,8 +128,17 @@ def test_placement_is_not_moved_by_an_unrelated_extra_arg(
     # these accelerators, and --seed has no business changing it.
     _apply_platform(monkeypatch, platform)
     _label, vulkan, memory = accelerator
-    placement_flags = {"-ngl", "--n-gpu-layers", "--gpu-layers", "--fit", "-sm",
-                       "--split-mode", "--tensor-split", "-ncmoe", "--n-cpu-moe"}
+    placement_flags = {
+        "-ngl",
+        "--n-gpu-layers",
+        "--gpu-layers",
+        "--fit",
+        "-sm",
+        "--split-mode",
+        "--tensor-split",
+        "-ncmoe",
+        "--n-cpu-moe",
+    }
 
     backend, gguf = _backend(tmp_path, vulkan = vulkan, memory = memory)
     baseline = _launch(backend, gguf)["cmd"]
@@ -158,7 +163,6 @@ def test_a_denied_flag_is_refused_identically_everywhere(
     # The denylist is a property of Unsloth, not of the host: a flag refused on
     # Linux must not be reachable by running the same build on Windows.
     from core.inference.llama_server_args import validate_extra_args
-
     _apply_platform(monkeypatch, platform)
     for denied in (["--agent"], ["--mcp-servers-json", "{}"], ["--log-file", "x"]):
         with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
