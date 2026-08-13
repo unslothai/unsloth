@@ -387,7 +387,7 @@ jobs:
       # torch from the CPU index and transformers WITHOUT it: the payload
       # modules the suites import need both to import at all, and the CPU
       # wheel is a minute against a session that costs quota. Measured in a
-      # bare venv with exactly these three: 226 passed.
+      # bare venv with exactly these three: 232 passed.
       - name: Test the harness
         run: |
           python -m pip install --quiet pytest transformers
