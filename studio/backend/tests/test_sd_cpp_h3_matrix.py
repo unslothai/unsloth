@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from core.inference.video import VideoBackend, _detect_load_family
+from core.inference.video_families import VIDEO_CANCELLED_MSG
 
 
 H3_REPO = "leejet/MiniMax-H3-GGUF"
@@ -97,11 +98,14 @@ def h3_host(monkeypatch, tmp_path):
 
         monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
 
+        asset_calls: list[str] = []
+
         class _Api:
             def __init__(self, **_kwargs):
                 pass
 
-            def model_info(self, *_args, **_kwargs):
+            def model_info(self, repo, *_args, **_kwargs):
+                asset_calls.append(repo)
                 return _PlanInfo([])
 
         monkeypatch.setattr("huggingface_hub.HfApi", _Api)
@@ -129,7 +133,7 @@ def h3_host(monkeypatch, tmp_path):
             )
             return backend_obj
 
-        return types.SimpleNamespace(run = run, downloads = downloads)
+        return types.SimpleNamespace(run = run, downloads = downloads, asset_calls = asset_calls)
 
     return _setup
 
@@ -192,6 +196,72 @@ def test_h3_gpu_host_falls_back_to_the_cpu_build(h3_host, platform, hw_label, ba
     assert len(host.downloads) == 4
     assert backend_obj._state is not None
     assert backend_obj._state.device == "cpu"
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
+def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """The ensure takes no cancel_event and can spend minutes installing the prebuilt, so a cancel
+    arriving during it is already late. It must not then cost four more model_info round trips."""
+    from core.inference import sd_cpp_backend
+
+    cancelled = threading.Event()
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    original = sd_cpp_backend.ensure_h3_sd_cpp_binary
+
+    def _cancel_midway(**kwargs):
+        cancelled.set()  # the user hits cancel while the install is running
+        return original(**kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", _cancel_midway)
+
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        host.run(cancel_event = cancelled)
+    assert host.downloads == []
+    # The point is not that it eventually raises -- the download loop always would. It is that a
+    # cancelled load stops before paying for the four sequential size-estimate round trips.
+    assert host.asset_calls == []
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
+def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """Vetting before the download means the vet-to-commit window is now the whole download.
+
+    A user-supplied binary is not ours to reinstall, so nothing else guards it: if the file at that
+    path changes while the bundle is fetched, the re-vet is the only thing standing between the
+    replacement and being recorded as the identity every later generation compares against."""
+    from core.inference import sd_cpp_backend
+
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+
+    # The preflight sees an H3 build; by the time the download is done the path holds a pre-H3 one.
+    swapped = {"done": False}
+    real_probe = sd_cpp_backend._sd_cpp_probe_output
+
+    def _probe(binary, *args):
+        if args == ("--help",) and swapped["done"]:
+            return _PRE_H3_HELP
+        return real_probe(binary, *args)
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return _real_download(*args, **kwargs)
+
+    _real_download = None
+    import utils.hf_xet_fallback as xet
+
+    _real_download = xet.hf_hub_download_with_xet_fallback
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    with pytest.raises(RuntimeError, match = "changed while this model was loading"):
+        host.run()
+    assert len(host.downloads) == 4  # the swap is caught after the fetch, not before it
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)

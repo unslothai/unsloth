@@ -1560,6 +1560,13 @@ class VideoBackend:
             raise RuntimeError(
                 "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
             )
+        # And again on the way out. The ensure above takes no cancel_event and can spend minutes
+        # downloading and extracting the prebuilt, so a cancel arriving during it is already late;
+        # without this a CPU or MPS target (which skips the claimed accelerator probe, the only
+        # other cancel-aware step here) would go on to make four sequential model_info calls before
+        # the download loop finally noticed.
+        if cancel_event.is_set():
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
 
         requests = (
             (repo_id, filename),
@@ -1628,10 +1635,17 @@ class VideoBackend:
                 raise RuntimeError(
                     "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
                 )
-            if is_managed_binary(binary) and not sd_cpp_supports_minimax_h3(binary):
+            # EVERY binary, not just a managed one. The managed-only test was written when the
+            # ensure sat right here, so a user-supplied build had been vetted microseconds earlier
+            # and only a concurrent INSTALL could have moved underneath it. The preflight now runs
+            # before the multi-tens-of-GB download, so the window it has to cover is that whole
+            # download -- long enough for a user to rebuild or repoint their own SD_CLI_PATH copy,
+            # after which _sd_cli_identity below would record the replacement as the vetted build
+            # and every later generation would compare it against itself.
+            if not sd_cpp_supports_minimax_h3(binary):
                 raise RuntimeError(
-                    "The stable-diffusion.cpp binary was replaced by an install that does not "
-                    "support MiniMax-H3. Try the load again."
+                    "The stable-diffusion.cpp binary changed while this model was loading, and the "
+                    "one now at that path does not support MiniMax-H3. Try the load again."
                 )
             # And re-ask the question native_device was decided on. H3 support alone is not
             # enough: a replacement can be H3-capable and still be a different accelerator, and
