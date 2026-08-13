@@ -284,10 +284,7 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         if (
             flag is not None
             and _takes_next(index, token, flag)
-            and (
-                _has_control_characters(tokens[index + 1])
-                or not _is_spawnable(tokens[index + 1])
-            )
+            and (_has_control_characters(tokens[index + 1]) or not _is_spawnable(tokens[index + 1]))
         ):
             # Recorded, not just skipped: the value is about to be dropped for its
             # control characters, and a flag that vanished without a word in the log

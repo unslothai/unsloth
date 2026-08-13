@@ -234,9 +234,7 @@ def test_a_token_that_cannot_be_spawned_is_refused_at_the_boundary():
 
 
 def test_a_stored_surrogate_is_dropped_like_any_other_unusable_value():
-    kept, dropped = _lsa.drop_managed_flags(
-        ["--grammar", "\ud800", "--top-k", "20"]
-    )
+    kept, dropped = _lsa.drop_managed_flags(["--grammar", "\ud800", "--top-k", "20"])
 
     assert kept == ["--top-k", "20"]
     assert _lsa.validate_extra_args(kept) == kept
@@ -253,7 +251,10 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
     import routes.inference as inference_route
 
     source = inspect.getsource(inference_route)
-    assert "_resolve_inherited_extra_args(\n            request, config, model_identifier, None\n        )" not in source
+    assert (
+        "_resolve_inherited_extra_args(\n            request, config, model_identifier, None\n        )"
+        not in source
+    )
     assert 'model_identifier, getattr(request, "llama_extra_args", None)' in source
 
     class _Request:
