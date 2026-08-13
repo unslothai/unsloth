@@ -1928,7 +1928,7 @@ EOF
         # and no-GPU arms below already use.
         substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
         substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
-        substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."
     else

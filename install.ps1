@@ -3713,7 +3713,10 @@ exit 0
         step "gpu" "Intel GPU detected" "Green"
         substep "$IntelGpuLabel"
         # The reroute below prints the index: only it knows the mirror URL and any pin.
-    } elseif ($HasROCm) {
+    } elseif ($HasROCm -and -not $ROCmUnsupportedGfxArch) {
+        # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx
+        # token and only a market name, which sets $HasROCm without an arch. Calling
+        # that card "AMD ROCm" contradicts the wheel note this run also prints.
         step "gpu" $ROCmGpuLabel
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"

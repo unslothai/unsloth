@@ -48,7 +48,11 @@ _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 # PowerShell cannot parse a bare VAR=value: it resolves it as a command name (verified
 # with pwsh), so a Windows user who pastes it sets nothing, re-runs the installer and
 # gets the same CPU bundle -- the #8458 failure mode, reintroduced by the fix for it.
-_POSIX_SETTER = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
+# `export`, not a bare assignment: a POSIX assignment without it is a shell variable,
+# invisible to the installer the next line tells the user to run, so they get the CPU
+# bundle again and conclude the advice was wrong (the #8458 mistake). The README block
+# has always used export; these messages have to agree with it.
+_POSIX_SETTER = "export UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
 _PWSH_SETTER = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
 _SETTER = {
     "install.sh": _POSIX_SETTER,
@@ -672,6 +676,36 @@ def test_setup_ps1_hoists_the_unsupported_arch_variable_too():
     assert any(line == decl for line in src.split("\n")), (
         "setup.ps1: the unsupported-arch declaration is indented, so it now sits "
         "inside a block an NVIDIA host skips"
+    )
+
+
+# ── An identified uncovered card outranks the generic ROCm report ────────────
+
+
+_ROCM_ARM = {
+    "install.ps1": ("} elseif ($HasROCm", "$ROCmUnsupportedGfxArch"),
+    "setup.ps1": ("} elseif ($HasROCm", "$script:ROCmUnsupportedGfxArch"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ROCM_ARM))
+def test_the_generic_rocm_arm_yields_to_an_identified_uncovered_card(name):
+    """amd-smi can report a GPU with no gfx token and only a market name.
+
+    That sets $HasROCm with no arch, so the generic arm fires and calls an RX 5700 XT
+    "AMD ROCm" while the wheel note in the same run says gfx1010 has none. The host is
+    not hypothetical: amd-smi is only probed when the HIP SDK is present, which is what
+    the #8529 and #8458 reporters installed because the old message told them to. Same
+    guard the HIP SDK arm below it already carries.
+    """
+    source_path = _INSTALL_PS1 if name == "install.ps1" else _SETUP_PS1
+    opener, var = _ROCM_ARM[name]
+    src = _normalised(source_path)
+    arm = next((ln for ln in src.split("\n") if ln.strip().startswith(opener)), None)
+    assert arm is not None, f"{name}: the $HasROCm arm was renamed"
+    assert f"-not {var}" in arm, (
+        f"{name}: the generic ROCm arm outranks the identified-uncovered-card arm, so a "
+        f"card we already named is reported as ordinary ROCm:\n{arm}"
     )
 
 

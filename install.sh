@@ -3387,7 +3387,7 @@ get_torch_index_url() {
                 # Torch ends here, llama.cpp does not. Saying WHEN is the whole point:
                 # the variable picks the llama.cpp bundle at install time, so exporting
                 # it afterwards changes nothing (the unslothai#8458 mistake).
-                echo "[INFO] GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+                echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
                 echo "$_base/cpu"; return
             fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
@@ -4510,7 +4510,7 @@ case "$TORCH_INDEX_URL" in
                     # Scoped to the card, as above: the SDK may still help another one.
                     substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." "$C_WARN"
                     substep "Installing the ROCm/HIP SDK will not give this GPU ROCm PyTorch." "$C_WARN"
-                    substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
+                    substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
                     substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"
                 else
                     substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"

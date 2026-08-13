@@ -2648,7 +2648,9 @@ if ($HasNvidiaSmi) {
     substep "$IntelGpuLabel"
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-StudioLine ""
-} elseif ($HasROCm) {
+} elseif ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
+    # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
+    # and only a market name, which sets $HasROCm without an arch.
     step "gpu" $ROCmGpuLabel
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
