@@ -709,6 +709,36 @@ def test_the_generic_rocm_arm_yields_to_an_identified_uncovered_card(name):
     )
 
 
+def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
+    """The summary chain opens with a bare `if ($HasROCm)`, not an `} elseif`.
+
+    So the check above walks straight past it. Its own third arm names the uncovered
+    card, and that arm is reached only when nothing outranks it: on a host where
+    amd-smi enumerates an RDNA 1 card with no gfx token, the "ROCm x.y" arm wins and
+    the arm written for that card never runs.
+    """
+    src = _normalised(_SETUP_PS1)
+    lines = src.split("\n")
+    opener = next(
+        (
+            i
+            for i, ln in enumerate(lines)
+            if ln.strip().startswith("if ($HasROCm")
+            and "$rocmVerLabel" in "\n".join(lines[i : i + 3])
+        ),
+        None,
+    )
+    assert opener is not None, "setup.ps1: the ROCm summary chain was renamed"
+    chain = "\n".join(lines[opener : opener + 20])
+    assert "$script:ROCmUnsupportedGfxArch" in chain, (
+        "setup.ps1: the summary chain no longer has an uncovered-card arm"
+    )
+    assert "-not $script:ROCmUnsupportedGfxArch" in lines[opener], (
+        "setup.ps1: the ROCm summary reports an uncovered card as ordinary ROCm, so the "
+        f"same run says 'ROCm' here and 'no wheels' below:\n{lines[opener]}"
+    )
+
+
 # ── Scope: these sentences speak for one card, not for the host ───────────
 
 
