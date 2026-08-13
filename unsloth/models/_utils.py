@@ -520,60 +520,33 @@ def _config_get(
             return config.get(field_name, default)
         return getattr(config, field_name, default)
     except Exception:
-        # `getattr` with a default only swallows AttributeError, and a config
-        # can raise something else entirely from `__getattribute__`.
-        #
         # transformers 5.x heterogeneous configs (Gemma 3n / Gemma 4, anything
-        # with `per_layer_config`) raise AmbiguousGlobalPerLayerAttributeError
-        # on a global read of a per-layer field such as `head_dim`, and that is
-        # not an AttributeError. It reached callers as a hard failure at model
-        # load: `Gemma4_(E2B)_Reinforcement_Learning_Sudoku_Game` died in the
-        # Flash Attention head-dim probe on transformers 5.15.0.
-        #
-        # Every caller of this helper is asking "does this config say X", so a
-        # refusal to answer globally is the same as not saying. The exception
-        # is deliberately not named or imported: it does not exist on the
-        # transformers 4.x versions this still supports, and a config is
-        # third-party code that may raise anything. `_get_per_layer_values`
-        # below is where the per-layer answer actually gets read.
+        # with `per_layer_config`) raise AmbiguousGlobalPerLayerAttributeError,
+        # not AttributeError, on a global read of a per-layer field, so a getattr
+        # default does not cover it. This killed model load on transformers
+        # 5.15.0. Not caught by name: the class does not exist on 4.x, and a
+        # config is third-party code that may raise anything.
         return default
 
 
 def _get_per_layer_values(config, field_name):
-    """Per-layer values for `field_name`, on a config that has per-layer ones.
-
-    Empty for a homogeneous config, and empty on transformers 4.x, which has
-    no such concept. Kept separate from `_config_get` because the two answer
-    different questions: one wants a single value and the other wants all of
-    them.
-    """
+    """Per-layer values for `field_name`; empty for homogeneous or 4.x configs."""
     per_layer = _config_get(config, "per_layer_config", None)
     if per_layer is None or isinstance(per_layer, (str, bytes)):
         return []
-    # Three shapes, one meaning, and only the first is a sequence:
-    #
-    #   live config      `_PerLayerConfigView`, a `collections.abc.Sequence` of
-    #                    resolved layer configs (so NOT an isinstance list/tuple
-    #                    check -- that would skip it and silently take this whole
-    #                    path out of service without failing anything)
-    #   config.json      a MAPPING of zero-padded layer index to that layer's
-    #                    overrides, `{"04": {"head_dim": 512}}`, which is what
-    #                    `to_dict` writes for a saved Gemma 4
-    #   Studio           the same mapping re-read from config.json, with every
-    #                    dict wrapped in a SimpleNamespace by the VRAM estimator
-    #
-    # Iterating the mapping forms would walk the layer indices instead of the
-    # overrides, so the probe would answer 256 for a checkpoint whose object
-    # form answers 512 -- Flash Attention left on for the 512-wide layers.
+    # Three shapes: a live `_PerLayerConfigView` (a Sequence, not a list/tuple);
+    # `to_dict`/config.json, a mapping of zero-padded layer index to overrides
+    # like `{"04": {"head_dim": 512}}`; and Studio's SimpleNamespace wrap of it.
+    # Iterating a mapping walks the indices, not the overrides, so the probe
+    # would answer 256 where the object form answers 512.
     if isinstance(per_layer, dict):
         per_layer = list(per_layer.values())
     else:
         try:
             iter(per_layer)
         except TypeError:
-            # Not iterable at all, so it is the namespace form. `iter` rather
-            # than `__iter__` because the view is allowed to be an old-style
-            # sequence with only `__getitem__`.
+            # Namespace form. `iter` not `__iter__`: the view may be an
+            # old-style sequence with only `__getitem__`.
             per_layer = list(vars(per_layer).values()) if hasattr(per_layer, "__dict__") else []
     values = []
     try:
@@ -642,12 +615,9 @@ def _collect_attention_head_dims(config):
         "local_head_dim",
         "kv_head_dim",
     ):
-        # Per-layer first. On a heterogeneous config the global read is the
-        # one that refuses, and taking the default there would leave this
-        # probe with no head dim at all -- which reads as "no reason to
-        # disable Flash Attention" on exactly the models whose layers might
-        # exceed its ceiling. The values are what the probe is for, so read
-        # them where they live.
+        # Per-layer first: on a heterogeneous config the global read refuses,
+        # and no head dim reads as "no reason to disable Flash Attention" on
+        # exactly the models whose layers may exceed its ceiling.
         candidates = _get_per_layer_values(config, field_name)
         candidates.append(_config_get(config, field_name, None))
         for value in candidates:
