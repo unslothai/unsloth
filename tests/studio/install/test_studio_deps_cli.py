@@ -21,6 +21,7 @@ import importlib.util
 import io
 import json
 import contextlib
+import os
 import pathlib
 import shutil
 import sys
@@ -73,6 +74,16 @@ def _studio_distribution_versions() -> dict:
                 version = part[2:]
         versions[name] = version
     return versions
+
+
+def _venv_executable(root: pathlib.Path) -> pathlib.Path:
+    """Where _venv_site_packages looks for this venv's interpreter.
+
+    Writing bin/python on Windows leaves the probe with nothing to run, so the
+    fixture falls through to the glob fallback and the case under test never
+    happens.
+    """
+    return root / "Scripts" / "python.exe" if os.name == "nt" else root / "bin" / "python"
 
 
 def _make_venv(
@@ -201,7 +212,7 @@ def cross_venv(tmp_path, monkeypatch):
             checkout_studio = tmp_path / "checkout" / "studio"
             shutil.move(str(managed_site / "studio"), checkout_studio)
             checkout_requirements = checkout_studio / "backend" / "requirements"
-            executable = managed / "bin" / "python"
+            executable = _venv_executable(managed)
             executable.parent.mkdir(parents = True, exist_ok = True)
             executable.write_text("probe placeholder", encoding = "utf-8")
 
@@ -218,8 +229,8 @@ def cross_venv(tmp_path, monkeypatch):
 
             monkeypatch.setattr(deps.subprocess, "check_output", editable_paths)
         if inactive_duplicate_version:
-            executable = managed / "bin" / "python"
-            executable.parent.mkdir(parents = True)
+            executable = _venv_executable(managed)
+            executable.parent.mkdir(parents = True, exist_ok = True)
             executable.write_text("probe placeholder", encoding = "utf-8")
 
             def active_paths(*_args, **_kwargs):
