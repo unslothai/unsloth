@@ -118,6 +118,18 @@ def test_put_unstamped_write_keeps_last_write_wins(client):
     assert c.get("/last-local-model").json()["id"] == "unsloth/OLMo-4-13B"
 
 
+def test_put_clamps_future_dated_stamps(client):
+    c, _ = client
+    import time as _time
+    r = c.put(
+        "/last-local-model",
+        json = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": 9_999_999_999_999},
+    )
+    assert r.status_code == 200
+    cap = int(_time.time() * 1000) + settings._LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+    assert r.json()["loaded_at"] <= cap
+
+
 def test_put_rejects_bad_payloads(client):
     c, _ = client
     assert c.put("/last-local-model", json = {"id": "x", "kind": "lora"}).status_code == 422

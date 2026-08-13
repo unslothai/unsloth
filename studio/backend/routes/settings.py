@@ -4,6 +4,7 @@
 import functools
 import re
 import threading
+import time
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
@@ -971,6 +972,10 @@ def update_model_memory(
 
 LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
 _LAST_LOCAL_MODEL_LOCK = threading.Lock()
+# Client clocks stamp loads (a dropped PUT can only be ordered by the clock that
+# saw it), but a future-dated stamp must not freeze the record forever: cap the
+# lead a client clock may claim over server time.
+_LAST_LOCAL_MODEL_CLOCK_SLACK_MS = 5 * 60 * 1000
 
 
 class LastLocalModelPayload(BaseModel):
@@ -1018,6 +1023,9 @@ def update_last_local_model(
     # writes come from pre-loaded_at clients and keep last-write-wins.
     with _LAST_LOCAL_MODEL_LOCK:
         if payload.loaded_at is not None:
+            _cap = int(time.time() * 1000) + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+            if payload.loaded_at > _cap:
+                payload = payload.model_copy(update = {"loaded_at": _cap})
             stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
             if isinstance(stored, dict):
                 try:

@@ -130,17 +130,17 @@ export async function readLastLocalModelLoad(
         const backendLoadedAt =
           typeof data.loaded_at === "number" ? data.loaded_at : null;
         if (
-          legacy?.pendingSync &&
+          legacy &&
           legacy.loadedAt !== null &&
           (backendLoadedAt === null || legacy.loadedAt > backendLoadedAt)
         ) {
-          // A load whose PUT was dropped at teardown, and the backend has seen
-          // nothing newer from any surface since (pendingSync alone proves the
-          // write was dropped, not that it is the latest load -- only the
-          // backend timestamp orders loads across surfaces). Re-sync it with
-          // its original load time even when the model identity matches the
-          // backend record: the backend timestamp must advance, or an older
-          // dropped write on another surface would later outrank this load.
+          // A local record the backend has not seen: a load whose PUT was
+          // dropped at teardown (pendingSync), or one written by a still-open
+          // pre-upgrade bundle that cannot stamp the marker or call the API at
+          // all -- only the timestamps order loads across surfaces. Re-sync it
+          // with its original load time even when the model identity matches
+          // the backend record: the backend timestamp must advance, or an
+          // older dropped write on another surface would later outrank it.
           recordLastLocalModelLoad({
             ...legacy.record,
             loadedAt: legacy.loadedAt,
@@ -194,9 +194,33 @@ export function recordLastLocalModelLoad(input: {
       loaded_at: loadedAt,
     }),
   })
-    .then((res) => {
+    .then(async (res) => {
       if (!res.ok) {
         return;
+      }
+      // Adopt the server's answer: it may have clamped a future-dated stamp or
+      // ignored this write as stale in favor of a newer one, and the shadow
+      // must mirror the stored record or the next read would re-reconcile.
+      let serverRecord: LastLocalModelLoad | null = null;
+      let serverLoadedAt: number | null = null;
+      try {
+        const body = (await res.json()) as {
+          id?: unknown;
+          kind?: unknown;
+          // biome-ignore lint/style/useNamingConvention: API schema
+          gguf_variant?: unknown;
+          // biome-ignore lint/style/useNamingConvention: API schema
+          loaded_at?: unknown;
+        };
+        serverRecord = toRecord({
+          id: body.id,
+          kind: body.kind,
+          ggufVariant: body.gguf_variant,
+        });
+        serverLoadedAt =
+          typeof body.loaded_at === "number" ? body.loaded_at : null;
+      } catch {
+        // Pre-loaded_at backend or opaque response: fall back to our stamp.
       }
       // Clear only this write's pending marker: a newer load may have replaced
       // the shadow while the PUT was in flight -- including a reload of the
@@ -204,11 +228,17 @@ export function recordLastLocalModelLoad(input: {
       // must match too or a slow older response would demote the newer shadow.
       const legacy = readLegacyEntry();
       if (
-        legacy?.pendingSync &&
-        sameRecord(legacy.record, record) &&
-        legacy.loadedAt === loadedAt
+        !legacy?.pendingSync ||
+        !sameRecord(legacy.record, record) ||
+        legacy.loadedAt !== loadedAt
       ) {
-        writeLegacyRecord(record, false, loadedAt);
+        return;
+      }
+      if (serverRecord && !sameRecord(serverRecord, record)) {
+        // The server kept a newer record from another surface: ours lost.
+        writeLegacyRecord(serverRecord, false, serverLoadedAt ?? Date.now());
+      } else {
+        writeLegacyRecord(record, false, serverLoadedAt ?? loadedAt);
       }
     })
     .catch(() => {
