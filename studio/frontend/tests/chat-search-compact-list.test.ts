@@ -51,7 +51,9 @@ test("rows arriving mid-open take the fixed height for the rest of that open", (
 
 test("a completed build with rows is remembered, so the next page load opens fixed", () => {
   store.clear();
-  assert.equal(chatSearchHadRows(), false);
+  // Nothing recorded yet reads as unknown, which is not the same as a history known to
+  // be empty: only the latter may be sized compact.
+  assert.equal(chatSearchHadRows(), null);
   rememberChatSearchHasRows(true);
   assert.equal(chatSearchHadRows(), true);
   // The regression: with 150 stored chats and a cache that has not been built yet, the
@@ -71,5 +73,8 @@ test("a session change drops the hint, so the next account never inherits it", (
   store.clear();
   rememberChatSearchHasRows(true);
   forgetChatSearchHasRows();
-  assert.equal(chatSearchHadRows(), false);
+  assert.equal(chatSearchHadRows(), null);
+  // Unknown, so the next account reserves the fixed height rather than opening compact
+  // on the strength of the previous account's history.
+  assert.equal(isCompactChatSearchList(true, chatSearchHadRows()), false);
 });

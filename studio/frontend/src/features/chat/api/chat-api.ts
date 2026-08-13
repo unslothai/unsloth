@@ -43,6 +43,9 @@ import {
 import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+// Bumped alongside that event so other tabs, which never receive it, can drop caches
+// they built from a history this one has just changed.
+export const CHAT_HISTORY_REVISION_KEY = "unsloth_chat_history_revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
@@ -92,6 +95,16 @@ export class GenerationLengthError extends Error {
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+    // The event above is same-document, so another tab's delete or rename cannot reach a
+    // cache built here. A storage write is what crosses, and the value only has to differ.
+    try {
+      window.localStorage?.setItem(
+        CHAT_HISTORY_REVISION_KEY,
+        `${Date.now()}.${Math.random()}`,
+      );
+    } catch {
+      // Private modes can refuse the write. The in-tab listeners are unaffected.
+    }
   }
 }
 

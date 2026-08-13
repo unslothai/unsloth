@@ -23,8 +23,7 @@ export function rememberChatSearchHasRows(hasRows: boolean): void {
   const store = storage();
   if (!store) return;
   try {
-    if (hasRows) store.setItem(CHAT_SEARCH_HAS_ROWS_KEY, "1");
-    else store.removeItem(CHAT_SEARCH_HAS_ROWS_KEY);
+    store.setItem(CHAT_SEARCH_HAS_ROWS_KEY, hasRows ? "1" : "0");
   } catch {
     // A hint, not state: a full quota costs a resize on one open, not correctness.
   }
@@ -40,12 +39,20 @@ export function forgetChatSearchHasRows(): void {
   }
 }
 
-export function chatSearchHadRows(): boolean {
+/**
+ * True or false from the last completed build, null when the history is unknown: never
+ * built here, forgotten on a session change, or localStorage unavailable. Absence has to
+ * stay distinguishable from a known-empty history, since only one of the two can be
+ * sized compact without risking the mid-open resize this dialog exists to avoid.
+ */
+export function chatSearchHadRows(): boolean | null {
   const store = storage();
-  if (!store) return false;
+  if (!store) return null;
   try {
-    return store.getItem(CHAT_SEARCH_HAS_ROWS_KEY) !== null;
+    const raw = store.getItem(CHAT_SEARCH_HAS_ROWS_KEY);
+    if (raw === null) return null;
+    return raw === "1";
   } catch {
-    return false;
+    return null;
   }
 }

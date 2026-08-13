@@ -9,7 +9,10 @@
 // and then grow it mid-open, which is the stutter this is here to remove.
 export function isCompactChatSearchList(
   wasCompact: boolean,
-  hasRows: boolean,
+  hasRows: boolean | null,
 ): boolean {
-  return wasCompact && !hasRows;
+  // null is "history unknown", which only a completed build can settle. Compact is right
+  // for a history known to be empty and wrong for one that turns out to have rows, so an
+  // unknown history takes the fixed height and never resizes mid-open.
+  return wasCompact && hasRows === false;
 }

@@ -3,7 +3,11 @@
 
 import { getAuthSessionEpoch } from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
-import { batchListChatMessages, CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import {
+  batchListChatMessages,
+  CHAT_HISTORY_REVISION_KEY,
+  CHAT_HISTORY_UPDATED_EVENT,
+} from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   listStoredChatMessages,
@@ -218,6 +222,12 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   return results;
 }
 
+// A row's searchText holds every message and every textual tool result, so THREAD_LIMIT
+// bounds the row count and not the bytes. Past this the index is rebuilt on each open
+// rather than held for the life of the page: a tool-heavy history is the case that would
+// otherwise retain tens of megabytes of conversation text behind a closed dialog.
+const MAX_CACHED_SEARCH_TEXT_CHARS = 4_000_000;
+
 // Last built index, kept across opens so reopening paints the previous rows at
 // once and revalidates in place instead of collapsing back to the empty state.
 let cachedIndex: ChatSearchItem[] | null = null;
@@ -237,21 +247,41 @@ function readCachedIndex(): ChatSearchItem[] | null {
   return cachedIndex;
 }
 
+function cachedSearchTextChars(items: ChatSearchItem[]): number {
+  let total = 0;
+  for (const item of items) total += item.searchText.length;
+  return total;
+}
+
 // Exported for tests, which drive the real bookkeeping rather than a stand-in.
 export function writeCachedIndex(next: ChatSearchItem[] | null): void {
-  cachedIndex = next;
   cachedIndexEpoch = getAuthSessionEpoch();
-  // Invalidation says the snapshot is stale, not that the history is empty, so only a
-  // completed build updates the hint.
+  cachedIndex =
+    next !== null && cachedSearchTextChars(next) > MAX_CACHED_SEARCH_TEXT_CHARS
+      ? null
+      : next;
+  // A completed build answers outright. An invalidation only says the history changed, and
+  // a history that had rows almost certainly still does, so that answer stands; a remembered
+  // EMPTY one does not, since the very change being announced may be its first chat.
   if (next !== null) rememberChatSearchHasRows(next.length > 0);
+  else if (chatSearchHadRows() === false) forgetChatSearchHasRows();
+}
+
+// A history change in another tab or from an API client never reaches this document, so the
+// cache would otherwise open onto rows that no longer exist and navigate to a dead thread.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== CHAT_HISTORY_REVISION_KEY) return;
+    writeCachedIndex(null);
+  });
 }
 
 // Whether the dialog should size itself for rows, readable during render so it can pick a
-// height before its opening paint. A built cache answers exactly; an unbuilt or invalidated
-// one falls back to what the last completed build left behind, which is the only thing that
-// can answer on the FIRST open of a page load -- the index is built while the dialog is open,
-// so at that point the cache is always empty however many chats are stored.
-export function chatSearchIndexHasRows(): boolean {
+// height before its opening paint. A built cache answers exactly; an unbuilt one falls back
+// to the last completed build, which is the only thing that can answer on the FIRST open of
+// a page load, since the index is built while the dialog is open and the cache is empty then
+// however many chats are stored. null means the history is genuinely unknown.
+export function chatSearchIndexHasRows(): boolean | null {
   const cached = readCachedIndex();
   if (cached !== null) return cached.length > 0;
   return chatSearchHadRows();
@@ -274,6 +304,10 @@ export function useChatSearchIndex(enabled: boolean): {
       if (items.length > 0) setItems([]);
       if (!loading) setLoading(true);
     }
+    // Closing onto no cache means these rows are the only thing still holding the
+    // conversation text, whether the index was too large to keep or was invalidated.
+    // The next open rebuilds either way, so releasing them costs nothing.
+    if (!enabled && readCachedIndex() === null && items.length > 0) setItems([]);
   }
 
   useEffect(() => {
