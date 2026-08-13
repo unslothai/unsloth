@@ -334,12 +334,23 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     is nothing to run on the GPU at all."""
     if not binary:
         return False
+    verdict = sd_cpp_accelerator_device_verdict(binary)
+    return True if verdict is None else verdict
+
+
+def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
+    """``sd_cpp_lists_accelerator_device`` without the conservative default: None means the probe
+    said nothing usable, rather than being folded into "assume it has one".
+
+    A caller COMPARING two readings needs that apart. Against a recorded decision, the collapsed
+    True is indistinguishable from a real accelerator, so an unreadable re-probe would read as a
+    build that changed underneath the load and refuse it."""
     text = _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
-        return True
+        return None
     names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
     if not names:
-        return True
+        return None
     return any(name.upper() != "CPU" for name in names)
 
 

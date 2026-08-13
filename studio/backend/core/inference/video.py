@@ -1627,7 +1627,11 @@ class VideoBackend:
         # checked for H3 support or the selected accelerator -- after which every generation
         # compares the replacement against itself and lets it through. Inside the claim no install
         # can start, so the build that answers --help here is the build whose identity is stored.
-        from .sd_cpp_backend import _tree_reader, sd_cpp_binary_vets_for_h3
+        from .sd_cpp_backend import (
+            _tree_reader,
+            sd_cpp_accelerator_device_verdict,
+            sd_cpp_binary_vets_for_h3,
+        )
         from .sd_cpp_engine import is_managed_binary
 
         with _tree_reader(binary, cancel_event, VIDEO_CANCELLED_MSG):
@@ -1660,14 +1664,26 @@ class VideoBackend:
             #
             # Only when the decision actually consulted it. A CPU or MPS target never asked, so
             # there is no answer to have changed, and inventing one would refuse those loads.
+            #
+            # Ownership does not narrow it, for the same reason the H3 re-vet above dropped that
+            # test: the accelerator answer is recorded before the download now, so the window is
+            # the whole fetch, and a user's own build can be rebuilt inside it just as an install
+            # can land. The harm does not care who owns the file -- what gets committed is
+            # native_device, and a GPU one around a CPU binary is offload policy and an arbiter
+            # claim written against hardware nothing is running on.
+            # Only a DECISIVE re-reading, hence the verdict form rather than
+            # sd_cpp_lists_accelerator_device: that one folds "could not tell" into True, which
+            # against a recorded False would refuse the very CPU fallback that recorded it.
+            fresh_accelerator = None if not binary else sd_cpp_accelerator_device_verdict(binary)
             if (
                 listed_accelerator is not None
-                and is_managed_binary(binary)
-                and sd_cpp_lists_accelerator_device(binary) != listed_accelerator
+                and fresh_accelerator is not None
+                and fresh_accelerator != listed_accelerator
             ):
                 raise RuntimeError(
-                    "The stable-diffusion.cpp binary was replaced by an install for a different "
-                    "accelerator while this model was loading. Try the load again."
+                    "The stable-diffusion.cpp binary changed while this model was loading, and the "
+                    "one now at that path was built for a different accelerator. Try the load "
+                    "again."
                 )
             binary_identity = _sd_cli_identity(binary)
         requested_mode = normalize_memory_mode(memory_mode) or "auto"

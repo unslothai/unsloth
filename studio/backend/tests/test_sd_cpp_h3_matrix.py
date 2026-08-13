@@ -304,6 +304,84 @@ def test_h3_revet_checks_identity_not_just_the_h3_marker(
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize(
+    "hw_label,backend,device", [h for h in HARDWARE if h[1] in ("cuda", "rocm")]
+)
+def test_h3_revet_catches_a_user_binary_whose_accelerator_changed(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """native_device is decided on the accelerator reading and then committed for the life of the
+    runtime, so the reading has to still hold at commit time -- for a user's own build too, not
+    only a managed one. A GPU device committed around a CPU binary means offload policy and an
+    arbiter claim written against hardware nothing is running on."""
+    from core.inference import sd_cpp_backend
+
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+
+    swapped = {"done": False}
+    real_probe = sd_cpp_backend._sd_cpp_probe_output
+
+    def _probe(binary, *args):
+        # Still an H3-capable sd.cpp, so identity and capability both pass; only the device list
+        # changed, which is exactly the case the H3 re-vet cannot see.
+        if args == ("--list-devices",) and swapped["done"]:
+            return "CPU\tIntel(R) Xeon(R)\n"
+        return real_probe(binary, *args)
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    with pytest.raises(RuntimeError, match = "built for a different accelerator"):
+        host.run()
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize(
+    "hw_label,backend,device", [h for h in HARDWARE if h[1] in ("cuda", "rocm")]
+)
+def test_h3_revet_tolerates_an_unreadable_accelerator_reprobe(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """ "Could not tell" is not "it changed". sd_cpp_lists_accelerator_device folds an unreadable
+    probe into True, so comparing THAT against a recorded False would refuse the CPU fallback that
+    recorded it -- the load must proceed on the reading it already has."""
+    from core.inference import sd_cpp_backend
+
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+
+    swapped = {"done": False}
+    real_probe = sd_cpp_backend._sd_cpp_probe_output
+
+    def _probe(binary, *args):
+        if args == ("--list-devices",) and swapped["done"]:
+            return None  # older build that rejects the flag, or an unreadable probe
+        return real_probe(binary, *args)
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    backend_obj = host.run()
+    assert backend_obj._state is not None
+    assert backend_obj._state.device == device
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
 def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label, backend, device):
     """The preflight can download and extract the sd-cli prebuilt and takes no cancel_event, so a
