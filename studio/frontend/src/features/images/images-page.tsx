@@ -1370,6 +1370,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
+    // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
+    // the user generates against a setting the collapsed field is hiding.
+    if (params.negativePrompt) setNegativeOpen(true);
     setWidth(params.width);
     setHeight(params.height);
     const matched = matchAspect(params.width, params.height);
@@ -1461,15 +1464,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
     setCanReapply(false);
-    // Stopping the poll above stops the branch that hands a pick which never became resident back
-    // to the presets. Settle its recipe claim here instead, or hydration deferred behind that pick
-    // waits forever: the stored recipe is never applied and the preset controls stay disabled.
+    // Stopping the poll above also stops its "the load was cancelled or evicted" branch, which is
+    // what hands back a pick that never became resident. Do it here, exactly as that branch would:
+    // an unreleased recipe claim leaves hydration parked behind a load that is never coming, and a
+    // rollback left behind is one a later pick would inherit in place of its own.
     if (quantRevert.current) {
-      setPendingModelDefaults(null);
-      quantRevert.current.releaseRecipeClaim?.();
-      quantRevert.current.releaseRecipeClaim = undefined;
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
     }
-  }, [dismissLoadToast, pickGuard]);
+  }, [dismissLoadToast, pickGuard, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {

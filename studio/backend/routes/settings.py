@@ -336,7 +336,11 @@ def _get_generation_preset_settings(kind, schema):
         presets = schema.model_fields["customPresets"].annotation
         item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
         readable = []
-        for raw in stored.get("customPresets", []) or []:
+        # Only a list is a preset collection. Recovery exists so a store this build cannot
+        # represent still reads; iterating a scalar here would answer 500 instead, which is the
+        # one outcome it is meant to prevent. _custom_presets takes the same view on the write.
+        raw_presets = stored.get("customPresets")
+        for raw in raw_presets if isinstance(raw_presets, list) else []:
             validated = _validated_readable_model(item, raw)
             if validated is not None:
                 readable.append(validated)

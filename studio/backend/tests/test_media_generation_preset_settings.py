@@ -317,6 +317,27 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
     assert body["currentParams"]["steps"] == 24
 
 
+def test_a_preset_collection_that_is_not_a_list_reads_as_empty(monkeypatch):
+    # Recovery exists so a store this build cannot represent still reads. Iterating a scalar here
+    # would answer 500 and take the whole preset UI down with it.
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "activePreset": "Default",
+                "currentParams": {"steps": 24},
+                "customPresets": 42,
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    assert body["saved"] is True
+    assert body["customPresets"] == []
+    assert body["currentParams"]["steps"] == 24
+
+
 def test_one_unreadable_state_field_does_not_reset_the_recipe(monkeypatch):
     # The response is still "saved", so the client applies and autosaves it. Handing back schema
     # defaults for a recipe that read fine would overwrite the stored one.

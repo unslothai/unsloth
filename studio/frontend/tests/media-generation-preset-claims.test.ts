@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A model pick claims the generation recipe before the settings GET has necessarily answered, so
-// the claim has to be settled on every way out of that load. The progress poll covers the ones it
-// sees; a cancel or an eject tears the poll down first, so the pages settle it themselves. Without
-// that, hydration parked behind the pick never resolves: the stored recipe is never applied and the
-// preset controls stay disabled for the rest of the session.
+// the claim has to be settled on every way out of that load. The progress poll covers the endings
+// it sees; a cancel or an eject tears the poll down first, so the pages hand the pick back
+// themselves. Without that, hydration parked behind the pick never resolves (the stored recipe is
+// never applied and the preset controls stay disabled), and the rollback left behind is the one a
+// later pick inherits in place of its own.
 //
 // The wiring lives inside two ~3000-line page components with no renderer in this suite, so these
 // assert on the source, like the other page-wiring tests here.
@@ -28,22 +29,28 @@ const HOOK = read(
 function dropResidentState(source: string) {
   const start = source.indexOf("const dropResidentState = useCallback(");
   assert.ok(start > 0, "dropResidentState must exist");
-  return source.slice(start, source.indexOf("}, [dismissLoadToast, pickGuard]);", start));
+  return source.slice(start, source.indexOf("]);", start));
 }
 
 for (const [page, source] of [
   ["images", IMAGES],
   ["video", VIDEO],
 ] as const) {
-  test(`${page}: cancelling or ejecting a load releases the pick's recipe claim`, () => {
+  test(`${page}: cancelling or ejecting a load hands the pick back`, () => {
     const body = dropResidentState(source);
-    assert.match(body, /quantRevert\.current\.releaseRecipeClaim\?\.\(\)/);
-    assert.match(body, /quantRevert\.current\.releaseRecipeClaim = undefined;/);
+    // The same two lines the poll's cancelled/evicted branch runs, which this tears down first.
+    assert.match(body, /revertPick\(quantRevert\.current\);/);
+    assert.match(body, /quantRevert\.current = null;/);
   });
 
-  test(`${page}: it also drops the Default recipe the abandoned pick claimed`, () => {
-    // Otherwise Default keeps describing a model that never became resident.
-    assert.match(dropResidentState(source), /setPendingModelDefaults\(null\);/);
+  test(`${page}: a preset's negative prompt is revealed, not applied behind a closed field`, () => {
+    const apply = source.slice(source.indexOf("PresetParams = useCallback("));
+    const setter = apply.indexOf("setNegativePrompt(params.negativePrompt);");
+    assert.ok(setter > 0);
+    assert.match(
+      apply.slice(setter, setter + 400),
+      /if \(params\.negativePrompt\) setNegativeOpen\(true\);/,
+    );
   });
 }
 
