@@ -478,9 +478,7 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
         return root, entry
 
     _INSTALLER = '#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
-    _USERS = (
-        '#!/bin/sh\nexport MY_TUNING=1\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
-    )
+    _USERS = '#!/bin/sh\nexport MY_TUNING=1\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
 
     def test_a_users_wrapper_in_a_custom_dir_is_launched_as_written(self, monkeypatch, tmp_path):
         root, entry = self._tree(tmp_path, self._USERS)

@@ -3225,7 +3225,7 @@ def _llama_lib_dir(binary: str) -> Path:
 # a shebang, one exec line, a trailing newline. Anything more is somebody's own
 # script, whose extra lines are the whole reason not to skip past it.
 _INSTALLER_WRAPPER_RE = re.compile(
-    r'\A#!/bin/sh\n' r'exec "\$\(dirname "\$0"\)/[^"\n]+" "\$@"\n?\Z'
+    r"\A#!/bin/sh\n" r'exec "\$\(dirname "\$0"\)/[^"\n]+" "\$@"\n?\Z'
 )
 
 
