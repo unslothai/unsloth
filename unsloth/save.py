@@ -3216,9 +3216,7 @@ def _same_filesystem(left, right):
     left_id = _filesystem_id(left)
     right_id = _filesystem_id(right)
     if left_id is None or right_id is None:
-        raise OSError(
-            f"Unsloth: cannot identify the filesystem holding `{left}` or `{right}`."
-        )
+        raise OSError(f"Unsloth: cannot identify the filesystem holding `{left}` or `{right}`.")
     return left_id == right_id
 
 

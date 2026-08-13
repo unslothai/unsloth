@@ -1593,9 +1593,10 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         """
         split.update(free = free_gb * GB, sibling_free = 1000 * GB)
         if fits:
-            assert S._preflight_gguf_disk(
-                _FakeAdapterModel(), "model", "q4_k_m"
-            ) == ("model", False)
+            assert S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m") == (
+                "model",
+                False,
+            )
         else:
             with pytest.raises(RuntimeError) as error:
                 S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m")
@@ -1680,9 +1681,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             ),
         )
         split.update(free = 34 * GB, sibling_free = 1000 * GB)
-        assert S._preflight_gguf_disk(
-            _FakeAdapterModel(), "model", "q4_k_m"
-        ) == ("model", False)
+        assert S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m") == ("model", False)
 
     def test_a_short_sibling_roomier_than_the_checkpoint_disk_still_refuses(self, split):
         """The hole the split would leave if the refusal still needed a TIGHTER sibling.
@@ -2389,9 +2388,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         return state
 
     def _preflight(self):
-        return S._preflight_gguf_disk(
-            _FakeModel(), "model", "q4_k_m", first_conversion = "bf16"
-        )
+        return S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", first_conversion = "bf16")
 
     def test_both_artefacts_are_charged_to_the_one_filesystem(self, colocated):
         """100GB holds either alone and not the pair."""
@@ -2408,9 +2405,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         colocated["devices"]["work"] = 2
         assert self._preflight() == ("model", True)
 
-    def test_an_unmeasurable_working_directory_charges_nothing_extra(
-        self, colocated, monkeypatch
-    ):
+    def test_an_unmeasurable_working_directory_charges_nothing_extra(self, colocated, monkeypatch):
         """`_shares_filesystem` says no to what it cannot see, so this is unchanged."""
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: None)
         assert self._preflight() == ("model", True)
