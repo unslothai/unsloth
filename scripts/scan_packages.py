@@ -866,7 +866,10 @@ def _add_param_names(stmt: list, start: int, scoped: set, candidates: frozenset)
 
 
 def _collect_rebindings(
-    stmt: list, rebound: set, candidates: frozenset, scoped: "set | None" = None
+    stmt: list,
+    rebound: set,
+    candidates: frozenset,
+    scoped: "set | None" = None,
 ) -> None:
     """Record the names in `candidates` that `stmt` binds to something else.
 
@@ -1977,9 +1980,7 @@ class _ExecEvalPattern:
                     if levels:
                         _cancel_close(opened, levels, at, col)
                     while scopes and scopes[-1][0] >= col:
-                        _close_scope(
-                            scopes.pop(), declared_global, at, local_imports, by_value
-                        )
+                        _close_scope(scopes.pop(), declared_global, at, local_imports, by_value)
                     opens = _opens_scope(stmt)
                     # A class body is the one scope a name does not cross: the
                     # methods written in it do not see its bindings. Read before
@@ -2005,9 +2006,7 @@ class _ExecEvalPattern:
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
                         # Only an import naming an alias can bind or re-arm one,
                         # so the ordinary file never parses its imports twice.
-                        if any(
-                            t.type == tokenize.NAME and t.string in candidates for t in stmt
-                        ):
+                        if any(t.type == tokenize.NAME and t.string in candidates for t in stmt):
                             bound: set = set()
                             _collect_import_bindings(stmt, bound, bound, None)
                             for name in bound:
@@ -2082,9 +2081,7 @@ class _ExecEvalPattern:
                         _cancel_add(cancel, opened, levels, name, ends, col)
                     rebound.clear()
                 for scope in reversed(scopes):
-                    _close_scope(
-                        scope, declared_global, len(content), local_imports, by_value
-                    )
+                    _close_scope(scope, declared_global, len(content), local_imports, by_value)
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or
                     # indent to compare against; cancel from the top of the file

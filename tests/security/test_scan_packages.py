@@ -3095,8 +3095,7 @@ def test_an_exception_target_is_the_exception_inside_its_handler():
     # right, but left the call inside it a false HIGH.
     prelude = "from builtins import exec as run\nimport marshal\n"
     payload = (
-        f"{prelude}try:\n    go()\nexcept CallableError as run:\n"
-        "    run(marshal.loads(BLOB))\n"
+        f"{prelude}try:\n    go()\nexcept CallableError as run:\n    run(marshal.loads(BLOB))\n"
     )
     assert _high(payload, "pkg/_infer.py") == [], "the handler binds its own `run`"
 
