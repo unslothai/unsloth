@@ -571,3 +571,38 @@ class TestTheEmbeddingLoaderChangesAreMacOsOnly:
         )
         mod.LlamaServerBackend()._build_env(str(wrapper), use_gpu = True)
         assert seen["dir"] == str(wrapper.parent)
+
+
+def test_device_preference_is_shared_between_both_backends(monkeypatch):
+    """One reader, so the two backends cannot disagree about the same string.
+
+    They did: this one compared a bare .lower() with no strip, so " gpu " forced the
+    GPU for sentence-transformers and fell through to auto here, and an Intel user
+    writing their own accelerator's name (xpu) got neither.
+    """
+    for requested, expected in (
+        ("gpu", "gpu"), ("GPU", "gpu"), ("  gpu  ", "gpu"),
+        ("cuda", "gpu"), ("rocm", "gpu"), ("hip", "gpu"),
+        ("xpu", "gpu"), ("mps", "gpu"), ("metal", "gpu"),
+        ("cpu", "cpu"), ("CPU", "cpu"), (" cpu ", "cpu"),
+        ("auto", "auto"), ("", "auto"), ("   ", "auto"), ("banana", "auto"),
+    ):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        assert config.embed_device_preference() == expected, requested
+
+
+def test_use_gpu_honours_the_normalized_preference(monkeypatch):
+    """A whitespace-padded or device-named setting reaches this backend too."""
+    backend = LlamaServerBackend()
+    for requested in ("  gpu  ", "GPU", "xpu", "cuda"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        monkeypatch.setattr(
+            LlamaServerBackend, "_gpu_available", staticmethod(lambda: False),
+        )
+        assert backend._use_gpu() is True, requested
+    for requested in (" cpu ", "CPU"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        monkeypatch.setattr(
+            LlamaServerBackend, "_gpu_available", staticmethod(lambda: True),
+        )
+        assert backend._use_gpu() is False, requested
