@@ -279,6 +279,49 @@ def test_a_probe_failure_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
     )
 
 
+def test_an_install_that_cannot_be_resolved_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
+    """Three exhausted pip attempts used to raise without reporting anything.
+
+    The launcher then sees a leg that produced no report, calls the run
+    `partial` or `infra` and exits GREEN, so the job added to catch a broken
+    distribution could not fail on one.
+    """
+    monkeypatch.setattr(build_kernel, "KERNEL_ROOT", str(tmp_path / "src"))
+    install = _payload_cells(LEGS["control"])[1]
+    script = tmp_path / "install.py"
+    script.write_text(
+        "import subprocess, time, types\n"
+        "subprocess.run = lambda cmd, **kw: types.SimpleNamespace(\n"
+        "    returncode=1, stdout='', stderr='ERROR: ResolutionImpossible')\n"
+        "time.sleep = lambda _s: None\n" + install,
+        encoding = "utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(script)], capture_output = True, text = True, timeout = 600
+    )
+    assert proc.returncode != 0
+    assert "KAGGLE_T4_CI_PAYLOAD INSTALL FAILED" in proc.stdout
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "kernel.log").write_text(proc.stdout + proc.stderr, encoding = "utf-8")
+    reports = launch.extract_reports(evidence)
+    assert reports, "the exhausted install produced no report at all"
+    assert reports[0]["label"] == "control"
+    assert reports[0]["passed"] is False
+    assert any("ResolutionImpossible" in f for f in reports[0]["failures"])
+
+
+def test_the_install_backs_off_between_attempts():
+    """Three immediate retries all land inside the same upstream blip.
+
+    The third failure is what the failed-payload report above is built on, so
+    it has to mean "this cannot be resolved" rather than "one bad minute".
+    """
+    install = _payload_cells(LEGS["control"])[1]
+    assert "time.sleep(15 * attempt)" in install
+
+
 # ------------------------------------------------------------------ launcher
 
 

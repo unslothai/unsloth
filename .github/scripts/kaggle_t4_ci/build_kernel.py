@@ -193,7 +193,7 @@ print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
 # differs between the control leg and the version canary. They are printed
 # before they run so the kernel log alone says what was asked for, which is
 # what makes a canary failure attributable without downloading anything.
-import json, subprocess, sys
+import json, subprocess, sys, time
 print("{PAYLOAD_SENTINEL} leg {leg.name}: {leg.summary}", flush=True)
 GROUPS = {json.dumps(groups)}
 print("{PAYLOAD_SENTINEL} install plan " + json.dumps(GROUPS), flush=True)
@@ -203,7 +203,9 @@ def pip(args):
     print("  $ " + " ".join(cmd[3:]), flush=True)
     # github.com occasionally 500s on a git fetch, and PyPI occasionally
     # times out; a single upstream blip must not be reported as a notebook
-    # regression. A resolution that is genuinely impossible fails all three.
+    # regression. The backoff is what lets the third failure be read as a
+    # resolution that is genuinely impossible rather than as one bad minute:
+    # three immediate retries all land inside the same outage.
     for attempt in (1, 2, 3):
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode == 0:
@@ -211,10 +213,27 @@ def pip(args):
         print(f"  install attempt {{attempt}} failed rc={{proc.returncode}}",
               flush=True)
         print("  " + proc.stderr.strip()[-1500:], flush=True)
-        if attempt == 3:
-            print("{PAYLOAD_SENTINEL} INSTALL FAILED " + json.dumps(list(args)),
-                  flush=True)
-            raise SystemExit(f"pip install failed: {{args}}")
+        if attempt < 3:
+            time.sleep(15 * attempt)
+            continue
+        print("{PAYLOAD_SENTINEL} INSTALL FAILED " + json.dumps(list(args)),
+              flush=True)
+        # A VERDICT, not missing evidence, for the same reason the dependency
+        # probe below writes one: the launcher classifies a leg that reported
+        # NOTHING as `partial` or `infra` and the workflow stays green. So a
+        # commit whose distribution cannot be resolved -- conflicting
+        # requirements in pyproject.toml, a dropped dependency -- used to pass
+        # the one job added to test its packaging metadata, by failing early
+        # enough that nothing was ever reported.
+        print("{RESULT_PREFIX}" + json.dumps({{
+            "label": {json.dumps(leg.name)},
+            "model": "install",
+            "passed": False,
+            "failures": ["pip install failed after 3 attempts: "
+                         + " ".join(args) + " -- rc=" + str(proc.returncode)
+                         + ": " + proc.stderr.strip()[-500:]],
+        }}), flush=True)
+        raise SystemExit(f"pip install failed: {{args}}")
 
 for group in GROUPS:
     pip(group)
