@@ -155,6 +155,18 @@ def _cpu_offloaded_modules(model) -> int:
     return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
 
 
+def _accepts_by_keyword(params, name):
+    """True if `name` can actually be passed as a keyword, not merely named.
+
+    A positional-only parameter is named and unusable: every call site here passes by
+    keyword, so counting one as support turns a clean refusal into a TypeError.
+    """
+    import inspect
+
+    parameter = params.get(name)
+    return parameter is not None and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -163,7 +175,9 @@ def _supports_kwarg(fn, name):
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False
-    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    return _accepts_by_keyword(params, name) or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _imatrix_export_supported(save_fn):
@@ -175,7 +189,7 @@ def _imatrix_export_supported(save_fn):
         params = inspect.signature(save_fn).parameters
     except (TypeError, ValueError):
         return False
-    if "imatrix_file" in params:
+    if _accepts_by_keyword(params, "imatrix_file"):
         return True
     if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
         return False
@@ -216,9 +230,9 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
     """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
 
     `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
-    would otherwise relocate an importance matrix as if it were a converted model. Matching
-    the full path, not the basename: an imatrix named after the quant would otherwise
-    suppress the real output in `model_gguf/` as well.
+    would otherwise relocate an importance matrix as if it were a converted model. The name
+    is derived from the basename, but callers compare the whole path (see `_is_imatrix`): an
+    imatrix named after the quant would otherwise suppress the real output in `model_gguf/`.
     """
     if imatrix_file is True:
         name = "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
@@ -230,6 +244,29 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
     else:
         return None
     return Path(model_dir) / name
+
+
+def _is_imatrix(path, imatrix_path):
+    """True when `path` is the materialized imatrix, asking the filesystem rather than `==`.
+
+    The on-disk spelling is the filesystem's to choose: a case-insensitive mount folds case
+    and APFS stores NFD, so the name `rglob` returns need not be the one derived from the
+    request. `Path.__eq__` is byte-exact under posix, so it misses, and the importance matrix
+    is then relocated into the user's export directory and reported as a converted model.
+    """
+    if imatrix_path is None:
+        return False
+    try:
+        return os.path.samefile(path, imatrix_path)
+    except OSError:
+        # Either side may be gone by cleanup time; fall back to a folded comparison.
+        return _folded(path) == _folded(imatrix_path)
+
+
+def _folded(path):
+    import unicodedata
+
+    return unicodedata.normalize("NFC", os.path.normcase(os.fspath(path)))
 
 
 def _compressed_export_supported():
@@ -1091,7 +1128,10 @@ class ExportBackend:
                     _resolve_local_convert_script,  # noqa: F401
                 )
                 os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-            except ImportError:
+            except Exception:
+                # Not just ImportError: a half-built unsloth_zoo surfaces as RuntimeError or
+                # AttributeError, and this pin is an optimisation. Letting it escape would
+                # take down every GGUF export, imatrix or not.
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
                         "Unsloth: installed unsloth_zoo does not honor "
@@ -1132,7 +1172,7 @@ class ExportBackend:
                     reported = result if isinstance(result, dict) else {}
                     produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
                     produced.update(Path(f) for f in _reported_gguf_files(result) or [])
-                    produced = {p for p in produced if p != imatrix_path}
+                    produced = {p for p in produced if not _is_imatrix(p, imatrix_path)}
                     modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
                     reported_modelfile = reported.get("modelfile_location")
                     if reported_modelfile and Path(reported_modelfile).is_file():
@@ -1174,7 +1214,8 @@ class ExportBackend:
                     unrelocated = []
                     if model_tmp_path.is_dir():
                         unrelocated = sorted(
-                            str(p) for p in model_tmp_path.rglob("*.gguf") if p != imatrix_path
+                            str(p) for p in model_tmp_path.rglob("*.gguf")
+                            if not _is_imatrix(p, imatrix_path)
                         )
                     if unrelocated:
                         logger.error(

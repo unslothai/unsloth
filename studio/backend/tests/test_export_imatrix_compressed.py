@@ -78,7 +78,8 @@ def test_export_merged_guards_unsupported_compressed_build():
 def test_supports_kwarg_helper():
     # exec just the helper source so the test stays free of export.py's heavy import chain.
     ns = {}
-    exec(_func_src("core/export/export.py", "_supports_kwarg"), ns)
+    for helper in ("_accepts_by_keyword", "_supports_kwarg"):
+        exec(_func_src("core/export/export.py", helper), ns)
     supports = ns["_supports_kwarg"]
 
     def has_it(a, imatrix_file = None):
@@ -90,9 +91,14 @@ def test_supports_kwarg_helper():
     def via_kwargs(a, **kw):
         pass
 
+    # Named but unusable: every call site passes the keyword, so this is not support.
+    positional_only = {}
+    exec("def f(a, imatrix_file = None, /): pass", positional_only)
+
     assert supports(has_it, "imatrix_file") is True
     assert supports(lacks_it, "imatrix_file") is False
     assert supports(via_kwargs, "imatrix_file") is True
+    assert supports(positional_only["f"], "imatrix_file") is False
 
 
 def test_orchestrator_and_worker_pass_imatrix():

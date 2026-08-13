@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import sys
 import types
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -642,3 +643,86 @@ def test_disabled_imatrix_does_not_reach_an_older_exporter(monkeypatch, tmp_path
 
     assert success is True, message
     assert calls["save"] == "q4_k_m"
+
+
+# A probe that says "supported" has to be right about the call it is authorising, and the
+# imatrix it materializes has to stay an input: whichever name the filesystem gave it.
+
+
+def test_a_positional_only_imatrix_parameter_is_not_support(monkeypatch, tmp_path):
+    """Named is not the same as passable by keyword, and every call site uses a keyword."""
+    module, _b, _s, _cwd = _backend(monkeypatch, tmp_path, object())
+
+    namespace: dict = {}
+    exec(
+        "def f(save_directory, tokenizer, quantization_method, imatrix_file = None,"
+        " token = None, /): pass",
+        namespace,
+    )
+
+    with pytest.raises(TypeError):
+        namespace["f"]("d", "t", "q", imatrix_file = True)
+    assert module._imatrix_export_supported(namespace["f"]) is False
+    assert module._supports_kwarg(namespace["f"], "token") is False
+
+
+class _ImatrixNamingModel:
+    """Writes the imatrix under the name the filesystem chose, not the one we asked for.
+
+    A case-insensitive mount folds case and APFS stores NFD, so this is what `rglob` hands
+    back on those hosts.
+    """
+
+    def __init__(self, on_disk_name):
+        self.on_disk_name = on_disk_name
+
+    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method,
+                             imatrix_file = None, token = None):
+        _gguf(Path(model_save_path) / "Model.IQ2_XXS.gguf")
+        _gguf(Path(model_save_path) / self.on_disk_name)
+
+
+_NFC = unicodedata.normalize("NFC", "im\u00e4trix")
+_NFD = unicodedata.normalize("NFD", "im\u00e4trix")
+
+
+@pytest.mark.parametrize("on_disk,requested", [
+    ("imatrix_unsloth.gguf", "/x/imatrix_unsloth.gguf_file"),
+    (f"{_NFD}.gguf", f"/x/{_NFC}.gguf_file"),   # APFS stores NFD, the request carried NFC
+    (f"{_NFC}.gguf", f"/x/{_NFD}.gguf_file"),   # and the other way round
+])
+def test_the_materialized_imatrix_is_never_exported_as_a_model(
+    monkeypatch, tmp_path, on_disk, requested,
+):
+    _m, backend, save_dir, _cwd = _backend(
+        monkeypatch, tmp_path, _ImatrixNamingModel(on_disk),
+    )
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir), "iq2_xxs", imatrix_file = requested,
+    )
+
+    assert success is True, message
+    landed = sorted(p.name for p in save_dir.iterdir() if p.suffix == ".gguf")
+    assert landed == ["Model.IQ2_XXS.gguf"], f"the imatrix was exported as a model: {landed}"
+
+
+def test_a_broken_unsloth_zoo_does_not_fail_a_plain_export(monkeypatch, tmp_path):
+    """The llama.cpp scripts pin is an optimisation, so it must not be able to fail an export.
+
+    A half-built unsloth_zoo surfaces as RuntimeError (missing native dependency) or
+    AttributeError (partially initialised module), neither of which `except ImportError`
+    caught, so it took down every GGUF export -- imatrix or not.
+    """
+    class _Exploding(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError("half-built native dep")
+
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", _Exploding("unsloth_zoo.llama_cpp"))
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q4_k_m")
+
+    assert success is True, message
+    assert calls["save"] == {"imatrix_file": None, "token": None}
