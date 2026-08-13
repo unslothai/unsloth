@@ -83,7 +83,12 @@ def test_put_without_variant(client):
     c, _ = client
     r = c.put("/last-local-model", json = {"id": "unsloth/Qwen3-4B", "kind": "model"})
     assert r.status_code == 200
-    assert r.json() == {"id": "unsloth/Qwen3-4B", "kind": "model", "gguf_variant": None, "loaded_at": None}
+    assert r.json() == {
+        "id": "unsloth/Qwen3-4B",
+        "kind": "model",
+        "gguf_variant": None,
+        "loaded_at": None,
+    }
 
 
 def test_put_rejects_bad_payloads(client):
