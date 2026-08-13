@@ -2113,25 +2113,28 @@ const Composer: FC<{
       // was already heading to the end can become one. Mid-text pastes stay
       // inline, where the order the user typed them in survives.
       const pasteGoesLast = input.selectionEnd === input.value.length;
+      const { selectionStart, selectionEnd, value } = input;
+      // Swallowing the paste also swallowed the replacement the browser would
+      // have made. Only once the attachment is in, and only if the composer is
+      // still the one that was pasted into, or a failed paste eats the text.
+      const dropReplacedSelection = () => {
+        if (selectionStart === selectionEnd) return;
+        const composer = aui.composer();
+        if (composer.getState().text !== value) return;
+        composer.setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
+      };
       const attachedPastedText = !overlay && pasteGoesLast && pasteLongTextAsFile(
         event,
-        (file) => aui.composer().addAttachment(file),
+        async (file) => {
+          await aui.composer().addAttachment(file);
+          dropReplacedSelection();
+        },
         () =>
           toast.error("Could not attach the pasted text.", {
             description: "Paste it again, or paste it in smaller pieces.",
           }),
       );
-      if (attachedPastedText) {
-        // Swallowing the paste also swallowed the replacement the browser
-        // would have made, so drop the selection the paste was meant to cover.
-        const { selectionStart, selectionEnd, value } = input;
-        if (selectionStart !== selectionEnd) {
-          aui
-            .composer()
-            .setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
-        }
-        return;
-      }
+      if (attachedPastedText) return;
       pasteClipboardFiles(
         event,
         async (files) => {
