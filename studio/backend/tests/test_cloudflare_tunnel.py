@@ -566,6 +566,27 @@ def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
     assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5) is None
     assert len(calls) == ct._DNS_MAX_DOH_ERRORS
+    # Blocking one of these services is how such a network is configured, so the
+    # attempts keep alternating rather than settling on whichever failed last.
+    assert [call.split("?")[0] for call in calls] == [
+        ct._DOH_URLS[index % len(ct._DOH_URLS)].split("?")[0]
+        for index in range(ct._DNS_MAX_DOH_ERRORS)
+    ]
+
+
+def test_wait_for_dns_takes_the_answer_of_whichever_service_is_reachable(monkeypatch):
+    asked = []
+
+    def handler(req):
+        asked.append(req.full_url)
+        if req.full_url.startswith(ct._DOH_URLS[0].split("?")[0]):
+            raise OSError("blocked")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"203.0.113.7"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct._wait_for_dns("studio.example.com", ct.time.monotonic() + 5) is True
+    assert all("studio.example.com" in call for call in asked)
 
 
 def test_wait_for_dns_delays_first_query(monkeypatch):
@@ -1697,10 +1718,15 @@ def test_the_readiness_probe_answers_from_the_status_cloudflared_sends():
         protocol_version = "HTTP/1.0"
 
         def do_GET(self):  # noqa: N802
-            # cloudflared's own /ready: 200 once a connection is registered, 503
-            # before that, and a body whose shape this probe does not depend on.
+            # cloudflared's own /ready: 200 once a connection is registered and
+            # 503 before that. The last case is the same connected tunnel behind
+            # a build that stopped reporting the count, which still serves.
             status = 200 if connections[0] else 503
-            body = json.dumps({"status": status, "readyConnections": connections[0]})
+            body = (
+                "OK"
+                if connections[0] == "counted out"
+                else json.dumps({"status": status, "readyConnections": connections[0]})
+            )
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1715,6 +1741,8 @@ def test_the_readiness_probe_answers_from_the_status_cloudflared_sends():
     try:
         assert ct._connector_reports_ready(address, 5.0) is False
         connections[0] = 1
+        assert ct._connector_reports_ready(address, 5.0) is True
+        connections[0] = "counted out"
         assert ct._connector_reports_ready(address, 5.0) is True
     finally:
         server.shutdown()

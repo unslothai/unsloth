@@ -70,7 +70,15 @@ _DNS_POLL_DELAY = 2.0
 # Retry transient DoH failures, but give up fast when DoH is blocked outright.
 _DNS_MAX_DOH_ERRORS = 3
 _DNS_ATTEMPT_TIMEOUT = 5.0
-_DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
+# Only a public recursive resolver answers whether the hostname resolves for
+# everyone else: the edge serves the tunnel by SNI before the name exists
+# anywhere, and the system resolver answers from this machine's own view. A
+# network that blocks one of these services blocks it by name, so the second is
+# tried before the wait gives up.
+_DOH_URLS = (
+    "https://cloudflare-dns.com/dns-query?name={host}&type=A",
+    "https://dns.google/resolve?name={host}&type=A",
+)
 # The resolver negative-caches a miss of its own, so a query sent before the
 # record can exist blinds the poll for that cache's lifetime. Hold off first.
 _DNS_INITIAL_GRACE = 3.0
@@ -286,7 +294,7 @@ def _wait_for_dns(host: str, deadline: float) -> Optional[bool]:
             return False if heard_negative else None
         try:
             req = urllib.request.Request(
-                _DOH_URL.format(host = host),
+                _DOH_URLS[errors % len(_DOH_URLS)].format(host = host),
                 headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
             )
             attempt = max(0.0, min(_DNS_ATTEMPT_TIMEOUT, deadline - time.monotonic()))
