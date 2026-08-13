@@ -1,7 +1,7 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
 use log::{error, info, warn};
 use process_wrap::std::*;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -125,7 +125,7 @@ struct InstallFailureContext {
     explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
     security_block: Option<SecurityBlockKind>,
-    last_clear: Option<String>,
+    unpaired_clears: HashMap<String, usize>,
     started: bool,
     output_tail: VecDeque<InstallOutputLine>,
 }
@@ -218,11 +218,24 @@ impl InstallFailureContext {
     fn clear_failure(&mut self, stream: InstallOutputStream, message: &str) {
         // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198), and
         // the two are read by independent threads. So a verdict can land between a clear and its
-        // own twin, and treating the twin as a second clear would discard a real block. The twin
-        // repeats the message verbatim, so ignore a clear identical to the one just processed:
-        // a genuine later recovery carries different text and still clears.
-        let twin = self.last_clear.as_deref() == Some(message);
-        self.last_clear = Some(message.to_owned());
+        // own twin, and treating the twin as a second clear would discard a real block.
+        //
+        // Pair them by message rather than only against the previous one: a reader can lag several
+        // clears behind, so with clears A then B on one stream and A's twin arriving on the other
+        // after the verdict, "is this the message I just saw" answers no and throws the verdict
+        // away. Each logical clear emits exactly two markers, so the first sighting of a message is
+        // the clear and the next sighting pairs with it.
+        let twin = match self.unpaired_clears.get_mut(message) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                true
+            }
+            _ => {
+                *self.unpaired_clears.entry(message.to_owned()).or_insert(0) += 1;
+                false
+            }
+        };
+        self.unpaired_clears.retain(|_, count| *count > 0);
         if !twin {
             // A run that cleared its own failure state was never blocked at parse time, so a
             // verdict here is stale.
@@ -1492,6 +1505,24 @@ mod tests {
         }
         // the twin of the same clear, arriving late on the other stream
         context.observe_stdout("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn a_twin_lagging_several_clears_behind_still_pairs() {
+        // install.ps1 clears after every recovered step, so a slower reader can be several clears
+        // behind when a block lands. Pairing only against the previous message would treat this
+        // delayed twin of A as a fresh recovery and drop the verdict.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] step A recovered");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] step B recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:ERROR_CLEAR] step A recovered");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] step B recovered");
         let message = context.message(1);
         assert!(message.contains("blocked part of the installer"), "{message}");
     }
