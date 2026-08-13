@@ -134,7 +134,7 @@ def h3_host(monkeypatch, tmp_path):
     "state,help_text,expected",
     [
         ("unrelated_binary", _UNRELATED_HELP, "is not stable-diffusion.cpp"),
-        ("pre_h3_binary", _PRE_H3_HELP, "predates MiniMax-H3"),
+        ("pre_h3_binary", _PRE_H3_HELP, "does not advertise MiniMax-H3"),
         ("no_binary", None, "could not be installed or started"),
     ],
 )

@@ -35,6 +35,7 @@ from core.inference.providers import (
     get_base_url,
     get_provider_info,
     list_available_providers,
+    validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
@@ -178,9 +179,17 @@ async def create_provider_config(
         updating = False,
     )
 
+    base_url = payload.base_url or info["base_url"]
+    # An empty base URL stays allowed (custom/vLLM entries carry none until the
+    # user fills one in); anything present is checked before a key is decrypted.
+    if base_url:
+        try:
+            base_url = validate_provider_base_url(base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+
     api_key = resolve_provider_api_key_or_400(None, payload.encrypted_api_key)
     provider_id = uuid.uuid4().hex[:16]
-    base_url = payload.base_url or info["base_url"]
 
     if api_key:
         credential_secrets.get_or_create_credential_encryption_key()
@@ -237,6 +246,16 @@ async def update_provider_config(
     metadata_fields = {"display_name", "base_url", "is_enabled", "models", "available_models"}
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
+    # Only a *changed* base URL is validated. The dialog re-sends the stored value
+    # on every edit, so validating an unchanged legacy row would lock the user out
+    # of editing its models or API key. Outbound use is still checked.
+    base_url = payload.base_url
+    if base_url and base_url != existing["base_url"]:
+        try:
+            base_url = validate_provider_base_url(base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+
     replacement_api_key = None
     if payload.encrypted_api_key:
         credential_secrets.get_or_create_credential_encryption_key()
@@ -251,7 +270,7 @@ async def update_provider_config(
             providers_db.update_provider(
                 id = provider_id,
                 display_name = payload.display_name,
-                base_url = payload.base_url,
+                base_url = base_url,
                 is_enabled = payload.is_enabled,
                 models = payload.models,
                 available_models = payload.available_models,
@@ -423,6 +442,14 @@ async def test_provider(
                 message = "Connection failed: Base URL is required for custom providers.",
                 models_count = None,
             )
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {exc}",
+            models_count = None,
+        )
 
     client = ExternalProviderClient(
         provider_type = payload.provider_type,
@@ -525,6 +552,11 @@ async def list_provider_models(
         ]
 
     base_url = payload.base_url or info["base_url"]
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
     client = ExternalProviderClient(
         provider_type = payload.provider_type,
         base_url = base_url,

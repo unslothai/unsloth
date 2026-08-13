@@ -189,6 +189,7 @@ def test_non_flag_token_passes_through():
         "--embeddings",
         "--rerank",
         "--reranking",
+        "--pooling",
         # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
         # Slot-state dir: Studio owns it for KV persistence across idle unload.

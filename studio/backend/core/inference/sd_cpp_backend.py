@@ -73,6 +73,7 @@ from core.inference.sd_cpp_engine import (
     find_sd_server_binary,
     help_text_identifies_sd_cpp,
     is_managed_binary,
+    legacy_sibling_install_root,
     managed_install_root,
     owning_managed_root,
     runtime_env,
@@ -325,6 +326,35 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     return any(name.upper() != "CPU" for name in names)
 
 
+def _h3_replacement_hint(binary: str) -> str:
+    """The trailing "or delete it" clause of the H3 refusal, or "" when there is nothing to delete.
+
+    Only a binary in a layout the installer writes to can be recovered by clearing that layout:
+    ``install()`` refuses a non-empty unmarked target, so an empty one is what lets the next load
+    put the pinned prebuilt there. Anything PATH or an env var named is elsewhere entirely. The
+    refusal used to end with "or remove that directory" whatever the binary was, which for the
+    ``/usr/bin/sd`` PATH discovery picks up read as "remove /usr/bin".
+
+    MOVE, never remove. Only the caller's unowned branch reaches this, so a root that matches here
+    necessarily carries no ownership marker -- it is the user's own build sitting at the path the
+    installer would use, which ``is_managed_binary`` documents as a supported thing to do, and
+    which a ``git clone`` of leejet's repo produces verbatim. Moving it aside frees the path
+    without destroying anything, and the user can put it back.
+
+    ``in_tree_install_root`` is not consulted at all: the installer never writes to
+    ``<repo_root>/stable-diffusion.cpp``, so clearing it would buy nothing."""
+    roots = [managed_install_root(), legacy_sibling_install_root()]
+    for root in roots:
+        if root is None:
+            continue
+        try:
+            Path(binary).resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        return f", or move {root} aside so Studio can install the pinned prebuilt there"
+    return ""
+
+
 def ensure_h3_sd_cpp_binary(
     *, allow_install: bool = True, accelerator: str = "cpu"
 ) -> Optional[str]:
@@ -370,7 +400,7 @@ def ensure_h3_sd_cpp_binary(
         return binary
     # What is wrong with it, for the log lines on the managed path below: a managed copy that is not
     # sd.cpp at all is still deleted and reinstalled, but calling it an old build would be false.
-    fault = "predates MiniMax-H3 support" if identified else "is not stable-diffusion.cpp"
+    fault = "does not advertise MiniMax-H3 support" if identified else "is not stable-diffusion.cpp"
     if not is_managed_binary(binary):
         # Not an old sd.cpp -- not sd.cpp at all. Worth its own message: the H3 marker is missing
         # from EVERY program that is not stable-diffusion.cpp, so reporting the capability verdict
@@ -381,16 +411,16 @@ def ensure_h3_sd_cpp_binary(
         if not identified:
             raise RuntimeError(
                 f"The executable at {binary} is not stable-diffusion.cpp: its --help output does "
-                f"not identify the project. Point SD_CLI_PATH / UNSLOTH_SD_CPP_PATH at a "
-                f"stable-diffusion.cpp build from master-812-ea7f0c8 or newer, or unset them so "
-                f"Studio installs the pinned prebuilt."
+                f"not identify the project. Point SD_CLI_PATH at a stable-diffusion.cpp build from "
+                f"master-812-ea7f0c8 or newer, or UNSLOTH_SD_CPP_PATH at the directory holding one"
+                f"{_h3_replacement_hint(binary)}."
             )
         raise RuntimeError(
-            f"The stable-diffusion.cpp build at {binary} predates MiniMax-H3 support (its --help "
-            f"does not list the H3 options), so generation would fail on it. "
-            f"Point SD_CLI_PATH / UNSLOTH_SD_CPP_PATH at a build from "
-            f"master-812-ea7f0c8 or newer, or remove that directory so Studio installs the "
-            f"pinned prebuilt."
+            f"The stable-diffusion.cpp binary at {binary} does not advertise MiniMax-H3 support "
+            f"(its --help does not list the H3 options), so generation would fail on it. "
+            f"Point SD_CLI_PATH at a build from master-812-ea7f0c8 or "
+            f"newer, or UNSLOTH_SD_CPP_PATH at the directory holding one"
+            f"{_h3_replacement_hint(binary)}."
         )
     if not allow_install:
         # Ours, but replacing it is exactly what auto-install is switched off for.

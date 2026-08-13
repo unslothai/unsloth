@@ -46,12 +46,18 @@ def _load_real_index_env_scrub():
     ns: dict = {"os": _os}
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
+        # _install_env_for_cmd calls both of these, and they resolve from this namespace
+        # at CALL time, so omitting either only shows up as a NameError once a test
+        # actually invokes the scrub.
+        ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
+        ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
+    assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
     return ns["_install_env_for_cmd"]
 
 
