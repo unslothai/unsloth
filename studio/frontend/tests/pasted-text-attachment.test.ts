@@ -120,6 +120,14 @@ test("the file is named after the opening of the paste", () => {
     pastedTextFileName(`${" ".repeat(300)}${"b".repeat(1000)}`),
     "Pasted text.txt",
   );
+  // Blank lines are stepped over one at a time, so the walk is bounded too:
+  // naming must not depend on how many of them there are.
+  const started = process.hrtime.bigint();
+  assert.equal(
+    pastedTextFileName(`${"\n".repeat(4 * 1024 * 1024)}Deploy log`),
+    "Pasted text.txt",
+  );
+  assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 250);
 });
 
 test("pasted text files are recognised by identity", () => {

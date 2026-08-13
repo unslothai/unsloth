@@ -15,6 +15,8 @@ export const PASTED_TEXT_MIN_LINES = 40;
 const PASTED_TEXT_NAME_MAX_CHARS = 32;
 // Enough for the name after whitespace collapses, without copying a line.
 const PASTED_TEXT_NAME_SCAN_CHARS = 256;
+// Blank lines are stepped over one at a time, so the walk needs its own bound.
+const PASTED_TEXT_NAME_TOTAL_SCAN_CHARS = 64 * 1024;
 const PASTED_TEXT_FALLBACK_NAME = "Pasted text";
 const PASTED_TEXT_TAG = "pasted_text";
 // A preview is for reading, so render an opening rather than megabytes.
@@ -58,8 +60,12 @@ export function shouldAttachPastedText(text: string): boolean {
 // line for nothing, so walk to the first non-blank line instead, and never
 // copy more of it than a name can hold.
 function firstTextLine(text: string): string {
+  // Bounded twice over: each slice, so one line cannot be copied whole, and
+  // the walk itself, so a paste of nothing but blank lines cannot be stepped
+  // through a line at a time.
+  const limit = Math.min(text.length, PASTED_TEXT_NAME_TOTAL_SCAN_CHARS);
   let start = 0;
-  while (start < text.length) {
+  while (start < limit) {
     const end = text.indexOf("\n", start);
     const stop = Math.min(
       end === -1 ? text.length : end,
