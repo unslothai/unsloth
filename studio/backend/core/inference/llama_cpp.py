@@ -10784,6 +10784,9 @@ class LlamaCppBackend:
             # Extra margin to hand llama.cpp's own fitter, set once the device
             # totals are known. Zero unless the budget is below the default.
             _fit_target_extra_mib = 0.0
+            # Set only if that margin actually reached the command line, which is
+            # what makes the child budget-priced in a mode the planner skipped.
+            _fit_target_priced = False
 
             def _budget_priced_placement() -> Optional[float]:
                 """The fraction this child was sized against, or None if it wasn't.
@@ -10797,9 +10800,16 @@ class LlamaCppBackend:
                 either would make a later change to the setting evict a healthy
                 child for a reload that cannot move anything.
                 """
-                if not gpus or intent.cpu_fallback:
+                if intent.cpu_fallback:
                     return None
-                return _vram_frac
+                if gpus:
+                    return _vram_frac
+                # Manual + Auto empties gpus to bypass the planner, but --fit-target
+                # still carries the budget to llama.cpp's fitter, so that child IS
+                # priced against it. Without this, a later change to the setting
+                # would report no reload needed and the duplicate check would adopt
+                # a child still fitting to the old margin.
+                return _vram_frac if _fit_target_priced else None
 
             # Armed before the duplicate check, not merely cleared: on an inactive
             # backend a save landing in that gap saw no pending value and no live
@@ -13023,17 +13033,22 @@ class LlamaCppBackend:
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None
-                cmd.extend(
-                    self._ctx_integrity_flags(
-                        n_parallel,
-                        use_fit,
-                        auto_fit,
-                        requested_ctx,
-                        effective_ctx,
-                        server_caps,
-                        fit_target_extra_mib = _fit_target_extra_mib,
-                    )
+                _integrity_flags = self._ctx_integrity_flags(
+                    n_parallel,
+                    use_fit,
+                    auto_fit,
+                    requested_ctx,
+                    effective_ctx,
+                    server_caps,
+                    fit_target_extra_mib = _fit_target_extra_mib,
                 )
+                # Read from the flags themselves, not from the inputs: --fit off, an
+                # older server without the capability, or a budget at the default all
+                # leave the child unpriced, and each is decided inside that call.
+                _fit_target_priced = (
+                    _fit_target_extra_mib > 0 and "--fit-target" in _integrity_flags
+                )
+                cmd.extend(_integrity_flags)
                 offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
                 )

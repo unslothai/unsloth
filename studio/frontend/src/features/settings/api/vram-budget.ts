@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 const VRAM_BUDGET_EVENT = "unsloth-vram-budget-change";
+const VRAM_BUDGET_LOCK_EVENT = "unsloth-vram-budget-lock";
 
 export type VramBudgetSettings = {
   /** Fraction of each GPU a load may claim, e.g. 0.97. */
@@ -83,6 +84,32 @@ export function settleVramBudgetSave(): Promise<unknown> | null {
   );
 }
 
+// A load waits on the budget it is about to launch against, so an edit made while
+// it waits would be flushed by the picker teardown alongside the load request and
+// either fraction could size the child. Settling again in a loop only shrinks that
+// window; closing the control closes it. Held here for the same reason the staged
+// fraction is: the row unmounts, the load does not.
+let vramBudgetLocked = false;
+
+export function setVramBudgetLocked(locked: boolean) {
+  vramBudgetLocked = locked;
+  window.dispatchEvent(
+    new CustomEvent(VRAM_BUDGET_LOCK_EVENT, { detail: locked }),
+  );
+}
+
+export function isVramBudgetLocked() {
+  return vramBudgetLocked;
+}
+
+export function subscribeVramBudgetLock(listener: (locked: boolean) => void) {
+  const handleChange = (event: Event) => {
+    listener((event as CustomEvent<boolean>).detail);
+  };
+  window.addEventListener(VRAM_BUDGET_LOCK_EVENT, handleChange);
+  return () => window.removeEventListener(VRAM_BUDGET_LOCK_EVENT, handleChange);
+}
+
 export function subscribeVramBudgetSettings(
   listener: (settings: VramBudgetSettings) => void,
 ) {
@@ -144,7 +171,12 @@ export async function loadVramBudgetSettings(
   if (!inFlightVramBudget) {
     const read: Promise<VramBudgetSettings> = pendingWrites
       .then(fetchVramBudgetSettings)
-      .then(publishVramBudget)
+      .then((settings) =>
+        // Publish only while this is still the current read. A read displaced by a
+        // forced one describes the child being replaced, and answering late would
+        // restore the notice, and the Reload button, that the forced read cleared.
+        inFlightVramBudget === read ? publishVramBudget(settings) : settings,
+      )
       .finally(() => {
         // Identity-checked: a forced read displaces this one, and clearing blindly
         // would drop the newer request's handle and leave it unshared.

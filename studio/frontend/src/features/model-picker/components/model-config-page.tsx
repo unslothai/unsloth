@@ -26,9 +26,12 @@ import {
   type VramBudgetSettings,
   dropVramBudgetRetry,
   flushVramBudgetSave,
+  isVramBudgetLocked,
   loadVramBudgetSettings,
+  setVramBudgetLocked,
   settleVramBudgetSave,
   stageVramBudgetSave,
+  subscribeVramBudgetLock,
   subscribeVramBudgetSettings,
   updateVramBudgetSettings,
 } from "@/features/settings/api/vram-budget";
@@ -97,10 +100,6 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
-
-// A Run waiting on the budget sends whatever a drag stages mid-flight, but only so
-// many times: past this it starts the load rather than let dragging starve it.
-const BUDGET_SETTLE_ATTEMPTS = 3;
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -308,6 +307,7 @@ function AdvancedGpuSlider({
   info,
   inputRef,
   step = 1,
+  disabled = false,
 }: {
   label: string;
   value: number;
@@ -318,6 +318,7 @@ function AdvancedGpuSlider({
   info?: ReactNode;
   inputRef?: Ref<NumericValueInputHandle>;
   step?: number;
+  disabled?: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -337,6 +338,7 @@ function AdvancedGpuSlider({
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
           size={8}
+          disabled={disabled}
         />
       </div>
       <Slider
@@ -347,6 +349,7 @@ function AdvancedGpuSlider({
         onValueChange={([next]) => onChange(next)}
         className="panel-slider"
         aria-label={label}
+        disabled={disabled}
       />
     </div>
   );
@@ -368,6 +371,10 @@ function VramBudgetRow() {
   const adviceId = useId();
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const wasModelLoading = useRef(false);
+  // Closed while a Run is settling this budget: an edit made in that window would
+  // be flushed by the teardown alongside the load request.
+  const [locked, setLocked] = useState(isVramBudgetLocked);
+  useEffect(() => subscribeVramBudgetLock(setLocked), []);
 
   // Adopt what the last save or read published: the row's own GET races the PUT a
   // previous unmount fired, so reopening Advanced straight after a drag could show
@@ -509,6 +516,7 @@ function VramBudgetRow() {
         step={VRAM_BUDGET_PERCENT_STEP}
         displayValue={`${percent}%`}
         onChange={commit}
+        disabled={locked}
         info={
           <div className="flex flex-col gap-1.5">
             <div>
@@ -539,6 +547,7 @@ function VramBudgetRow() {
       {settings.isStored && (
         <button
           type="button"
+          disabled={locked}
           onClick={resetBudget}
           className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-nav-fg"
         >
@@ -1630,6 +1639,10 @@ export function ModelConfigPage({
     // which for this click lands after onRun has staged the load, so that load (the
     // very one the control promises) would use the old fraction. A failed save must
     // not swallow the load, hence finally; nothing staged stays synchronous.
+    // Closed before the settle, not after: the control has to stop taking edits at
+    // the moment this click owns the fraction, or a drag landing in between is the
+    // very race the lock exists to remove.
+    setVramBudgetLocked(true);
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
       // The click is answered by a network round trip now, so the button stays live
@@ -1638,37 +1651,28 @@ export function ModelConfigPage({
       setBudgetSettling(true);
       // Caught, not voided: finally alone re-rejects into an unhandled rejection,
       // and the load would proceed on the old fraction with nothing said.
-      const settleThenRun = (pending: Promise<unknown>, attempt: number) => {
-        void pending
-          .catch((error: unknown) => {
+      void stagedBudget
+        .catch((error: unknown) => {
             // Dropped rather than left for the next flush: the picker teardown that
             // onRun triggers flushes it, and that PUT would then race the load
             // request this click is about to send. Either fraction could win, which
             // is the one thing this control promises cannot happen. Only the retry
             // goes, never a newer edit staged over it. The toast says the budget
             // did not change, and the slider is still there to retry.
-            dropVramBudgetRetry();
-            toast.error(
-              error instanceof Error ? error.message : "Failed to save VRAM budget",
-            );
-          })
-          .finally(() => {
-            // The slider stays live while this settles, so a drag can stage a newer
-            // fraction mid-flight. Send that too, or the teardown would flush it
-            // alongside the load request and either could size the child. Capped, so
-            // continued dragging cannot starve the load forever.
-            const next = attempt < BUDGET_SETTLE_ATTEMPTS ? settleVramBudgetSave() : null;
-            if (next) {
-              settleThenRun(next, attempt + 1);
-              return;
-            }
-            setBudgetSettling(false);
-            onRun(effectiveLoadConfig, classifiedIsDiffusion);
-          });
-      };
-      settleThenRun(stagedBudget, 1);
+          dropVramBudgetRetry();
+          toast.error(
+            error instanceof Error ? error.message : "Failed to save VRAM budget",
+          );
+        })
+        .finally(() => {
+          setVramBudgetLocked(false);
+          setBudgetSettling(false);
+          onRun(effectiveLoadConfig, classifiedIsDiffusion);
+        });
       return;
     }
+    // Nothing to wait for, so the control never actually closes for the user.
+    setVramBudgetLocked(false);
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
 

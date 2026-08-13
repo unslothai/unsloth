@@ -405,7 +405,9 @@ class TestLaunchFinalization:
         # the comments here get rewritten and the slice should not care.
         helper = helper[: helper.index("self._vram_fraction_pending")]
         compact = "".join(helper.split())
-        assert "ifnotgpusorintent.cpu_fallback:returnNone" in compact
+        assert "ifintent.cpu_fallback:returnNone" in compact
+        # ...and it is tested first, so no later branch can stamp one.
+        assert compact.index("ifintent.cpu_fallback:returnNone") < compact.index("ifgpus:")
 
 
 class TestPreLaunchWindow:
@@ -691,3 +693,44 @@ class TestFitTarget:
         assert "if_vram_frac<_CTX_FIT_VRAM_FRACTIONand" in compact
         assert "_fit_target_extra_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*max(" in compact
         assert "fit_target_extra_mib=_fit_target_extra_mib," in compact
+
+
+class TestManualAutoIsPriced:
+    """Manual + Auto empties ``gpus``, but --fit-target still spends the budget."""
+
+    def _helper(self):
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        helper = source[source.index("def _budget_priced_placement()") :]
+        helper = helper[: helper.index("self._vram_fraction_pending")]
+        return "".join(helper.split())
+
+    def test_an_unplanned_but_fitted_child_is_still_stamped(self):
+        # Otherwise a later change to the setting reports no reload needed and the
+        # duplicate check adopts a child still fitting to the old margin. The
+        # planner's own consumers are all gated on a non-empty gpus, which is what
+        # made an empty one mean "unpriced" until --fit-target started spending it.
+        assert "return_vram_fracif_fit_target_pricedelseNone" in self._helper()
+
+    def test_priced_is_read_off_the_emitted_flags(self):
+        # --fit off, an older server without the capability, and a budget at the
+        # default all leave the child unpriced, and each is decided inside the call
+        # that builds the flags rather than by its inputs.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert (
+            '_fit_target_priced=(_fit_target_extra_mib>0and"--fit-target"in_integrity_flags)'
+            in compact
+        )
+
+    def test_a_cpu_fallback_child_is_still_refused(self):
+        # The recovery path leaves gpus populated AND may have emitted the flag on
+        # the attempt that failed, so this has to be tested ahead of both.
+        helper = self._helper()
+        assert helper.index("ifintent.cpu_fallback:returnNone") < helper.index("_fit_target_priced")

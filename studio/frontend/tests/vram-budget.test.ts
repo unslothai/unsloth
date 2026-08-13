@@ -336,7 +336,7 @@ test("Run waits out the budget save without starting two loads", () => {
 test("a save that fails during Run is dropped, not left to race the load", () => {
   const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
   const rejection = run
-    .slice(run.indexOf("const settleThenRun ="))
+    .slice(run.indexOf("void stagedBudget"))
     .replace(/\s+/g, " ");
   // onRun tears the picker down, and that unmount flushes whatever is staged. A
   // re-staged retry would therefore PUT alongside the load request this click is
@@ -394,18 +394,28 @@ test("a post-load read is not answered by one taken before the load finished", (
   assert.match(row, /loadVramBudgetSettings\(\{ force: true \}\)/);
 });
 
-test("an edit made while Run waits is sent before the load starts", () => {
+test("the budget closes while Run settles it, instead of racing the load", () => {
   const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
   const body = run.slice(0, run.indexOf("\n  return (")).replace(/\s+/g, " ");
-  // The slider stays live for the round trip, so a drag can stage a newer fraction
-  // mid-flight. The teardown would otherwise flush it alongside the load request.
+  // Settling again in a loop only shrinks the window: an edit made during the last
+  // attempt is still staged when onRun tears the picker down and flushes it
+  // alongside the load request. Closing the control closes the window.
   assert.match(
     body,
-    /const next = attempt < BUDGET_SETTLE_ATTEMPTS \? settleVramBudgetSave\(\) : null;/,
+    /setVramBudgetLocked\(true\); const stagedBudget = settleVramBudgetSave\(\);/,
   );
-  assert.match(body, /settleThenRun\(next, attempt \+ 1\);/);
-  // Capped, so continued dragging cannot starve the load.
-  assert.match(pageSource, /const BUDGET_SETTLE_ATTEMPTS = 3;/);
+  assert.match(
+    body,
+    /setVramBudgetLocked\(false\); setBudgetSettling\(false\); onRun\(/,
+  );
+  // Nothing staged means nothing to wait for, so the control never closes.
+  assert.match(body, /setVramBudgetLocked\(false\); onRun\(/);
+  const row = vramBudgetRowSource().replace(/\s+/g, " ");
+  assert.match(
+    row,
+    /useEffect\(\(\) => subscribeVramBudgetLock\(setLocked\), \[\]\)/,
+  );
+  assert.match(row, /disabled=\{locked\}/);
 });
 
 test("a stored budget can be cleared back to the inherited one", () => {
@@ -431,5 +441,21 @@ test("Reload is reachable when only the server-wide budget changed", () => {
   assert.match(
     pageSource.replace(/\s+/g, " "),
     /subscribeVramBudgetSettings\(\(next\) => \{ setBudgetReloadRequired\(next\.reloadRequired\); \}\)/,
+  );
+});
+
+test("a read displaced by a forced one does not publish", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  // Clearing the handle is not enough: the displaced GET still resolves, and it
+  // describes the child being replaced, so publishing would restore the notice and
+  // the Reload button that the forced read had just cleared.
+  assert.match(
+    client.replace(/\s+/g, " "),
+    /inFlightVramBudget === read \? publishVramBudget\(settings\) : settings/,
   );
 });
