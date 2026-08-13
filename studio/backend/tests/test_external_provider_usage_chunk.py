@@ -708,3 +708,72 @@ def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
     lines = _drive(run())
     assert not [line for line in lines if '"provider_error"' in line], lines
     assert len(_usage_chunks(lines)) == 1, lines
+
+
+def test_an_untyped_error_frame_is_surfaced_rather_than_skipped(monkeypatch):
+    """Skipping a frame we cannot type is right for a Chat Completions chunk arriving on
+    the Responses path, but an OpenAI-compatible proxy emits its errors as a bare
+    ``{"error": {...}}`` with no ``type`` and no SSE event name either. Skipping that ended
+    the generation with zero chunks and nothing to explain it: a blank answer where the
+    endpoint had said "rate limited". Before the skip existed this at least raised."""
+    body = (
+        b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content = body, headers = {"content-type": "text/event-stream"}
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert chunks, "the error frame was swallowed and the answer came back empty"
+    assert any("rate limited" in str(chunk) for chunk in chunks), chunks
+
+
+def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeypatch):
+    """The case the skip exists for stays skipped: no type, no event name, no error key."""
+    body = (
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        b"event: response.completed\n"
+        b'data: {"type":"response.completed"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content = body, headers = {"content-type": "text/event-stream"}
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert not any("502" in str(chunk) for chunk in chunks), chunks
