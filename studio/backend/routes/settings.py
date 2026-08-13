@@ -1055,8 +1055,12 @@ def update_last_local_model(
                     return LastLocalModelResponse(
                         **current.model_dump(exclude = {"client_now"}), server_now = _server_now
                     )
-        upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump(exclude = {"client_now"})})
-    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _server_now)
+        upsert_app_settings(
+            {LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump(exclude = {"client_now"})}
+        )
+    return LastLocalModelResponse(
+        **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
+    )
 
 
 @router.get("/vram-budget", response_model = VramBudgetResponse)

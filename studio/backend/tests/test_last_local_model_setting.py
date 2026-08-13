@@ -142,11 +142,15 @@ def test_put_clamps_future_dated_stamps(client):
 def test_put_normalizes_slow_client_clocks(client):
     c, store = client
     import time as _time
+
     now = int(_time.time() * 1000)
-    assert c.put(
-        "/last-local-model",
-        json = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": now, "client_now": now},
-    ).status_code == 200
+    assert (
+        c.put(
+            "/last-local-model",
+            json = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": now, "client_now": now},
+        ).status_code
+        == 200
+    )
     # a clock hours behind: a genuinely later load still lands after the stored one
     slow_now = now - 7_200_000
     r = c.put(
