@@ -115,3 +115,28 @@ def test_sh_guard_runs_before_the_skip_decision():
         "the incomplete-install guard must run before setup.sh acts on "
         "_SKIP_PYTHON_DEPS, otherwise it can never change the outcome"
     )
+
+
+INSTALL_SH = REPO_ROOT / "install.sh"
+INSTALL_PS1 = REPO_ROOT / "install.ps1"
+
+
+@pytest.mark.parametrize(
+    "script", [INSTALL_SH, INSTALL_PS1], ids = ["install.sh", "install.ps1"]
+)
+def test_the_installer_reports_duplicate_metadata_on_every_platform(script: pathlib.Path):
+    """Both installers print the version they just installed.
+
+    importlib.metadata.version() answers from whichever record the finder
+    yields first, so on a duplicated install it prints an arbitrary one and the
+    run looks clean. Windows and POSIX have to agree here, or the same broken
+    venv is reported differently depending on the host.
+    """
+    text = script.read_text(encoding = "utf-8")
+    assert "installed_version_probe" in text, (
+        f"{script.name} still reports the installed version through "
+        "importlib.metadata.version(), which cannot see a duplicate record"
+    )
+    assert "duplicate metadata found" in text, (
+        f"{script.name} detects the conflict but never says so"
+    )
