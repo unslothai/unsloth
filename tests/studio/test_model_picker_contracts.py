@@ -1699,11 +1699,25 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     # the assertion follows it rather than pinning the old spelling.
     assert "hasUnknownRecord(" in fn
     assert "hasUnknownRecord(\n        baseline," in fn
-    # The caller still snapshots the ids BEFORE the POST and passes them in.
-    # Pin the data flow, not three strings that can each be present while the
-    # baseline handed to the probe is a fresh one taken after the POST.
-    assert "new Set(galleryCache.images.map((image) => image.id))" in src
+    # The caller still snapshots the ids BEFORE the POST and passes THAT SET in.
+    # Pin the argument, not the mere presence of the snapshot expression: with a
+    # fresh `new Set()` in the knownIds slot the snapshot still exists, is still
+    # taken before the POST and `probeBaseline` still reaches the probe, yet every
+    # record already on the page reads as unknown and a POST that never landed is
+    # reported as a finished image. Whitespace is normalised first, so reformatting
+    # the call cannot break the pin.
+    snapshot_pattern = r"const (\w+) = new Set\(galleryCache\.images\.map\(\(image\) => image\.id\)\);"
+    assert len(re.findall(snapshot_pattern, src)) == 1, "the pre-POST id snapshot is not unique"
+    snapshot = re.search(snapshot_pattern, src)
+    known_ids = snapshot.group(1)
+    flat = " ".join(src.split())
+    call = re.search(r"const probeBaseline = newRecordProbeBaseline\(\s*(.*?)\s*\);", flat)
+    assert call, "probeBaseline is no longer built by newRecordProbeBaseline"
+    args = [arg.strip() for arg in call.group(1).split(",") if arg.strip()]
+    assert args == ["galleryCache.images", "galleryCache.hasMore", known_ids], args
     baseline = src.index("const probeBaseline = newRecordProbeBaseline(")
+    # Snapshot, then baseline, then the POST -- in that order.
+    assert snapshot.start() < baseline
     assert baseline < src.index("await generateDiffusionImage(", baseline)
     assert "settleLostGeneration(() => isMounted.current, probeBaseline)" in src
 
