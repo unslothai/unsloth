@@ -1180,6 +1180,32 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
     ]
 
 
+def test_cli_guard_pins_the_model_paths_llama_server_reads_for_itself():
+    r"""llama-server resolves LLAMA_ARG_MODEL, LLAMA_ARG_MMPROJ and the draft
+    spellings against its own working directory, and Studio reads them back when
+    it sizes a launch, so a relative one has to move with the process. The URL
+    spelling names no local file and is left alone."""
+    environ_out: dict[str, str] = {}
+    _message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {
+            "LLAMA_ARG_MODEL": r"models\qwen.gguf",
+            "LLAMA_ARG_MMPROJ": r".\mmproj.gguf",
+            "LLAMA_ARG_MODEL_DRAFT": "draft.gguf",
+            "LLAMA_ARG_SPEC_DRAFT_MODEL": r"D:\drafts\small.gguf",
+            "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/proj.gguf",
+        },
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out["LLAMA_ARG_MODEL"] == r"C:\Windows\System32\models\qwen.gguf"
+    assert environ_out["LLAMA_ARG_MMPROJ"] == r"C:\Windows\System32\.\mmproj.gguf"
+    assert environ_out["LLAMA_ARG_MODEL_DRAFT"] == r"C:\Windows\System32\draft.gguf"
+    assert environ_out["LLAMA_ARG_SPEC_DRAFT_MODEL"] == r"D:\drafts\small.gguf"
+    assert environ_out["LLAMA_ARG_MMPROJ_URL"] == "https://example.invalid/proj.gguf"
+
+
 def test_cli_guard_leaves_a_bracketed_directory_alone_only_where_it_is_json():
     r"""A folder really called "[llama]" is legal, so the inline-JSON exemption is
     scoped to the one variable whose reader accepts JSON."""

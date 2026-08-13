@@ -300,6 +300,13 @@ _RELATIVE_PATH_ENV = (
     "WHISPER_SERVER_PATH",
     "SD_CLI_PATH",
     "SD_SERVER_PATH",
+    # Model files llama-server reads straight from the environment, and Studio
+    # reads back when it sizes a launch (llama_cpp.py). The URL and HF-repo
+    # spellings are deliberately absent: they name no local file.
+    "LLAMA_ARG_MODEL",
+    "LLAMA_ARG_MMPROJ",
+    "LLAMA_ARG_MODEL_DRAFT",
+    "LLAMA_ARG_SPEC_DRAFT_MODEL",
     # GPU SDK roots, joined with bin/ for DLL discovery.
     "CUDA_PATH",
     "HIP_PATH",

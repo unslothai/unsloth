@@ -1103,6 +1103,10 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "WHISPER_SERVER_PATH",
     "SD_CLI_PATH",
     "SD_SERVER_PATH",
+    "LLAMA_ARG_MODEL",
+    "LLAMA_ARG_MMPROJ",
+    "LLAMA_ARG_MODEL_DRAFT",
+    "LLAMA_ARG_SPEC_DRAFT_MODEL",
     "CUDA_PATH",
     "HIP_PATH",
     "HIP_PATH_57",
@@ -3138,6 +3142,42 @@ mod managed_cli_working_dir_tests {
             relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_model_paths_llama_server_reads_for_itself_are_pinned() {
+        // llama-server resolves these against its own working directory, so a
+        // relative one has to move with the child. The URL spelling names no
+        // local file.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let env = |name: &str| match name {
+            "LLAMA_ARG_MODEL" => Some("models\\qwen.gguf".to_string()),
+            "LLAMA_ARG_MMPROJ" => Some(".\\mmproj.gguf".to_string()),
+            "LLAMA_ARG_MODEL_DRAFT" => Some("draft.gguf".to_string()),
+            "LLAMA_ARG_SPEC_DRAFT_MODEL" => Some("D:\\drafts\\small.gguf".to_string()),
+            "LLAMA_ARG_MMPROJ_URL" => Some("https://example.invalid/proj.gguf".to_string()),
+            _ => None,
+        };
+        let absolute = |value: &str| panic!("unexpected value needing the OS: {value}");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            env,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![
+                ("LLAMA_ARG_MODEL", cwd.join("models\\qwen.gguf")),
+                ("LLAMA_ARG_MMPROJ", cwd.join(".\\mmproj.gguf")),
+                ("LLAMA_ARG_MODEL_DRAFT", cwd.join("draft.gguf")),
+            ]
         );
     }
 
