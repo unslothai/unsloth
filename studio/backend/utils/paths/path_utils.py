@@ -211,7 +211,6 @@ def reset_cache_case_resolution_state() -> None:
 
 def _wsl_reveal_in_explorer(path: Path) -> bool:
     import subprocess
-
     if not _IS_WSL:
         return False
     try:
