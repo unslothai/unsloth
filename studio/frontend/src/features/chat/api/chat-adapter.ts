@@ -5059,11 +5059,12 @@ export function createOpenAIStreamAdapter(
                         : runtime.toolCallTimeout * 60,
                     // Self-hosted models often write a call as text rather than
                     // emitting structured tool_calls, so the external loop heals
-                    // and nudges exactly like the local one. Omitting these left
-                    // the backend on its process defaults, which is not what the
-                    // user set in Settings.
+                    // like the local one. Omitting this left the backend on its
+                    // process default, which is not what the user set in Settings.
+                    // nudge_tool_calls is deliberately absent: it is the
+                    // non-streaming client-tool passthrough retry, which this
+                    // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    nudge_tool_calls: runtime.nudgeToolCalls,
                     ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
                     ...(ragEnabled || projectRagEnabled

@@ -988,6 +988,7 @@ class ExternalProviderClient:
                     reasoning_effort,
                     tools,
                     tool_choice,
+                    response_format,
                 ):
                     yield line
                 return
@@ -1031,6 +1032,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                response_format,
             ):
                 yield line
             return
@@ -3120,6 +3122,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -3984,6 +3987,25 @@ class ExternalProviderClient:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
 
+        # Structured output. Gemini carries it on generationConfig as a response
+        # MIME type, not the Chat Completions `response_format` this endpoint has
+        # never seen, so JSON mode was silently dropped for every native Gemini
+        # call (deep research parses its planning hop as JSON). Only on a tool-free
+        # turn: Gemini 400s with "Function calling with a response mime type:
+        # 'application/json' is unsupported" when both are sent, and the hop that
+        # asks for JSON sends no tools.
+        # https://ai.google.dev/gemini-api/docs/structured-output
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type in ("json_object", "json_schema") and "tools" not in body:
+            _gen_cfg = body.setdefault("generationConfig", {})
+            _gen_cfg["responseMimeType"] = "application/json"
+            if _rf_type == "json_schema":
+                _rf_schema = response_format.get("json_schema")
+                if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                    # responseSchema is the same OpenAPI subset the function
+                    # declarations use, so it needs the same scrubbing.
+                    _gen_cfg["responseSchema"] = _sanitize_gemini_schema(_rf_schema["schema"])
+
         # Prompt caching. The Gemini contract is "create a CachedContent
         # resource, then pass its name on `cachedContent`". The cache is created
         # out of band by the caller via POST /cachedContents; here we forward an
@@ -4674,6 +4696,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -4972,6 +4995,26 @@ class ExternalProviderClient:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
+
+        # The Responses API carries structured output on `text.format`; the Chat
+        # Completions `response_format` is not part of its contract, so a caller's
+        # JSON mode became free prose. The json_schema shape is flattened here:
+        # name/schema/strict are siblings of `type`, not nested under json_schema.
+        # https://platform.openai.com/docs/guides/structured-outputs
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type == "json_object":
+            body["text"] = {"format": {"type": "json_object"}}
+        elif _rf_type == "json_schema":
+            _rf_schema = response_format.get("json_schema")
+            if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                body["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": str(_rf_schema.get("name") or "response"),
+                        "schema": _rf_schema["schema"],
+                        "strict": bool(_rf_schema.get("strict", True)),
+                    }
+                }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
         # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"

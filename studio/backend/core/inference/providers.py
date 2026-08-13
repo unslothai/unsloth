@@ -420,7 +420,12 @@ def provider_runs_local_tools(provider_type: str | None) -> bool:
     tool_result message replay, which is separate work. Anthropic keeps its
     hosted web_search, web_fetch and code_execution meanwhile.
     """
-    info = PROVIDER_REGISTRY.get(provider_type or "")
+    # isinstance, not a truthiness check: the value reaches here straight from a
+    # request body, and a list or dict key raises TypeError inside dict.get, which
+    # would turn malformed input into a 500 instead of the caller's 400.
+    if not isinstance(provider_type, str):
+        return False
+    info = PROVIDER_REGISTRY.get(provider_type)
     return bool(info and info.get("studio_tools"))
 
 

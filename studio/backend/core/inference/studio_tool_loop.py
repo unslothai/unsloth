@@ -144,12 +144,16 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
         parsed = {"_raw": arguments}
     if not isinstance(parsed, dict):
         parsed = {"value": parsed}
-    return {
+    normalized: dict[str, Any] = {
         "id": call_id,
         "type": "function",
         "function": {"name": name, "arguments": arguments or "{}"},
         "arguments": parsed,
     }
+    extra = call.get("extra_content")
+    if isinstance(extra, dict) and extra:
+        normalized["extra_content"] = extra
+    return normalized
 
 
 def _delta_text(content: Any) -> str:
@@ -271,6 +275,12 @@ class _Turn:
             current = self.by_index[key]
             if isinstance(call_id, str) and call_id:
                 current["id"] = call_id
+            extra = raw_call.get("extra_content")
+            if isinstance(extra, dict) and extra:
+                # Gemini 3 stows this call's thoughtSignature here, and the
+                # native translator rejects a replayed functionCall without it.
+                # Per call, so it cannot ride along on the delta-level slot.
+                current["extra_content"] = {**current.get("extra_content", {}), **extra}
             function = raw_call.get("function")
             if isinstance(function, dict):
                 # Assignment, not concatenation: llama-server re-sends the whole
@@ -663,11 +673,21 @@ async def stream_with_studio_tools(
                 )
                 continue
             decision = controller.prepare_call(call)
+            # The frontend groups a round's reasoning by this id
+            # (codexLocalToolRoundId), so every tool card the loop emits has to
+            # carry it, not just the budget-exhausted one built by hand above.
+            decision.provenance["round_id"] = round_id
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
                 noop_messages.append(completion.model_message())
                 continue
-            assistant_tool_calls.append(decision.as_assistant_tool_call())
+            assistant_call = decision.as_assistant_tool_call()
+            call_extra = call.get("extra_content")
+            if isinstance(call_extra, dict) and call_extra:
+                # Replayed verbatim: Gemini 3 validates the signature that came
+                # back with this exact call.
+                assistant_call["extra_content"] = call_extra
+            assistant_tool_calls.append(assistant_call)
 
             name = decision.tool_name
             arguments = decision.arguments

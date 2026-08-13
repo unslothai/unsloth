@@ -2271,6 +2271,24 @@ def _request_has_api_key(request: Any) -> bool:
     return _request_api_key_token(request) is not None
 
 
+def _request_is_internal_workflow(request: Any) -> bool:
+    """True only for Studio's own workflow keys (Deep Research, data recipes).
+
+    Checked against the stored internal-key hashes, never a prefix, so a caller
+    cannot mint one by sending an sk-unsloth-looking bearer. Fails closed when the
+    probe raises, so a storage error withholds saved credentials rather than
+    handing them out.
+    """
+    token = _request_api_key_token(request)
+    if token is None:
+        return False
+    try:
+        return bool(auth_storage.is_internal_api_key(token))
+    except Exception:
+        logger.debug("external_provider.internal_key_probe_failed", exc_info = True)
+        return False
+
+
 def _request_used_api_key(request: Any) -> bool:
     """True when this request authenticated with a third party's sk-unsloth key.
 
@@ -2280,8 +2298,8 @@ def _request_used_api_key(request: Any) -> bool:
     itself and are excluded, or every research step would pop the API monitor open.
     """
     # Total by construction: this only decides a monitor label and must never fail a
-    # load. Saved-secret authorization uses _request_has_api_key instead, because
-    # internal workflow keys must remain programmatic callers for credential access.
+    # load. Saved-secret authorization uses _request_has_api_key instead, narrowed by
+    # _request_is_internal_workflow where a Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
         return False
@@ -11678,7 +11696,14 @@ async def _proxy_to_external_provider(
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
         payload.encrypted_api_key,
-        allow_saved_key = not _request_has_api_key(request),
+        # A durable Deep Research hop authenticates with an internal workflow key,
+        # which is still an API key, so the plain check would drop the saved
+        # provider id and fail before the provider is ever contacted. The run's
+        # connection was already validated as an enabled saved one by
+        # research_runs._sanitize_config, and the key is verified against storage.
+        allow_saved_key = (
+            not _request_has_api_key(request) or _request_is_internal_workflow(request)
+        ),
     )
 
     model = payload.external_model or payload.model
@@ -11804,7 +11829,11 @@ async def _proxy_to_external_provider(
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
-                    max_calls = payload.max_tool_calls_per_message or 25,
+                    max_calls = (
+                        payload.max_tool_calls_per_message
+                        if payload.max_tool_calls_per_message is not None
+                        else 25
+                    ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),

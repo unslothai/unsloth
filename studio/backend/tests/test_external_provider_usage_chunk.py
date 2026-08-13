@@ -190,18 +190,24 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
 
 
 def test_custom_provider_registry_is_hidden():
-    """Hidden entries reach the frontend, flagged, rather than being filtered out.
+    """Hidden entries stay filtered by default and are opt-in via include_hidden.
 
-    They used to be dropped from /registry entirely, which is why the UI could
-    never learn that the self-hosted presets run Studio tools. The UI filters
-    the dropdown on ``hidden`` instead.
+    They used to be dropped from /registry unconditionally, which is why the UI
+    could never learn that the self-hosted presets run Studio tools. Exposing
+    them by default would instead make a cached pre-change bundle render them as
+    duplicate dropdown rows, since that bundle filters on a hardcoded name set
+    rather than on ``hidden``. So the default is unchanged and the current UI
+    asks for them, then filters the dropdown on the flag.
     """
     from core.inference.providers import get_provider_info, list_available_providers
 
     info = get_provider_info("custom")
     assert info is not None
     assert info["hidden"] is True
-    entry = next(p for p in list_available_providers() if p["provider_type"] == "custom")
+    assert all(p["provider_type"] != "custom" for p in list_available_providers())
+    entry = next(
+        p for p in list_available_providers(include_hidden = True) if p["provider_type"] == "custom"
+    )
     assert entry["hidden"] is True
     assert entry["supports_studio_tools"] is True
 

@@ -294,3 +294,126 @@ def test_response_format_is_forwarded_verbatim_when_requested(monkeypatch):
 
     _drive(run())
     assert captured["body"]["response_format"] == {"type": "json_object"}
+
+
+# ── 5. response_format reaches the native provider shapes ────────────
+
+
+def test_gemini_translates_response_format_to_a_response_mime_type(monkeypatch):
+    """Deep research plans on Gemini now, and its planning hop asks for JSON.
+
+    Gemini never sees ``response_format``; it is a generationConfig MIME type,
+    so dropping it left the planner parsing prose.
+    """
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "gemini",
+            base_url = "https://generativelanguage.googleapis.com/v1beta",
+            api_key = "k",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "Return only strict JSON"}],
+                model = "gemini-3-pro",
+                tool_choice = "none",
+                enabled_tools = [],
+                response_format = {"type": "json_object"},
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert "tools" not in captured["body"]
+
+
+def test_gemini_skips_the_json_mime_type_when_tools_are_sent(monkeypatch):
+    """Gemini 400s on "Function calling with a response mime type ... unsupported"."""
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "gemini",
+            base_url = "https://generativelanguage.googleapis.com/v1beta",
+            api_key = "k",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gemini-3-pro",
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {"name": "web_search", "parameters": {"type": "object"}},
+                    }
+                ],
+                tool_choice = "auto",
+                response_format = {"type": "json_object"},
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert "tools" in captured["body"]
+    assert "responseMimeType" not in captured["body"].get("generationConfig", {})
+
+
+@pytest.mark.parametrize(
+    "response_format, expected",
+    [
+        ({"type": "json_object"}, {"type": "json_object"}),
+        (
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "plan",
+                    "schema": {"type": "object", "properties": {}},
+                    "strict": True,
+                },
+            },
+            {
+                "type": "json_schema",
+                "name": "plan",
+                "schema": {"type": "object", "properties": {}},
+                "strict": True,
+            },
+        ),
+    ],
+)
+def test_openai_responses_translates_response_format_to_text_format(
+    monkeypatch, response_format, expected
+):
+    """/v1/responses carries structured output on ``text.format``, never response_format."""
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "k",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "Return only strict JSON"}],
+                model = "gpt-5.1",
+                response_format = response_format,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["text"]["format"] == expected
+    assert "response_format" not in captured["body"]
+
+
+def test_a_non_scalar_provider_type_is_not_a_registry_lookup_crash():
+    """The value arrives straight from a request body; dict.get would TypeError."""
+    assert provider_runs_local_tools(["vllm"]) is False
+    assert provider_runs_local_tools({"provider": "vllm"}) is False
+    assert provider_runs_local_tools(None) is False
+    assert provider_runs_local_tools("vllm") is True

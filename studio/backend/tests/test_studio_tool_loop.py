@@ -874,3 +874,42 @@ def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
 
     roles = [m["role"] for m in transport.requests[1]["messages"]]
     assert all(not (a == "user" and b == "user") for a, b in zip(roles, roles[1:])), roles
+
+
+def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
+    """Gemini 3 rejects a replayed functionCall without its thoughtSignature.
+
+    The native translator stows the part-level signature on the tool_call delta
+    as extra_content.google.thought_signature, so the accumulator has to carry
+    it onto the assistant message or the first post-tool turn is refused.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {"name": "web_search", "arguments": ""},
+                                "extra_content": {"google": {"thought_signature": "SIG-A"}},
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"u"}'}}]}),
+                _sse(finish="tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
+        ],
+        heals=False,
+    )
+    _run(transport)
+
+    assistant = [m for m in transport.requests[1]["messages"] if m.get("role") == "assistant"][-1]
+    call = assistant["tool_calls"][0]
+    assert call["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
+    assert call["function"]["name"] == "web_search"
+    assert json.loads(call["function"]["arguments"]) == {"query": "u"}

@@ -54,6 +54,16 @@ class OAICompatTransport:
         tool_choice: Any,
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
+        # "Resume the trailing assistant turn", so it is only ever true of the
+        # first request. Once a tool runs the conversation ends with a role="tool"
+        # result (or a role="user" no-op note), and vLLM / llama.cpp would splice
+        # the generation prompt off the end of *that* message: the model continues
+        # the tool output instead of answering it, or the chat template raises and
+        # the server 400s. Re-read the tail every turn rather than replaying the
+        # flag the transport was constructed with.
+        continue_final_message = bool(self._continue_final_message) and bool(
+            messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
+        )
         # stream_chat_completion has no cancel_event parameter: cancellation is
         # driven by the route closing this generator, which propagates as
         # GeneratorExit through the httpx stream context.
@@ -62,6 +72,6 @@ class OAICompatTransport:
             model = self._model,
             tools = tools,
             tool_choice = tool_choice,
-            continue_final_message = self._continue_final_message,
+            continue_final_message = continue_final_message,
             **self._request_kwargs,
         )
