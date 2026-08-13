@@ -485,11 +485,15 @@ def test_a_stale_safetensors_index_does_not_widen_the_deletion(tmp_path, monkeyp
     theirs = Path(merge) / "users_own-00001-of-00002.safetensors"
     theirs.write_bytes(b"an earlier save under a stem the convention protects")
     (Path(merge) / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {
-            "a": "model-00001-of-00002.safetensors",
-            "b": "model-00002-of-00002.safetensors",
-            "c": theirs.name,
-        }})
+        json.dumps(
+            {
+                "weight_map": {
+                    "a": "model-00001-of-00002.safetensors",
+                    "b": "model-00002-of-00002.safetensors",
+                    "c": theirs.name,
+                }
+            }
+        )
     )
     _with_free(monkeypatch, save_mod, 1)
     assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
@@ -504,10 +508,14 @@ def test_an_index_missing_shards_it_names_is_not_trusted(tmp_path, monkeypatch, 
     theirs = Path(merge) / "leftover-00001-of-00003.safetensors"
     theirs.write_bytes(b"one shard of a set that is no longer whole")
     (Path(merge) / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {
-            "a": theirs.name,
-            "b": "leftover-00002-of-00003.safetensors",
-        }})
+        json.dumps(
+            {
+                "weight_map": {
+                    "a": theirs.name,
+                    "b": "leftover-00002-of-00003.safetensors",
+                }
+            }
+        )
     )
     _with_free(monkeypatch, save_mod, 1)
     assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
