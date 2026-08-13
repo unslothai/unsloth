@@ -1,6 +1,7 @@
 """Contracts for the complete Linux AppImage release path."""
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,10 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
+
+CLEAN_MACHINE_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "desktop-app-clean-machine-ci.yml"
+)
 VERIFIER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "verify-complete-appimage.sh"
 
 
@@ -45,35 +50,126 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
         "${{ steps.build_linux.outputs.artifactPaths"
     )
 
-    clean_machine = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/desktop-app-clean-machine-ci.yml").read_text(
-            encoding = "utf-8"
-        )
-    )
+    clean_machine = yaml.safe_load(CLEAN_MACHINE_WORKFLOW.read_text(encoding = "utf-8"))
     e2e = clean_machine["jobs"]["appimage-model-download"]
     e2e_source = yaml.safe_dump(e2e)
-    assert "webkit2gtk-driver" in e2e_source
-    assert "tauri-driver --version 2.0.6 --locked" in e2e_source
+    webdriver_install = next(
+        step for step in e2e["steps"] if step.get("name") == "Install WebDriver prerequisites"
+    )
+    assert "webkit2gtk-driver" in webdriver_install["run"]
+    assert "tauri-driver --version 2.0.6 --locked" in webdriver_install["run"]
     assert "appimage_model_download_webdriver.py" in e2e_source
+
+
+def test_appimage_pr_build_is_unsigned_and_feeds_every_artifact_test():
+    workflow = yaml.safe_load(CLEAN_MACHINE_WORKFLOW.read_text(encoding = "utf-8"))
+    pull_request_paths = workflow[True]["pull_request"]["paths"]
+    for relevant_path in (
+        ".github/workflows/release-desktop.yml",
+        ".github/workflows/desktop-app-clean-machine-ci.yml",
+        "studio/src-tauri/linux/**",
+        "studio/src-tauri/src/**",
+        "studio/src-tauri/tauri.conf.json",
+        "tests/security/test_release_desktop_appimage.py",
+    ):
+        assert relevant_path in pull_request_paths
+
+    jobs = workflow["jobs"]
+    build = jobs["appimage-pr-build"]
+    build_source = yaml.safe_dump(build)
+    assert "github.event_name == 'pull_request'" in build["if"]
+    assert "TAURI_SIGNING_PRIVATE_KEY" not in build_source
+    assert "createUpdaterArtifacts" in build_source
+    assert "false" in build_source
+    assert "--bundles appimage" in build_source
+    assert "verify-complete-appimage.sh" in build_source
+    assert "appimage-pr-build" in build_source
+
+    for job_name in ("appimage-portability", "appimage-model-download"):
+        job = jobs[job_name]
+        source = yaml.safe_dump(job)
+        assert "appimage-pr-build" in job["needs"]
+        assert "github.event_name != 'pull_request'" in job["if"]
+        assert "actions/download-artifact" in source
+        assert "name: appimage-pr-build" in source
+        assert "github.event_name == 'pull_request'" in source
+        assert "github.event_name != 'pull_request'" in source
+        assert "head.repo.fork" not in source
+
+
+def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisites():
+    workflow = yaml.safe_load(CLEAN_MACHINE_WORKFLOW.read_text(encoding = "utf-8"))
+    job = workflow["jobs"]["appimage-portability"]
+    source = yaml.safe_dump(job)
+    for package in (
+        "binutils",
+        "libegl1",
+        "libgbm1",
+        "libwayland-client0",
+        "libharfbuzz0b",
+        "libnghttp2-14",
+    ):
+        assert package in source
+    assert "weston" in source
+    assert "APPIMAGE_DISPLAY_BACKEND" in source
+    assert "wayland" in source
+
+    linux_source = yaml.safe_dump(workflow["jobs"]["linux"])
+    webdriver_source = yaml.safe_dump(workflow["jobs"]["appimage-model-download"])
+    for package in (
+        "libegl1",
+        "libgbm1",
+        "libwayland-client0",
+        "libharfbuzz0b",
+        "libnghttp2-14",
+    ):
+        assert package in linux_source
+        assert package in webdriver_source
+
+    for package in ("libwayland-client", "libnghttp2"):
+        assert package in source
 
 
 def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     step = _step("Pin complete AppImage toolchain")
     assert step["if"] == "matrix.platform == 'ubuntu-22.04'"
+    assert "prepare-complete-appimage-tools.sh" in step["run"]
+    tool_script = (
+        REPO_ROOT / "studio/src-tauri/linux/prepare-complete-appimage-tools.sh"
+    ).read_text(encoding = "utf-8")
     expected = {
-        "APPRUN": "AppRun-x86_64",
-        "LINUXDEPLOY": "linuxdeploy-x86_64.AppImage",
-        "GTK_PLUGIN": "linuxdeploy-plugin-gtk.sh",
-        "GSTREAMER_PLUGIN": "linuxdeploy-plugin-gstreamer.sh",
-        "APPIMAGE_PLUGIN": "linuxdeploy-plugin-appimage-x86_64.AppImage",
+        "APPRUN": ("AppRun-x86_64", "AppRun-x86_64"),
+        "LINUXDEPLOY": ("linuxdeploy-x86_64.AppImage", "linuxdeploy-x86_64.AppImage"),
+        "GTK_PLUGIN": ("linuxdeploy-plugin-gtk.sh", "linuxdeploy-plugin-gtk.sh"),
+        "GSTREAMER_PLUGIN": (
+            "linuxdeploy-plugin-gstreamer.sh",
+            "linuxdeploy-plugin-gstreamer.sh",
+        ),
+        "APPIMAGE_PLUGIN": (
+            "linuxdeploy-plugin-appimage-x86_64.AppImage",
+            "linuxdeploy-plugin-appimage.AppImage",
+        ),
     }
-    for prefix, filename in expected.items():
-        assert filename in step["env"][f"{prefix}_URL"]
-        assert len(step["env"][f"{prefix}_SHA256"]) == 64
-        assert f'fetch "${prefix}_URL" "${prefix}_SHA256"' in step["run"]
-    assert "sha256sum -c" in step["run"]
-    assert step["run"].index("sha256sum -c") < step["run"].index("chmod +x")
-    assert 'rm -f "$APPDIR"/usr/lib/libwayland-client.so*' in step["run"]
+    for prefix, (url_filename, destination) in expected.items():
+        assert re.search(rf'^{prefix}_URL="[^"]*{re.escape(url_filename)}"$', tool_script, re.M)
+        assert re.search(rf'^{prefix}_SHA256="[0-9a-f]{{64}}"$', tool_script, re.M)
+        assert f'fetch "${prefix}_URL" "${prefix}_SHA256" {destination}' in tool_script
+    fetch_calls = [
+        line.strip() for line in tool_script.splitlines() if line.strip().startswith("fetch ")
+    ]
+    assert len(fetch_calls) == len(expected)
+    assert tool_script.index("sha256sum -c") < tool_script.index("chmod +x")
+    for host_library in (
+        "libwayland-client.so*",
+        "libnghttp2.so*",
+        "libcurl*.so*",
+        "libstdc++.so*",
+        "libgcc_s.so*",
+    ):
+        assert host_library in tool_script
+    assert "GIO_MODULE_DIR" in tool_script
+
+    assert "sed -i '/export GDK_BACKEND=x11/d'" in tool_script
 
 
 def _fake_complete_appdir(tmp_path: Path) -> Path:
@@ -82,8 +178,16 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     binary.parent.mkdir(parents = True)
     shutil.copy2("/bin/true", binary)
     apprun = appdir / "AppRun"
-    apprun.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    apprun.write_text(
+        '#!/bin/sh\n. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\nexit 0\n',
+        encoding = "utf-8",
+    )
     apprun.chmod(0o755)
+    hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
+    hook.parent.mkdir()
+    hook.write_text(
+        'export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n', encoding = "utf-8"
+    )
     runtime = appdir / "usr/lib"
     runtime.mkdir(parents = True)
     for name in (
@@ -124,7 +228,14 @@ def test_complete_appimage_verifier_requires_webkit_and_rejects_host_abi_librari
     assert result.returncode != 0
     assert "libwebkit2gtk-4.1.so" in result.stderr
 
-    for library in ("libc.so.6", "libwayland-client.so.0"):
+    for library in (
+        "libc.so.6",
+        "libwayland-client.so.0",
+        "libnghttp2.so.14",
+        "libcurl-gnutls.so.4",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+    ):
         bundled = _fake_complete_appdir(tmp_path / library)
         (bundled / "usr/lib" / library).touch()
         result = subprocess.run(
@@ -137,7 +248,7 @@ def test_complete_appimage_verifier_requires_webkit_and_rejects_host_abi_librari
         assert "host runtime component" in result.stderr
 
 
-def test_all_managed_appimage_children_drop_the_bundle_library_path():
+def test_managed_appimage_children_preserve_host_library_paths():
     source_root = REPO_ROOT / "studio/src-tauri/src"
     process_source = (source_root / "process.rs").read_text(encoding = "utf-8")
     child_process_calls = {
@@ -148,9 +259,11 @@ def test_all_managed_appimage_children_drop_the_bundle_library_path():
         source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 3),
         source_root / "update.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
     }
-    assert process_source.count('cmd.env_remove("LD_LIBRARY_PATH")') == 2
-    assert process_source.count('cmd.env_remove("PYTHONHOME")') == 2
-    assert process_source.count('cmd.env_remove("PYTHONPATH")') == 2
+    assert "scrub_appimage_library_path" in process_source
+    assert "split_paths" in process_source
+    assert "starts_with(&appdir)" in process_source
+    assert 'cmd.env_remove("PYTHONHOME")' in process_source
+    assert 'cmd.env_remove("PYTHONPATH")' in process_source
     for source_path, (call, expected) in child_process_calls.items():
         assert source_path.read_text(encoding = "utf-8").count(call) == expected
 

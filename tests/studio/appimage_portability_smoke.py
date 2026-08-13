@@ -22,9 +22,9 @@ import textwrap
 import time
 from pathlib import Path
 
+from appimage_test_support import assert_no_loader_errors
 
 ROOT_ID = "a" * 64
-OWNER_SECRET = "appimage-portability-owner"
 DESKTOP_SECRET = "appimage-portability-secret"
 
 
@@ -176,8 +176,12 @@ def main() -> None:
     appimage = Path(appimage_value).resolve()
     if not appimage.is_file():
         raise SystemExit(f"AppImage does not exist: {appimage}")
-    if not shutil.which("xvfb-run"):
-        raise SystemExit("xvfb-run is required")
+    display_backend = os.environ.get("APPIMAGE_DISPLAY_BACKEND", "x11")
+    if display_backend not in {"x11", "wayland"}:
+        raise SystemExit(f"Unsupported APPIMAGE_DISPLAY_BACKEND: {display_backend}")
+    display_tool = "weston" if display_backend == "wayland" else "xvfb-run"
+    if not shutil.which(display_tool):
+        raise SystemExit(f"{display_tool} is required for {display_backend} smoke")
 
     art_dir = Path(
         os.environ.get("APPIMAGE_SMOKE_ART_DIR", "logs/appimage-portability")
@@ -211,23 +215,60 @@ def main() -> None:
         "XDG_RUNTIME_DIR": str(runtime),
         "APPIMAGE_EXTRACT_AND_RUN": "1",
         "NO_AT_BRIDGE": "1",
-        "WEBKIT_DISABLE_DMABUF_RENDERER": "1",
         "LIBGL_ALWAYS_SOFTWARE": "1",
         "GALLIUM_DRIVER": "llvmpipe",
         "G_MESSAGES_DEBUG": "all",
     }
+    weston: subprocess.Popen[bytes] | None = None
+    weston_log = None
+    if display_backend == "wayland":
+        env["GDK_BACKEND"] = "wayland"
+        env["WAYLAND_DISPLAY"] = "wayland-ci"
+        weston_log = (art_dir / "weston.log").open("wb")
+
+        weston_help = subprocess.run(
+            ["weston", "--help"], capture_output=True, check=False, text=True
+        )
+        help_text = weston_help.stdout + weston_help.stderr
+        software_renderer = (
+            "--renderer=pixman" if "--renderer" in help_text else "--use-pixman"
+        )
+        weston = subprocess.Popen(
+            [
+                "weston",
+                "--backend=headless-backend.so",
+                software_renderer,
+                "--socket=wayland-ci",
+                "--idle-time=0",
+            ],
+            stdout=weston_log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+        socket = runtime / "wayland-ci"
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not socket.exists():
+            if weston.poll() is not None:
+                raise RuntimeError(f"Weston exited early with {weston.returncode}")
+            time.sleep(0.1)
+        if not socket.exists():
+            raise RuntimeError("Weston did not create its Wayland socket")
     stdout = (art_dir / "app-stdout.log").open("wb")
-    process = subprocess.Popen(
-        [
+    command = [str(appimage)]
+    if display_backend == "x11":
+        command = [
             "xvfb-run",
             "-a",
             "--server-args=-screen 0 1440x900x24",
             str(appimage),
-        ],
-        stdout = stdout,
-        stderr = subprocess.STDOUT,
-        env = env,
-        start_new_session = True,
+        ]
+    process = subprocess.Popen(
+        command,
+        stdout=stdout,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
     )
     try:
         deadline = time.monotonic() + 45
@@ -237,7 +278,15 @@ def main() -> None:
             if request_log.is_file():
                 requests = request_log.read_text(encoding = "utf-8")
                 if '"path": "/api/auth/desktop-login"' in requests:
-                    print("PASS complete AppImage rendered startup and completed desktop auth")
+                    stdout.flush()
+                    assert_no_loader_errors(
+                        art_dir / "app-stdout.log",
+                        home / ".unsloth/studio/tauri.log",
+                    )
+                    print(
+                        "PASS complete AppImage rendered startup and completed desktop auth "
+                        f"on {display_backend}"
+                    )
                     return
             time.sleep(0.25)
         raise RuntimeError("Packaged webview never completed desktop authentication")
@@ -250,6 +299,16 @@ def main() -> None:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout = 10)
         stdout.close()
+
+        if weston is not None and weston.poll() is None:
+            os.killpg(weston.pid, signal.SIGTERM)
+            try:
+                weston.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(weston.pid, signal.SIGKILL)
+                weston.wait(timeout=5)
+        if weston_log is not None:
+            weston_log.close()
         tauri_log = home / ".unsloth/studio/tauri.log"
         if tauri_log.is_file():
             shutil.copy2(tauri_log, art_dir / "tauri.log")

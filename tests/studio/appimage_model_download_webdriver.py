@@ -30,6 +30,9 @@ from pathlib import Path
 from typing import Any
 
 
+from appimage_test_support import assert_no_loader_errors
+
+
 REPO_ID = "unsloth/FLUX.2-klein-4B-GGUF"
 FILENAME = "FLUX.2-klein-4B-Q4_K_M.gguf"
 MODEL_BYTES = 1_048_576
@@ -588,6 +591,11 @@ def main() -> None:
         )
         body = _execute(base, session_id, "return document.body.innerText")
         (ART_DIR / "webview-body.txt").write_text(str(body), encoding = "utf-8")
+        assert_no_loader_errors(
+            ART_DIR / "tauri-driver.log",
+            home / ".unsloth/studio/tauri.log",
+        )
+
         print(
             "PASS packaged AppImage model picker sent download, rendered progress, and cancelled"
         )

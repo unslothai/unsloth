@@ -29,6 +29,11 @@ fi
 [[ -d "$appdir" ]] || { echo "AppDir does not exist: $appdir" >&2; exit 1; }
 [[ -x "$appdir/AppRun" ]] || { echo "Complete AppImage has no executable AppRun" >&2; exit 1; }
 
+if ! grep -Rqs 'GIO_MODULE_DIR=' \
+  "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then
+  echo "Complete AppImage does not isolate bundled GIO modules" >&2
+  exit 1
+fi
 binary="$(find "$appdir/usr/bin" -maxdepth 1 -type f -name 'unsloth*' -perm -111 -print -quit 2>/dev/null)"
 [[ -n "$binary" ]] || { echo "Complete AppImage has no Unsloth executable" >&2; exit 1; }
 
@@ -62,6 +67,7 @@ for forbidden in \
   'libc.so*' 'libpthread.so*' 'libm.so*' 'libdl.so*' 'librt.so*' \
   'ld-linux*.so*' 'libGL.so*' 'libGLX*.so*' 'libEGL.so*' \
   'libwayland-client.so*' \
+  'libnghttp2.so*' 'libcurl*.so*' 'libstdc++.so*' 'libgcc_s.so*' \
   'libdrm.so*' 'libgbm.so*' 'libvulkan.so*' 'libcuda.so*'; do
   if found="$(find "$appdir" \( -type f -o -type l \) -name "$forbidden" -print -quit)" && [[ -n "$found" ]]; then
     echo "Complete AppImage must leave host runtime component unbundled: $found" >&2

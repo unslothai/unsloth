@@ -633,11 +633,22 @@ jobs:
             'linuxdeploy-plugin-gstreamer.sh',
             'linuxdeploy-plugin-appimage.AppImage',
           ];
-          for (const tool of requiredTools) {
-            if (!workflow.includes(tool)) throw new Error(`Desktop Linux release must preseed ${tool}`);
+          const toolScript = readFileSync(
+            'studio/src-tauri/linux/prepare-complete-appimage-tools.sh',
+            'utf8',
+          );
+          const fetchCalls = toolScript
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => /^fetch "\$[A-Z_]+_URL" "\$[A-Z_]+_SHA256" \S+$/.test(line));
+          const fetchedTools = fetchCalls.map((line) => line.split(/\s+/).at(-1));
+          if (fetchCalls.length !== requiredTools.length) {
+            throw new Error(`Expected ${requiredTools.length} digest-verified fetch calls, got ${fetchCalls.length}`);
           }
-          if ((workflow.match(/sha256sum -c/g) || []).length < requiredTools.length) {
-            throw new Error('Desktop Linux release must digest-verify every Tauri AppImage tool');
+          for (const tool of requiredTools) {
+            if (!fetchedTools.includes(tool)) {
+              throw new Error(`Desktop Linux release must digest-verify its fetch of ${tool}`);
+            }
           }
           const releaseBody = process.env.DESKTOP_RELEASE_NOTES;
           if (!releaseBody) throw new Error('DESKTOP_RELEASE_NOTES must not be empty');
@@ -889,39 +900,9 @@ jobs:
       - name: Pin complete AppImage toolchain
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
-        env:
-          APPRUN_URL: "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64"
-          APPRUN_SHA256: "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f"
-          LINUXDEPLOY_URL: "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
-          LINUXDEPLOY_SHA256: "e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef"
-          GTK_PLUGIN_URL: "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
-          GTK_PLUGIN_SHA256: "cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a"
-          GSTREAMER_PLUGIN_URL: "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/master/linuxdeploy-plugin-gstreamer.sh"
-          GSTREAMER_PLUGIN_SHA256: "c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94"
-          APPIMAGE_PLUGIN_URL: "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
-          APPIMAGE_PLUGIN_SHA256: "a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79"
         run: |
-          set -euo pipefail
-          tools_dir="$RUNNER_TEMP/tauri-tools-cache/tauri"
-          mkdir -p "$tools_dir"
-          fetch() {
-            local url="$1" digest="$2" name="$3"
-            local dest="$tools_dir/$name"
-            curl -fsSL "$url" -o "$dest"
-            echo "$digest  $dest" | sha256sum -c -
-            chmod +x "$dest"
-          }
-          fetch "$APPRUN_URL" "$APPRUN_SHA256" AppRun-x86_64
-          fetch "$LINUXDEPLOY_URL" "$LINUXDEPLOY_SHA256" linuxdeploy-x86_64.AppImage
-          fetch "$GTK_PLUGIN_URL" "$GTK_PLUGIN_SHA256" linuxdeploy-plugin-gtk.sh
-          fetch "$GSTREAMER_PLUGIN_URL" "$GSTREAMER_PLUGIN_SHA256" linuxdeploy-plugin-gstreamer.sh
-          fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appimage.AppImage
-          # linuxdeploy's stock GTK closure copies the Ubuntu Wayland client next to
-          # host-owned EGL/Mesa. Remove only that ABI boundary after the plugin has
-          # finished deploying the complete GTK/WebKit runtime.
-          cat >> "$tools_dir/linuxdeploy-plugin-gtk.sh" <<'SH'
-          rm -f "$APPDIR"/usr/lib/libwayland-client.so*
-          SH
+          studio/src-tauri/linux/prepare-complete-appimage-tools.sh \
+            "$RUNNER_TEMP/tauri-tools-cache/tauri"
 
       # ── Linux: build and sign the native package and complete AppImage together ──
       - name: Build Linux bundles

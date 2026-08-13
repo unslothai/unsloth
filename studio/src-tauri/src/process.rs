@@ -13,13 +13,39 @@ use tauri::{AppHandle, Emitter, Manager};
 const MAX_LOG_LINES: usize = 1000;
 
 // The complete AppImage's library path belongs only to its GTK/WebKit GUI.
-// Never leak that older bundled runtime—or activated Python overrides—into the
-// managed host Python environment.
+// Never leak AppDir entries—or activated Python overrides—into the managed
+// host Python environment. Caller-provided host paths remain available for
+// CUDA and private runtime discovery.
+#[cfg(target_os = "linux")]
+fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
+    let appdir = std::env::var_os("APPDIR")?;
+    let library_path = std::env::var_os("LD_LIBRARY_PATH")?;
+    let host_paths: Vec<_> = std::env::split_paths(&library_path)
+        .filter(|path| !path.starts_with(&appdir))
+        .collect();
+    if host_paths.is_empty() {
+        None
+    } else {
+        std::env::join_paths(host_paths).ok()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
+    match scrub_appimage_library_path() {
+        Some(library_path) => {
+            cmd.env("LD_LIBRARY_PATH", library_path);
+        }
+        None => {
+            cmd.env_remove("LD_LIBRARY_PATH");
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-
+        apply_scrubbed_appimage_library_path(cmd);
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
@@ -28,8 +54,14 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-
+        match scrub_appimage_library_path() {
+            Some(library_path) => {
+                cmd.env("LD_LIBRARY_PATH", library_path);
+            }
+            None => {
+                cmd.env_remove("LD_LIBRARY_PATH");
+            }
+        }
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
@@ -47,27 +79,40 @@ mod appimage_environment_tests {
     }
 
     fn appimage_isolated_path() -> &'static OsStr {
-        OsStr::new("/appimage/lib")
+        OsStr::new("/tmp/.mount_Unsloth/usr/lib")
     }
 
     #[test]
-    fn std_managed_child_drops_appimage_and_python_paths() {
+    fn std_managed_child_drops_only_appdir_and_python_paths() {
         let _guard = env_lock();
         let old_appimage = std::env::var_os("APPIMAGE");
+        let old_appdir = std::env::var_os("APPDIR");
+        let old_library_path = std::env::var_os("LD_LIBRARY_PATH");
         std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_Unsloth/usr/lib:/opt/cuda/lib64:/private/runtime",
+        );
         let mut cmd = Command::new("/usr/bin/env");
-        cmd.env("LD_LIBRARY_PATH", appimage_isolated_path())
-            .env("PYTHONHOME", "/activated/python")
+        cmd.env("PYTHONHOME", "/activated/python")
             .env("PYTHONPATH", "/activated/modules");
         scrub_appimage_python_env(&mut cmd);
         let output = cmd.output().expect("run isolated child");
         let env = String::from_utf8(output.stdout).unwrap();
-        assert!(!env.contains("LD_LIBRARY_PATH="));
+        assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64:/private/runtime"));
+        assert!(!env.contains(appimage_isolated_path().to_string_lossy().as_ref()));
         assert!(!env.contains("PYTHONHOME="));
         assert!(!env.contains("PYTHONPATH="));
-        match old_appimage {
-            Some(value) => std::env::set_var("APPIMAGE", value),
-            None => std::env::remove_var("APPIMAGE"),
+        for (key, old_value) in [
+            ("APPIMAGE", old_appimage),
+            ("APPDIR", old_appdir),
+            ("LD_LIBRARY_PATH", old_library_path),
+        ] {
+            match old_value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
         }
     }
 
@@ -83,7 +128,7 @@ mod appimage_environment_tests {
         scrub_appimage_python_env(&mut cmd);
         let output = cmd.output().expect("run native-package child");
         let env = String::from_utf8(output.stdout).unwrap();
-        assert!(env.contains("LD_LIBRARY_PATH=/appimage/lib"));
+        assert!(env.contains("LD_LIBRARY_PATH=/tmp/.mount_Unsloth/usr/lib"));
         assert!(env.contains("PYTHONHOME=/activated/python"));
         assert!(env.contains("PYTHONPATH=/activated/modules"));
         if let Some(value) = old_appimage {
