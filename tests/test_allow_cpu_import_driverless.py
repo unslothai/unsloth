@@ -21,10 +21,17 @@ every `if DEVICE_TYPE == "cuda": torch.cuda.get_device_capability()` at module
 scope runs with nothing to query and raises `RuntimeError: No CUDA GPUs are
 available` out of `_lazy_init()`.
 
+A CPU-only wheel reaches the same branches, because `get_device_type()` answers
+`"cuda"` for the variable before it looks at the torch build. It raises
+`AssertionError: Torch not compiled with CUDA enabled` from the same
+`_lazy_init()` instead, so both spellings count as "asked a device that is not
+there what it can do". That is the build CI's `Repo tests (CPU)` job installs.
+
 The import is process-global and one-shot, so every case here runs in a fresh
 interpreter with `CUDA_VISIBLE_DEVICES=""`.
 """
 
+import importlib.util
 import os
 import pathlib
 import re
@@ -38,12 +45,24 @@ import torch
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _UNSLOTH_DIR = _ROOT / "unsloth"
 
-_NO_DEVICE = "No CUDA GPUs are available"
+# Both spellings of "you asked a device that is not there what it can do". A
+# CUDA-built torch with the devices hidden raises the first out of _lazy_init();
+# a CPU-only wheel raises the second from the same place. CI's `Repo tests (CPU)`
+# job installs the CPU wheel, so the second shape is the one it would see.
+_NO_DEVICE = (
+    "No CUDA GPUs are available",
+    "Torch not compiled with CUDA enabled",
+)
 
 
-def _run(code, **env):
+def _asked_a_missing_device(text):
+    return any(message in text for message in _NO_DEVICE)
+
+
+def _run(code, extra_path = (), **env):
     """Fresh interpreter, this checkout on the path, every CUDA device hidden."""
-    path = [str(_ROOT)]
+    path = [str(entry) for entry in extra_path]
+    path.append(str(_ROOT))
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
     # A runner (or a conftest) that exports UNSLOTH_ALLOW_CPU must not decide the
@@ -63,18 +82,29 @@ def _run(code, **env):
     )
 
 
-def _needs_cuda_build():
-    """Only a CUDA-built torch reaches the branch under test. On a ROCm or a
-    CPU-only build `DEVICE_TYPE` is not `"cuda"` and there is nothing to prove --
-    that is the Windows-on-ARM shape, not this one."""
+def _needs_the_cuda_branch():
+    """The guards under test sit behind `DEVICE_TYPE == "cuda"`, and a CPU-only
+    wheel gets there too.
+
+    `get_device_type()` answers `"cuda"` for `UNSLOTH_ALLOW_CPU=1` before it
+    looks at `torch.cuda.is_available()` or at the torch build
+    (`unsloth/device_type.py`), so the CPU wheel CI installs in `Repo tests
+    (CPU)` reaches both new branches -- it just raises
+    "Torch not compiled with CUDA enabled" rather than "No CUDA GPUs are
+    available" when they are missing, which `_NO_DEVICE` now covers. Skipping on
+    that build left the only job that discovers this file reporting four skips.
+
+    MLX is the real exception: there `DEVICE_TYPE` is `"mlx"` and none of this
+    runs. ROCm keeps its own skip because `is_available()` answers from a
+    different runtime there."""
+    if importlib.util.find_spec("mlx") is not None:
+        pytest.skip("MLX runtime: DEVICE_TYPE is 'mlx', not the cuda branch this covers")
     if getattr(torch.version, "hip", None):
         pytest.skip("ROCm build: DEVICE_TYPE is not the cuda branch this covers")
-    if not getattr(torch.version, "cuda", None):
-        pytest.skip("torch is not built against CUDA, so no device can go missing")
 
 
 def _import_attempt():
-    _needs_cuda_build()
+    _needs_the_cuda_branch()
     return _run(
         """
         import unsloth
@@ -114,7 +144,7 @@ def test_the_devices_really_are_hidden_and_the_variable_is_what_opens_the_import
     """Without the variable the import must still refuse, and refuse with the
     documented message. If this ever passes, the host has a visible GPU and every
     other case in this file is vacuous."""
-    _needs_cuda_build()
+    _needs_the_cuda_branch()
     out = _run("import unsloth")
     assert out.returncode != 0, "a device is visible; this file proves nothing here"
     assert "You need a GPU" in out.stderr, out.stderr[-3000:]
@@ -126,7 +156,7 @@ def test_no_unsloth_module_probes_a_device_that_is_not_there():
     out = _import_attempt()
     if out.returncode == 0:
         return
-    if _NO_DEVICE not in out.stderr:
+    if not _asked_a_missing_device(out.stderr):
         return
     culprit = _culprit(out.stderr)
     assert not _under(culprit, _UNSLOTH_DIR), (
@@ -140,7 +170,7 @@ def test_the_import_succeeds_on_a_driverless_host():
     (`compiler.py`, `loss_utils.py`), so an unsloth_zoo without those guards
     leaves this unprovable rather than failed."""
     out = _import_attempt()
-    if out.returncode != 0 and _NO_DEVICE in out.stderr:
+    if out.returncode != 0 and _asked_a_missing_device(out.stderr):
         import unsloth_zoo
         zoo = pathlib.Path(unsloth_zoo.__file__).parent
         if _under(_culprit(out.stderr), zoo):
@@ -150,6 +180,88 @@ def test_the_import_succeeds_on_a_driverless_host():
             )
     assert out.returncode == 0, out.stderr[-3000:]
     assert "IMPORT_OK" in out.stdout, out.stdout
+
+
+_NO_LIBCUDA_PROBE = '''
+import os
+import subprocess
+
+_log = open(os.environ["PROBE_LOG"], "a")
+
+
+def _record(what):
+    _log.write(what + "\\n")
+    _log.flush()
+
+
+# Root is the default in a container, and it is the only euid that reaches the
+# ldconfig arm. Claim it, and stub out the two calls that would touch the host so
+# the test observes the attempt without performing it.
+os.geteuid = lambda: 0
+os.system = lambda command: (_record("system: " + command), 0)[1]
+
+_check_output = subprocess.check_output
+
+
+def _check(command, *args, **kwargs):
+    _record("check_output: " + repr(command))
+    return _check_output(command, *args, **kwargs)
+
+
+subprocess.check_output = _check
+
+# A driverless host has no libcuda for ldconfig to find, which is what triton's
+# probe reports by raising.
+import triton.backends.nvidia.driver as _driver
+
+
+def _no_libcuda(*args, **kwargs):
+    raise RuntimeError("probe: libcuda.so.1 not found by ldconfig")
+
+
+_driver.libcuda_dirs = _no_libcuda
+'''
+
+
+def test_a_driverless_import_does_not_try_to_repair_cuda_linkage(tmp_path):
+    """`UNSLOTH_ALLOW_CPU=1` says there is no device, so there is no linkage to
+    repair.
+
+    The `except` arm around `libcuda_dirs()` predates this branch and was only
+    reachable with a device present. Left unguarded it now fires on every
+    driverless import: as root it ldconfigs the container's linker cache through
+    an unguarded `ls` subprocess, and otherwise it warns that CUDA is broken on a
+    host the caller already said has no card.
+    """
+    _needs_the_cuda_branch()
+    try:
+        found = importlib.util.find_spec("triton.backends.nvidia.driver")
+    except Exception:
+        found = None
+    if found is None:
+        pytest.skip("no triton nvidia backend here, so libcuda_dirs is never called")
+    probe = tmp_path / "sitecustomize.py"
+    probe.write_text(_NO_LIBCUDA_PROBE, encoding = "utf-8")
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding = "utf-8")
+    out = _run(
+        "import unsloth\nprint('IMPORT_OK')",
+        extra_path = (tmp_path,),
+        UNSLOTH_ALLOW_CPU = "1",
+        PROBE_LOG = str(log),
+    )
+    if out.returncode != 0 and _asked_a_missing_device(out.stderr):
+        pytest.skip("the import does not complete here; covered by the cases above")
+    assert out.returncode == 0, out.stderr[-3000:]
+    # Scoped to the two calls the repair arm makes. Other importers legitimately
+    # shell out here (bitsandbytes runs `file`, triton runs `uname`), so a bare
+    # "nothing was executed" assertion would be red for unrelated reasons.
+    calls = log.read_text(encoding = "utf-8")
+    assert "ldconfig" not in calls, f"a driverless import ran ldconfig:\n{calls}"
+    assert "check_output: ['ls'" not in calls, (
+        f"a driverless import shelled out to ls to hunt for a CUDA install:\n{calls}"
+    )
+    assert "CUDA is not linked properly" not in out.stderr, out.stderr[-3000:]
 
 
 def test_a_host_with_no_device_claims_no_capability():

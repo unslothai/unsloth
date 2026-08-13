@@ -363,7 +363,15 @@ if DEVICE_TYPE == "cuda":
         cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
+        if not torch.cuda.is_available():
+            # UNSLOTH_ALLOW_CPU=1 on a driverless host. DEVICE_TYPE is "cuda"
+            # only because the caller asked the import to survive without a
+            # device, so a missing libcuda is the expected state, not broken
+            # linkage. Repairing it would ldconfig the host's linker cache (this
+            # branch runs as root, the default in a container) through an
+            # unguarded `ls` subprocess, to link a device that is not there.
+            pass
+        elif hasattr(os, "geteuid") and os.geteuid() == 0:
             warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
 
             if os.path.exists("/usr/lib64-nvidia"):
