@@ -21,6 +21,7 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copyreg
 import importlib
+import collections
 import inspect
 import os
 import re
@@ -1666,6 +1667,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
 _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
+# Whether the *most recent* forward handed back real logits instead of hidden
+# states. The warning attribute above is warn-once bookkeeping and is never
+# cleared, so it answers "ever degraded", not "degraded on the call the caller
+# is about to dispatch on".
+_UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR = "_unsloth_grpo_hidden_states_degraded"
 
 
 def _module_returns_logits(module):
@@ -1774,10 +1780,114 @@ def _get_num_logits_to_keep(forward_signature, args, kwargs):
 
 
 def _warn_grpo_hidden_states_fallback_once(model, message):
+    # The degradation flag is per call: whether the tensor this forward is about
+    # to return is real logits. Degradation is not a property of the model -- a
+    # forward that splats **kwargs into a sub-module only reached by some inputs
+    # (a vision tower, say) raises for the batches that reach it and succeeds for
+    # the rest -- so a sticky flag would keep routing later, genuine hidden
+    # states through the raw-logits helper, skipping the lm_head matmul.
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
     if getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, False):
         return
     setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, True)
     logger.warning(message)
+
+
+def _note_grpo_hidden_states_success(model):
+    """Record that the forward about to return really is handing back hidden states."""
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, False)
+
+
+def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
+    """Ask the model for as few logits as it will give us, and say which kwarg did it.
+
+    We are about to overwrite `outputs.logits` with hidden states, so every
+    logit the forward computes is thrown away. transformers spells the limit
+    `logits_to_keep` -- measured on 4.57.6, 5.0.0 and 5.15.0, all three declare
+    that name and none declares `num_logits_to_keep`, so the second name is not
+    for them. It is for us: `unsloth/models/llama.py` and `mistral.py` patch in
+    forwards declaring both, and `unsloth/models/vision.py` probes for the old
+    name FIRST because some VLM stacks still carry only it. Whichever name a
+    forward takes, it reads the value as
+    `slice(-value, None)`, so the DEFAULT of 0 becomes `slice(0, None)` -- the
+    whole sequence. The GRPO trainer does not pass a value at all, so the
+    lm_head projects every prompt and completion position over the full
+    vocabulary and, for the softcapped models, multiplies the result twice more.
+
+    Muse Glimmer 30B on a Kaggle 2xT4 measured that at a 1002 MiB allocation
+    per chunk, over a 202048-wide vocabulary. On one card it is invisible: the
+    trainer's `del outputs` frees it a line later. On a layer-split model
+    accelerate copies it to the other card first and the run dies there.
+
+    1, not 0: 0 means "all of them", and a model that computes its own loss from
+    `labels` needs real logits, so that case is left alone.
+    """
+    if forward_kwargs.get("labels") is not None:
+        return None
+    try:
+        bound = forward_signature.bind_partial(*args, **forward_kwargs)
+    except TypeError:
+        return None
+    # A forward given `labels` positionally lands it in `bound.arguments` and
+    # never in `forward_kwargs`, so the lookup above cannot see it, and the loss
+    # the model then computes for itself would be one position wide.
+    if bound.arguments.get("labels") is not None:
+        return None
+    accepts_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in forward_signature.parameters.values()
+    )
+    for name in ("logits_to_keep", "num_logits_to_keep"):
+        declared = name in forward_signature.parameters
+        if not declared and not accepts_var_keyword:
+            continue
+        # Passing it positionally already and then also by keyword is a
+        # TypeError. Give up entirely rather than moving to the next name: a
+        # caller who bound a width positionally has said what it wants, and
+        # reaching for the OTHER spelling would either fight that width or, on a
+        # forward that only understands the one it was handed and swallows the
+        # rest in `**kwargs`, be accepted and ignored -- no saving, and a
+        # non-None return arms the re-run below for nothing.
+        if name in bound.arguments and name not in forward_kwargs:
+            return None
+        forward_kwargs[name] = 1
+        return name
+    return None
+
+
+def _drop_spare_hidden_states(outputs):
+    """Detach every hidden-state layer from `outputs`; the caller keeps the last.
+
+    `outputs.hidden_states = None` does NOT do this. `ModelOutput.__setattr__`
+    is
+
+        if name in field_names and value is not None:
+            super().__setitem__(name, value)
+        super().__setattr__(name, value)
+
+    so assigning None sets the attribute and leaves the mapping entry holding
+    the full tuple, and `ModelOutput` blocks `__delitem__`, `pop`, `update` and
+    `setdefault` outright. Every consumer that walks the object as a mapping --
+    accelerate's `send_to_device`, which is the one that matters here -- still
+    sees and copies all of it. Writing through `OrderedDict.__setitem__` is what
+    actually clears it, and leaves the mapping and the attribute agreeing on
+    None, which is the state a forward returns with `output_hidden_states=False`.
+    """
+    try:
+        if isinstance(outputs, collections.OrderedDict) and "hidden_states" in outputs:
+            collections.OrderedDict.__setitem__(outputs, "hidden_states", None)
+            object.__setattr__(outputs, "hidden_states", None)
+        elif isinstance(outputs, dict) and "hidden_states" in outputs:
+            outputs["hidden_states"] = None
+        elif hasattr(outputs, "hidden_states"):
+            outputs.hidden_states = None
+    except Exception:
+        # A frozen or exotic output object is not worth failing the step over;
+        # the caller has already taken the layer it needs.
+        logger.debug(
+            "Unsloth: could not drop spare GRPO hidden states.",
+            exc_info = True,
+        )
 
 
 def _replace_outputs_logits(outputs, hidden_states):
@@ -1815,22 +1925,58 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         while len(args) != 0 and args[0] is target_model:
             args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
+            # nobody asked for hidden states, so this returns real logits
+            setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
             return original_forward(*args, **kwargs)
 
-        forward_kwargs = _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
+        # copy: _drop_forward_kwargs_consumed_positionally hands `kwargs` straight
+        # back when there is nothing to drop, so mutating it below would poison the
+        # caller's dict and make the fallback calls further down re-send the very
+        # kwargs the model just rejected.
+        forward_kwargs = dict(
+            _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
+        )
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
-        try:
-            outputs = original_forward(*args, **forward_kwargs)
-        except TypeError as error:
-            if "output_hidden_states" not in str(error) and "return_dict" not in str(error):
-                raise
+        logits_kwarg = _minimise_logits_kwarg(
+            forward_signature,
+            args,
+            forward_kwargs,
+        )
+
+        def rejected_hidden_states(message):
+            return "output_hidden_states" in message or "return_dict" in message
+
+        def forward_without_hidden_states():
             _warn_grpo_hidden_states_fallback_once(
                 target_model,
                 f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
             )
             return original_forward(*args, **kwargs)
+
+        try:
+            outputs = original_forward(*args, **forward_kwargs)
+        except TypeError as error:
+            message = str(error)
+            if logits_kwarg is None or logits_kwarg not in message:
+                if not rejected_hidden_states(message):
+                    raise
+                return forward_without_hidden_states()
+            # The signature advertised the parameter but the forward refuses
+            # the value. Retry without our minimisation rather than losing
+            # hidden states entirely over an optimisation -- and send the retry
+            # through the same fallback, since a forward that splats **kwargs
+            # into a sub-module can refuse the logits limiter and the hidden
+            # states one after the other.
+            forward_kwargs.pop(logits_kwarg, None)
+            logits_kwarg = None
+            try:
+                outputs = original_forward(*args, **forward_kwargs)
+            except TypeError as retry_error:
+                if not rejected_hidden_states(str(retry_error)):
+                    raise
+                return forward_without_hidden_states()
 
         hidden_states = getattr(outputs, "hidden_states", None)
         if hidden_states is None or len(hidden_states) == 0:
@@ -1838,11 +1984,30 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 target_model,
                 f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
             )
-            return outputs
+            if logits_kwarg is None:
+                return outputs
+            # `outputs.logits` is the return value now, and we asked for a single
+            # position because we meant to throw the logits away. GRPO drops the
+            # last one and slices the completion window out of what is left, so
+            # one position leaves it nothing. Put the caller's own limit back --
+            # absent means every position, which is what a model that ignores
+            # `logits_to_keep` would have returned anyway -- and re-run.
+            if logits_kwarg in kwargs:
+                forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
+            else:
+                forward_kwargs.pop(logits_kwarg, None)
+            return original_forward(*args, **forward_kwargs)
 
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        # Only the last layer is ever read. Every earlier layer is still hanging
+        # off `outputs`, and on a multi-GPU dispatch accelerate's
+        # AlignDevicesHook.post_forward walks the whole returned object and
+        # copies every tensor in it to the input device, so keeping them costs a
+        # cross-device copy per layer as well as the memory.
+        _drop_spare_hidden_states(outputs)
+        _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
     wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True

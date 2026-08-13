@@ -46,7 +46,8 @@ def stub_audio_decoder(monkeypatch):
     monkeypatch.setattr(
         stt_sidecar_module,
         "_decode_audio_bounded",
-        lambda _audio: np.zeros(8000, dtype = np.float32),
+        # Second arg is the cancel event the real decoder polls in its frame loop.
+        lambda _audio, _cancel_event = None: np.zeros(8000, dtype = np.float32),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -774,6 +775,14 @@ def test_accelerator_load_failure_retries_on_cpu(monkeypatch):
 
 
 def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatch):
+    # The bound that carries the contract is the CANCEL thread's: it must come back while the
+    # build still holds the model lock, so two seconds against an indefinite wait is the whole
+    # question. The other waits below are liveness only -- they say "this must happen", and the
+    # assertion after each is what fails if it does not. Two seconds there was a budget on
+    # runner speed instead: after the build is released the load thread still has to be
+    # scheduled and run the cancel path's two full gc.collect()s, which a loaded two-core CI
+    # runner did not finish inside it.
+    settle = 30.0
     _install_fake_torch(monkeypatch)
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     build_started = threading.Event()
@@ -782,7 +791,7 @@ def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatc
 
     def build(_repo, _device, _dtype, _cancel_event):
         build_started.set()
-        assert release_build.wait(timeout = 2)
+        assert release_build.wait(timeout = settle)
         return object(), object()
 
     def run_load():
@@ -797,19 +806,19 @@ def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatc
 
     load_thread = threading.Thread(target = run_load)
     load_thread.start()
-    assert build_started.wait(timeout = 2)
+    assert build_started.wait(timeout = settle)
 
     result = []
     cancel_thread = threading.Thread(target = lambda: result.append(sidecar.cancel_pending_load()))
     cancel_thread.start()
-    cancel_thread.join(timeout = 2)
+    cancel_thread.join(timeout = 2)  # the contract: back while the build still holds the lock
 
     assert not cancel_thread.is_alive()
     assert result == [True]
     assert load_thread.is_alive()
 
     release_build.set()
-    load_thread.join(timeout = 2)
+    load_thread.join(timeout = settle)
 
     assert not load_thread.is_alive()
     assert len(errors) == 1
@@ -1199,6 +1208,9 @@ def test_download_status_is_idle_before_any_download():
         "model": None,
         "error": None,
         "cancelled": False,
+        # Only set alongside cancelled: "model" goes None once the download thread stops, so
+        # this is what tells a settled cancellation from an unrelated one.
+        "cancelled_model": None,
         "bytes_total": None,
         "bytes_done": None,
     }
@@ -1336,3 +1348,22 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
     # its accelerator memory stays stranded for the whole retry.
     assert seen["alive_during_retry"] is False
     assert sidecar.device == "cpu"
+
+
+def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
+    """Checking only after the decode returned let an abandoned upload run to EOF or the
+    30-minute cap, and several could do that at once."""
+    import threading
+
+    monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", _REAL_DECODE_AUDIO_BOUNDED)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((np.zeros(16000 * 5, dtype = np.int16)).tobytes())
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
+        stt_sidecar_module._decode_audio_bounded(buf.getvalue(), cancelled)

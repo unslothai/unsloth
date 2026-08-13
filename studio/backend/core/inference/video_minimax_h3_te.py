@@ -47,6 +47,7 @@ nothing configured.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Optional
 
 # The ConvRot primitives, shared with the denoiser's hosted INT8 checkpoint. Re-exported below
@@ -155,8 +156,15 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # exactly how they would stop agreeing. Both stay importable from here.
 
 
+@lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
-    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports torch."""
+    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
+    torch, and built exactly ONCE.
+
+    One load already shares a single class across every projection, so the cache is about the
+    SECOND load in a process: a fresh class there is a fresh ``___check_type_id`` guard, which
+    retraces every compiled block that survived the first one. Same reason the denoiser's
+    ``convrot_linear_class`` is cached."""
     import torch
     from torch import nn
 

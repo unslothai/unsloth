@@ -5181,7 +5181,9 @@ def test_gemini_custom_oai_compat_base_skips_native_allowlist():
             provider_type = "gemini",
             base_url = "https://litellm.example/v1",
         )
-        result = _asyncio.run(list_provider_models(req, current_subject = "unsloth"))
+        result = _asyncio.run(
+            list_provider_models(req, _current_subject = "unsloth", via_api_key = False)
+        )
     finally:
         _providers.ExternalProviderClient = orig
     ids = {m.id for m in result}

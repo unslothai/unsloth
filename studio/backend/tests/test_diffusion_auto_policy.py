@@ -12,9 +12,23 @@ estimate fits resident."""
 
 from __future__ import annotations
 
+import pytest
+
 from types import SimpleNamespace
 
 import core.inference.diffusion_auto_policy as ap
+
+
+@pytest.fixture(autouse = True)
+def _assume_the_restricted_load_is_available(monkeypatch):
+    """Policy/planning tests, not a check on whether this host's torchao imports.
+
+    Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
+    below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
+    import core.inference.diffusion_prequant as _pq
+    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+
+
 from core.inference.diffusion_auto_policy import (
     DenseQuantEstimate,
     build_resolved_record,

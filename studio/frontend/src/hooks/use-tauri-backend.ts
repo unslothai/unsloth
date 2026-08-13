@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { preflightStaleMessage } from "@/hooks/backend-preflight-message";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
@@ -84,12 +85,9 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
     return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
   }
 
-  // Do not describe a backend from an unknown install as terminal-started.
-  if (preflight.reason === "ambiguous_root_external_backend_active") {
-    return preflight.port
-      ? `An Unsloth server is already running on port ${preflight.port}, and this app cannot confirm which install it belongs to. Stop that server, then reopen Unsloth.`
-      : "An Unsloth server is already running, and this app cannot confirm which install it belongs to. Stop that server, then reopen Unsloth.";
-  }
+  // A backend we cannot attribute to this install no longer reaches here: the
+  // launch steps over its port. Only a mutation still refuses, and that message
+  // comes from external_conflict_message in commands.rs.
 
   if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
     return preflight.port
@@ -279,9 +277,7 @@ export function useTauriBackend() {
             await startRepair();
           } else {
             setBackendError(
-              preflight.disposition === "owned_stale"
-                ? "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth."
-                : "Managed Unsloth install is too old. Run `unsloth studio update`.",
+              preflightStaleMessage(preflight.disposition, preflight.reason),
             );
           }
           return;

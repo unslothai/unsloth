@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -68,3 +69,44 @@ def test_update_provider_models(isolated_providers_db: Path):
         "meta-llama/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ]
+
+
+def test_custom_max_output_tokens_round_trip_and_clear(isolated_providers_db: Path):
+    providers_db.create_provider(
+        id = "custom1",
+        provider_type = "custom",
+        display_name = "Custom",
+        base_url = "https://example.com/v1",
+        max_output_tokens = 131072,
+    )
+
+    assert providers_db.get_provider("custom1")["max_output_tokens"] == 131072
+    assert providers_db.update_provider(id = "custom1", max_output_tokens = None)
+    assert providers_db.get_provider("custom1")["max_output_tokens"] is None
+
+
+def test_existing_provider_rows_migrate_to_unset_override(isolated_providers_db: Path):
+    conn = sqlite3.connect(isolated_providers_db)
+    conn.execute(
+        """
+        CREATE TABLE llm_providers (
+            id TEXT NOT NULL PRIMARY KEY,
+            provider_type TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            is_enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO llm_providers VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("existing", "custom", "Existing", "https://example.com/v1", 1, "now", "now"),
+    )
+    conn.commit()
+    conn.close()
+
+    row = providers_db.get_provider("existing")
+    assert row is not None
+    assert row["max_output_tokens"] is None

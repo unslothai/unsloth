@@ -543,11 +543,15 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
     network-reachable launch is never silent about code execution."""
     if enable_tools is False:
         return "Server-side tools are DISABLED (--disable-tools)."
-    state = (
-        "ENABLED (--enable-tools)"
-        if enable_tools
-        else "ENABLED by default (per-request setting honored)"
-    )
+    if enable_tools is None:
+        # This launcher installs no tools-on default (that is `unsloth studio
+        # run`), so the request decides and the Studio UI sends its pills.
+        return (
+            "Server-side tools follow each request's enable_tools; the Studio UI's "
+            "tool toggles decide. Pass --enable-tools to force them on for every "
+            "request."
+        )
+    state = "ENABLED (--enable-tools)"
     if secure:
         return (
             f"Server-side tools are {state}, reachable via the authenticated "
@@ -833,6 +837,12 @@ from utils.paths.storage_roots import studio_root as _studio_root
 # Legacy single-instance file; still read so `stop` finds an older build's server.
 _PID_FILE = _studio_root() / "studio.pid"
 PID_FILE_GLOB = "studio-*.pid"
+# Deliberately not a .pid: everything that globs PID_FILE_GLOB expects a bound
+# server with a port in the name, and a process that has not bound yet is not
+# one. Only the sibling probe reads these.
+STARTUP_MARKER_GLOB = "studio-starting-*.marker"
+_OWN_STARTUP_MARKERS: "list[Path]" = []
+_STARTUP_MARKER_HOOK_REGISTERED = False
 
 
 def _pid_file_for_port(port: int) -> Path:
@@ -982,6 +992,253 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     return pid
 
 
+def write_startup_marker() -> None:
+    """Record that this process is coming up, before uvicorn starts.
+
+    The per-port record cannot be written until uvicorn reports the bound port,
+    and lifespan startup runs well before that. Two overlapping launches would
+    otherwise each find no sibling and each clear the shared compiled cache, the
+    exact race this is meant to prevent, so a sibling has to be discoverable
+    from the moment it could do any clearing.
+
+    Published under the same lock the clear takes, so the marker cannot appear in
+    the gap between a sibling's probe and its rmtree; that ordering is the whole
+    point of the marker.
+
+    Best effort, like the records themselves: a studio home we cannot write to
+    is not a reason to refuse to start.
+    """
+    me = os.getpid()
+    created = _process_create_time(me)
+    body = f"{me}\n{created if created is not None else ''}\n"
+    try:
+        from utils.cache_cleanup import compiled_cache_lock, LOCK_BUSY
+    except Exception:
+        import contextlib
+
+        # No lock available means an unserialized publish, which is what this
+        # did before the lock existed. Startup still has to happen.
+        compiled_cache_lock = contextlib.nullcontext
+        LOCK_BUSY = None
+    # A longer budget than a clear takes: publishing behind a holder that is
+    # mid-rmtree is the case worth waiting out. Publishing anyway if the wait
+    # runs out is still right, because a marker that never appears makes this
+    # backend invisible, which is the failure the marker exists to prevent.
+    with compiled_cache_lock(timeout = 30.0) as lock_state:
+        published_unlocked = lock_state == LOCK_BUSY
+        if published_unlocked:
+            logger.warning(
+                "Publishing the startup marker without the cache lock: another backend "
+                "has held it for 30s"
+            )
+        directory = _studio_root()
+        path = directory / f"studio-starting-{me}.marker"
+        try:
+            directory.mkdir(parents = True, exist_ok = True)
+            # Same layout as a per-port record, so _read_pid_record parses both.
+            # An unknown start time is a blank line, read back as None.
+            path.write_text(body, encoding = "utf-8")
+            # Not appended twice. The path is the same file every time (this
+            # PID names it), so a second publish rewrites identical bytes, but
+            # a duplicate entry would be popped and retried twice on the way
+            # out for no reason.
+            if path not in _OWN_STARTUP_MARKERS:
+                _OWN_STARTUP_MARKERS.append(path)
+        except OSError:
+            pass
+    if not _OWN_STARTUP_MARKERS:
+        return
+    import atexit
+
+    # Registered here rather than beside the pid-file hook: startup can fail
+    # between these two points, and the marker has to go either way. Before the
+    # wait below, so an interrupt during it still takes the marker back. Once
+    # per process: the hook drains the whole list, so a second registration
+    # only runs it again on an empty one.
+    global _STARTUP_MARKER_HOOK_REGISTERED
+    if not _STARTUP_MARKER_HOOK_REGISTERED:
+        atexit.register(_remove_startup_marker)
+        _STARTUP_MARKER_HOOK_REGISTERED = True
+    if published_unlocked:
+        _wait_out_a_running_cache_clear(compiled_cache_lock, LOCK_BUSY)
+
+
+# A clear is an rmtree of one directory. Five minutes is not how long that takes
+# even on network storage; it is how long to keep waiting before deciding that
+# refusing to start is worse for the user than starting on a cache that may lose
+# files underneath it.
+_CACHE_CLEAR_WAIT_SECONDS = 300.0
+
+
+def _wait_out_a_running_cache_clear(compiled_cache_lock, lock_busy) -> None:
+    """Block until whoever is clearing the compiled cache has finished.
+
+    The marker is already published, so this backend is visible to every sibling
+    probe from here on, which is what publishing unlocked bought. What it must
+    not do is return to a caller that immediately imports and compiles into a
+    cache another backend is still deleting: that is the cross-backend race the
+    lock exists to close. Taking the lock and dropping it again is the wait.
+
+    The lock is an OS file lock, released when its holder exits, so a crashed
+    backend cannot hold this here.
+    """
+    with compiled_cache_lock(timeout = _CACHE_CLEAR_WAIT_SECONDS) as state:
+        if state == lock_busy:
+            logger.warning(
+                "Starting while another backend is still clearing the compiled cache: "
+                "it has held the lock for %ss. Compiled modules may be removed underneath "
+                "this one and recompiled.",
+                int(30.0 + _CACHE_CLEAR_WAIT_SECONDS),
+            )
+
+
+# Enough attempts to outlast the usual Windows holder (an indexer or a scanner
+# with the file open), short enough that shutdown is not visibly delayed.
+_MARKER_REMOVAL_ATTEMPTS = 5
+_MARKER_REMOVAL_BACKOFF_SECONDS = 0.2
+
+
+def _remove_startup_marker() -> None:
+    """Delete this process's startup markers, retrying a failure a few times.
+
+    A path is dropped from the list only once it is actually gone. A transient
+    unlink failure would otherwise lose the only reference to it, leaving a
+    marker on disk that no later cleanup can retry: its recorded start time
+    still matches this process, so an embedded host that keeps running would go
+    on answering as a live backend and pin the compiled cache.
+
+    Retrying here rather than only keeping the path is what makes that recovery
+    real. The one guaranteed later call is the atexit hook, which an embedded
+    host that outlives its backend does not reach for a long time, if ever.
+    """
+    import time
+
+    remaining = []
+    while _OWN_STARTUP_MARKERS:
+        path = _OWN_STARTUP_MARKERS.pop()
+        for attempt in range(_MARKER_REMOVAL_ATTEMPTS):
+            try:
+                path.unlink(missing_ok = True)
+                break
+            except OSError:
+                if attempt + 1 == _MARKER_REMOVAL_ATTEMPTS:
+                    # Still tracked, so the atexit hook and any later call try
+                    # again; this is the floor, not the only chance.
+                    remaining.append(path)
+                    break
+                time.sleep(_MARKER_REMOVAL_BACKOFF_SECONDS)
+    _OWN_STARTUP_MARKERS.extend(remaining)
+
+
+def _record_written_at(path: Path) -> float:
+    """When *path* was last written, or 0.0 when the filesystem will not say.
+
+    0.0 makes an unreadable time the oldest possible, so it never wins the
+    "which statement about this PID came last" comparison below.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _timed_records() -> "list[tuple[tuple[int, float | None, str | None], float]]":
+    """Every startup marker and per-port record, each with its write time."""
+    paths: "list[Path]" = []
+    for pattern in (STARTUP_MARKER_GLOB, PID_FILE_GLOB):
+        try:
+            paths.extend(_studio_root().glob(pattern))
+        except OSError:
+            continue
+    found = []
+    for path in paths:
+        record = _read_pid_record(path)
+        if record is not None:
+            found.append((record, _record_written_at(path)))
+    return found
+
+
+def _legacy_record() -> "tuple[tuple[int, float | None, str | None], float] | None":
+    try:
+        if not _PID_FILE.is_file():
+            return None
+    except OSError:
+        return None
+    record = _read_pid_record(_PID_FILE)
+    return None if record is None else (record, _record_written_at(_PID_FILE))
+
+
+def _sibling_is_running(pid: int) -> bool:
+    """Alive, and not an exited process nobody waited on.
+
+    A zombie answers kill(0) and keeps its start time, so on its own liveness
+    reads it as a serving backend. Under a non-reaping parent (PID 1 in some
+    containers) it can stay that way indefinitely, and a record pointing at one
+    would pin the compiled cache on every later startup.
+    """
+    if not _pid_alive(pid):
+        return False
+    try:
+        from utils.process_lifetime import _pid_is_zombie
+    except Exception:  # noqa: BLE001
+        # The check is an exclusion, so without it this behaves as it did
+        # before: alive is alive.
+        return True
+    return not _pid_is_zombie(pid)
+
+
+def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
+    for entry in records:
+        if entry is None:
+            continue
+        record, written_at = entry
+        pid, created, _address = record
+        if pid == me or not _sibling_is_running(pid):
+            continue
+        # Corroborate against other records for this PID, the way
+        # _legacy_studio_on_port does. studio.pid holds a bare PID with no start
+        # time, and an untimed record is trusted unconditionally, so on its own
+        # it would resurrect a server that died and had its PID reused -- and
+        # keep the compiled cache forever on the strength of it. A timestamped
+        # record for the same PID that fails the check is evidence it is gone.
+        #
+        # Only a record written no earlier than this one counts as that
+        # evidence. A pre-upgrade backend writes a bare studio.pid and nothing
+        # else, so if it starts on a PID a crashed current-version backend left
+        # a timestamped record for, the older timestamp is a statement about a
+        # process that is gone, not about this one. Letting it veto would clear
+        # the compiled cache under a serving legacy backend.
+        corroborating = [
+            other[1]
+            for other, other_written in timed
+            if other[0] == pid and other_written >= written_at
+        ]
+        if _pid_is_studio_backend(pid, [created] + corroborating):
+            return pid
+    return None
+
+
+def live_sibling_backend() -> "int | None":
+    """PID of another live Studio backend of this install, or None.
+
+    Two of ours at once is a supported configuration: `_resolve_port` refuses
+    only the port one of ours already holds, and `_abort_already_running` tells
+    the user to pick another. They share an install-tree compiled cache, so the
+    second one must not wipe it out from under the first.
+
+    All three records are read, because a sibling can be in a state where only
+    one of them exists: a startup marker while it is still binding, a per-port
+    record once it has bound, and `studio.pid` alone for a pre-upgrade server or
+    one whose best-effort per-port write failed.
+
+    Called before `_write_pid_file`, so our own record is not there yet; the
+    explicit pid check keeps it correct for the marker, which is.
+    """
+    me = os.getpid()
+    timed = _timed_records()
+    return _live_sibling(timed + [_legacy_record()], me, timed)
+
+
 def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
     try:
         return [_read_pid_record(p) for p in _studio_root().glob(PID_FILE_GLOB)]
@@ -1112,10 +1369,17 @@ def _legacy_heir() -> "int | None":
 
 
 def _remove_pid_file():
-    """Remove the PID files that belong to this process.
+    """Remove the records that belong to this process.
 
     _PID_FILE is checked even when the per-port record was never written, since
     _write_pid_file writes the two independently.
+
+    The startup marker is deliberately NOT dropped here. _graceful_shutdown
+    calls this before the server thread is joined, and a backend that is still
+    finishing an in-flight request or a background warm is still importing from
+    the cache; going invisible there would let a replacement clear it underneath.
+    The marker goes when the server thread actually ends, and from the atexit
+    hook if the process exits first.
     """
     # Nothing here may raise: _graceful_shutdown calls this at the end, and an
     # unreadable or undeletable record must not abandon the rest of the exit
@@ -1865,8 +2129,15 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
-    unset (tools default on, per-request enable_tools honored). Host is never
-    inspected here."""
+    unset, so each request's own enable_tools decides. Host is never inspected
+    here.
+
+    The tools-on default for an omitted `enable_tools` belongs to `unsloth studio
+    run`, which installs it itself (that is the launcher that has always forced
+    tools on). Installing it here too would extend it to `unsloth studio`, the
+    desktop app and Colab, where paths built around "omitted means off" -- n > 1,
+    max_tool_calls_per_message: 0, the pre-switch passthrough guard -- would
+    start seeing it."""
     if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
@@ -1882,6 +2153,41 @@ _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 4
 
 
+def _drops_its_marker_on_failure(start):
+    """Take the startup marker back if the server never starts.
+
+    An embedded caller keeps its process alive across a failure -- colab.py
+    catches SystemExit and Exception around run_server -- and no exit hook runs
+    then. A marker left behind would answer every later sibling probe as a live
+    backend, so no backend of this install would clear the compiled cache again.
+
+    A decorator rather than a renamed inner function: run_server's signature is
+    a contract here, read both by inspect.signature and by tests that parse the
+    def out of this file, and functools.wraps keeps both intact.
+    """
+    import functools
+
+    @functools.wraps(start)
+    def started(*args, **kwargs):
+        try:
+            return start(*args, **kwargs)
+        except BaseException:
+            # Only when no server thread is left running. A KeyboardInterrupt
+            # during the readiness wait asks uvicorn to stop and re-raises
+            # without joining, so the thread may still be finishing lifespan
+            # startup or shutdown. Taking the marker back there makes a backend
+            # that is still up invisible to a sibling, which would then clear
+            # the compiled cache under it. That thread's own finally removes
+            # the marker at the point it has genuinely stopped serving.
+            thread = _server_thread
+            if thread is None or not thread.is_alive():
+                _remove_startup_marker()
+            raise
+
+    return started
+
+
+@_drops_its_marker_on_failure
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -1912,7 +2218,7 @@ def run_server(
             bind. Tri-state: None (unset) and False both mean off; True enables it.
             --secure implies it (True) and rejects an explicit False.
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
-            the default (tools on, per-request enable_tools honored)
+            the default (tools on, a request's own enable_tools: false honored)
         emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
             app parses from stdout; the headless `run --api-only` path turns it
             off so it does not pollute the documented URL/API-key banner
@@ -2013,7 +2319,28 @@ def run_server(
 
     import_started = time.perf_counter()
 
+    # Before the import, not just before uvicorn: this is what makes us visible
+    # to a sibling's own probe, and the earlier it lands the smaller the window
+    # in which two launches can each believe they are alone.
+    #
+    # The cache env has to be seeded first. main.py pins UNSLOTH_COMPILE_LOCATION
+    # at import time, which is after this point, and that variable is part of the
+    # coordination key: publishing before it is set would key the marker and the
+    # lock differently from the clear that follows, and serialize nothing.
+    try:
+        from utils.paths.storage_roots import setup_cache_env
+        setup_cache_env()
+    except Exception:  # noqa: BLE001
+        # main.py seeds it too, and does not depend on this having worked.
+        pass
+    write_startup_marker()
+
     from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+
+    # Handed to lifespan as a callable, not a value: it is asked again at
+    # shutdown, when a sibling may have started since. On app.state rather than
+    # imported, because main.py must not import this module back.
+    app.state.live_sibling_backend = live_sibling_backend
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -2111,7 +2438,15 @@ def run_server(
                 "\n"
                 "Fix one of:\n"
                 f"  - run the installer's binary directly: {installer_bin} studio\n"
-                "  - pass --frontend <path/to/studio/frontend/dist>\n"
+                + (
+                    # An Application Control policy can block the generated
+                    # unsloth.exe while the signed interpreter beside it still
+                    # runs, so name a route that does not go through it.
+                    f"  - or through the interpreter: {sys.executable} -I -m unsloth_cli studio\n"
+                    if sys.platform == "win32"
+                    else ""
+                )
+                + "  - pass --frontend <path/to/studio/frontend/dist>\n"
                 "  - pass --api-only to skip serving the web UI\n"
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
@@ -2144,12 +2479,19 @@ def run_server(
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
+    # http=... is uvicorn's own h11 protocol unless we are on the plain-h11 path, where it
+    # becomes a subclass that ignores socket reads delivered after the connection was already
+    # closed. Without it every clean shutdown on Windows ends in an h11 LocalProtocolError
+    # traceback that reads as a crash; see utils/uvicorn_h11_shutdown.py for the full sequence.
+    from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
+
     config_kwargs = dict(
         host = host,
         port = port,
         log_level = "info",
         access_log = False,
         server_header = False,
+        http = uvicorn_http_protocol(),
     )
     # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees
     # the real https origin. forwarded_allow_ips="*" is safe in Colab's
@@ -2256,6 +2598,14 @@ def run_server(
             loop.close()
             if not ready_event.is_set():
                 startup_failed.set()
+            # An embedded host stays alive after the server thread ends, and a
+            # post-readiness failure in here never reaches run_server's caller,
+            # so nothing else takes these back. They would keep validating
+            # against the still-live host PID with no backend serving. This is
+            # also the point at which the backend has genuinely stopped serving,
+            # which is why the marker goes here rather than in _remove_pid_file.
+            _remove_startup_marker()
+            _remove_pid_file()
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread
@@ -2411,7 +2761,9 @@ def _build_arg_parser():
     parser.add_argument(
         "--host",
         default = "127.0.0.1",
-        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access). "
+        "On a shared host, set UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 to stop external "
+        "provider connections from targeting private addresses.",
     )
     parser.add_argument(
         "--password",
@@ -2463,7 +2815,8 @@ def _build_arg_parser():
         default = argparse.SUPPRESS,
         help = argparse.SUPPRESS,
     )
-    # Tri-state tool policy: no flag -> None (tools on, per-request honored);
+    # Tri-state tool policy: no flag -> None (tools default on, a request's own
+    # enable_tools: false honored);
     # --enable-tools/--disable-tools force on/off.
     parser.add_argument(
         "--enable-tools",
@@ -2471,7 +2824,9 @@ def _build_arg_parser():
         action = "store_true",
         default = None,
         help = "Force server-side tools (web search, code execution) on for "
-        "every request. Default: on for every bind, per-request setting honored. "
+        "every request. Default: no server-wide policy, so each request's own "
+        "enable_tools decides (`unsloth studio run` is the launcher that defaults "
+        "them on). "
         "/v1/messages takes the on direction per request (enable_tools) because it has "
         "no confirmation channel; the off direction still applies everywhere.",
     )
@@ -2485,8 +2840,9 @@ def _build_arg_parser():
     parser.add_argument(
         "--disable-dns-pinning",
         action = "store_true",
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     )
     parser.add_argument(
         "--parallel",
