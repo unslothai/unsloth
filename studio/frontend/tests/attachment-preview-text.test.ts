@@ -33,7 +33,10 @@ test("parseAttachmentText unwraps the plain text attachment tag", () => {
 
 test("parseAttachmentText keeps text that carries no wrapper", () => {
   const parsed = parseAttachmentText("[not a label] still content");
-  assert.deepEqual(parsed, { label: null, text: "[not a label] still content" });
+  assert.deepEqual(parsed, {
+    label: null,
+    text: "[not a label] still content",
+  });
 });
 
 test("parseAttachmentText keeps a header-like first line inside the body", () => {
@@ -92,7 +95,7 @@ test("attachmentAudioSrc falls back to the extension for untyped uploads", () =>
   );
 });
 
-// TextAttachmentAdapter accepts plain text with no size limit, so opening a
+// The text and HTML adapters accept uploads with no size limit, so opening a
 // preview must not materialize the whole file.
 test("readAttachmentText reads a bounded slice of a large text file", async () => {
   const oversized = new File(["a".repeat(2_000_000)], "huge.txt", {
@@ -106,6 +109,40 @@ test("readAttachmentText reads a bounded slice of a large text file", async () =
   assert.equal(label, null);
   assert.equal(text.length, 1_000_000);
   assert.equal(truncateAttachmentPreviewText(text).truncated, true);
+});
+
+test("readAttachmentText reads a bounded slice of a large html file", async () => {
+  const parsed: number[] = [];
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = class {
+    parseFromString(source: string) {
+      parsed.push(source.length);
+      return {
+        querySelectorAll: () => [],
+        body: { textContent: source },
+      };
+    }
+  };
+
+  try {
+    const oversized = new File(
+      [`<p>${"b".repeat(2_000_000)}</p>`],
+      "huge.html",
+      {
+        type: "text/html",
+      },
+    );
+    const { label, text } = await readAttachmentText(
+      oversized,
+      oversized.name,
+      oversized.type,
+    );
+    assert.equal(label, "HTML");
+    assert.deepEqual(parsed, [1_000_000]);
+    assert.equal(text.length <= 1_000_000, true);
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
 });
 
 test("isAudioAttachment matches by MIME and by extension", () => {

@@ -39,7 +39,7 @@ const AUDIO_EXTENSION_MIMES: Record<string, string> = {
 // Long attachments still have to render inside a dialog, so the preview stops
 // well before the point where a single <pre> stalls the webview.
 const MAX_PREVIEW_TEXT_LENGTH = 200_000;
-// Plain text has no size limit at upload, so a preview reads a bounded slice
+// Text and HTML have no size limit at upload, so a preview reads a bounded slice
 // instead of the whole file. Five bytes per character keeps the slice past the
 // character cap for any UTF-8 input, so truncation is still detected.
 const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
@@ -147,7 +147,7 @@ export async function readAttachmentText(
   if (isHtmlAttachment(name, contentType)) {
     return {
       label: "HTML",
-      text: extractHtmlAttachmentText(await file.text()),
+      text: extractHtmlAttachmentText(await readBoundedText(file)),
     };
   }
   if (isOpenDocumentAttachment(name, contentType)) {
