@@ -3241,6 +3241,86 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn the_pin_decision_is_a_table_with_no_other_outcomes() {
+        // Every combination of the three things the pinning looks at, so "nothing
+        // happens unless the directory is one the CLI refuses" is a table rather
+        // than a claim. The child either stays with nothing rewritten, moves with
+        // every relative setting anchored to the directory it left, or the caller
+        // is told exactly which setting could not be preserved. There is no
+        // fourth outcome.
+        let home = std::path::Path::new("C:\\Users\\me");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let cwds = [
+            (Some(PathBuf::from("C:\\Users\\me\\project")), "elsewhere"),
+            (Some(work_dir.clone()), "already-there"),
+            (Some(PathBuf::from("C:\\Windows\\System32")), "system"),
+            (None, "unknown"),
+        ];
+        let envs: [(&dyn Fn(&str) -> Option<String>, &str); 4] = [
+            (&|_: &str| None, "clean"),
+            (
+                &|name: &str| (name == "HF_HOME").then(|| "cache".to_string()),
+                "relative",
+            ),
+            (
+                &|name: &str| (name == "HF_HOME").then(|| "D:\\cache".to_string()),
+                "absolute",
+            ),
+            (
+                &|name: &str| {
+                    (name == "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH").then(|| "1".to_string())
+                },
+                "toggle",
+            ),
+        ];
+        let absolute = |value: &str| panic!("unexpected value needing the OS: {value}");
+        let mut table = Vec::new();
+        for (cwd, cwd_kind) in &cwds {
+            for (lookup, env_kind) in &envs {
+                let outcome = relative_override_pins_from(
+                    cwd.clone(),
+                    &work_dir,
+                    lookup,
+                    absolute,
+                    Some(home),
+                    MANAGED_CHILD_SCRUBBED_ENV,
+                    true,
+                );
+                let cell = match &outcome {
+                    Ok(pins) if pins.is_empty() => "nothing rewritten",
+                    Ok(_) => "anchored to the directory being left",
+                    Err(_) => "reported as unpreservable",
+                };
+                table.push((*cwd_kind, *env_kind, cell));
+            }
+        }
+        assert_eq!(
+            table,
+            vec![
+                ("elsewhere", "clean", "nothing rewritten"),
+                ("elsewhere", "relative", "anchored to the directory being left"),
+                ("elsewhere", "absolute", "nothing rewritten"),
+                ("elsewhere", "toggle", "nothing rewritten"),
+                // Staying put rewrites nothing whatever the environment holds.
+                ("already-there", "clean", "nothing rewritten"),
+                ("already-there", "relative", "nothing rewritten"),
+                ("already-there", "absolute", "nothing rewritten"),
+                ("already-there", "toggle", "nothing rewritten"),
+                ("system", "clean", "nothing rewritten"),
+                ("system", "relative", "anchored to the directory being left"),
+                ("system", "absolute", "nothing rewritten"),
+                ("system", "toggle", "nothing rewritten"),
+                // Nothing can be anchored to a directory with no name, so a
+                // relative setting is reported and the caller stays put.
+                ("unknown", "clean", "nothing rewritten"),
+                ("unknown", "relative", "reported as unpreservable"),
+                ("unknown", "absolute", "nothing rewritten"),
+                ("unknown", "toggle", "nothing rewritten"),
+            ]
+        );
+    }
+
+    #[test]
     fn a_directory_that_cannot_be_named_leaves_the_child_where_it_is() {
         // Nothing can be anchored to a directory this process cannot name, so the
         // child stays in it rather than the spawn failing over a setting the
