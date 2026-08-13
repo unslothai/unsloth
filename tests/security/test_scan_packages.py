@@ -1079,6 +1079,50 @@ def test_unparseable_source_still_reaches_the_regex_fallback():
     assert sp.RE_EXEC_EVAL.search(truncated) is not None
 
 
+def test_an_escaped_module_name_still_names_the_builtins_module():
+    # `__import__('buil\x74ins')` loads exactly what `__import__('builtins')`
+    # loads - Python compares the value the literal evaluates to, not the way it
+    # was spelled. Comparing the source text instead let one backslash park the
+    # module in a name the scanner did not know was an alias, so the `b.exec(...)`
+    # below it read as an ordinary method call. The pre-rule text scan caught
+    # that line through its bare `exec\s*\(`, so losing it is a regression.
+    for literal in (r"'buil\x74ins'", r"'buil\164ins'", r"'builtins'"):
+        payload = (
+            "import marshal\n"
+            "mod = __import__('os')\n"
+            f"b = __import__({literal})\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"an escaped module name must still be the builtin:\n{payload}"
+
+    # Same escape as the receiver of the call rather than parked in a name.
+    direct = (
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        r"__import__('builtins').exec(marshal.loads(BLOB))"
+        "\n"
+    )
+    findings = sp.check_py_file(direct, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an escaped receiver must still be the builtin"
+
+    # A raw literal has no escape to decode, so `r'buil\x74ins'` really is a
+    # module of that name and the call through it stays an ordinary method call.
+    raw = (
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        r"b = __import__(r'buil\x74ins')"
+        "\nb.eval(BLOB)\n"
+    )
+    findings = sp.check_py_file(raw, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a raw literal must not decode to builtins: {high}"
+    assert sp._string_body(r"'buil\x74ins'") == "builtins"
+    assert sp._string_body(r"r'buil\x74ins'") == r"buil\x74ins"
+
+
 def test_proc_self_status_read_flags_anti_analysis():
     # Reading /proc/self/status + a subprocess call is the classic anti-debug combo.
     # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/"); the

@@ -55,6 +55,7 @@ Exit codes:
 """
 
 import argparse
+import ast
 import atexit
 import bisect
 import hashlib
@@ -177,6 +178,15 @@ _FSTRING_OPAQUE = not hasattr(tokenize, "FSTRING_START")
 # how deep one opaque STRING token can nest them.
 _FSTRING_QUOTES = ('"""', "'''", '"', "'")
 _MAX_FSTRING_NESTING = len(_FSTRING_QUOTES)
+# Longest escape that can stand for one character is `\N{...}`, and no Unicode
+# name runs to 500 characters, so a literal longer than this cannot spell an
+# eight-character module name however it is escaped - and a member is allowed
+# to hold a 64 MiB one.
+_MAX_LITERAL_DECODE = 512
+# An escape sequence that resolves to a character: `'buil\x74ins'` names the
+# `builtins` module without spelling it, so a file that carries one has to be
+# read even though the plain word never appears in it.
+_RE_STRING_ESCAPE = re.compile(r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{)")
 
 
 class _Span:
@@ -306,7 +316,15 @@ def _name_index(toks: list, name: str) -> "int | None":
 
 
 def _string_body(literal: str) -> "str | None":
-    """The text inside a string token, or None for bytes/f-strings/odd quoting."""
+    """The value of a string token, or None for bytes/f-strings/odd quoting.
+
+    Escapes are decoded, because the interpreter compares the module name the
+    literal evaluates to, not the way it was spelled: `__import__('buil\\x74ins')`
+    loads exactly what `__import__('builtins')` loads, and returning the source
+    text would read the two as different modules. Raw literals have no escapes
+    to decode, and a literal far longer than any module name cannot be one, so
+    both skip the parse.
+    """
     i = 0
     while i < len(literal) and literal[i] not in "\"'":
         i += 1
@@ -316,7 +334,14 @@ def _string_body(literal: str) -> "str | None":
     body = literal[i:]
     for quote in ('"""', "'''", '"', "'"):
         if body.startswith(quote) and body.endswith(quote) and len(body) >= 2 * len(quote):
-            return body[len(quote) : -len(quote)]
+            body = body[len(quote) : -len(quote)]
+            if "\\" not in body or "r" in prefix or len(body) > _MAX_LITERAL_DECODE:
+                return body
+            try:
+                value = ast.literal_eval(literal)
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                return body
+            return value if isinstance(value, str) else None
     return None
 
 
@@ -535,7 +560,10 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
                 if marker:
                     break
                 assign = True
-        elif ttype == tokenize.STRING and "builtins" in tok.string:
+        elif ttype == tokenize.STRING and (
+            "builtins" in tok.string
+            or ("\\" in tok.string and _string_body(tok.string) == "builtins")
+        ):
             if assign:
                 break
             marker = True
@@ -1338,7 +1366,12 @@ class _ExecEvalPattern:
         funcs: set = set()
         cancel: dict = {}
         loaders = _Loaders()
-        if "builtins" in content:
+        # An escaped literal spells the module without the word appearing, so
+        # that file has to be read too - but only when it also holds a call to
+        # reach through the alias, since `_scan` returns nothing without one.
+        if "builtins" in content or (
+            ("exec" in content or "eval" in content) and _RE_STRING_ESCAPE.search(content)
+        ):
             failed: list = []
             for stmt in _statements(content, failed):
                 head = stmt[0]
