@@ -343,18 +343,17 @@ def test_the_retry_reloads_the_processor_when_it_discovers_whisper(monkeypatch):
     trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
 
     assert trainer._audio_type == "whisper"
-    assert loaded == ["tokenizer", "processor"], (
-        f"expected a processor reload once the retry found whisper, got {loaded}"
-    )
+    assert loaded == [
+        "tokenizer",
+        "processor",
+    ], f"expected a processor reload once the retry found whisper, got {loaded}"
 
 
 def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
     # A retry that confirms the same type must not pay for a second load.
     import core.training.trainer as trainer_mod
 
-    monkeypatch.setattr(
-        trainer_mod, "detect_audio_type_checked", lambda *a, **kw: (None, True)
-    )
+    monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", lambda *a, **kw: (None, True))
     monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
 
     loaded: list[str] = []

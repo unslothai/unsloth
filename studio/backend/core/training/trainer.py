@@ -246,7 +246,6 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     # only a row that HAS values, none of which look like audio, can answer False.
     try:
         from utils.datasets.format_detection import _AUDIO_EXTENSIONS, _is_audio_value
-
         saw_a_usable_value = False
         for index, row in enumerate(dataset):
             if index >= _AUDIO_SNIFF_ROWS:
