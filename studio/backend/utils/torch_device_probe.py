@@ -3,8 +3,12 @@
 
 """Probe torch allocation in a child so driver crashes do not kill the backend.
 
-Only a killed or hung child marks a device unusable. Ordinary Python errors and
-spawn failures are left to the in-process loader. Set
+Only a child that ran cleanly to the end marks an accelerator usable. A crash, a hang, a
+kill and a probe that could not run or be read all leave it unusable, since the allocation
+this stands in front of ends the process rather than raising. Ordinary Python errors are
+the exception: the child ran and reported, so the in-process loader raises the same error
+and describes it better. CPU takes the opposite default, because it cannot fault a driver
+and condemning it would change the embedding backend. Set
 ``UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1`` to skip the probe.
 """
 
@@ -146,9 +150,9 @@ def _died_by_signal(returncode: int) -> bool:
     """Return whether the code represents a hard fault, not any death by signal.
 
     SIGKILL and SIGTERM are excluded: the OOM killer, a container stop and an operator
-    all produce them, and condemning a healthy GPU for the life of the process because
-    something else shot the probe is the wrong trade. Matches the hard-fault set
-    ``LlamaCppBackend._is_signal_crash`` already uses for the same reason.
+    all produce them, and they are not evidence the device faulted. Matches the hard-fault
+    set ``LlamaCppBackend._is_signal_crash`` already uses for the same reason. They are not
+    read as a pass either: the caller sends them to ``_unknown_verdict`` instead.
 
     On Windows a native abort() takes both shapes: an NTSTATUS for an access violation,
     and the CRT's plain exit status 3 when torch or a ROCm library calls abort() itself.
@@ -179,7 +183,12 @@ def _hit_its_own_deadline(returncode: int) -> bool:
     return os.name != "nt" and returncode == -_SIGALRM_NUMBER
 
 
-def _unknown_verdict(device: str, what_happened: str) -> bool:
+def _unknown_verdict(
+    device: str,
+    what_happened: str,
+    *,
+    exc_info: bool = True,
+) -> bool:
     """What to answer when the probe produced no verdict at all.
 
     Unusable for an accelerator: no evidence it is fine, and the two ways of being wrong
@@ -196,7 +205,7 @@ def _unknown_verdict(device: str, what_happened: str) -> bool:
         device,
         what_happened,
         "usable, since CPU cannot fault the driver" if usable else "unusable",
-        exc_info = True,
+        exc_info = exc_info,
     )
     return usable
 
@@ -286,6 +295,19 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
                 f": {tail}" if tail else "",
             )
             return False
+
+        if process.returncode < 0:
+            # Killed by something that is not a hard fault: an OOM kill, a container stop,
+            # an operator. That is not evidence against the device, but it is not the clean
+            # run this returns true for either, and importing torch and building its device
+            # context is itself enough to trip a cgroup limit. Reading it as a pass would
+            # send _load_device() on to a much larger load in this process, which is the
+            # death the probe exists to prevent, so it takes the no-verdict path instead.
+            return _unknown_verdict(
+                device,
+                f"was killed by signal {-process.returncode} without faulting",
+                exc_info = False,
+            )
         return True
     finally:
         # A child handed to the asynchronous reaper remains adopted until it exits.

@@ -457,6 +457,31 @@ def test_died_by_signal(monkeypatch, returncode, on_windows, expected):
     assert torch_device_probe._died_by_signal(returncode) is expected
 
 
+@pytest.mark.parametrize("killer", [9, 15, 1])
+def test_a_killed_probe_is_not_a_pass_for_an_accelerator(monkeypatch, killer):
+    # Not a hard fault, so it is no evidence against the device, but it is not the clean
+    # run that earns a pass either. Importing torch and building its device context is
+    # enough to trip a cgroup OOM on its own, and reading that as a pass sends the caller
+    # on to a much larger load in this process.
+    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _patch_popen(monkeypatch, _FakeProcess(returncode = -killer))
+    assert torch_device_probe.device_can_allocate("cuda") is False
+
+
+def test_a_killed_probe_still_leaves_cpu_available(monkeypatch):
+    # Same no-verdict trade as a probe that never ran: CPU cannot fault a GPU driver, and
+    # condemning it would push the caller past its CPU fallback to a different backend.
+    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _patch_popen(monkeypatch, _FakeProcess(returncode = -9))
+    assert torch_device_probe.device_can_allocate("cpu") is True
+
+
+def test_a_clean_child_is_still_a_pass(monkeypatch):
+    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _patch_popen(monkeypatch, _FakeProcess(returncode = 0))
+    assert torch_device_probe.device_can_allocate("cuda") is True
+
+
 def test_real_torch_allocates_on_cpu():
     pytest.importorskip("torch")
     probe = subprocess.run(
