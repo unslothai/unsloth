@@ -95,9 +95,11 @@ def _without_the_array_wraps(src: str) -> str:
 
 
 def _amd_scan_block(src: str) -> str:
-    """The `if (-not $HasROCm)` WMI fallback: the adapter list the label is read from."""
+    """The WMI fallback: the adapter list the label is read from. Gated on the ARCH,
+    not on $HasROCm, so the peer list also exists on the amd-smi market-name-only path
+    (an arch there is null while $HasROCm is true)."""
     m = re.search(
-        r"^    if \(-not \$HasROCm\) \{\n        try \{\n.*?^    \}\n",
+        r"^    if \(-not \$script:ROCmGfxArch\) \{\n        try \{\n.*?^    \}\n",
         src,
         re.DOTALL | re.MULTILINE,
     )
@@ -438,10 +440,12 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
 
 
 def _installer_scan_block() -> str:
-    """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds."""
+    """install.ps1's own WMI fallback plus the name table it feeds. Gated on the ARCH,
+    not on $HasROCm: amd-smi can set the latter with no arch, and the peer list this
+    block builds has to exist on that path too."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = src.index(
-        "        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode"
+        "        if (-not $ROCmGfxArch) {\n            try {\n                # ConfigManagerErrorCode"
     )
     end = src.index("        # Capture ROCm version for wheel selection", start)
     return src[start:end]
@@ -457,7 +461,10 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                # Both names: install.ps1 asks CIM, and the old name throws as it does on
+                # PowerShell 7, so a revert fails instead of answering nothing via the catch.
+                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                "function Get-WmiObject { throw 'Get-WmiObject is not available in PowerShell 7' }",
                 "function substep { param($a, $b) }",
                 "$HasROCm = $false",
                 "$ROCmGpuLabel = $null",
