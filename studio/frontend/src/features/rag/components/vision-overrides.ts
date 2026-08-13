@@ -21,10 +21,13 @@ function hasLocal(key: string): boolean {
 
 /** Ingest-time vision-pass overrides, sent only once the user has set them;
  * otherwise backend env defaults own the policy. Shared by every upload path. */
-export function resolveVisionOverrides(): {
+export async function resolveVisionOverrides(): Promise<{
   ocr: boolean | undefined;
   caption: boolean | undefined;
-} {
+}> {
+  // These live in the mirrored chat settings, so a fresh browser has to wait for
+  // them: an ingest cannot be undone once its vision passes have run.
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
   const state = useChatRuntimeStore.getState();
   return {
     ocr: hasLocal(CHAT_RAG_OCR_KEY) ? state.ragOcrScanned : undefined,

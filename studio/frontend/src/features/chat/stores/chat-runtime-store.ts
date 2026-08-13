@@ -597,7 +597,13 @@ function flushPreHydrationSettings(): void {
  * cache; the backend copy is what a second browser or a remote session reads.
  */
 function persistSetting(key: string, raw: string): void {
-  if (readStorageValue(key) !== raw) mirrorSettingToBackend(key, raw);
+  // Before hydration the cache says nothing about the server's value, so an
+  // explicit write is recorded even where it changes nothing locally. A
+  // constraint write (deep research turning the tool pills off) has to reach
+  // the backend, or hydration restores the toggle it was there to clear.
+  if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+    mirrorSettingToBackend(key, raw);
+  }
   writeStorageValue(key, raw);
 }
 
@@ -606,12 +612,23 @@ function persistSetting(key: string, raw: string): void {
  * hydration such a write only reflects this browser's cache, so treating it as
  * an edit would both block the stored preference from hydrating and replay the
  * load's default over it. It reaches the cache and waits for the server's.
+ *
+ * `stillCurrent` says the value matches the live store. A load captures its
+ * settings up front and persists them on success, so one that started before
+ * hydration and finished after it would otherwise write the stale capture over
+ * the preference that just arrived.
  */
-function persistLoadDerivedSetting(key: string, raw: string): void {
+function persistLoadDerivedSetting(
+  key: string,
+  raw: string,
+  stillCurrent: boolean,
+): void {
   if (!mirroredSettingsHydrated) {
     writeStorageValue(key, raw);
     return;
   }
+  // Dropped outright: the cache now holds the hydrated preference too.
+  if (!stillCurrent) return;
   persistSetting(key, raw);
 }
 
@@ -763,7 +780,11 @@ export function readPersistedSpeculativeType(): string {
 // unapplied dropdown edit the user might Reset or abandon before Apply.
 export function saveSpeculativeType(value: string | null): void {
   if (value && PERSISTED_SPEC_MODES.has(value)) {
-    persistLoadDerivedSetting(CHAT_SPECULATIVE_TYPE_KEY, value);
+    persistLoadDerivedSetting(
+      CHAT_SPECULATIVE_TYPE_KEY,
+      value,
+      useChatRuntimeStore.getState().speculativeType === value,
+    );
   }
 }
 
@@ -774,7 +795,11 @@ export function readPersistedGpuMemoryMode(): "auto" | "manual" {
 }
 
 export function saveGpuMemoryMode(value: "auto" | "manual"): void {
-  persistLoadDerivedSetting(CHAT_GPU_MEMORY_MODE_KEY, value);
+  persistLoadDerivedSetting(
+    CHAT_GPU_MEMORY_MODE_KEY,
+    value,
+    useChatRuntimeStore.getState().gpuMemoryMode === value,
+  );
 }
 
 /** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
