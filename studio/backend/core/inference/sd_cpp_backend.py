@@ -379,7 +379,7 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
         head = name.rstrip("0123456789")
         if head.upper() not in _PHYSICAL_INDEX_DEVICE_PREFIXES:
             continue
-        if name[len(head):] == str(ordinal):
+        if name[len(head) :] == str(ordinal):
             return name
     return None
 

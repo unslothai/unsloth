@@ -169,7 +169,6 @@ def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]
         return None
     try:
         import torch
-
         count = torch.cuda.device_count()
     except Exception as exc:  # noqa: BLE001 -- no torch / no driver: reported, never guessed
         raise ValueError(f"GPU selection needs a working CUDA or ROCm torch build: {exc}") from exc
@@ -185,7 +184,6 @@ def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]
     def _free_vram(gpu_id: int) -> int:
         try:
             import torch
-
             return int(torch.cuda.mem_get_info(gpu_id)[0])
         except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
             return -1
@@ -206,15 +204,12 @@ def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
         return
     try:
         import torch
-
         torch.cuda.set_device(target.ordinal)
     except Exception:  # noqa: BLE001 -- placement still works off torch_device; never fail a load here
         pass
 
 
-def resolve_diffusion_device_target(
-    gpu_ids: Optional[list[int]] = None,
-) -> DiffusionDeviceTarget:
+def resolve_diffusion_device_target(gpu_ids: Optional[list[int]] = None) -> DiffusionDeviceTarget:
     """Resolve the torch device + dtype + capability flags for diffusion.
 
     Prefers Studio's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
@@ -321,7 +316,10 @@ def diffusion_device_target_from_torch_device(
 
 
 def _cuda_or_rocm_target(
-    torch: Any, *, is_rocm: bool, gpu_ids: Optional[list[int]] = None
+    torch: Any,
+    *,
+    is_rocm: bool,
+    gpu_ids: Optional[list[int]] = None,
 ) -> DiffusionDeviceTarget:
     ordinal = resolve_selected_cuda_ordinal(gpu_ids)
     if is_rocm:

@@ -173,6 +173,7 @@ def metal_text_encoder_flags() -> list[str]:
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
+
 def device_backend_flags(
     device_name: Optional[str], offload: Optional[list[str]] = None
 ) -> list[str]:
