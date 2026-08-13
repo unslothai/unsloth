@@ -104,7 +104,9 @@ def _amd_smi_allowed() -> bool:
 
 
 def _run_amd_smi(
-    *args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT, count_failures: bool = True
+    *args: str,
+    timeout: int = _AMD_SMI_DEFAULT_TIMEOUT,
+    count_failures: bool = True,
 ) -> Optional[Any]:
     """Run amd-smi with the given args and return parsed JSON, or None.
 

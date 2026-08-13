@@ -83,9 +83,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
     """Defect A: the branch keyed rows by amd-smi's gpu id and compared that number
     against HIP visibility tokens."""
 
-    def test_a_reordered_host_reports_each_cards_memory_under_its_hip_id(
-        self, rocm, monkeypatch
-    ):
+    def test_a_reordered_host_reports_each_cards_memory_under_its_hip_id(self, rocm, monkeypatch):
         """amd-smi gpu 1 is HIP 0 here. Keyed by amd-smi's number, the 96 GiB card's
         memory lands on HIP id 1 and the planner pins the 16 GiB card for a model
         only the big one fits."""
@@ -140,9 +138,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
     def test_a_single_gpu_host_needs_no_mapping(self, rocm, monkeypatch):
         """One card on both sides forces the mapping, so the common ROCm desktop
         keeps the context saving on any amd-smi version."""
-        monkeypatch.setattr(
-            amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None)
-        )
+        monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
 
@@ -165,9 +161,7 @@ class TestAnUnreadableMaskDeclines:
 
     def test_an_empty_mask_still_means_no_gpus(self, rocm, monkeypatch):
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
-        monkeypatch.setattr(
-            amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None)
-        )
+        monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
 
@@ -219,16 +213,11 @@ class TestAPartialAnswerDefersToTorch:
                 (16 * 1024**3, 32 * 1024**3) if ordinal == 0 else (7 * 1024**3, 8 * 1024**3)
             ),
         )
-        assert LlamaCppBackend._get_gpu_memory() == [
-            (0, 16384, 32768),
-            (1, 7168, 8192),
-        ]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 16384, 32768), (1, 7168, 8192)]
 
     def test_a_visible_device_amd_smi_never_enumerated_declines(self, rocm, monkeypatch):
         """The mask names two cards and amd-smi answered for one; the other is not
         "absent", it is unmeasured."""
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
-        monkeypatch.setattr(
-            amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None)
-        )
+        monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
