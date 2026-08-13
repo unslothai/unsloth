@@ -206,7 +206,15 @@ class _TurnAccumulator:
     parses it into a real call, or releases it when it turns out to be prose.
     """
 
-    def __init__(self, *, provisional_tool_names: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        *,
+        provisional_tool_names: frozenset[str] = frozenset(),
+        single_call_only: bool = False,
+    ) -> None:
+        # only the first call survives disable_parallel_tool_use, so the rest must open
+        # no card: it would stream its arguments and then close blank, having never run.
+        self._single_call_only = single_call_only
         self.text: str = ""
         self.shown: str = ""
         self.pending: str = ""
@@ -352,11 +360,14 @@ class _TurnAccumulator:
                 continue
             name = function.get("name")
             if isinstance(name, str) and name:
-                # a name can be split across deltas the way arguments are.
-                call["function"]["name"] += name
+                # replaced, never appended: llama-server re-sends the whole name as it
+                # grows mid-parse (common/chat.cpp compute_diffs), so += would double it.
+                call["function"]["name"] = name
             arguments = function.get("arguments")
             if isinstance(arguments, str):
                 call["function"]["arguments"] += arguments
+            if self._single_call_only and slot != min(self.tool_calls):
+                continue
             events.extend(
                 self._provisional_events(call, arguments, has_real_id = slot in self._real_id_slots)
             )
@@ -550,6 +561,26 @@ def _close_provisional_cards(turn: _TurnAccumulator, resolved: set[str]) -> list
     return lines
 
 
+def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
+    """Append a user turn, merging into a trailing one so roles keep alternating.
+
+    A turn whose only calls were no-ops appends no assistant message, so a bare
+    append would leave two user turns in a row. Unlike the in-process loops this
+    conversation is rendered by the provider, and a strict server rejects that.
+    """
+    if not content:
+        return
+    last = conversation[-1] if conversation else None
+    if (
+        isinstance(last, dict)
+        and last.get("role") == "user"
+        and isinstance(last.get("content"), str)
+    ):
+        conversation[-1] = {**last, "content": f"{last['content']}\n\n{content}"}
+        return
+    conversation.append({"role": "user", "content": content})
+
+
 def _resolve_permission_mode(
     permission_mode: Optional[str], bypass_permissions: bool
 ) -> tuple[str, bool]:
@@ -668,6 +699,7 @@ async def stream_chat_completion_with_local_tools(
                     bypass_permissions = bypass_permissions,
                     permission_mode = permission_mode,
                 ),
+                single_call_only = disable_parallel_tool_use,
             )
             gen = client.stream_chat_completion(
                 messages = conversation,
@@ -819,8 +851,9 @@ async def stream_chat_completion_with_local_tools(
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 # markup never replays: the call is carried structurally below.
+                # the full catalog, so a spent one-shot's rehearsal form still strips.
                 "content": strip_tool_markup(
-                    turn.text, final = True, enabled_tool_names = enabled_tool_names
+                    turn.text, final = True, enabled_tool_names = all_tool_names
                 ),
             }
             assistant_tool_calls: list[dict[str, Any]] = []
@@ -992,13 +1025,17 @@ async def stream_chat_completion_with_local_tools(
                     continue_final_message = continue_final_message,
                 )
             conversation.extend(tool_messages)
-            append_deferred_nudges(conversation, nudge_messages)
+            # deferred to after the tool results, so a no-op never splits a call from them.
+            _append_user_turn(
+                conversation,
+                "\n\n".join(dict.fromkeys(message["content"] for message in nudge_messages)),
+            )
             if turn_executed_real_tool:
                 remaining_iterations -= 1
             if remaining_iterations == 0 and not controller.force_final_answer:
                 # the catalog is gone from here on, so say why rather than letting
                 # the next pass ask for a tool that is no longer offered.
-                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+                _append_user_turn(conversation, BUDGET_EXHAUSTED_NUDGE)
 
         usage_line = _usage_chunk_line(model, usage_totals)
         if usage_line is not None:

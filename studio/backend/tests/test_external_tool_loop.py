@@ -1758,21 +1758,27 @@ def test_suppressed_duplicate_closes_its_provisional_card():
     assert started == ended
 
 
-def test_fragmented_function_name_is_accumulated():
-    """A split name must not resolve to its last fragment and read as disabled."""
+def test_a_regrown_function_name_replaces_rather_than_appends():
+    """llama-server re-sends the whole name as it grows (common/chat.cpp), not a suffix."""
     executed = []
     client = _FakeClient(
         [
             [
-                _chunk(tool_calls = [{"index": 0, "id": "c0", "function": {"name": "web_"}}]),
+                _chunk(
+                    tool_calls = [
+                        {"index": 0, "id": "w1", "function": {"name": "web", "arguments": "{"}}
+                    ]
+                ),
                 _chunk(
                     tool_calls = [
                         {
                             "index": 0,
-                            "function": {"name": "search", "arguments": '{"query":"x"}'},
+                            "id": "w1",
+                            "function": {"name": "web_search", "arguments": '"query"'},
                         }
                     ]
                 ),
+                _chunk(tool_calls = [{"index": 0, "function": {"arguments": ': "unsloth"}'}}]),
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
@@ -1781,7 +1787,7 @@ def test_fragmented_function_name_is_accumulated():
     )
 
     def _execute(name, arguments, **kwargs):
-        executed.append(name)
+        executed.append((name, arguments))
         return "Title: x"
 
     asyncio.run(
@@ -1795,7 +1801,7 @@ def test_fragmented_function_name_is_accumulated():
             )
         )
     )
-    assert executed == ["web_search"]
+    assert executed == [("web_search", {"query": "unsloth"})]
 
 
 def test_tool_call_without_an_id_still_pairs_its_result():
@@ -1946,3 +1952,121 @@ def test_a_set_cancel_event_stops_the_loop():
     assert len(client.calls) == 1
     assert "should never be requested." not in _content(lines)
     assert lines[-1] == "data: [DONE]"
+
+
+def test_a_noop_only_turn_keeps_roles_alternating():
+    """A no-op appends no assistant turn, and a strict server rejects user/user."""
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {"index": 0, "id": "c0", "function": {"name": "bash", "arguments": "{}"}}
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "ok"), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "run ls"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: pytest.fail("disabled tool must not run"),
+            )
+        )
+    )
+    roles = [message["role"] for message in client.calls[1]["messages"]]
+    assert roles == ["user"]
+    assert "bash" in client.calls[1]["messages"][-1]["content"]
+
+
+def test_budget_nudge_merges_into_a_trailing_noop_nudge():
+    """Both are user turns, so appending the second bare would break alternation."""
+    big_a = json.dumps({"code": "a"})
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {"index": 0, "id": "c0", "function": {"name": "python", "arguments": big_a}}
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {"name": "python", "arguments": big_a},
+                        },
+                        {
+                            "index": 1,
+                            "id": "c2",
+                            "function": {"name": "python", "arguments": json.dumps({"code": "b"})},
+                        },
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "done."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                max_tool_iterations = 2,
+                execute_tool = lambda *a, **k: "out",
+            )
+        )
+    )
+    roles = [message["role"] for message in client.calls[2]["messages"]]
+    assert all(a != b for a, b in zip(roles, roles[1:]))
+
+
+def test_dropped_parallel_call_opens_no_provisional_card():
+    """Only the first call runs, so a card for the rest would stream then blank out."""
+    big = json.dumps({"code": "z" * 400})
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {"index": 0, "id": "c0", "function": {"name": "python", "arguments": big}},
+                        {"index": 1, "id": "c1", "function": {"name": "python", "arguments": big}},
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "done."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                disable_parallel_tool_use = True,
+                execute_tool = lambda *a, **k: "ok",
+            )
+        )
+    )
+    events = _events(lines)
+    assert {e["tool_call_id"] for e in events if e["type"] == "tool_start"} == {"c0"}
+    assert not [e for e in events if e["type"] == "tool_args" and e["tool_call_id"] == "c1"]

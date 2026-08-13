@@ -3241,3 +3241,28 @@ def test_external_loop_permission_mode_keeps_the_legacy_confirm_contract():
     assert (
         _external_loop_permission_mode(req(confirm_tool_calls = False, provider_type = "vllm")) is None
     )
+
+
+def test_external_stream_is_tracked_but_not_counted_as_local():
+    # It must stay cancellable by thread deletion while staying invisible to the
+    # model-swap guard, which assumes every entry decodes on the local llama server.
+    import threading
+
+    from routes.inference import _CANCEL_REGISTRY, _TrackedCancel
+    from state import active_generations
+
+    event = threading.Event()
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        thread_id = "T",
+        provider_type = "vllm",
+    )
+    before = active_generations.count()
+    with _TrackedCancel.for_payload(event, payload, "cancel-1", "session-1", local_model = False):
+        assert event in _CANCEL_REGISTRY["cancel-1"]
+        assert active_generations.count() == before
+        assert "T" not in active_generations.active_thread_ids()
+        # deleting the thread still has to stop it
+        assert active_generations.cancel_thread("T") == 1
+        assert event.is_set()
+    assert "cancel-1" not in _CANCEL_REGISTRY

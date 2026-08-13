@@ -2861,23 +2861,31 @@ class _TrackedCancel:
         thread_id = None,
         model = None,
         kind = "chat",
+        local_model = True,
     ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, model = model, kind = kind
+            event, thread_id = thread_id, model = model, kind = kind, local_model = local_model
         )
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        local_model = True,
+    ):
         """Track the run against the conversation its request names."""
         return cls(
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
             model = getattr(payload, "model", None),
+            local_model = local_model,
         )
 
     def __enter__(self):
@@ -11817,9 +11825,15 @@ async def _proxy_to_external_provider(
                 **_provider_stream_kwargs,
             )
         if local_cancel_event is not None:
+            # tracked so deleting the thread stops its tools; flagged non-local so a model
+            # swap neither 409s on this stream nor cancels it.
             cancel_scope.enter_context(
                 _TrackedCancel.for_payload(
-                    local_cancel_event, payload, payload.cancel_id, payload.session_id
+                    local_cancel_event,
+                    payload,
+                    payload.cancel_id,
+                    payload.session_id,
+                    local_model = False,
                 )
             )
         try:

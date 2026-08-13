@@ -35,7 +35,7 @@ class ActiveGeneration:
     Each __enter__ mints its own handle, so overlapping uses never clobber.
     """
 
-    __slots__ = ("thread_id", "cancel_event", "model", "kind", "_handle")
+    __slots__ = ("thread_id", "cancel_event", "model", "kind", "local_model", "_handle")
 
     def __init__(
         self,
@@ -44,11 +44,15 @@ class ActiveGeneration:
         thread_id: Optional[str] = None,
         model: Optional[str] = None,
         kind: str = "chat",
+        local_model: bool = True,
     ):
         self.thread_id = thread_id or None
         self.cancel_event = cancel_event
         self.model = model or None
         self.kind = kind
+        # an external provider stream is registered for thread deletion but does not
+        # decode on the local server, so the model-swap guard must not count it.
+        self.local_model = local_model
         self._handle: Optional[str] = None
 
     def __enter__(self) -> "ActiveGeneration":
@@ -59,6 +63,7 @@ class ActiveGeneration:
                 "thread_id": self.thread_id,
                 "model": self.model,
                 "kind": self.kind,
+                "local_model": self.local_model,
                 "started_at": time.time(),
                 "event": self.cancel_event,
             }
@@ -95,8 +100,11 @@ def active_thread_ids() -> list[str]:
     A first turn that races persistence has no thread id yet: count() sees it,
     this cannot name it.
     """
+    with _LOCK:
+        entries = [e for e in _ACTIVE.values() if e.get("local_model", True)]
+    entries.sort(key = lambda e: e["started_at"])
     seen: list[str] = []
-    for e in snapshot():
+    for e in entries:
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
@@ -104,9 +112,13 @@ def active_thread_ids() -> list[str]:
 
 
 def count() -> int:
-    """Number of generations currently in flight."""
+    """Generations decoding on the local server, which a model swap would interrupt.
+
+    External provider streams are registered here so thread deletion can stop them,
+    but they survive a swap untouched, so they are not counted.
+    """
     with _LOCK:
-        return len(_ACTIVE)
+        return sum(1 for e in _ACTIVE.values() if e.get("local_model", True))
 
 
 def cancel_all() -> int:
@@ -117,7 +129,7 @@ def cancel_all() -> int:
     counted.
     """
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values()]
+        events = [e["event"] for e in _ACTIVE.values() if e.get("local_model", True)]
     for ev in events:
         try:
             ev.set()

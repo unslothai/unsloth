@@ -2214,11 +2214,18 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
-    const nextToolsEnabled = supportsBuiltinWebSearch
-      ? isKimi
-        ? false
-        : (storedToolsEnabled ?? searchOnByDefault)
-      : false;
+    // a self-hosted connection runs Search and Code locally, so its saved pill
+    // state must survive even though it ships no provider-side builtin.
+    const studioToolsEnabled = providerStudioToolsEnabled(
+      provider,
+      selection.modelId,
+    );
+    const nextToolsEnabled =
+      supportsBuiltinWebSearch || studioToolsEnabled
+        ? isKimi
+          ? false
+          : (storedToolsEnabled ?? searchOnByDefault)
+        : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -2234,15 +2241,16 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      supportsTools: providerStudioToolsEnabled(provider, selection.modelId),
+      supportsTools: studioToolsEnabled,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
-        ? (storedCodeToolsEnabled ?? false)
-        : false,
+      codeToolsEnabled:
+        supportsBuiltinCodeExecution || studioToolsEnabled
+          ? (storedCodeToolsEnabled ?? false)
+          : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
@@ -2753,11 +2761,17 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
-        const nextToolsEnabled = supportsBuiltinWebSearch
-          ? isKimi
-            ? false
-            : (storedToolsEnabled ?? searchOnByDefault)
-          : false;
+        // mirror of the sibling effect: a self-hosted connection runs these locally.
+        const studioToolsEnabled = providerStudioToolsEnabled(
+          selectedProvider,
+          selectedExternal?.modelId,
+        );
+        const nextToolsEnabled =
+          supportsBuiltinWebSearch || studioToolsEnabled
+            ? isKimi
+              ? false
+              : (storedToolsEnabled ?? searchOnByDefault)
+            : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -2783,18 +2797,16 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          supportsTools: providerStudioToolsEnabled(
-            selectedProvider,
-            selectedExternal?.modelId,
-          ),
+          supportsTools: studioToolsEnabled,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
-            ? (storedCodeToolsEnabled ?? false)
-            : false,
+          codeToolsEnabled:
+            supportsBuiltinCodeExecution || studioToolsEnabled
+              ? (storedCodeToolsEnabled ?? false)
+              : false,
           imageToolsEnabled: supportsBuiltinImageGeneration
             ? (storedImageToolsEnabled ?? false)
             : false,
