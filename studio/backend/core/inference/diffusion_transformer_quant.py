@@ -359,10 +359,10 @@ def _smoke_cache_device_key(device: str) -> str:
         return device
     try:
         import torch
-
         return f"cuda:{torch.cuda.current_device()}"
     except Exception:  # noqa: BLE001 -- an unreadable index falls back to the un-indexed key
         return device
+
 
 # Data-center GPU tokens (un-nerfed FP32 accumulate). Matched as whole tokens of get_device_name() so "A4000" is not mistaken for "A40"; anything else is consumer-class.
 _DATACENTER_GPU_TOKENS = frozenset(

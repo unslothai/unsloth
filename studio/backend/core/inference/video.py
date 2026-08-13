@@ -1906,7 +1906,9 @@ class VideoBackend:
 
     @staticmethod
     def _te_prequant_sources(
-        fam: Any, text_encoder_quant: Optional[str], gpu_ordinal: Optional[int] = None
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
