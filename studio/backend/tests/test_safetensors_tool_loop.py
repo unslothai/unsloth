@@ -17,6 +17,7 @@ from typing import cast
 import pytest
 
 from core.inference import safetensors_agentic
+from core.inference import tool_call_parser
 from core.inference.safetensors_agentic import (
     _coerce_arguments,
     _detect_render_html_tool_start,
@@ -661,11 +662,14 @@ class TestParser:
     def test_streaming_strip_handles_nested_wrapperless_gemma(self):
         # Same class of bug for the wrapper-less Gemma call:NAME{...} form with a
         # nested object argument.
-        raw = "ok call:f{loc:{city:NYC},n:3} tail"
+        raw = "ok\ncall:f{loc:{city:NYC},n:3} tail"
         out = strip_tool_markup_streaming(raw)
         assert "call:f" not in out
         assert "}" not in out
-        assert "ok " in out and "tail" in out
+        assert "ok" in out and "tail" in out
+        # Mid-sentence the same shape is prose: streaming display keeps it.
+        inline = "ok call:f{loc:{city:NYC},n:3} tail"
+        assert strip_tool_markup_streaming(inline) == inline
 
     def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
         # A literal ``<function=...>`` in a value is data: the strip must close at the REAL
@@ -1099,8 +1103,11 @@ class TestParserMultiFormat:
         assert result == []
 
     def test_gemma4_bare_strip_markup_final(self):
-        text = "Here you go: call:web_search{query:weather today}"
+        text = "Here you go:\ncall:web_search{query:weather today}"
         assert "call:web_search" not in strip_tool_markup(text, final = True)
+        # Mid-sentence: prose, kept whole.
+        inline = "Here you go: call:web_search{query:weather today}"
+        assert strip_tool_markup(inline, final = True) == inline
 
     # ── Cross-format sentinels ────────────────────────────────────
 
@@ -5241,3 +5248,58 @@ def test_both_tool_loops_say_they_are_waiting_for_approval():
             and node.func.id == "awaiting_approval_status"
         ]
         assert calls, f"{name} still announces a gated tool call as running"
+
+
+class TestStreamingDisplayStripStillMatchesTheExportedHelper:
+    """The loop used to call ``strip_tool_markup_streaming`` directly; it now drives a
+    ``StreamingMarkupStripper`` instead, and the exported helper has no call site left in
+    this module. Everything else in this file asserts on the helper, so without this the
+    suite would look like it guards the loop while guarding a parallel implementation.
+
+    This pins the two together: for the inputs the rest of the file uses, the incremental
+    path the loop actually runs must agree with the helper at every prefix.
+    """
+
+    @staticmethod
+    def _loop_strip(text, names = None):
+        """The loop's display strip, reproduced exactly: Magistral reasoning removal,
+        then the shared incremental stripper (see ``_strip_streaming_display``)."""
+        stripper = tool_call_parser.StreamingMarkupStripper(names)
+        return stripper.strip(safetensors_agentic._strip_mistral_reasoning(text))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call>',
+            "before <function=search><parameter=q>x</parameter></function> after",
+            "plain prose with no markup at all",
+            "<think>rehearsed <tool_call>{}</tool_call></think> visible",
+            "[TOOL_CALLS] search[ARGS]{}",
+            "trailing <function=search",
+            "",
+        ],
+    )
+    def test_the_loop_path_agrees_with_the_helper(self, text):
+        names = {"search"}
+        assert self._loop_strip(text, names) == strip_tool_markup_streaming(
+            text, enabled_tool_names = names
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call> after',
+            "<function=search><parameter=q>a</parameter></function>tail",
+        ],
+    )
+    def test_the_loop_path_agrees_at_every_prefix(self, text):
+        """The loop feeds a growing buffer, so agreement has to hold at each step, not
+        only on the whole string."""
+        names = {"search"}
+        stripper = tool_call_parser.StreamingMarkupStripper(names)
+        for i in range(1, len(text) + 1):
+            prefix = text[:i]
+            incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
+            assert incremental == strip_tool_markup_streaming(
+                prefix, enabled_tool_names = names
+            ), f"diverged at offset {i}"

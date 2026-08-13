@@ -34,6 +34,7 @@ from typing import Callable, List, Tuple, Union
 import hashlib
 import json
 import threading
+import time
 import yaml
 
 
@@ -1107,13 +1108,20 @@ VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 # Keyed like the vision cache so an unauthenticated/offline/other-revision miss can't poison.
 _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
+# An offline probe cannot answer for an adapter directory without its own tokenizer, nor
+# for a base repo that is not downloaded, and a non-definitive answer is deliberately
+# never cached, so /loras redid both for every checkpoint on every poll. Remembered for a
+# short while rather than permanently, because both can become answerable without a
+# restart: the base gets downloaded, or a training run finishes writing its output.
+_AUDIO_OFFLINE_MISS_TTL_S = 60.0
+_audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
 
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
+
 def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     """Whether more than ``threshold`` tokens start with ``prefix``.
 
-    Equivalent to ``sum(...) > threshold`` but stops at the answer, rather than counting
-    all 28k of Orpheus's codes to settle a question decided by the first 10,001.
+    Equivalent to ``sum(...) > threshold`` but stops at the answer. Summing counted every
+    one of Orpheus's 28k codes to decide a question settled by the first 10,001.
     """
     count = 0
     for token in tokens:
@@ -1124,11 +1132,13 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
+# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
+# ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
+# generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
+# stray <|audio|>; audio_vlm first typed it as audio-input, leaving is_audio False.
 _AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
-    # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
     "dac": lambda tokens: (
         "<|audio_start|>" in tokens
@@ -1137,14 +1147,17 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_end|>" in tokens
     ),
     "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
+    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
+    # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
+    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 # Every substring a pattern above needs. A tokenizer_config whose text contains NONE of
 # these cannot match any pattern, whatever it holds, so the answer is settled without
-# parsing it. Ordinary text checkpoints carry big tokenizers (unsloth/gemma-3-270m-it is
-# 1.16 MB with 6415 added tokens) and json.loads of one was most of the detection cost.
+# parsing it. That matters because an ordinary text checkpoint carries a large
+# tokenizer_config and json.loads of it was the bulk of a cold /loras scan.
 # MUST cover every pattern: _AUDIO_TOKEN_PATTERNS is lambdas, so this cannot be derived
 # from them, and a codec added there without its marker here would silently stop being
-# detected. test_audio_marker_prescan.py fails if the two drift.
+# detected. test_audio_token_detection.py fails if the two drift.
 _AUDIO_TOKEN_MARKERS = (
     "<|AUDIO|>",  # csm
     "<|startoftranscript|>",  # whisper
@@ -1183,10 +1196,58 @@ def detect_audio_type(
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
 
+    A None here is ambiguous: it covers both "not an audio model" and "the repo
+    could not be read". Callers that gate a user action on the answer want
+    detect_audio_type_checked instead, so a gated or offline repo is not reported
+    as a definitively non-audio one.
+
     When local_files_only is True (offline export) the remote HuggingFace fetch
     is skipped so detection never blocks on a network read; only the local HF
     cache is consulted.
     """
+    return detect_audio_type_checked(
+        model_name,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        revision = revision,
+    )[0]
+
+
+def detect_audio_type_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[Optional[str], bool]:
+    """detect_audio_type, plus whether the answer is definitive.
+
+    Returns (audio_type_or_None, definitive). definitive is False when every read
+    failed for a reason that is not "the file is absent" -- a 401 on a gated repo,
+    a 5xx, a timeout -- so a None means unknown rather than "not audio".
+    """
+    # No model is definitively not an audio model. Without this the name is
+    # interpolated into the Hub URL and every poll fetches /None/resolve/main/...
+    if not model_name:
+        return None, True
+
+    # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
+    effective_offline = bool(local_files_only or _env_offline())
+    # Checked on the RAW name, before the casing resolution below, because resolving a
+    # repo id that is not in the cache walks every cache directory, and that walk is the
+    # cost this cache exists to avoid. A casing variant just takes its own entry, which
+    # for a short-lived negative is harmless.
+    miss_key: _CapabilityCacheKey = (
+        model_name,
+        _token_fingerprint(hf_token),
+        effective_offline,
+    )
+    if revision is not None:
+        miss_key += (revision,)
+    if effective_offline:
+        seen_at = _audio_offline_miss_cache.get(miss_key)
+        if seen_at is not None and time.monotonic() - seen_at < _AUDIO_OFFLINE_MISS_TTL_S:
+            return None, False
+
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
         if is_local_path(model_name):
@@ -1195,8 +1256,6 @@ def detect_audio_type(
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
-    effective_offline = bool(local_files_only or _env_offline())
     cache_key: _CapabilityCacheKey = (
         resolved_name,
         _token_fingerprint(hf_token),
@@ -1205,7 +1264,8 @@ def detect_audio_type(
     if revision is not None:
         cache_key += (revision,)
     if cache_key in _audio_detection_cache:
-        return _audio_detection_cache[cache_key]
+        # Only definitive results are cached, so a hit is definitive by construction.
+        return _audio_detection_cache[cache_key], True
 
     tokenizer_kwargs = {"local_files_only": effective_offline}
     if revision is not None:
@@ -1214,9 +1274,20 @@ def detect_audio_type(
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:
         _audio_detection_cache[cache_key] = result
+        _audio_offline_miss_cache.pop(miss_key, None)
+    elif effective_offline:
+        _audio_offline_miss_cache[miss_key] = time.monotonic()
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
-    return result
+    elif not definitive:
+        # Offline, this is the ordinary answer for any base that is not downloaded, and
+        # /loras asks once per checkpoint, so info level made it one log line per row per
+        # poll. Online it is worth surfacing: it means gated or an upstream error.
+        (logger.debug if effective_offline else logger.info)(
+            f"Could not determine whether {model_name} is an audio model: "
+            f"tokenizer_config.json was unreadable (gated, offline or upstream error)"
+        )
+    return result, definitive
 
 
 def _detect_audio_from_tokenizer(
@@ -1304,6 +1375,13 @@ def _detect_audio_from_tokenizer(
     # 2) Fall back to the HuggingFace API. This raw requests.get ignores the HF offline
     #    flag, so gate it on local_files_only OR the env vars to skip the network offline.
     if local_files_only or _env_offline():
+        return None, read_any
+
+    # A filesystem path is not a repo id, so the URL below would be nonsense. The /loras scan
+    # reaches here for every adapter directory without its own tokenizer, and since a transient
+    # failure is never cached it paid two 15s timeouts per checkpoint on every pass, blocking
+    # the event loop that calls it. The local read above is the whole answer for a local path.
+    if is_local_path(model_name):
         return None, read_any
 
     try:
@@ -1709,113 +1787,34 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-def _drafter_pairing_stem(name: str, *, kind: str) -> str:
-    """The model family a drafter filename names, stripped of its own markers.
+# Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so one
+# rule serves the local scan, the download, the snapshot reuse and the offline cache.
+# Only the names this module calls are imported here; the rest import from drafters at
+# their use site. A re-export shim would read better, but verify_import_hoist.py scopes
+# its __all__ exemption to package __init__.py on purpose (see its
+# reexport_in_ordinary_module_is_still_blocked self-test).
+from utils.models.drafters import (  # noqa: E402
+    _drafter_launch_path,
+    _drafter_matches_weight,
+    _drafter_split_is_complete,
+    _drafter_stem_rank,
+    _drafter_total_size,
+    detect_dflash_file,
+    dspark_precision_rank,
+)
+from utils.models.drafters import (  # noqa: E402
+    dspark_preference_key as _drafters_dspark_preference_key,
+)
 
-    Both published schemes are handled: ``<kind>-<model>`` and the older
-    ``<model>-<KIND>``. The shard suffix sits outside the quant token, so it
-    goes first or the anchored quant strip below cannot match. Full quant
-    vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too, and the optional
-    bpw modifier goes with it, as _extract_quant_label does.
+
+def dspark_preference_key(name: str) -> Tuple[int, str]:
+    """Sort key picking the preferred DSpark sidecar by name alone.
+
+    Delegates rather than re-exports: routes/inference.py has imported this from here
+    since #7968, and repointing that function-local import trips verify_import_hoist.py's
+    TARGET-CHANGED rule, whose relocation exemption only covers module-level imports.
     """
-    stem = Path(name).stem.lower()
-    if stem.startswith(f"{kind}-"):
-        stem = stem[len(kind) + 1 :]
-    stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
-    if stem.endswith(f"-{kind}"):
-        stem = stem[: -(len(kind) + 1)]
-    return re.sub(
-        rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
-        "",
-        stem,
-        flags = re.IGNORECASE,
-    )
-
-
-def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, kind: str) -> bool:
-    """Whether a drafter pairs with the weight, by name.
-
-    A multi-model folder must not attach a foreign drafter, so the family the
-    drafter names has to PREFIX the weight filename at a non-alphanumeric
-    boundary. That blocks one direction of a ``DeepSeek-V4-Flash-Lite`` /
-    ``DeepSeek-V4-Flash`` pair but not the other: the shorter family name is a
-    prefix of the longer weight, so a base-family sidecar still matches a
-    longer-named sibling's weights. Exact equality cannot replace the prefix
-    rule -- ``mtp-gemma-4-12B-it.gguf`` really does ship beside
-    ``gemma-4-12B-it-qat-*.gguf`` -- so the remaining direction is settled by
-    ranking: callers prefer the longest matching stem (see _drafter_stem_rank).
-    """
-    if weight_name is None:
-        return True
-    stem = _drafter_pairing_stem(candidate_name, kind = kind)
-    weight = weight_name.lower()
-    return (
-        bool(stem)
-        and weight.startswith(stem)
-        and (len(weight) == len(stem) or not weight[len(stem)].isalnum())
-    )
-
-
-def _drafter_stem_rank(candidate_name: str, *, kind: str) -> int:
-    """Sort key placing the most specific family first (longest stem wins).
-
-    Both ``mtp-DeepSeek-V4-Flash-BF16.gguf`` and
-    ``mtp-DeepSeek-V4-Flash-0731-BF16.gguf`` prefix-match a 0731 weight, and
-    only the second is really its drafter.
-    """
-    return -len(_drafter_pairing_stem(candidate_name, kind = kind) or "")
-
-
-def _drafter_launch_path(candidate: Path) -> str:
-    """The path llama-server should receive for *candidate*.
-
-    llama-server takes shard 1 as the model path, and a split copy must stay on
-    its snapshot path: the blob target has no sibling shard names. Single-file
-    drafters still resolve, as callers expect.
-    """
-    loadable = _local_gguf_load_path(candidate)
-    if _GGUF_SPLIT_FILE_RE.match(loadable.name):
-        return str(loadable)
-    return str(loadable.resolve())
-
-
-def _drafter_split_is_complete(candidate: Path) -> bool:
-    """False for a partial split set, which would fail llama-server's draft
-    startup and disable speculation entirely; skip it so a complete copy wins."""
-    try:
-        _, complete = colocated_split_shards(candidate)
-    except OSError:
-        return False
-    return complete
-
-
-def _drafter_total_size(candidate: Path) -> int:
-    """Bytes across every shard. Candidates are collapsed to shard 1, so a split
-    copy must be summed or it would outrank a smaller single file."""
-    try:
-        shards, _ = colocated_split_shards(candidate)
-        return sum(shard.stat().st_size for shard in shards)
-    except OSError:
-        return sys.maxsize
-
-
-def dspark_precision_rank(name: str) -> int:
-    """Sidecar precision preference: Q8_0 first, the precision the DSpark model
-    card recommends. Shared with the hub download and VRAM-sizing paths so the
-    file Studio budgets for is the file it fetches and launches."""
-    base = Path(name).name.lower()
-    if "-q8_0" in base:
-        return 0
-    if "-q4_0" in base:
-        return 1
-    if "-bf16" in base or "-f16" in base:
-        return 2
-    return 3
-
-
-def dspark_preference_key(name: str) -> tuple[int, str]:
-    """Sort key picking the preferred sidecar by name alone (no filesystem)."""
-    return dspark_precision_rank(name), Path(name).name.lower()
+    return _drafters_dspark_preference_key(name)
 
 
 def detect_mtp_file(
@@ -2488,11 +2487,11 @@ def _qualified_variant_name(filename: str, label: str) -> str:
     if _gguf_variant_token(filename) is None:
         return label
     key = _gguf_variant_key(filename)
-    # Only a PATH-qualified key. Without the slash the key is the bare quant token, and this
-    # module's label is the richer of the two: it carries the bpw modifier that keeps
-    # ``model-IQ4_XS-3.53bpw.gguf`` and ``model-IQ4_XS-3.97bpw.gguf`` separately selectable, which
-    # the token extractor drops. Swapping in the token would merge them.
-    return key if "/" in key else label
+    # A qualified key carries more identity than the bare quant: usually a directory, but H3's
+    # root-level partitions use the full stem. Compare against the plain key rather than look for
+    # a slash, keeping bpw-only keys on the label that separates 3.53bpw from 3.97bpw.
+    plain = _quant_token_with_bpw(filename)
+    return key if plain is not None and key.lower() != plain.lower() else label
 
 
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
@@ -3585,6 +3584,7 @@ class ModelConfig:
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
+    gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -3647,6 +3647,7 @@ class ModelConfig:
         hf_token: Optional[str] = None,
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
+        drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -3657,6 +3658,16 @@ class ModelConfig:
             is_lora: Whether this is a LoRA adapter
             gguf_variant: Optional GGUF quant variant (e.g. "Q4_K_M") to load
                 via -hf for remote repos; None auto-selects via _pick_best_gguf().
+            drafter_accept: ``(candidate, gguf_file, kind, search_root) -> bool``,
+                the caller's extra admission rule for a discovered drafter. A
+                native-grant load passes the lease boundary here so it is applied
+                BEFORE this scan inspects a candidate: detect_dflash_file reads
+                the header of the file it is about to accept, and a
+                ``dflash-*.gguf`` symlink in a granted directory can point at a
+                target outside the lease, which the validated rescan on the load
+                route rejects only after the read already happened. Left None by
+                every caller that has no boundary to impose, which sees the same
+                candidates in the same order as before.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -3725,6 +3736,18 @@ class ModelConfig:
 
                 # Direct file selections may point into a quant subdir while mmproj-*.gguf sits at the root.
                 companion_root = _local_gguf_companion_search_root(path, gguf_file)
+
+                # One accept per drafter kind, bound to the file this load opens.
+                # Each kind admits a different companion directory, so they cannot
+                # share one closure or an MTP load would take a sidecar out of
+                # dspark/.
+                def _drafter_accept_for(kind: str) -> Optional[Callable[[str], bool]]:
+                    if drafter_accept is None:
+                        return None
+                    return lambda candidate: drafter_accept(
+                        candidate, gguf_file, kind, companion_root
+                    )
+
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
                 if mmproj_file:
                     gguf_is_vision = True
@@ -3733,10 +3756,27 @@ class ModelConfig:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
-                mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
+                mtp_file = detect_mtp_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("mtp"),
+                )
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
-                dspark_file = detect_dspark_file(gguf_file, search_root = companion_root)
+                # DSpark and DFlash take the boundary for the same reason, even
+                # though only the DFlash scan opens a candidate: all three are the
+                # same discovery, and a kind that skipped the check would hand the
+                # load route a sidecar it has to reject a second time.
+                dspark_file = detect_dspark_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dspark"),
+                )
+                dflash_file = detect_dflash_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dflash"),
+                )
 
                 return cls(
                     identifier = identifier,
@@ -3757,6 +3797,7 @@ class ModelConfig:
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
                     gguf_dspark_file = dspark_file,
+                    gguf_dflash_file = dflash_file,
                 )
         else:
             # Does the HF repo contain GGUF files?

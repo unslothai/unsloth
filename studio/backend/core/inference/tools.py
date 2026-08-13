@@ -2521,9 +2521,35 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "read_pickle",
     }
 )
-# Pickle-backed loaders that can execute code embedded in the file; gated by
-# receiver module (torch.load, joblib.load) since bare `load` is too common.
-_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# Loaders that can execute code embedded in the data they deserialize; gated by
+# receiver module (torch.load, yaml.load) since bare `load` is too common.
+_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# The load entry points on those modules. yaml.load runs whatever its Loader=
+# builds, and !!python/object/apply in the data is a call, so it asks like the
+# pickle-backed ones do. yaml.safe_load is untouched.
+_AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
+# Loader classes: the same deserialize one level down (yaml.Loader(s).get_data())
+# and what a custom loader subclasses. Ordinary words, so matched by receiver.
+_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset({"Loader", "Constructor"})
+# Names no other library uses, so they are matched wherever they appear rather
+# than by receiver: an alias, a subclass, a loop, a helper or a factory all name
+# one of these somewhere, and following the value through every binding form is
+# a game without an end.
+_AUTO_UNSAFE_YAML_LOADERS = frozenset(
+    {
+        "unsafe_load",
+        "unsafe_load_all",
+        "full_load",
+        "full_load_all",
+        "UnsafeLoader",
+        "CUnsafeLoader",
+        "FullLoader",
+        "CFullLoader",
+        "CLoader",
+        "UnsafeConstructor",
+        "FullConstructor",
+    }
+)
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -3922,6 +3948,58 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     and _wraps_write_callable(_default.args[0])
                 ):
                     dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
+    # Naming a code-executing loader asks, wherever the name appears. Presence
+    # rather than dataflow: a loader can be aliased, subclassed, packed into a
+    # container, returned from a helper or picked by a conditional, and following
+    # it through all of those is a game without an end. A safe read names none of
+    # these, so yaml.safe_load and json.load are unaffected.
+    _module_names = set(_AUTO_UNSAFE_PY_LOAD_MODULES)  # receivers: yaml.load
+    _bare_names = set(_AUTO_UNSAFE_YAML_LOADERS)  # loaders named on their own
+    _imported_modules = set()  # only the module itself, for the return rule
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _root = alias.name.split(".")[0]
+                if _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _imported_modules.add(alias.asname or _root)
+        elif isinstance(node, ast.ImportFrom):
+            _root = (node.module or "").split(".")[0]
+            for alias in node.names:
+                if alias.name in _AUTO_UNSAFE_YAML_LOADERS or (
+                    _root in _AUTO_UNSAFE_PY_LOAD_MODULES
+                    and (
+                        alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                        or alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                    )
+                ):
+                    _bare_names.add(alias.asname or alias.name)
+                elif _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    # from yaml import loader as yl, so yl.Loader still reads as one.
+                    _module_names.add(alias.asname or alias.name)
+    _module_names |= _imported_modules
+
+    def _loader_receiver(node) -> bool:
+        # yaml, a submodule of it (yaml.loader.Loader), or an import alias.
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in _module_names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node.attr in _AUTO_UNSAFE_YAML_LOADERS:
+                return True
+            if (
+                node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or node.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
+            ) and _loader_receiver(node.value):
+                return True
+        elif isinstance(node, ast.Name) and node.id in _bare_names:
+            return True
+        # Handing the module out of a function hands out every loader on it, and
+        # the caller's name for it cannot be seen from here.
+        elif isinstance(node, (ast.Return, ast.Lambda)):
+            _out = node.value if isinstance(node, ast.Return) else node.body
+            if isinstance(_out, ast.Name) and _out.id in _imported_modules:
+                return True
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -8861,6 +8939,107 @@ def _build_sandbox_paths_note() -> str:
     )
 
 
+# Full access (permission_mode='full') edits, applied to the sandboxed text
+# rather than writing a second copy of it. Everything the two modes share -- the
+# relative-path advice, the persisted workdir, the download-link note -- is prose
+# that gets tuned over time, and a parallel copy would drift out of sync in
+# silence. Only the claims the sandbox makes true are touched. A rewording that
+# stops one of these matching is caught by test_full_access_tool_prompt.py, which
+# asserts the sandboxed markers are gone from the result on both platforms.
+_FULL_ACCESS_SUBSTITUTIONS = (
+    # The only sentence in the python description that names the sandbox. Just
+    # dropped, not reworded: where the code runs is said once, by the paths note
+    # below, which both tools carry.
+    ("Execute Python code in a sandbox and", "Execute Python code and"),
+    # POSIX: a blanket denial is wrong with the sandbox off, and so is a blanket
+    # promise. POSIX has no sentence saying where the code runs, so it is added
+    # here; Windows already has one.
+    (
+        "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
+        ". This runs wherever Unsloth Studio is running, which may be a remote host "
+        "or a container with only some paths mounted.{clause}",
+    ),
+    # Windows already says where the code runs and never denies absolute paths,
+    # so there is nothing false to remove; state the capability instead. "the
+    # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
+    # are documented remote modes (README), and the tools run on the host serving
+    # Studio, which is then not the device the user is looking at.
+    (
+        " You are on Windows, and this runs on the user's own machine.",
+        " You are on Windows, and this runs wherever Unsloth Studio is running, "
+        "which may be a remote host or a container with only some paths "
+        "mounted.{clause}",
+    ),
+)
+
+
+# What "the sandbox is off" actually means for paths, per tool. Shared by both
+# platform substitutions: the split is the shim, not the OS. _build_bypass_env
+# keeps _SANDBOX_SITE_DIR on PYTHONPATH for BOTH tools, so sitecustomize.py still
+# loads, and being a CPython startup hook is what separates them. Measured:
+#
+#   python, parent exists    -> writes the real absolute path
+#   python, absent prefix    -> _remap keeps the SUFFIX under the workdir
+#                               (/mnt/data/reports/out.csv -> ./reports/out.csv)
+#                               and returns before the generic fallback, so no
+#                               basename collapse and no anti-clobber
+#   python, other missing parent -> the fallback keeps only the base name, and
+#                               raises when an UNRELATED file holds it; the
+#                               .unsloth_sandbox_remap.json sidecar lets a rewrite
+#                               of the same invented path re-serve its own target
+#   python, prefix present   -> a real /mnt/data mount is never shadowed, so a
+#                               prefix is special only while absent, which is why
+#                               the clause names one inside a conditional and
+#                               never categorically
+#   python, unpatched API    -> only open/io.open/os.open and the mkdir family are
+#                               wrapped: os.rename and os.symlink raise, while
+#                               shutil.copy writes the rewritten file through open
+#                               and then raises in copymode
+#   terminal                 -> the shell's own rules, except for Python it
+#                               launches, which is patched like the python tool
+_FULL_ACCESS_CLAUSE = {
+    "python": (
+        " The code sandbox is disabled, so absolute paths under a directory that "
+        "exists do resolve. Two different rewrites apply when the directory does "
+        "not exist: under a code-interpreter convention prefix (/mnt/data, "
+        "/mnt/outputs, /tmp/outputs, /home/sandbox, /workspace) the rest of the "
+        "path is kept relative to the working directory, replacing any file "
+        "already sitting there; under any other missing directory only the base "
+        "name is kept, and the write fails outright if that name is taken by an "
+        "unrelated file, though rewriting the same absolute path just replaces "
+        "what your own earlier call left there. Both reach only open() and the "
+        "mkdir calls, so os.rename, os.symlink and the like are never rewritten "
+        "and simply fail, and a helper such as shutil.copy can write the "
+        "rewritten file and still raise on a later step. Report where a file "
+        "actually landed rather than the path you asked for."
+    ),
+    "terminal": (
+        " The code sandbox is disabled, so absolute paths do resolve as the shell "
+        "resolves them. Python you launch from here is the exception: it loads the "
+        "same shim as the python tool and gets the same rewrites, so a create "
+        "under a directory that does not exist lands in the working directory."
+    ),
+}
+
+
+def _to_full_access(description: str, tool_name: str) -> str:
+    """Rewrite a sandboxed tool description for Full access.
+
+    Under bypass_permissions the loops pass disable_sandbox=True:
+    _build_bypass_env / _bypass_preexec skip the static analysis, the command
+    blocklist and the rlimits, so the host filesystem really is reachable.
+    Handing a model the sandboxed text in that mode makes it answer "I am
+    sandboxed and cannot see your files" to a question one tool call would have
+    answered. Untouched clauses are the ones still true in both modes: the
+    workdir is the per-session dir either way (_build_bypass_env repoints HOME /
+    TMPDIR / TEMP / TMP at it), and so is the download-link note.
+    """
+    clause = _FULL_ACCESS_CLAUSE[tool_name]
+    for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
+        description = description.replace(sandboxed, full_access.format(clause = clause))
+    return description
+
+
 def _build_terminal_shell_note() -> str:
     """Shell-specific note, on the TERMINAL description only.
 
@@ -8928,6 +9107,57 @@ TERMINAL_TOOL = {
         },
     },
 }
+
+# Full access runs these two without the sandbox, so it gets its own pair of
+# schemas rather than a per-request rebuild: the descriptions are
+# platform-derived constants either way. The sandboxed pair stays the module
+# default, so every existing importer keeps the safe wording. The shell note is
+# unaffected by the substitutions and carries through as-is.
+PYTHON_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **PYTHON_TOOL["function"],
+        "description": _to_full_access(PYTHON_TOOL["function"]["description"], "python"),
+    },
+}
+
+TERMINAL_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": _to_full_access(TERMINAL_TOOL["function"]["description"], "terminal"),
+    },
+}
+
+_FULL_ACCESS_TOOL_BY_NAME = {
+    "python": PYTHON_TOOL_FULL_ACCESS,
+    "terminal": TERMINAL_TOOL_FULL_ACCESS,
+}
+
+
+def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Swap python/terminal for their Full access schemas.
+
+    Only the two sandboxed built-ins are touched; web_search, render_html,
+    search_knowledge_base and MCP tools are passed through untouched, and a list
+    without either built-in is returned as-is so callers can apply this
+    unconditionally. The input list is never mutated -- ALL_TOOLS entries are
+    module globals shared across requests.
+    """
+    if not tools:
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        replacement = _FULL_ACCESS_TOOL_BY_NAME.get(name)
+        if replacement is None:
+            out.append(tool)
+        else:
+            out.append(replacement)
+            swapped = True
+    return out if swapped else tools
+
 
 RENDER_HTML_TOOL = {
     "type": "function",
@@ -9829,6 +10059,30 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
         return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
+def _explicit_proxy_applies(scheme: str, host: str) -> bool:
+    """Whether urllib routes a *scheme* request for *host* through a proxy.
+
+    Only a proxied fetch may keep the hostname in the request URL: the proxy
+    resolves it, so this host never looks it up again. A direct one would, which
+    is the DNS-rebinding window, so it stays pinned to the validated IP.
+
+    *host* must be the ``host[:port]`` form ``Request.host`` carries, since that
+    is what ``ProxyHandler`` passes to ``proxy_bypass``; probing the bare hostname
+    instead would disagree with it on a port-qualified NO_PROXY entry.
+    """
+    from urllib.request import getproxies, proxy_bypass
+
+    # ProxyHandler lowercases every mapping key, and the Windows registry can hand
+    # back "HTTPS=...", so normalize before testing or a proxy-only host goes direct.
+    if scheme not in {key.lower() for key in getproxies()}:
+        return False
+    try:
+        return not proxy_bypass(host)
+    except (OSError, ValueError):
+        # proxy_bypass reads system config on macOS/Windows; failure falls back to pinning.
+        return False
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
 
@@ -10182,8 +10436,13 @@ def _fetch_url_raw(
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
                 validated_netloc = f"{validated_netloc}:{cp.port}"
-            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1":
-                # Enterprise proxies need the hostname in CONNECT for policy and TLS interception.
+            # Decide routing once, on the netloc urllib tests: a pinned request
+            # carries an IP, which no NO_PROXY entry matches, so the opener below
+            # has to carry the decision rather than re-derive it.
+            proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
+            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
+                # Enterprise proxies need the hostname in CONNECT for policy and TLS
+                # interception, and they resolve it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin to the validated IP to prevent DNS rebinding.
@@ -10191,10 +10450,11 @@ def _fetch_url_raw(
                 ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
                 request_url = urlunparse(cp._replace(netloc = ip_netloc))
 
-            opener = urllib.request.build_opener(
-                _NoRedirect,
-                _SNIHTTPSHandler(current_host),
-            )
+            handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]
+            if not proxied:
+                # An empty ProxyHandler is the documented way to opt a request out.
+                handlers.append(urllib.request.ProxyHandler({}))
+            opener = urllib.request.build_opener(*handlers)
 
             headers = {
                 "User-Agent": ua,
@@ -11015,6 +11275,7 @@ def _check_signal_escape_patterns(code: str):
             "upload_folder",
             "upload_large_folder",
             "create_commit",
+            "preupload_lfs_files",
         }
     )
     # Cloud-metadata / link-local hosts.
@@ -11272,6 +11533,19 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
+    _HF_UPLOAD_PATH_VIOLATION = (
+        "HF upload path must be a sandbox-local relative-path literal "
+        "(no absolute paths, no '..' segments, no dynamic expressions)"
+    )
+
+    # Upload methods that take CommitOperation* objects rather than a path, and
+    # the kwarg each one carries them in. `preupload_lfs_files` sends the file
+    # bytes to the LFS store on its own, so it needs the same gate as a commit.
+    _HF_OPERATIONS_KWARG = {
+        "create_commit": "operations",
+        "preupload_lfs_files": "additions",
+    }
+
     def _is_os_environ(node: ast.AST) -> bool:
         return (
             isinstance(node, ast.Attribute)
@@ -11373,14 +11647,49 @@ def _check_signal_escape_patterns(code: str):
                     "HF upload cannot include os.environ / os.getenv / subprocess "
                     "env reads; secrets and tokens must not be exfiltrated"
                 )
-        if method_name == "create_commit":
+        if method_name in _HF_OPERATIONS_KWARG:
+            ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
+            # A `*args` / `**kwargs` splat can smuggle in the operations or a token,
+            # and either may sit after `operations=`, so scan before resolving.
+            if any(isinstance(a, ast.Starred) for a in node.args or []):
+                return _HF_UPLOAD_PATH_VIOLATION
+            if any(kw.arg is None for kw in node.keywords or []):
+                return _HF_UPLOAD_PATH_VIOLATION
+            # Both methods take the operation list as their 2nd positional param.
+            operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
             for kw in node.keywords or []:
-                if kw.arg == "operations" and isinstance(kw.value, ast.List):
-                    for elt in kw.value.elts:
-                        if isinstance(elt, ast.Call):
-                            inner = _hf_upload_violation(elt, "upload_file")
-                            if inner:
-                                return inner
+                if kw.arg == ops_kwarg:
+                    operations_node = kw.value
+                    break
+            if operations_node is None:
+                return None  # no operations -> nothing is read off disk
+            if not isinstance(operations_node, (ast.List, ast.Tuple)):
+                return _HF_UPLOAD_PATH_VIOLATION
+            for elt in operations_node.elts:
+                if not isinstance(elt, ast.Call):
+                    return _HF_UPLOAD_PATH_VIOLATION
+                inner = _hf_upload_violation(elt, "commit_operation")
+                if inner:
+                    return inner
+            return None
+        if method_name == "commit_operation":
+            # A CommitOperation* constructor from the list above. Delete and copy get
+            # no exemption: a by-name one would trust a name sandboxed code can rebind.
+            # Add is (path_in_repo, path_or_fileobj) so both positionals are checked,
+            # and other keywords must be literals -- a computed one reads the file.
+            path_nodes = list(node.args or [])
+            for kw in node.keywords or []:
+                if kw.arg is None:
+                    return _HF_UPLOAD_PATH_VIOLATION
+                if kw.arg == "path_or_fileobj":
+                    path_nodes.append(kw.value)
+                elif not isinstance(kw.value, ast.Constant):
+                    return _HF_UPLOAD_PATH_VIOLATION
+            if not path_nodes:
+                return _HF_UPLOAD_PATH_VIOLATION
+            for p in path_nodes:
+                if not _path_arg_is_sandbox_local(p):
+                    return _HF_UPLOAD_PATH_VIOLATION
             return None
         path_node: ast.AST | None = node.args[0] if node.args else None
         for kw in node.keywords or []:
@@ -11388,10 +11697,7 @@ def _check_signal_escape_patterns(code: str):
                 path_node = kw.value
                 break
         if not _path_arg_is_sandbox_local(path_node):
-            return (
-                "HF upload path must be a sandbox-local relative-path literal "
-                "(no absolute paths, no '..' segments, no dynamic expressions)"
-            )
+            return _HF_UPLOAD_PATH_VIOLATION
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):

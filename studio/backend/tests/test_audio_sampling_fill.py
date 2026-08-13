@@ -11,11 +11,13 @@ generation. These exercise the transformers TTS path of ``generate_audio`` (the 
 """
 
 import asyncio
+import json
 
 import pytest
 
 import routes.inference as inference_route
-from models.inference import ChatCompletionRequest
+from fastapi import HTTPException
+from models.inference import AudioSpeechRequest, ChatCompletionRequest
 from utils.inference import inference_config as ic
 
 
@@ -26,9 +28,9 @@ class _FakeLlama:
 
 
 class _FakeTransformersBackend:
-    def __init__(self):
+    def __init__(self, audio_type = "snac"):
         self.active_model_name = "some/custom-tts"
-        self.models = {"some/custom-tts": {"is_audio": True}}
+        self.models = {"some/custom-tts": {"is_audio": True, "audio_type": audio_type}}
         self.captured = {}
 
     def generate_audio_response(self, **kwargs):
@@ -88,3 +90,47 @@ def test_audio_operator_pin_overrides_client(monkeypatch):
 def test_audio_client_explicit_preserved(monkeypatch):
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
     assert captured["temperature"] == 0.2  # explicit client value preserved over recommendation
+
+
+def test_audio_generate_returns_the_exact_persisted_clip_id(monkeypatch):
+    backend = _FakeTransformersBackend()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "some/custom-tts", messages = [{"role": "user", "content": "hi"}]
+    )
+    response = asyncio.run(
+        inference_route.generate_audio(payload, request = None, current_subject = "t")
+    )
+    body = json.loads(response.body)
+    assert body["clip_id"]
+    assert len(body["clip_id"]) == 32
+
+
+def test_whisper_is_rejected_cleanly_by_both_tts_endpoints(monkeypatch):
+    backend = _FakeTransformersBackend(audio_type = "whisper")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "some/custom-tts", messages = [{"role": "user", "content": "hi"}]
+    )
+    speech = AudioSpeechRequest(input = "hi", model = "some/custom-tts")
+    for request in (
+        inference_route.generate_audio(payload, request = None, current_subject = "t"),
+        inference_route.openai_audio_speech(speech, request = None, current_subject = "t"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(request)
+        assert exc.value.status_code == 400
+        assert "does not support text-to-speech" in exc.value.detail
+    assert backend.captured == {}
