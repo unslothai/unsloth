@@ -123,7 +123,11 @@ Check "it is outside the deps gate"       ($_gateClose -and $_gateClose -lt $_ch
 
 Write-Host "it reports, and never aborts"
 Check "the mismatch is an error line"     ($report -match 'step "gpu check" "PyTorch cannot see the \$_gpuCheckAnnounced reported above" "Red"')
-Check "it names the venv"                 ($report -match 'torch\.cuda\.is_available\(\) is False in \$VenvDir')
+Check "it names the venv"                 ($report -match '"\$_gpuCheckApi in \$VenvDir"')
+# Only an Intel announcement is held back until BOTH answers are False, so only there may the
+# report say so; naming torch.xpu on an NVIDIA/AMD host would state something never checked.
+Check "an Intel report names both answers" ($report -match 'Intel\*[\s\S]{0,120}torch\.xpu\.is_available\(\) are False')
+Check "every other report names torch.cuda only" ($report -match 'else \{ "torch\.cuda\.is_available\(\) is False" \}')
 Check "it names the wheel"                ($report -match 'substep "torch \$\(\$_gpuVisibility\.TorchVersion\)')
 Check "it names torch.version.hip"        ($report -match 'torch\.version\.hip \$_gpuCheckHip')
 # Naming the symptom is what stops the user filing it a second time as a UI bug.
@@ -133,7 +137,33 @@ Check "it says where to report it"        ($report -match 'github\.com/unslothai
 Check "it never fails the setup"          (-not ($report -match 'Exit-SetupFailure|exit 1|\$stackExit'))
 Check "a silent probe warns instead"      ($report -match '\[WARN\] could not check whether PyTorch sees this GPU')
 # A GGUF-only venv has no torch and nothing to reconcile; warning there is noise every update.
-Check "a missing torch is not warned about" ($report -match "ModuleNotFoundError\|No module named")
+Check "a missing torch is not warned about" ($report -match "No module named 'torch'")
+
+Write-Host "the quiet-when-torch-is-absent arm is about torch, and only torch"
+# Run the real arm rather than reading it: a match broad enough to swallow any import error
+# silences the host this check exists for, and the source text alone cannot show that.
+$quietPat = '(?ms)^        if \(-not \(\$_gpuVisibility\.Error -match.*?^        \}$'
+$quietArm = if ($report -match $quietPat) { $Matches[0] } else { "" }
+Check "the quiet arm was found"           ($quietArm -ne "")
+function Test-Warns {
+    param([string] $ErrText)
+    $sb = [scriptblock]::Create(@"
+param(`$ErrText)
+`$script:Warned = `$false
+function substep { param(`$a, `$b) `$script:Warned = `$true }
+`$_gpuVisibility = [pscustomobject]@{ Answered = `$false; Error = `$ErrText }
+$quietArm
+`$script:Warned
+"@)
+    return (& $sb $ErrText)
+}
+Check "an absent torch says nothing"      (-not (Test-Warns "ModuleNotFoundError: No module named 'torch'"))
+# The backend treats ANY torch import failure as detection failure and runs on CPU, so a torch
+# that is installed and cannot import is exactly the host that needs telling.
+Check "a missing transitive dep warns"    (Test-Warns "ModuleNotFoundError: No module named 'typing_extensions'")
+Check "a broken torch internal warns"     (Test-Warns "ModuleNotFoundError: No module named 'torch._C'")
+Check "a timeout still warns"             (Test-Warns "python did not answer within 90 seconds")
+Check "an OSError still warns"            (Test-Warns "OSError: [WinError 126] The specified module could not be found")
 
 Write-Host "and it costs nothing where it cannot help"
 Check "no-torch mode is excluded"         ($report -match '-not \$NoTorchMode')
@@ -143,10 +173,67 @@ Check "a missing interpreter is excluded" ($report -match 'Test-Path -LiteralPat
 Check "it probes the venv interpreter"    ($report -match '\$_gpuCheckPy = Join-Path \$VenvDir "Scripts\\python\.exe"')
 Check "the probe is called once"          ((([regex]::Matches($report, 'Get-TorchGpuVisibility')).Count) -eq 1)
 
-Write-Host "the announced GPU is quoted back, whichever it was"
-Check "NVIDIA is named"                   ($report -match 'if \(\$HasNvidiaSmi\) \{ \$_gpuCheckAnnounced = "NVIDIA GPU" \}')
-Check "the AMD arch is named"             ($report -match '\$_gpuCheckAnnounced = "AMD GPU \(\$script:ROCmGfxArch\)"')
-Check "an arch-less AMD host still counts" ($report -match 'elseif \(\$HasROCm\) \{ \$_gpuCheckAnnounced = "AMD GPU" \}')
+Write-Host "the announced GPU is quoted from the summary, not re-derived"
+# Re-deriving from the raw detection flags disagreed with the summary on a host with an Intel
+# Arc next to an AMD card whose arch gets no ROCm wheels: the scan lets Intel win there and
+# $script:ROCmGfxArch stays populated, so the report named a GPU nobody announced (#8473).
+$reportCode = (($report -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Check "the comment strip left code"       ($reportCode -match 'Get-TorchGpuVisibility')
+Check "it quotes the summary"             ($reportCode -match '\$_gpuCheckAnnounced = \$script:GpuSummaryAnnounced')
+Check "it re-derives nothing"             (-not ($reportCode -match '\$_gpuCheckAnnounced = "'))
+Check "it reads no detection flag"        (-not ($reportCode -match '\$script:ROCmGfxArch|\$HasROCm|\$HasNvidiaSmi|\$script:IsIntelXpu'))
+
+# ...and the summary itself records what it printed. Run the real chain, so an announcement that
+# stops being recorded fails here rather than passing on the report's source text alone.
+$summaryPat = '(?ms)^\$script:GpuSummaryAnnounced = \$null\nif \(\$HasNvidiaSmi\) \{.*?^\}$'
+$summary = if ($setupText -match $summaryPat) { $Matches[0] } else { "" }
+Check "the GPU summary was found"         ($summary -ne "")
+Check "the extraction kept every arm"     ($summary -match 'Intel GPU detected' -and $summary -match 'AMD ROCm \(\$script:ROCmGfxArch\)' -and $summary -match 'none \(chat-only / GGUF\)')
+
+function Invoke-Summary {
+    param([hashtable] $Vars)
+    $sb = [scriptblock]::Create(@"
+param(`$V)
+`$script:Lines = @()
+function step { param(`$a, `$b, `$c) `$script:Lines += "STEP|`$a|`$b" }
+function substep { param(`$a, `$b) `$script:Lines += "SUB|`$a" }
+function Write-StudioLine { param(`$a, `$b, `$c) }
+`$HasNvidiaSmi = [bool]`$V['HasNvidiaSmi']
+`$script:IsIntelXpu = [bool]`$V['IsIntelXpu']
+`$IntelGpuLabel = `$V['IntelGpuLabel']
+`$HasROCm = [bool]`$V['HasROCm']
+`$ROCmGpuLabel = `$V['ROCmGpuLabel']
+`$HipSdkInstalled = [bool]`$V['HipSdkInstalled']
+`$script:ROCmGfxArch = `$V['ROCmGfxArch']
+`$script:ROCmVersionFull = `$V['ROCmVersionFull']
+$summary
+[pscustomobject]@{ Announced = `$script:GpuSummaryAnnounced; Lines = (`$script:Lines -join "``n") }
+"@)
+    return (& $sb $Vars)
+}
+
+$sNvidia = Invoke-Summary @{ HasNvidiaSmi = $true; ROCmGfxArch = "gfx1201" }
+Check "NVIDIA is announced as NVIDIA"     ($sNvidia.Announced -eq "NVIDIA GPU")
+Check "and that is what it printed"       ($sNvidia.Lines -match 'STEP\|gpu\|NVIDIA GPU detected')
+
+# The reported combination: Intel Arc plus an AMD card on an arch outside $_rocmWheelArches, so
+# the Intel scan runs, Intel wins the summary, and $script:ROCmGfxArch is still set.
+$sHybrid = Invoke-Summary @{ IsIntelXpu = $true; IntelGpuLabel = "Intel Arc B580"; ROCmGfxArch = "gfx90c" }
+Check "Intel wins the summary"            ($sHybrid.Lines -match 'STEP\|gpu\|Intel GPU detected')
+Check "and Intel is what is announced"    ($sHybrid.Announced -eq "Intel GPU")
+Check "no AMD announcement is invented"   (-not ($sHybrid.Announced -match 'AMD'))
+
+$sAmd = Invoke-Summary @{ ROCmGfxArch = "gfx1201" }
+Check "a ROCm-wheel AMD host is announced" ($sAmd.Announced -eq "AMD GPU (gfx1201)")
+$sHip = Invoke-Summary @{ HasROCm = $true; ROCmGpuLabel = "AMD ROCm (gfx1100)"; ROCmGfxArch = "gfx1100" }
+Check "a HIP SDK AMD host is announced"   ($sHip.Announced -eq "AMD GPU (gfx1100)")
+
+# Nothing to reconcile: no accelerator at all, and an AMD card the summary has already told the
+# user gets CPU torch. A red "PyTorch cannot see it" there would contradict the line above it.
+$sNone = Invoke-Summary @{}
+Check "a CPU-only host announces nothing" ($null -eq $sNone.Announced)
+$sUnknownArch = Invoke-Summary @{ ROCmGpuLabel = "AMD Radeon 780M" }
+Check "an arch-less AMD host is not accused" ($null -eq $sUnknownArch.Announced)
 
 # A hybrid Intel/NVIDIA host on the XPU wheel answers SeesGpu=False and still runs on the
 # GPU, because _detect_hardware_locked falls through from CUDA to XPU. Accusing that host of

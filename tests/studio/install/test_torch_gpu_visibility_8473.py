@@ -110,6 +110,9 @@ def _run_block(
     env: dict[str, str] | None = None,
     with_timeout: bool = True,
     timeout_bound: int = 5,
+    colab: bool = False,
+    venv_dir: Path | None = None,
+    path_python: str | None = None,
 ) -> dict:
     """Run the real setup.sh block with stubbed printers and a stubbed `timeout`."""
     stub_bin = tmp_path / "stubbin"
@@ -135,10 +138,20 @@ def _run_block(
             assert found, f"missing {tool}"
             os.symlink(found, stub_bin / tool)
 
+    # Colab's system interpreter is found on PATH, so that is where the fake one goes.
+    if colab:
+        shutil.copy2(venv / "bin" / "python", stub_bin / "python")
+        (stub_bin / "python").chmod(0o755)
+    elif path_python is not None:
+        # A DIFFERENT answer than the venv's, so a probe that drifted onto the system
+        # interpreter changes the report instead of passing on identical output.
+        _write_exec(stub_bin / "python", f"#!/bin/sh\nprintf '%s' '{path_python}'\n")
+
     script = "\n".join(
         [
             _HARNESS_HEAD,
-            f'VENV_DIR="{venv}"',
+            f'VENV_DIR="{venv_dir if venv_dir is not None else venv}"',
+            f"_COLAB_NO_VENV={'true' if colab else 'false'}",
             f"_setup_nvidia_usable={'true' if nvidia else 'false'}",
             f"_setup_amd_detected={'true' if amd else 'false'}",
             f'_setup_gfx="{gfx}"',
@@ -306,7 +319,7 @@ def test_both_probe_arms_carry_the_in_process_deadline(block):
     file-level check passes with the other arm intact."""
     arms = [line for line in block.splitlines() if '-c "$_setup_torch_probe"' in line]
     assert len(arms) == 2, arms
-    assert all('"$VENV_DIR/bin/python"' in line for line in arms), arms
+    assert all('"$_setup_torch_py"' in line for line in arms), arms
     # One arm bounded by timeout(1), one for hosts without it -- both share the same probe
     # string, so the in-process deadline covers each.
     assert sum(1 for line in arms if "timeout 90 " in line) == 1, arms
@@ -379,6 +392,61 @@ def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
     venv = _make_venv(tmp_path, stdout = _answer("0", xpu = "0"))
     result = _run_block(block, venv, tmp_path, nvidia = True)
     assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
+
+
+def test_a_colab_runtime_probes_the_interpreter_its_deps_went_into(block, tmp_path):
+    """Colab has no Unsloth venv: setup.sh installs the backend deps into the SYSTEM python and
+    sets _COLAB_NO_VENV. A guard requiring $VENV_DIR/bin/python skipped the probe there, so an
+    NVIDIA Colab runtime whose torch cannot see the GPU got no diagnostic at all."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
+    )
+    out = result["stdout"]
+    assert "skipped" not in out
+    assert result["calls"].count("call") == 1
+    assert "STEP|gpu check|PyTorch cannot see the NVIDIA GPU reported above|ERR" in out
+    # The interpreter it actually asked, not a venv path that does not exist on Colab.
+    assert f"SUB|torch.cuda.is_available() is False in {tmp_path / 'stubbin' / 'python'}|ERR" in out
+    assert result["returncode"] == 0
+
+
+def test_a_working_colab_runtime_prints_no_mismatch(block, tmp_path):
+    """Same expansion, other direction: Colab is where most working GPUs are."""
+    venv = _make_venv(tmp_path, stdout = _answer("1", count = "1", version = "2.9.0+cu128"))
+    result = _run_block(
+        block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
+    )
+    assert "cannot see" not in result["stdout"]
+    assert "VSUB|torch sees 1 GPU(s) (torch 2.9.0+cu128, hip none)" in result["stdout"]
+
+
+def test_a_colab_probe_that_does_not_answer_still_warns(block, tmp_path):
+    """The GGUF-only silence keys on the venv's torch on disk, and Colab has no venv layout to
+    look at while its runtimes ship torch. Falling back to silence there would hide the crash."""
+    venv = _make_venv(tmp_path, exit_code = 1, torch_on_disk = False)
+    result = _run_block(
+        block, venv, tmp_path, nvidia = True, colab = True, venv_dir = tmp_path / "no_such_venv"
+    )
+    assert "could not check whether PyTorch sees this GPU" in result["stdout"]
+    assert result["returncode"] == 0
+
+
+def test_the_venv_interpreter_still_wins_where_there_is_a_venv(block, tmp_path):
+    """Colab support must not redirect the normal path onto a system python carrying a
+    different torch, and must not add a second launch to it."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        path_python = _answer("1", count = "1"),
+    )
+    assert result["calls"].count("call") == 1
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+    assert f"SUB|torch.cuda.is_available() is False in {venv}|ERR" in result["stdout"]
 
 
 def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):

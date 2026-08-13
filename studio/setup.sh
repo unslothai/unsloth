@@ -1932,18 +1932,36 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
         1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
         *) _setup_skip_torch_check=false ;;
     esac
+    # Which interpreter actually carries the backend deps. Colab has no Unsloth venv:
+    # that path installs them into the SYSTEM python and sets _COLAB_NO_VENV (above),
+    # so requiring $VENV_DIR/bin/python skipped the probe on exactly the runtime that
+    # announces an NVIDIA GPU and ships torch preinstalled. Probe the interpreter that
+    # path installed into -- the same `python` install_python_stack runs under -- and
+    # keep the venv one everywhere else, so the normal path launches python once.
+    if [ "${_COLAB_NO_VENV:-false}" = true ]; then
+        _setup_torch_py=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
+        _setup_torch_where="$_setup_torch_py"
+    elif [ -x "$VENV_DIR/bin/python" ]; then
+        _setup_torch_py="$VENV_DIR/bin/python"
+        _setup_torch_where="$VENV_DIR"
+    else
+        _setup_torch_py=""
+        _setup_torch_where=""
+    fi
     if [ "$_setup_skip_torch_check" = true ]; then
         verbose_substep "torch GPU visibility check skipped (UNSLOTH_SKIP_TORCH_GPU_CHECK)"
-    elif [ ! -x "$VENV_DIR/bin/python" ]; then
+    elif [ -z "$_setup_torch_py" ] && [ "${_COLAB_NO_VENV:-false}" = true ]; then
+        verbose_substep "torch GPU visibility check skipped: no python on PATH"
+    elif [ -z "$_setup_torch_py" ]; then
         verbose_substep "torch GPU visibility check skipped: no interpreter at $VENV_DIR/bin/python"
     else
         # Sentinel-prefixed and matched line-anchored below, so a stdout banner
         # from a noisy import cannot be read as the answer.
         _setup_torch_probe='import signal; signal.alarm(90); import torch; print("UNSLOTHTORCHGPU=" + ("1" if torch.cuda.is_available() else "0") + "|" + str(torch.cuda.device_count()) + "|" + torch.__version__ + "|" + str(getattr(torch.version, "hip", None) or "") + "|" + ("1" if (hasattr(torch, "xpu") and torch.xpu.is_available()) else "0"))'
         if command -v timeout >/dev/null 2>&1; then
-            _setup_torch_out=$(timeout 90 "$VENV_DIR/bin/python" -c "$_setup_torch_probe" 2>/dev/null || true)
+            _setup_torch_out=$(timeout 90 "$_setup_torch_py" -c "$_setup_torch_probe" 2>/dev/null || true)
         else
-            _setup_torch_out=$("$VENV_DIR/bin/python" -c "$_setup_torch_probe" 2>/dev/null || true)
+            _setup_torch_out=$("$_setup_torch_py" -c "$_setup_torch_probe" 2>/dev/null || true)
         fi
         _setup_torch_line=$(printf '%s\n' "$_setup_torch_out" | grep '^UNSLOTHTORCHGPU=' | tail -n 1 || true)
         if [ -n "$_setup_torch_line" ]; then
@@ -1973,7 +1991,7 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
             step "gpu check" "PyTorch cannot see the NVIDIA GPU reported above" "$C_ERR"
             substep "detected by the installer: NVIDIA GPU" "$C_ERR"
         fi
-        substep "torch.cuda.is_available() is False in $VENV_DIR" "$C_ERR"
+        substep "torch.cuda.is_available() is False in $_setup_torch_where" "$C_ERR"
         substep "torch ${_setup_torch_ver:-unknown}, device_count ${_setup_torch_devices:-0}, torch.version.hip ${_setup_torch_hip:-none}" "$C_ERR"
         # Named so the report matches what the user is about to see, instead of
         # leaving them to discover it and file it as a second, separate bug.
@@ -1981,15 +1999,25 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then
         verbose_substep "torch sees $_setup_torch_devices GPU(s) (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"
-    elif [ "$_setup_skip_torch_check" = false ] && [ -x "$VENV_DIR/bin/python" ]; then
+    elif [ "$_setup_skip_torch_check" = false ] && [ -n "$_setup_torch_py" ]; then
         # Silent when torch is simply absent (GGUF-only venv): there is nothing
-        # to reconcile, and a warning there would be noise on every update.
-        for _setup_torch_vpy in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
-            [ -f "$_setup_torch_vpy" ] || continue
+        # to reconcile, and a warning there would be noise on every update. Colab
+        # has no venv layout to look at and its runtimes ship torch, so a probe
+        # that did not answer there is worth saying.
+        _setup_torch_on_disk=false
+        if [ "${_COLAB_NO_VENV:-false}" = true ]; then
+            _setup_torch_on_disk=true
+        else
+            for _setup_torch_vpy in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+                [ -f "$_setup_torch_vpy" ] || continue
+                _setup_torch_on_disk=true
+                break
+            done
+        fi
+        if [ "$_setup_torch_on_disk" = true ]; then
             substep "[WARN] could not check whether PyTorch sees this GPU (the probe crashed or did not answer within 90s)." "$C_WARN"
-            substep "       $VENV_DIR/bin/python -c \"import torch; print(torch.cuda.is_available())\"" "$C_WARN"
-            break
-        done
+            substep "       $_setup_torch_py -c \"import torch; print(torch.cuda.is_available())\"" "$C_WARN"
+        fi
     fi
 fi
 
