@@ -39,6 +39,7 @@ requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "Power
 _RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
 _RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
 _R780M = "AMD Radeon 780M Graphics"  # Phoenix iGPU     -> gfx1103, a shadowing arch
+_R9700 = "AMD Radeon AI PRO R9700"  # RDNA 4 workstation -> gfx1201 (#7624, #7307)
 _ARC = "Intel(R) Arc(TM) A770 Graphics"
 
 HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
@@ -322,6 +323,8 @@ def test_the_adapter_name_reaches_inference_whole(tmp_path):
     [
         (_RADEON, "gfx1151"),
         (_RX9070, "gfx1201"),
+        (_R9700, "gfx1201"),
+        ("ATI Radeon 9700 PRO", None),
         ("AMD Radeon RX 9060 XT", "gfx1200"),
         ("AMD Radeon 890M Graphics", "gfx1150"),
         ("AMD Radeon 860M Graphics", "gfx1152"),
@@ -494,6 +497,15 @@ def test_the_installer_keeps_a_parked_adapter_when_it_is_the_only_one(tmp_path):
     peer there is nothing to prefer."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 45)])
     assert out["arch"] == "gfx1201"
+
+
+@requires_pwsh
+def test_a_lone_r9700_is_detected_by_both_scans(tmp_path):
+    """Reported on PR #8398: single R9700 on Windows 11, not detected. One healthy adapter
+    and no HIP SDK, so the name is the only evidence left, and it holds neither "9070" nor
+    "9080". Both scans must reach gfx1201 (#7624, #7307) or the install lands on CPU torch."""
+    assert _run(tmp_path, [(_R9700, 0)])["arch"] == "gfx1201"
+    assert _run_installer_scan(tmp_path, [(_R9700, 0)])["arch"] == "gfx1201"
 
 
 @requires_pwsh

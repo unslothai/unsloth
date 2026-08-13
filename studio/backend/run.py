@@ -2755,7 +2755,9 @@ def _build_arg_parser():
     parser.add_argument(
         "--host",
         default = "127.0.0.1",
-        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access). "
+        "On a shared host, set UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 to stop external "
+        "provider connections from targeting private addresses.",
     )
     parser.add_argument(
         "--password",

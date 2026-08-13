@@ -71,6 +71,7 @@ on:
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -124,6 +125,7 @@ on:
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -235,6 +237,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1
+      # Slices the shipped $nameArchTable out of install.ps1 and setup.ps1 and resolves GPU
+      # names through PowerShell's own -match, so no venv, no AMD GPU and no Windows needed.
+      - name: AMD GPU-name arch table tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced
