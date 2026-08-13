@@ -181,6 +181,7 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
+
 def device_backend_flags(
     device_name: Optional[str], offload: Optional[list[str]] = None
 ) -> list[str]:
