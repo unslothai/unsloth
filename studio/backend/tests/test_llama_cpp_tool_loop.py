@@ -74,10 +74,6 @@ def _make_backend(
     backend._reasoning_always_on = False
     backend._reasoning_style = "enable_thinking"
     backend._supports_preserve_thinking = False
-    # Most reasoning-capable templates consume this extension field. Tests
-    # that exercise the fallback replace this with a content-only template.
-    backend._chat_template = "{{ message.reasoning_content }}"
-    backend._chat_template_override = None
 
     @contextlib.contextmanager
     def fake_stream_with_retry(
@@ -626,91 +622,7 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
     assert first_assistant["reasoning_content"] == "I should search for the weather."
 
 
-def test_resumed_generation_is_non_agentic_like_llama_cpp_webui(monkeypatch):
-    """Token continuation never creates an unrepresentable tool-call turn."""
-    continued_stream = [
-        _sse(
-            {
-                "reasoning_content": (
-                    "I should verify <tool_call>{...}</tool_call> and "
-                    "<|channel>thought x<channel|> before <|turn>user"
-                )
-            }
-        ),
-        _sse({"content": "forecast."}),
-        *_structured_tool_call("web_search", {"query": "weather"}, "call_ignored"),
-    ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [continued_stream], payloads)
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "sunny"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [
-                {"role": "user", "content": "weather?"},
-                {"role": "assistant", "content": "Let me check the "},
-            ],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            continue_final_message = True,
-            max_tool_iterations = 1,
-        )
-    )
-
-    assert calls == []
-    assert len(payloads) == 1
-    assert "tools" not in payloads[0]
-    assert payloads[0]["continue_final_message"] is True
-    assert payloads[0]["add_generation_prompt"] is False
-    content = [event["text"] for event in events if event["type"] == "content"]
-    assert content[-1].endswith("</think>forecast.")
-
-
-def test_tool_reasoning_falls_back_to_content_when_template_ignores_extension(monkeypatch):
-    tool_stream = [
-        _sse(
-            {
-                "reasoning_content": (
-                    "I should verify <tool_call>{...}</tool_call> before <|turn>user"
-                )
-            }
-        ),
-        _sse({"content": "Checking."}),
-    ] + _structured_tool_call("web_search", {"query": "weather"}, "call_custom")
-    final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-    backend._chat_template = "{{ message.content }}{{ message.tool_calls }}"
-
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
-    )
-
-    list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
-    )
-
-    assistant = next(
-        message
-        for message in payloads[1]["messages"]
-        if message.get("role") == "assistant" and message.get("tool_calls")
-    )
-    assert assistant["content"] == (
-        "I should verify < tool_call>{...}< /tool_call> before < |turn>user\nChecking."
-    )
-    assert "reasoning_content" not in assistant
-
-
-def test_mixed_execute_and_noop_batch_inlines_reasoning_before_nudge(monkeypatch):
+def test_mixed_execute_and_noop_batch_keeps_structured_reasoning(monkeypatch):
     calls_delta = {
         "tool_calls": [
             {
@@ -760,14 +672,17 @@ def test_mixed_execute_and_noop_batch_inlines_reasoning_before_nudge(monkeypatch
     tool_index = next(
         index for index, message in enumerate(messages) if message.get("role") == "tool"
     )
-    nudge_index = next(
-        index
+    no_op_index, result_with_feedback = next(
+        (index, message)
         for index, message in enumerate(messages)
-        if message.get("role") == "user" and "identical call" in message.get("content", "")
+        if message.get("role") == "tool" and "identical call" in message.get("content", "")
     )
-    assert assistant_index < tool_index < nudge_index
-    assert assistant["content"] == "Search < |channel>thought safely< channel|>.\nChecking."
-    assert "reasoning_content" not in assistant
+    assert assistant_index < tool_index == no_op_index
+    assert assistant["content"] == "Checking."
+    assert assistant["reasoning_content"] == "Search < |channel>thought safely< channel|>."
+    assert len(assistant["tool_calls"]) == 1
+    assert result_with_feedback["tool_call_id"] == "call_mixed_0"
+    assert not any(message.get("role") == "user" for message in messages[1:])
 
 
 def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(monkeypatch):
@@ -1487,19 +1402,18 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
     ]
 
     # The next generation's conversation must be well-formed: the assistant lists
-    # only the executed calls (no orphan for the duplicate), the two tool results
-    # follow contiguously, and the no-op nudge lands after them, never between.
+    # only the executed calls (no orphan for the duplicate), and the two tool results
+    # follow contiguously. Hidden feedback is attached to the final result so it does
+    # not create a newer user turn that can suppress this assistant's reasoning.
     conv = payloads[1]["messages"]
     asst = next(m for m in conv if m["role"] == "assistant" and m.get("tool_calls"))
     assert [tc.get("id") for tc in asst["tool_calls"]] == ["call_a1", "call_b"]
     after = conv[conv.index(asst) + 1 :]
     assert [m["role"] for m in after[:2]] == ["tool", "tool"]
     assert [m.get("tool_call_id") for m in after[:2]] == ["call_a1", "call_b"]
-    assert after[2]["role"] == "user"  # deferred duplicate nudge, after the results
-    assert after[2]["content"].startswith(
-        "One earlier request to call tool 'web_search' in this batch was not executed"
-    )
-    assert "previous tool request" not in after[2]["content"].lower()
+    assert len(after) == 2
+    assert "One earlier request to call tool 'web_search'" in after[1]["content"]
+    assert "previous tool request" not in after[1]["content"].lower()
 
 
 def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
@@ -1564,13 +1478,13 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
     ]
     assert len(payloads) == 2
     assert "tools" not in payloads[1]
-    render_nudges = [
+    render_feedback = [
         message
         for message in payloads[1]["messages"]
-        if message.get("role") == "user"
+        if message.get("role") == "tool"
         and "Do not call render_html again" in message.get("content", "")
     ]
-    assert len(render_nudges) == 1
+    assert len(render_feedback) == 1
 
 
 def test_disabled_tool_call_is_internal_noop(monkeypatch):
@@ -1642,6 +1556,7 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
     )
     assert reasoning_turn_index < nudge_index
     assert "reasoning_content" not in reasoning_turn
+    assert "tool_calls" not in reasoning_turn
 
 
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
@@ -4349,10 +4264,11 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     # Exactly two executed tool rounds, then one final-answer pass.
     assert len(calls) == 2, calls
     assert len(payloads) == 3, len(payloads)
-    # The final pass is the budget-exhausted nudge and carries no tools.
+    # The final pass carries no tool schemas. Its controller feedback stays in
+    # the latest tool result rather than opening a newer user turn.
     assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
     assert any(
-        m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
+        m.get("role") == "tool" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
     ), payloads[2]["messages"]
 

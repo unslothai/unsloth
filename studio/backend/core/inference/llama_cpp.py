@@ -16510,46 +16510,30 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        from core.inference.chat_template_helpers import trailing_assistant_text
-
-        # A token-level continuation resumes inside the trailing assistant turn.
-        # Tool calls cannot be represented there portably after the response is
-        # replayed through an arbitrary chat template: templates choose their own
-        # fixed ordering for content, reasoning, and tool_calls. Match llama.cpp's
-        # WebUI and keep this one generation non-agentic instead of manufacturing
-        # a reordered historical turn.
-        if continue_final_message and trailing_assistant_text(messages):
-            for item in self.generate_chat_completion(
-                messages,
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                min_p = min_p,
-                max_tokens = max_tokens,
-                repetition_penalty = repetition_penalty,
-                presence_penalty = presence_penalty,
-                stop = stop,
-                cancel_event = cancel_event,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                continue_final_message = True,
-                seed = seed,
-                promote_reasoning_only = promote_reasoning_only,
-            ):
-                yield {"type": "content", "text": item} if isinstance(item, str) else item
-            return
-
         conversation = list(messages)
+
+        def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
+            """Keep controller instructions inside the current tool exchange."""
+            if not conversation or conversation[-1].get("role") != "tool":
+                return False
+            content = conversation[-1].get("content")
+            if not isinstance(content, str):
+                return False
+            conversation[-1]["content"] = f"{content}\n\n{feedback}"
+            return True
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
         # the same tool card + citations a real call would. Skip it only when a
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
+        from core.inference.chat_template_helpers import trailing_assistant_text
+
+        # A resumed turn must keep the partial trailing: autoinject appends a tool call
+        # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-        )
+        ) or bool(continue_final_message and trailing_assistant_text(conversation))
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -16726,15 +16710,6 @@ class LlamaCppBackend:
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
-        # Emitting reasoning and replaying it are separate capabilities.
-        # llama-server may return delta.reasoning_content even when a custom
-        # Jinja template never reads that extension field from history.
-        _effective_template = (
-            getattr(self, "_chat_template_override", None)
-            or getattr(self, "_chat_template", None)
-            or ""
-        )
-        _template_replays_reasoning = "reasoning_content" in _effective_template
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -16796,6 +16771,11 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            # Re-checked per iteration: once a tool result is appended the partial is
+            # no longer trailing, so later turns are normal.
+            if continue_final_message and trailing_assistant_text(conversation):
+                payload["continue_final_message"] = True
+                payload["add_generation_prompt"] = False
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None
@@ -17642,8 +17622,8 @@ class LlamaCppBackend:
                 if reasoning_accum:
                     assistant_msg["reasoning_content"] = reasoning_accum
                 assistant_appended = False
-                # Collect no-op nudges and flush them after the batch, so a no-op
-                # doesn't abort it and drop the parallel calls that follow.
+                # Collect no-op feedback and flush it after the batch, so a
+                # suppressed call never drops a later parallel call.
                 deferred_noop_msgs: list = []
 
                 # The text-path provisional card uses the parser's default id ("call_0");
@@ -17831,30 +17811,33 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
-                # Keep structured reasoning when the selected template will replay
-                # it. Otherwise use neutralized content. A deferred no-op nudge is
-                # also unsafe: it becomes the newest user turn, and templates such
-                # as Gemma 4 then suppress the preceding structured thinking block.
-                if assistant_msg.get("reasoning_content") and (
-                    deferred_noop_msgs or not _template_replays_reasoning
-                ):
-                    assistant_msg["content"] = neutralize_control_markup(
-                        reasoning_accum,
-                        self.markup_profile,
+                if deferred_noop_msgs and assistant_appended:
+                    # A mixed execute/no-op batch already has a real tool result.
+                    # Keep the controller feedback with that result instead of
+                    # appending a newer user turn, which can make templates hide
+                    # this turn's structured reasoning.
+                    feedback = "\n\n".join(
+                        dict.fromkeys(message["content"] for message in deferred_noop_msgs)
                     )
-                    if content_text:
-                        assistant_msg["content"] += f"\n{content_text}"
-                    del assistant_msg["reasoning_content"]
-
-                if not assistant_appended and (content_text or reasoning_accum):
-                    append_assistant_turn(
-                        conversation,
-                        assistant_msg,
-                        continue_final_message = continue_final_message,
-                    )
-                    assistant_appended = True
-
-                append_deferred_nudges(conversation, deferred_noop_msgs)
+                    if not _attach_internal_feedback_to_tool_result(feedback):
+                        append_deferred_nudges(conversation, deferred_noop_msgs)
+                else:
+                    if not assistant_appended and (content_text or reasoning_accum):
+                        if assistant_msg.get("reasoning_content"):
+                            assistant_msg["content"] = neutralize_control_markup(
+                                reasoning_accum,
+                                self.markup_profile,
+                            )
+                            if content_text:
+                                assistant_msg["content"] += f"\n{content_text}"
+                            del assistant_msg["reasoning_content"]
+                        append_assistant_turn(
+                            conversation,
+                            assistant_msg,
+                            continue_final_message = continue_final_message,
+                        )
+                        assistant_appended = True
+                    append_deferred_nudges(conversation, deferred_noop_msgs)
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -17917,16 +17900,13 @@ class LlamaCppBackend:
         # the final streaming pass to produce a useful answer instead of
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "You have used all available tool calls. Based on "
-                        "everything you have found so far, provide your final "
-                        "answer now. Do not call any more tools."
-                    ),
-                }
+            budget_feedback = (
+                "You have used all available tool calls. Based on "
+                "everything you have found so far, provide your final "
+                "answer now. Do not call any more tools."
             )
+            if not _attach_internal_feedback_to_tool_result(budget_feedback):
+                conversation.append({"role": "user", "content": budget_feedback})
 
         # Clear status.
         yield {"type": "status", "text": ""}

@@ -285,12 +285,11 @@ def test_preserve_thinking_on_keeps_prior_reasoning():
 
 
 @pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
-def test_inlined_mixed_noop_reasoning_survives_newest_user_nudge(tpl):
-    messages = _convo_with_prior_tool_reasoning()
-    assert "SECRET_THOUGHT" not in _render_with(tpl, messages)
-
-    messages[1]["content"] = messages[1].pop("reasoning_content")
-    assert "SECRET_THOUGHT" in _render_with(tpl, messages)
+def test_current_tool_reasoning_survives_a_suppressed_call_result(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[2]["content"] += "\n\nThe duplicate call was not executed."
+    rendered = _render_with(tpl, messages)
+    assert rendered.index("SECRET_THOUGHT") < rendered.index("The duplicate call was not executed.")
 
 
 def test_enable_thinking_gates_think_token():
