@@ -131,6 +131,14 @@ _QUIET_SUCCESS_PATHS = {
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
+    # The Settings > Debugging viewer polls these while it is open, and it is
+    # reading the very file this middleware writes to. Without the suppression
+    # each poll appends a request_completed record that the next poll reads
+    # back, so the log grows forever and the viewer fills with itself. The
+    # _is_redundant_repeat dedup does NOT cover it: that keys on the query
+    # string, and every poll carries a fresh cursor.
+    "/api/settings/debug/logs",
+    "/api/settings/debug/logs/sources",
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
