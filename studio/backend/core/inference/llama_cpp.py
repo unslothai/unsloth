@@ -5405,20 +5405,17 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    # Spellings of "off" for GGML_CUDA_ENABLE_UNIFIED_MEMORY. ggml never reads the
-    # value, so these mean nothing to it; we honour them on the user's behalf.
+    # "Off" spellings ggml itself ignores (it tests presence); we honour them.
     _UNIFIED_MEMORY_OFF = frozenset({"", "0", "false", "no", "off"})
 
     @staticmethod
     def _unified_memory_opted_out(env = None) -> bool:
-        """True when this launch must leave GGML_CUDA_ENABLE_UNIFIED_MEMORY *absent*.
+        """True when GGML_CUDA_ENABLE_UNIFIED_MEMORY must be ABSENT from this launch.
 
-        ggml gates managed memory on `getenv(...) != nullptr`, so any value enables
-        it and `=0` is not an off switch (#8651). Two ways to opt out, both of which
-        have to end in the name being unset in the child env:
-        UNSLOTH_DISABLE_UNIFIED_MEMORY=1 (mirrors UNSLOTH_DISABLE_DC_TUNING), or a
-        falsy GGML_CUDA_ENABLE_UNIFIED_MEMORY, which is what users reasonably expect
-        to mean off. Fails open (False) so a bad env never blocks a load.
+        ggml tests presence, not value, so `=0` is not an off switch (#8651). Both
+        opt-outs (UNSLOTH_DISABLE_UNIFIED_MEMORY=1, mirroring UNSLOTH_DISABLE_DC_TUNING,
+        or a falsy GGML_CUDA_ENABLE_UNIFIED_MEMORY) must end in the name unset.
+        Fails open (False) so a bad env never blocks a load.
         """
         try:
             source = os.environ if env is None else env
@@ -13965,13 +13962,13 @@ class LlamaCppBackend:
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use shared
                 # system RAM. Not on Vulkan (nor DC below): gpu_indices are ggml
-                # ordinals, not CUDA/ROCm ids. Tracked by OWNERSHIP, so the arch-crash
+                # ordinals, not CUDA/ROCm ids. Ownership-tracked, so the arch-crash
                 # retry withdraws it only when THIS launch set it.
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 if _unified_opt_out:
-                    # ggml reads presence, not value, so passing a user's "0" through
-                    # would ENABLE the thing they turned off (#8651). Only absence is off.
+                    # ggml tests presence, so passing a user's "0" through would
+                    # ENABLE what they turned off (#8651). Only absence is off.
                     if env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None) is not None:
                         logger.info(
                             "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"

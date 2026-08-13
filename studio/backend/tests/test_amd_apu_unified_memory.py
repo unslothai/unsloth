@@ -355,9 +355,8 @@ class TestTheProbeTestsDoNotDependOnHostRam:
 
 
 class TestTheOptOutHelper:
-    """_unified_memory_opted_out, the escape hatch for #8651. ggml reads the
-    variable with getenv(...) != nullptr, so only ABSENCE is off and the helper
-    exists to work out when Studio has to make it absent."""
+    """_unified_memory_opted_out, the #8651 escape hatch. ggml tests presence, not
+    value, so only ABSENCE is off and this decides when to make it absent."""
 
     @pytest.mark.parametrize(
         "env,expected",
@@ -374,7 +373,7 @@ class TestTheOptOutHelper:
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}, True),
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),  # exact "1", like the DC switch
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "yes"}, False),
-            # The switch beats a truthy value, or it is useless where it matters.
+            # The switch has to beat a truthy value.
             (
                 {
                     "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1",
@@ -388,15 +387,13 @@ class TestTheOptOutHelper:
         assert LlamaCppBackend._unified_memory_opted_out(env) is expected
 
     def test_none_reads_the_process_env(self, monkeypatch):
-        """The default argument is the process env, so a shell export is honoured
-        even where no child env has been built yet."""
+        """The default arg is the process env, so a shell export is honoured."""
         monkeypatch.delenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", raising = False)
         monkeypatch.setenv("UNSLOTH_DISABLE_UNIFIED_MEMORY", "1")
         assert LlamaCppBackend._unified_memory_opted_out() is True
 
     def test_a_hostile_env_fails_open(self):
-        """Fails open like the rest of this family: a bad env must not block a
-        load, and False is the pre-#8651 behaviour."""
+        """Fails open: a bad env must not block a load. False is pre-#8651."""
 
         class _Exploding(dict):
             def get(self, *_args, **_kwargs):
