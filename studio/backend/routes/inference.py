@@ -8030,7 +8030,6 @@ async def _load_model_impl(
             # during startup rather than being ignored: a 400 here beats a load that
             # has already unloaded the previous model.
             from core.inference.llama_server_args import check_batch_floor
-
             try:
                 check_batch_floor(extra_llama_args, _n_parallel)
             except ValueError as exc:
