@@ -7,6 +7,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
+
 
 # ── Registry (static provider info) ───────────────────────────────
 
@@ -61,6 +63,13 @@ class ProviderCreate(BaseModel):
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 64,
+        le = MAX_JSON_SAFE_INTEGER,
+        description = "Optional maximum Max Tokens cap for a generic Custom connection",
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -78,6 +87,13 @@ class ProviderUpdate(BaseModel):
     available_models: Optional[list[str]] = Field(
         None,
         description = "Discovered catalog model IDs last fetched for this connection",
+    )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 64,
+        le = MAX_JSON_SAFE_INTEGER,
+        description = "Optional maximum Max Tokens cap for a generic Custom connection",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -120,6 +136,10 @@ class ProviderResponse(BaseModel):
     available_models: list[str] = Field(
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
+    )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        description = "Configured maximum Max Tokens cap for a generic Custom connection",
     )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")

@@ -62,13 +62,54 @@ class TestDiffusionArchitectures:
         assert "enough memory" not in msg.lower()
 
     # Parametrize over the production set so new arches are auto-covered.
-    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._DIFFUSION_ARCHES))
-    def test_every_diffusion_arch_is_recognised(self, arch):
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._IMAGE_ARCHES))
+    def test_every_image_arch_is_recognised(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
         msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
         assert "diffusion" in msg.lower()
         assert "Images page" in msg
         assert arch in msg
+
+    # A video arch must name the VIDEO page: Images cannot run it either.
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._VIDEO_ARCHES))
+    def test_every_video_arch_routes_to_the_video_page(self, arch):
+        out = f"error loading model: unknown model architecture: '{arch}'"
+        msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
+        assert "text-to-video" in msg.lower()
+        assert "Video page" in msg
+        assert "Images page" not in msg
+        assert arch in msg
+        assert "enough memory" not in msg.lower()
+
+    # An arch no page can run must promise NEITHER page: the picker tags these
+    # ``image-diffusion-unsupported``, hiding them from the Images and Video lists alike.
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES))
+    def test_unrunnable_media_arch_names_no_page(self, arch):
+        out = f"error loading model: unknown model architecture: '{arch}'"
+        msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
+        assert arch in msg
+        assert "neither the Images page nor the Video page" in msg
+        assert "Use Unsloth's image generation page" not in msg
+        assert "Open it from" not in msg
+        assert "cannot run" in msg.lower()
+        assert "enough memory" not in msg.lower()
+
+    def test_media_arch_sets_are_disjoint_and_cover_the_union(self):
+        sets = (
+            LlamaCppBackend._IMAGE_ARCHES,
+            LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES,
+            LlamaCppBackend._VIDEO_ARCHES,
+            LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES,
+        )
+        assert sum(len(s) for s in sets) == len(set().union(*sets))
+        assert set().union(*sets) == LlamaCppBackend._DIFFUSION_ARCHES
+
+    # The video set must stay inside what the Video picker offers: an arch routes.models
+    # tags unsupported can never be picked on the page we name. Video only -- the image half
+    # (sd1/sd3/sdxl/aura/hidream) predates the video split and is left to its own change.
+    def test_no_runnable_video_arch_is_tagged_unsupported_by_the_picker(self):
+        from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+        assert not (LlamaCppBackend._VIDEO_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)
 
 
 class TestUnsupportedNonDiffusionArchitecture:

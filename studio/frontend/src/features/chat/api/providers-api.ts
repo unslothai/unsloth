@@ -43,6 +43,7 @@ export interface ProviderConfig {
   auth_status?: ProviderAuthStatus;
   models?: string[];
   available_models?: string[];
+  max_output_tokens?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -145,6 +146,7 @@ export async function createProviderConfig(payload: {
   baseUrl?: string | null;
   models?: string[];
   availableModels?: string[];
+  maxOutputTokens?: number | null;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -157,6 +159,9 @@ export async function createProviderConfig(payload: {
         base_url: payload.baseUrl ?? null,
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
+        ...(payload.maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: payload.maxOutputTokens }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -188,6 +193,7 @@ export async function updateProviderConfig(
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
+    maxOutputTokens?: number | null;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -204,6 +210,9 @@ export async function updateProviderConfig(
         ...(payload.availableModels === undefined
           ? {}
           : { available_models: payload.availableModels }),
+        ...(payload.maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: payload.maxOutputTokens }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),

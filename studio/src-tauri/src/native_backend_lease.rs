@@ -78,8 +78,13 @@ pub struct NativePathLeaseResponse {
     pub expires_at_ms: u64,
 }
 
+/// Lockstep with `_MIN_LEASE_SECRET_BYTES` in
+/// `studio/backend/utils/native_path_leases.py`: a shorter secret is refused
+/// there, so a shorter one here would advertise leases the backend rejects.
+pub const MIN_LEASE_SECRET_BYTES: usize = 32;
+
 pub fn new_lease_secret() -> Vec<u8> {
-    rand::random::<[u8; 32]>().to_vec()
+    rand::random::<[u8; MIN_LEASE_SECRET_BYTES]>().to_vec()
 }
 
 pub fn encode_secret_env(secret: &[u8]) -> String {

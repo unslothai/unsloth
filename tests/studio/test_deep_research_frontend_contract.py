@@ -299,7 +299,9 @@ def test_research_stop_is_prompt_only_and_deduplicated() -> None:
     activity = source("features/chat/components/research-activity-panel.tsx")
 
     assert "stoppingResearchRunIdRef" in thread
-    assert 'activeResearchRun.status === "cancelling"' in thread
+    # The composer selects the run status, not the run object, so a streamed research delta
+    # does not re-render it. The cancelling guard reads that status.
+    assert 'activeResearchRunStatus === "cancelling"' in thread
     assert 'aria-label={researchStopping ? "Stopping research"' in thread
     assert "cancelResearchRun" not in activity
     assert "Stop research" not in activity

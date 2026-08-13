@@ -1538,6 +1538,7 @@ fn main() {
             commands::open_models_dir,
             commands::start_backend_update,
             commands::start_managed_repair,
+            commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
