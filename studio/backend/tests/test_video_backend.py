@@ -2497,8 +2497,9 @@ def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(mo
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None, roots = None: roots
-            != ("live",)
+            lambda repo_id, filename, revision = None, expected_size = None, roots = None: (
+                roots != ("live",)
+            )
         ),
     )
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
@@ -3323,7 +3324,12 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
         if args == ("--list-devices",):
             # What the CPU prebuilt answers: the one ggml device it was built with.
             return "CPU\tIntel(R) Xeon(R) Platinum 8559C\n"
-        return "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+        # The banner too: it is what identifies the binary AS stable-diffusion.cpp, and the gate
+        # asks that before it asks whether the build carries H3.
+        return (
+            "stable-diffusion.cpp version unknown, commit unknown\n"
+            "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+        )
 
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
 
@@ -3409,7 +3415,12 @@ def _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, *, swap_on_fallback):
             if swapped:
                 return "CUDA0\tNVIDIA H100 PCIe\nCPU\tIntel(R) Xeon(R) Platinum 8559C\n"
             return "CPU\tIntel(R) Xeon(R) Platinum 8559C\n"
-        return "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+        # The banner too: it is what identifies the binary AS stable-diffusion.cpp, and the gate
+        # asks that before it asks whether the build carries H3.
+        return (
+            "stable-diffusion.cpp version unknown, commit unknown\n"
+            "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+        )
 
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
 
@@ -3541,7 +3552,10 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
 def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path):
     """ensure_sd_cpp_binary probes runnability only, so an sd.cpp build older than H3 support is
     handed back and clears the version() gate: the load reported ready and the first generation
-    failed, i.e. AFTER the multi-tens-of-GB bundle had downloaded. Gate on the capability."""
+    failed, i.e. AFTER the multi-tens-of-GB bundle had downloaded. Gate on the capability.
+
+    And gate BEFORE the download: the point of refusing early is lost if the four-file bundle has
+    already been fetched by the time the gate runs, which is what the ordering here asserts."""
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
 
@@ -3572,6 +3586,9 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
         sd_cpp_backend,
         "_sd_cpp_probe_output",
         lambda *_args: (
+            # The banner is what identifies it AS stable-diffusion.cpp. Without it the gate would
+            # (correctly) report a different failure: not an old build, not the project at all.
+            "stable-diffusion.cpp version unknown, commit unknown\n"
             "  -M, --mode                    run mode, one of [img_gen, vid_gen, upscale]\n"
             "  --audio-vae <string>          path to standalone LTX audio vae model\n"
         ),
@@ -3587,7 +3604,10 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
 
     monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
 
+    downloads: list[str] = []
+
     def _download(_repo, wanted, *_args, **_kwargs):
+        downloads.append(wanted)
         path = tmp_path / Path(wanted).name
         path.write_bytes(b"x")
         return str(path)
@@ -3607,6 +3627,165 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
         )
 
     assert backend._state is None
+    # Not one byte of the bundle: the binary is vetted before the four files are resolved.
+    assert downloads == []
+
+
+def test_h3_native_load_refuses_a_missing_binary_before_downloading(monkeypatch, tmp_path):
+    """ensure_h3_sd_cpp_binary returns None whenever it cannot produce a binary -- auto-install off,
+    unsupported platform, no network, or a stale managed copy something else is running out of. The
+    only `not binary` check used to sit after the download loop, so every one of those cases still
+    fetched the four-file bundle first."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: False)
+    monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", lambda **_kwargs: None)
+
+    downloads: list[str] = []
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        downloads.append(wanted)
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    with pytest.raises(RuntimeError, match = "could not be installed or started"):
+        backend._run_load_h3_native(
+            fam = fam,
+            token = None,
+            cancel_event = threading.Event(),
+            repo_id = "leejet/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        )
+
+    assert backend._state is None
+    assert downloads == []
+
+
+def test_h3_native_load_checks_cancellation_before_the_binary_preflight(monkeypatch):
+    """The preflight may install the sd-cli prebuilt and takes no cancel_event, so a load cancelled
+    before this thread got going must not pay for it. The download loop used to be the first check;
+    moving the preflight above it put an uncancellable install in front of that."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend
+
+    ensures: list[str] = []
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_h3_sd_cpp_binary",
+        lambda **_kwargs: (ensures.append("ensure"), "/usr/local/bin/sd-cli")[1],
+    )
+
+    cancelled = threading.Event()
+    cancelled.set()
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend._run_load_h3_native(
+            fam = fam,
+            token = None,
+            cancel_event = cancelled,
+            repo_id = "leejet/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        )
+    assert ensures == []
+
+
+def test_h3_native_load_refuses_a_binary_that_is_not_sd_cpp_before_downloading(
+    monkeypatch, tmp_path
+):
+    """#8507: an unrelated executable named `sd` was reported as an sd.cpp build predating H3.
+
+    Discovery now skips it, so reaching the gate takes a deliberate SD_CLI_PATH override -- and
+    when it is reached the message says what is actually wrong, still before any download."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/usr/bin/sd",
+    )
+    monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: False)
+    # Debian/Ubuntu's find-and-replace `sd`, which is what /usr/bin/sd is on the reporter's box.
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
+        lambda *_args: "sd 1.0.0\nFind & replace CLI\n\nUSAGE:\n    sd <find> <replace-with>\n",
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    downloads: list[str] = []
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        downloads.append(wanted)
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    with pytest.raises(RuntimeError, match = "is not stable-diffusion.cpp"):
+        backend._run_load_h3_native(
+            fam = fam,
+            token = None,
+            cancel_event = threading.Event(),
+            repo_id = "leejet/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        )
+
+    assert backend._state is None
+    assert downloads == []
 
 
 def test_h3_native_generation_dispatch_does_not_import_torch(monkeypatch):
@@ -5058,10 +5237,10 @@ def test_h3_modular_load_pins_a_hosted_prequant_denoiser_out_of_the_offload_rota
     monkeypatch.setattr(
         prequant_module,
         "pin_prequantized_module",
-        lambda mgr, module, device, **kwargs: calls.setdefault(
-            "pinned", {"manager": mgr, "module": module, "device": device}
-        )
-        is not None,
+        lambda mgr, module, device, **kwargs: (
+            calls.setdefault("pinned", {"manager": mgr, "module": module, "device": device})
+            is not None
+        ),
     )
 
     def load(scheme):
