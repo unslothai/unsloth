@@ -1370,22 +1370,17 @@ fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) ->
 /// exemption is scoped to the variables whose reader proves it, because the
 /// syntax is only special there: a directory really called "[llama]" is legal on
 /// Windows, and UNSLOTH_LLAMA_CPP_PATH is read as one.
-/// `value` expanded until it stops changing, or None if it never does.
+/// `value` expanded once, or None if one pass does not settle it.
 ///
-/// One pass is what each reader does, and one pass is all a value Windows itself
-/// built ever needs. A nested reference (LOCALAPPDATA holding %USERPROFILE%)
-/// needs more, and a self-reference needs infinitely many. The twin of
-/// `_expand_settled` in the CLI guard.
+/// One pass is what every reader does, so one pass is what this does. The result
+/// is only usable if expanding it again would change nothing, because the reader
+/// expands whatever gets written back: a nested %LOCALAPPDATA% that itself holds
+/// %USERPROFILE%, an escaped %%NAME%%, or a self-reference would be expanded a
+/// second time and read as a folder with another drive in the middle of it. The
+/// twin of `_expand_settled` in the CLI guard.
 fn expand_settled(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> Option<String> {
-    let mut value = value.to_string();
-    for _ in 0..8 {
-        let expanded = expand_windows_vars(&value, lookup);
-        if expanded == value {
-            return Some(value);
-        }
-        value = expanded;
-    }
-    None
+    let expanded = expand_windows_vars(value, lookup);
+    (expand_windows_vars(&expanded, lookup) == expanded).then_some(expanded)
 }
 
 fn names_a_path(name: &str, value: &str) -> bool {
@@ -1586,9 +1581,12 @@ fn relative_override_pins_from(
                 entries.push(cwd.to_string_lossy().into_owned());
                 continue;
             }
+            // Python never expands `~` in PYTHONPATH, so `~\plugins` is an
+            // ordinary relative folder there, and expanding it would point the
+            // import at a profile folder that the interpreter was never reading.
             let entry = match home {
-                Some(home) => expand_windows_user(&entry, home),
-                None => entry,
+                Some(home) if *name != "PYTHONPATH" => expand_windows_user(&entry, home),
+                _ => entry,
             };
             if entry.is_empty() || is_fully_qualified(&entry) {
                 entries.push(entry);
@@ -3379,9 +3377,9 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn an_expansion_that_never_settles_leaves_the_value_alone() {
-        // %LOCALAPPDATA% holding %USERPROFILE% needs a second pass; HF_HOME
-        // holding itself needs infinitely many. Anchoring a half-expanded string
-        // would build a folder name with a second drive in the middle of it.
+        // The reader expands once, so a value that still holds a reference after
+        // one pass would be expanded a second time by the reader and read as a
+        // folder with another drive in the middle of it.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
@@ -3404,12 +3402,8 @@ mod managed_cli_working_dir_tests {
         .unwrap();
         assert_eq!(
             pins,
-            vec![(
-                // Nested, so it settles on the second pass and names one folder.
-                "HF_HUB_CACHE",
-                PathBuf::from("C:\\Users\\me\\AppData\\Local\\hub")
-            )],
-            "a self-referencing value is left as written, a nested one is resolved"
+            Vec::new(),
+            "neither a nested nor a self-referencing value is written back"
         );
     }
 
@@ -3989,9 +3983,13 @@ mod managed_cli_working_dir_tests {
             true,
         )
         .unwrap();
+        // `~\plugins` is anchored as the literal relative folder Python reads,
+        // not turned into the profile the interpreter was never looking at.
         let expected = format!(
-            "{};C:\\Users\\me\\plugins;C:\\shared\\lib",
-            cwd.to_string_lossy()
+            "{};{};C:\\shared\\lib",
+            cwd.to_string_lossy(),
+            // join, like the anchoring does, so the separator is the host's.
+            cwd.join("~\\plugins").to_string_lossy()
         );
         assert_eq!(pins, vec![("PYTHONPATH", PathBuf::from(expected))]);
     }

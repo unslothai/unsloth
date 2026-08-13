@@ -232,6 +232,17 @@ def _is_desktop_backend_launch(rest):
 _PATH_TAKING_STUDIO_COMMANDS = ("run", "update")
 
 
+def _carries_a_value(arg):
+    """Whether this token can hold a value, attached or not."""
+    if not arg.startswith("-"):
+        return True
+    if arg.startswith("--"):
+        return "=" in arg
+    # A short option carries its value in the same token from the second
+    # character on: `-f.\dist` is Click's spelling of `--frontend .\dist`.
+    return len(arg) > 2
+
+
 def _takes_a_path(rest):
     """Whether this `studio` invocation can carry a caller's path. Blunt on
     purpose: the bare forms the desktop runs carry none, so anything else might.
@@ -242,9 +253,10 @@ def _takes_a_path(rest):
         return tuple(rest) not in _STUDIO_COMMANDS
     # rest[0] is the subcommand name, skipped unless it is a flag (then there is
     # no subcommand). An attached value hides inside its own token, so a leading
-    # dash does not clear it: `studio --frontend=.\dist` carries a path.
+    # dash does not clear it: Click reads both `--frontend=.\dist` and the short
+    # `-f.\dist` as a value, and either carries a path a relocation would rebase.
     tail = rest if rest[0].startswith("-") else rest[1:]
-    return any(not arg.startswith("-") or "=" in arg for arg in tail)
+    return any(_carries_a_value(arg) for arg in tail)
 
 
 def is_relocatable_invocation(argv, environ):
@@ -499,33 +511,34 @@ def _anchor_list_entry(
     expandvars,
     expanduser = None,
 ):
-    """One entry of a path list, anchored, or left as written. An empty PYTHONPATH
-    component means the working directory itself, the one spelling _anchor cannot
-    see.
+    r"""One entry of a path list, anchored, or left as written.
+
+    PYTHONPATH has two spellings that follow the process rather than the caller:
+    an empty component is the working directory itself, and `~` is never expanded
+    there, so Python reads `~\plugins` as an ordinary relative folder and so does
+    this.
     """
     entry = entry.strip()
-    if name == "PYTHONPATH" and not entry:
-        return cwd
+    if name == "PYTHONPATH":
+        if not entry:
+            return cwd
+        expanduser = lambda value: value
     return _anchor(name, entry, cwd, pathmod, abspath, expandvars, expanduser) or entry
 
 
-def _expand_settled(
-    value,
-    expandvars,
-    passes = 8,
-):
-    """The value expanded until it stops changing, or None if it never does.
+def _expand_settled(value, expandvars):
+    """The value expanded exactly once, or None if one pass does not settle it.
 
-    One pass is what each reader does, and one pass is enough for the values
-    Windows itself builds. A nested reference (LOCALAPPDATA holding %USERPROFILE%)
-    needs more, and a self-reference needs infinitely many.
+    One pass is what every reader does, so one pass is what the guard does. The
+    result is only usable if expanding it again would change nothing, because the
+    reader expands whatever gets written back: a value that still holds a
+    reference (a nested %LOCALAPPDATA% that itself holds %USERPROFILE%, an escaped
+    %%NAME%%, a self-reference) would be expanded a second time by the reader and
+    read as a folder with another drive in the middle of it. Those are left
+    exactly as written instead.
     """
-    for _ in range(passes):
-        expanded = expandvars(value)
-        if expanded == value:
-            return value
-        value = expanded
-    return None
+    expanded = expandvars(value)
+    return expanded if expandvars(expanded) == expanded else None
 
 
 def _anchor(
@@ -553,10 +566,8 @@ def _anchor(
         # in the same folder. An unset variable is left exactly as written.
         value = _expand_settled(value, expandvars or _os.path.expandvars)
         if value is None:
-            # A value whose expansion never settles (%HF_HOME% inside HF_HOME) is
-            # left exactly as it was: no reader can resolve it either, and
-            # anchoring a half-expanded string would build a folder name with a
-            # second drive in the middle of it.
+            # One pass did not settle it, so writing the result back would make
+            # the reader expand it a second time. Left exactly as it was.
             return None
     if not value:
         return None
@@ -722,19 +733,31 @@ def check_working_directory(
             # that no longer fits in a Windows variable once fully qualified.
             unpinnable = error
             target = None
+    moved = False
     if target is not None:
         try:
             chdir(target)
         except OSError:
             target = None
         else:
+            moved = True
             # Confirm where it landed rather than trusting chdir not to raise.
             try:
                 if is_system_dir(getcwd(), windirs, pathmod, sep):
                     target = None
             except OSError:
                 target = None
-    if target is None:
+            if target is None:
+                # It landed somewhere the CLI still refuses, so go back: the
+                # values written for the move only mean the same folder from the
+                # directory they were written in.
+                try:
+                    chdir(cwd)
+                except OSError:
+                    pass
+                else:
+                    moved = False
+    if target is None and not moved:
         # Nothing moved, so nothing stays rewritten: put back what pinning wrote.
         if environ_before != environ:
             environ.clear()

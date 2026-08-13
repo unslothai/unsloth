@@ -353,6 +353,7 @@ def _guard_outcome(
     syspath: list[str] | None = None,
     real_paths: tuple[str, ...] = (),
     pass_syspath: bool = True,
+    chdir_lands_in: str | None = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -391,7 +392,11 @@ def _guard_outcome(
         chdir_calls.append(target)
         if chdir_error is not None:
             raise chdir_error
-        current["cwd"] = target
+        # A junction, or a profile that is itself inside the Windows tree: the
+        # call succeeds and the process ends up somewhere else than it asked for.
+        current["cwd"] = (
+            chdir_lands_in if chdir_lands_in is not None and target == _RELOCATED else target
+        )
 
     def _getcwd():
         if getcwd_error is not None:
@@ -1183,27 +1188,83 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
     ]
 
 
-def test_cli_guard_leaves_an_expansion_that_never_settles_as_written():
-    r"""%LOCALAPPDATA% holding %USERPROFILE% needs a second pass, and HF_HOME
-    holding itself needs infinitely many. Anchoring a half-expanded value would
-    build a folder name with a second drive in the middle of it, so a value whose
-    expansion never settles is left exactly as it was."""
+def test_cli_guard_writes_back_only_an_expansion_the_reader_agrees_with():
+    r"""Every reader expands once, so the guard expands once and writes the result
+    back only when expanding it again would change nothing. A nested reference, an
+    escaped %%NAME%% and a self-reference all fail that test: the reader would
+    expand what we wrote a second time and read a folder with another drive in the
+    middle of it, so they are left exactly as written."""
     environ_out: dict[str, str] = {}
     _message, colour, _chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "--api-only"],
         environ_extra = {
-            "LOCALAPPDATA": r"%USERPROFILE%\AppData\Local",
+            "LOCALAPPDATA": r"C:\Users\me\AppData\Local",
+            "NESTED": r"%USERPROFILE%\AppData\Local",
             "HF_HUB_CACHE": r"%LOCALAPPDATA%\hub",
+            "HF_ASSETS_CACHE": r"%NESTED%\assets",
+            "XDG_CACHE_HOME": r"%%USERPROFILE%%\xdg",
             "HF_HOME": r"%HF_HOME%\cache",
         },
         environ_out = environ_out,
     )
     assert colour == "yellow"
-    # Nested, so it settles on the second pass and names one folder.
+    # One pass settles it, so it names one folder and is written back.
     assert environ_out["HF_HUB_CACHE"] == r"C:\Users\me\AppData\Local\hub"
-    # Self-referencing, so it is left exactly as written.
+    # One pass leaves another reference behind: left exactly as written.
+    assert environ_out["HF_ASSETS_CACHE"] == r"%NESTED%\assets"
+    # The escape is a literal percent to the reader, and expanding what one pass
+    # produces would consume it, so this is left alone too.
+    assert environ_out["XDG_CACHE_HOME"] == r"%%USERPROFILE%%\xdg"
+    # Self-referencing, so it never settles.
     assert environ_out["HF_HOME"] == r"%HF_HOME%\cache"
+
+
+def test_cli_guard_refuses_a_path_attached_to_a_short_option():
+    r"""Click reads `-f.\dist` as a value the same way it reads
+    `--frontend=.\dist`, so a marked invocation carrying one is refused rather
+    than rebased under the new folder."""
+    for argv in (
+        ["unsloth", "studio", "-f.\\dist"],
+        ["unsloth", "studio", "--frontend=.\\dist"],
+        ["unsloth", "studio", "-f", ".\\dist"],
+    ):
+        message, colour, chdir_calls = _guard_outcome(
+            r"C:\Windows\System32",
+            argv,
+            environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "1"},
+        )
+        assert (colour, chdir_calls) == ("red", []), argv
+        assert "cannot run from" in message
+    # The bare marked form the desktop actually runs still relocates.
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "desktop-handshake"],
+        environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "1"},
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+
+
+def test_cli_guard_goes_back_when_the_move_lands_somewhere_still_refused():
+    r"""chdir can succeed into a folder the guard still refuses, through a
+    junction or a profile that is itself inside the Windows tree. The process
+    has to end up where it started, or the values written for the move would
+    name folders under a directory nobody chose."""
+    environ_out: dict[str, str] = {}
+    message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {"HF_HOME": "cache"},
+        environ_out = environ_out,
+        # A junction under the profile: the move succeeds and the process is
+        # still inside the folder the guard refuses.
+        chdir_lands_in = r"C:\Windows\System32\config\systemprofile",
+    )
+    assert colour == "red"
+    assert "cannot run from" in message
+    # Back where it started, and the override is exactly as the caller wrote it.
+    assert chdir_calls[-1] == r"C:\Windows\System32"
+    assert environ_out["HF_HOME"] == "cache"
 
 
 def test_cli_guard_restores_the_real_sys_path_when_the_move_fails():
@@ -1314,9 +1375,9 @@ def test_cli_guard_pins_the_token_path_and_the_special_pythonpath_entries():
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     assert environ_out["HF_TOKEN_PATH"] == r"C:\Windows\System32\secrets\token"
     assert environ_out["PYTHONPATH"] == (
-        # The empty component is the folder being left; `~` names the profile,
-        # which is what the caller meant and what expanduser answers.
-        r"C:\Windows\System32;C:\Users\me\plugins;C:\shared\lib"
+        # The empty component is the folder being left; `~` is anchored as the
+        # literal relative folder Python reads there, not as the profile.
+        r"C:\Windows\System32;C:\Windows\System32\~\plugins;C:\shared\lib"
     )
 
 
