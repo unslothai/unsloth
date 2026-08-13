@@ -124,7 +124,11 @@ def test_sandbox_listing_route_exists():
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
     # :path so a file written into a subdirectory is reachable.
-    assert sandbox_routes == ["/sandbox/{session_id}", "/sandbox/{session_id}/{filename:path}"]
+    assert sandbox_routes == [
+        "/sandbox/{session_id}",
+        "/sandbox/{session_id}/reveal",
+        "/sandbox/{session_id}/{filename:path}",
+    ]
 
     import inspect
     from routes import inference
@@ -4773,6 +4777,56 @@ def test_a_sandbox_listing_does_not_resolve_on_the_event_loop(tmp_path, monkeypa
         inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
     )
     assert ran_on and loop_thread not in ran_on, "resolution ran on the event loop"
+
+
+def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypatch):
+    """The route hands the file manager the resolved sandbox, not the raw id."""
+    import asyncio
+
+    from pathlib import Path as _Path
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    opened = []
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", opened.append)
+
+    result = asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+    )
+    assert result["path"] == str(sandbox)
+    assert opened == [_Path(str(sandbox))]
+
+
+def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypatch):
+    """A chat whose tools never ran has no folder, and opening one for it would
+    materialise a directory the user never asked for."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    missing = tmp_path / "sandbox" / "thread-1"
+    opened = []
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(missing))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", opened.append)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 404
+    assert not missing.exists()
+    assert opened == []
 
 
 def test_a_kept_sandbox_is_offered_even_when_deletion_was_asked_for():

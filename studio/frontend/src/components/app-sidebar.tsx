@@ -78,6 +78,7 @@ import {
   Edit03Icon,
   FolderAddIcon,
   FolderExportIcon,
+  FolderOpenIcon,
   Folder01Icon,
   FlimSlateIcon,
   Globe02Icon,
@@ -104,6 +105,7 @@ import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -138,6 +140,8 @@ import {
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
+import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
@@ -325,6 +329,46 @@ function preloadSilently(request: Promise<unknown>): void {
 }
 
 // "New" pill for recent tabs. Same recipe as the brand "beta" badge.
+/**
+ * "Open chat folder" for a browser session, where the backend's file manager is
+ * not the user's. Radix's `disabled` takes the row's pointer events away, and a
+ * tooltip under a dropdown is blocked while the menu owns the screen, so the
+ * row stays enabled, refuses the select itself, and drives a controlled tooltip
+ * off a pointer-events-none anchor (as the MCP rows do).
+ */
+function OpenChatFolderUnavailableItem() {
+  const [hintOpen, setHintOpen] = useState(false);
+
+  return (
+    <DropdownMenuItem
+      aria-disabled={true}
+      className="relative opacity-50"
+      onSelect={(event) => event.preventDefault()}
+      onPointerEnter={() => setHintOpen(true)}
+      onPointerLeave={() => setHintOpen(false)}
+      onFocus={() => setHintOpen(true)}
+      onBlur={() => setHintOpen(false)}
+    >
+      <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+      <span>Open chat folder</span>
+      <Tooltip open={hintOpen}>
+        {/* Our wrapper, not the raw primitive: it registers the trigger element,
+            without which the tooltip counts itself blocked by the open menu. */}
+        <TooltipTrigger asChild={true}>
+          <span
+            aria-hidden={true}
+            className="pointer-events-none absolute inset-y-0 right-0 w-0"
+          />
+        </TooltipTrigger>
+        <TooltipContent side="right" className="max-w-[220px]">
+          Opening the folder needs the desktop app. In a browser, save a file
+          from the card that created it.
+        </TooltipContent>
+      </Tooltip>
+    </DropdownMenuItem>
+  );
+}
+
 function NavBadge({ label, className }: { label: string; className?: string }) {
   return (
     <span
@@ -1554,6 +1598,12 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    // A compare row outside a project spans two sandboxes, and there is no
+    // honest single folder to offer for it.
+    const sandboxSessionId =
+      item.type === "single" || item.projectId
+        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+        : undefined;
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
       item.type === "compare"
@@ -1762,6 +1812,26 @@ export function AppSidebar() {
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
             </DropdownMenuItem>
+            {sandboxSessionId ? (
+              isTauri ? (
+                <DropdownMenuItem
+                  title="Open the folder this chat's tool calls read and write"
+                  onSelect={() => {
+                    revealSandbox(sandboxSessionId).catch((error) => {
+                      toast.error("Could not open the chat folder.", {
+                        description:
+                          error instanceof Error ? error.message : String(error),
+                      });
+                    });
+                  }}
+                >
+                  <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>Open chat folder</span>
+                </DropdownMenuItem>
+              ) : (
+                <OpenChatFolderUnavailableItem />
+              )
+            ) : null}
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />

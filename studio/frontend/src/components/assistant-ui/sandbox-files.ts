@@ -72,6 +72,18 @@ export function sandboxRoutePrefix(sessionId: string): {
   };
 }
 
+/**
+ * The sandbox a chat's tool calls run in. Threads inside a project share the
+ * project's workspace, so their files land in one place instead of one folder
+ * per thread.
+ */
+export function sandboxSessionIdFor(
+  threadId: string | undefined,
+  projectId: string | null | undefined,
+): string | undefined {
+  return projectId ? `project-${projectId}` : threadId;
+}
+
 export function sandboxFilePath(sessionId: string, filename: string): string {
   // Segment by segment: a file written to outputs/report.csv keeps a real "/"
   // in the URL, which encodeURIComponent on the whole name would have escaped.

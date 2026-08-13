@@ -25,6 +25,7 @@ import {
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
   type SandboxFile,
+  sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -1821,7 +1822,7 @@ async function resolveSandboxSessionId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
-  return projectId ? `project-${projectId}` : threadId;
+  return sandboxSessionIdFor(threadId, projectId);
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
