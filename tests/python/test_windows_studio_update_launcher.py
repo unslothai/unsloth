@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 import types
@@ -631,13 +632,18 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
     assert calls[0][0] == [str(launcher), "--version"]
     interpreter_call = calls[1][0]
     # Spelled out rather than imported, so an edit to the constant fails here.
-    # No -I: it implies -E and would drop every PYTHON* variable the console
-    # script honours, which the trampoline's own sys.path[:1] filter makes
-    # unnecessary.
+    # -I here and nowhere else in this module: this probe predicts the desktop
+    # updater's launch, and build_update_command runs that under
+    # Isolation::Isolated with PYTHONHOME/PYTHONPATH cleared. A probe that
+    # inherited them could be answered by a foreign checkout on PYTHONPATH and
+    # would keep an update the next launch cannot start. -X utf8 precedes -I
+    # because -I implies -E, which drops PYTHONUTF8 but cannot touch a
+    # command-line -X.
     assert interpreter_call == [
         str(scripts / "python.exe"),
         "-X",
         "utf8",
+        "-I",
         "-c",
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())",
@@ -739,6 +745,33 @@ def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(monkeypatch, 
     assert not (scripts / "unsloth.exe.update-backup").exists()
     # Only the interpreter was asked; there was no file to probe.
     assert [call[0][0] for call in calls] == [str(scripts / "python.exe")]
+
+
+def test_only_the_updater_probe_isolates_the_interpreter(studio, tmp_path):
+    """Isolation is opt-in, and exactly one caller opts in.
+
+    Every other managed invocation has to stay byte-for-byte what the console
+    script did, and -I implies -E and -s: PYTHONPATH, PYTHONWARNINGS,
+    PYTHONHASHSEED and user site-packages all stop being honoured. That is an
+    observable difference on a machine with no policy at all, so the default
+    inherits and only the probe standing in for an already-isolated launch asks
+    for it. Mirrors only_the_isolated_flavour_carries_the_isolation_flag in
+    studio/src-tauri/src/process.rs.
+    """
+    python = tmp_path / "python.exe"
+
+    inherited = studio._managed_cli_argv(python, "--version")
+    assert inherited[:3] == [str(python), "-X", "utf8"]
+    assert "-I" not in inherited
+
+    isolated = studio._managed_cli_argv(python, "--version", isolated = True)
+    # -X utf8 first: -I implies -E, so PYTHONUTF8 would be discarded, while a
+    # command-line -X survives it.
+    assert isolated[:4] == [str(python), "-X", "utf8", "-I"]
+
+    # Isolation is the only difference. Same trampoline, same caller arguments,
+    # in the same order.
+    assert [arg for arg in isolated if arg != "-I"] == inherited
 
 
 def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
@@ -868,6 +901,76 @@ def test_an_importable_package_still_answers_for_the_quarantined_stub(
     # And POSIX is untouched: there the console script is what gets exec'd.
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     assert not studio._managed_cli_package_present(python)
+
+
+@pytest.fixture
+def bare_probe_venv(real_venv):
+    """The module venv with any unsloth_cli left by a neighbouring test removed.
+
+    These cases each install their own shape of broken package, so they cannot
+    inherit one, and they must not leave one behind either.
+    """
+    python, site_packages = real_venv
+    package = site_packages / "unsloth_cli"
+    shutil.rmtree(package, ignore_errors = True)
+    yield python, site_packages
+    shutil.rmtree(package, ignore_errors = True)
+
+
+@pytest.mark.parametrize(
+    "shape, files",
+    [
+        # An emptied directory. find_spec calls this a namespace package and
+        # returns a spec for it, so a spec lookup answers yes to a venv the
+        # trampoline's `from unsloth_cli import app` cannot start. This is the
+        # shape antivirus leaves when it takes the module files out from under a
+        # package it decided it disliked.
+        ("an emptied package directory", {}),
+        # An interrupted install: the package landed, its dependencies did not.
+        ("a package whose imports are missing", {"__init__.py": "import unsloth_cli_missing_dep\n"}),
+        # A partially written __init__ that imports but has no app to hand back.
+        ("a package with no app attribute", {"__init__.py": "VERSION = '1'\n"}),
+        # An __init__ that raises on import, which no spec lookup ever executes.
+        ("a package whose import raises", {"__init__.py": "raise RuntimeError('half installed')\n"}),
+    ],
+)
+def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
+    monkeypatch, studio, bare_probe_venv, shape, files
+):
+    """The gate has to fail on everything the launch would fail on.
+
+    It stands in front of the headless-public strip of .bootstrap_password, so a
+    yes here that the trampoline then contradicts is a public Studio with no
+    login page and no plaintext recovery credential. Locating the package is not
+    the question; importing it and getting `app` back is, which is why the probe
+    runs that exact import rather than a cheaper find_spec.
+    """
+    python, site_packages = bare_probe_venv
+    package = site_packages / "unsloth_cli"
+    package.mkdir(parents = True)
+    for name, body in files.items():
+        (package / name).write_text(body, encoding = "utf-8")
+
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    assert not studio._managed_cli_package_present(python), (
+        f"{shape} must not pass the gate: the trampoline cannot start it"
+    )
+
+    # Anti-vacuity: the same venv with a package that does import passes, so the
+    # assertion above is about the shape and not about the fixture being broken.
+    (package / "__init__.py").write_text("app = None\n", encoding = "utf-8")
+    assert studio._managed_cli_package_present(python)
+
+
+def test_the_import_probe_performs_the_trampolines_own_import(studio):
+    """A spec lookup here would answer a different question than the launch asks.
+
+    Pinned as a source contract because the two failures it prevents are silent:
+    an empty directory and a raising __init__ both resolve as specs, and both
+    give the gate a yes the launch immediately contradicts.
+    """
+    assert "from unsloth_cli import app" in studio._MANAGED_CLI_IMPORT_PROBE
+    assert "find_spec" not in studio._MANAGED_CLI_IMPORT_PROBE
 
 
 def test_the_import_probe_scrubs_the_cwd_exactly_as_the_trampoline_does(studio):

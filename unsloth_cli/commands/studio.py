@@ -183,17 +183,28 @@ _WINDOWS_CLI_ENTRYPOINT = (
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
-# Asks the managed interpreter whether the trampoline's import would resolve,
-# without running it. The sys.path[0] scrub is _WINDOWS_CLI_ENTRYPOINT's, kept a
-# separate literal because a parity test literal_evals that constant; the two
-# must agree or the probe answers for a different sys.path than the launch uses.
+# Asks the managed interpreter whether the trampoline's import would succeed, by
+# performing that exact import. The sys.path[0] scrub is
+# _WINDOWS_CLI_ENTRYPOINT's, kept a separate literal because a parity test
+# literal_evals that constant; the two must agree or the probe answers for a
+# different sys.path than the launch uses.
+#
+# `from unsloth_cli import app` rather than a find_spec, deliberately. find_spec
+# locates without executing, which sounds like the lighter question and is the
+# wrong one: it answers True for an empty unsloth_cli/ directory (a namespace
+# package), for a package whose __init__ raises, and for one whose dependencies
+# an interrupted install never fetched. Every one of those is a venv the
+# trampoline cannot start, and this probe gates the headless-public strip of
+# .bootstrap_password, so a false pass there is a public Studio with no login
+# page and no plaintext recovery credential. Paying the import is what makes the
+# probe's answer the launch's answer.
 _MANAGED_CLI_IMPORT_PROBE = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
-    "import importlib.util; sys.exit(0 if importlib.util.find_spec('unsloth_cli') else 1)"
+    "from unsloth_cli import app; sys.exit(0)"
 )
 
-# Seconds, and generous: this is a bare interpreter start plus a path-finder
-# walk, but it can run from cold on a machine whose antivirus is scanning the
+# Seconds, and generous: this is a bare interpreter start plus the CLI package
+# import, and it can run from cold on a machine whose antivirus is scanning the
 # venv it just quarantined a file out of. The caller treats a timeout as "no
 # verdict" rather than as a missing package, so overrunning it is not fatal.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
@@ -203,15 +214,23 @@ _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 _ERROR_ACCESS_DISABLED_BY_POLICY = 1260
 
 
-def _managed_cli_argv(python: Path, *args: str) -> List[str]:
+def _managed_cli_argv(python: Path, *args: str, isolated: bool = False) -> List[str]:
     """argv that runs the managed `unsloth` CLI through *python*.
 
     -X utf8 rather than PYTHONUTF8 so the encoding holds even for a caller that
-    scrubs the environment. No -I: see _WINDOWS_CLI_ENTRYPOINT for why isolation
-    is bought inside the trampoline instead. Same form and rationale as
-    build_managed_cli_command in studio/src-tauri/src/process.rs.
+    scrubs the environment. -X utf8 precedes -I because -I implies -E, which
+    would discard PYTHONUTF8 but cannot touch a command-line -X.
+
+    *isolated* mirrors the Isolation enum in studio/src-tauri/src/process.rs and
+    carries the same rule: the default is inherit, because -I implies -E and -s
+    and so drops PYTHONPATH, PYTHONWARNINGS, PYTHONHASHSEED and user
+    site-packages that the console script honoured, an observable difference on
+    machines with no policy at all. Only a caller that must reproduce an
+    already-isolated launch asks for it, and today that is the desktop updater's
+    health probe, matching build_update_command's Isolation::Isolated.
     """
-    return [str(python), "-X", "utf8", "-c", _WINDOWS_CLI_ENTRYPOINT, *args]
+    flags = ["-X", "utf8", "-I"] if isolated else ["-X", "utf8"]
+    return [str(python), *flags, "-c", _WINDOWS_CLI_ENTRYPOINT, *args]
 
 
 def _is_application_control_block(error: OSError) -> bool:
@@ -339,8 +358,9 @@ def _managed_cli_package_present(python: Path) -> bool:
     outcome the gate's placement exists to prevent -- a public Studio with no
     login page and no plaintext recovery credential.
 
-    find_spec locates without executing, so the probe runs no package import
-    side effects, and the same sys.path[0] scrub as the trampoline is applied so
+    The probe runs the trampoline's own ``from unsloth_cli import app`` rather
+    than a cheaper spec lookup (see _MANAGED_CLI_IMPORT_PROBE for why the cheaper
+    one answers a different question), with the same sys.path[0] scrub applied so
     an ``unsloth_cli`` directory in the caller's cwd cannot answer for the venv.
     """
     if platform.system() != "Windows":
@@ -4207,6 +4227,15 @@ class _WindowsLauncherUpdateTransaction:
         leave a working CLI? -- on a machine where --version on the launcher can
         never succeed. Falls back to reporting the original block when there is
         no interpreter to ask.
+
+        Isolated, alone among this module's managed invocations, because the
+        launch it is predicting is itself isolated: build_update_command in
+        studio/src-tauri/src/update.rs runs the desktop updater under
+        Isolation::Isolated and clears PYTHONHOME/PYTHONPATH. Inheriting them
+        here would let a foreign checkout on PYTHONPATH answer --version for a
+        managed package the update actually broke, and validate_launcher would
+        keep an update that the next desktop launch cannot start. -I implies -E,
+        so it clears the same two variables the Rust side removes by hand.
         """
         assert self.launcher is not None
         python = self.launcher.parent / "python.exe"
@@ -4219,7 +4248,7 @@ class _WindowsLauncherUpdateTransaction:
             )
         try:
             result = subprocess.run(
-                _managed_cli_argv(python, "--version"),
+                _managed_cli_argv(python, "--version", isolated = True),
                 check = False,
                 capture_output = True,
                 timeout = self._VERSION_TIMEOUT_SECONDS,

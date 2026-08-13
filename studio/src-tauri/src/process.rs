@@ -968,7 +968,9 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
     //   1. a launcher with the interpreter beside it -- a complete environment;
     //   2. Windows only, an interpreter with no launcher -- quarantine takes the
     //      unsigned stub and leaves a working install, and nothing executes the
-    //      stub any more, so its absence no longer means "not installed";
+    //      stub any more, so its absence no longer means "not installed". Within
+    //      this pass, a layout that still holds the CLI package outranks one
+    //      that holds only an interpreter, whichever layout it is;
     //   3. a launcher with no interpreter -- useless to every caller here, but it
     //      is what this function answered before, and its error message names the
     //      missing interpreter, which is more use than "not installed".
@@ -988,6 +990,24 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
 
         if complete {
             return Some(bin);
+        }
+    }
+
+    // Pass 2 twice over, package first. When an interrupted migration leaves an
+    // interpreter in BOTH layouts, layout order alone would hand back the new
+    // one even if its site-packages is empty and the old one still carries the
+    // package the trampoline imports, and every capability probe would then
+    // report an install that cannot start. A directory test, not an import
+    // probe: this is called on the launch path and from the capability checks,
+    // so it must stay a stat rather than an interpreter spawn. It cannot prove
+    // the package is importable, only that one candidate has something to
+    // import and the other has nothing, which is the whole difference here.
+    #[cfg(windows)]
+    for base in &bases {
+        if base.join("Scripts").join("python.exe").exists()
+            && base.join("Lib").join("site-packages").join("unsloth_cli").exists()
+        {
+            return Some(base.join("Scripts").join("unsloth.exe"));
         }
     }
 
@@ -1337,6 +1357,55 @@ mod tests {
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
             Some(new_scripts.join("unsloth.exe"))
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // Both halves of an interrupted migration kept an interpreter and neither kept
+    // a launcher, so pass 1 cannot decide and layout order alone would hand back
+    // the new base whether or not anything is installed in it. The base that still
+    // holds the package the trampoline imports has to win, in either direction, or
+    // every capability probe drives an interpreter with nothing to run.
+    #[cfg(windows)]
+    #[test]
+    fn an_interpreter_that_still_has_the_package_outranks_one_that_does_not() {
+        let studio = temp_studio_dir("stubless-both-halves");
+        let new_base = studio.join("unsloth_studio");
+        let old_base = studio.join(".venv");
+        for base in [&new_base, &old_base] {
+            fs::create_dir_all(base.join("Scripts")).unwrap();
+            fs::write(base.join("Scripts").join("python.exe"), "").unwrap();
+        }
+
+        // Neither carries the package: layout order decides, exactly as before.
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_base.join("Scripts").join("unsloth.exe")),
+            "with nothing to choose between them the new layout still wins"
+        );
+
+        // The legacy base has the package and the new one does not.
+        fs::create_dir_all(old_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe")),
+            "the only base with a package to import must win"
+        );
+
+        // Once the new base has it too, layout order takes over again.
+        fs::create_dir_all(new_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_base.join("Scripts").join("unsloth.exe")),
+            "package on both sides is not a reason to prefer the legacy layout"
+        );
+
+        // A complete environment anywhere still outranks this whole pass.
+        fs::write(old_base.join("Scripts").join("unsloth.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe"))
         );
 
         fs::remove_dir_all(studio).unwrap();

@@ -151,18 +151,70 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
     ), "$script:UnslothCliTrampoline in install.ps1 has drifted"
 
 
-def test_the_interpreter_argv_carries_no_isolation_flag():
-    """-I would imply -E and drop every PYTHON* variable the console script honours.
+def test_the_interpreter_argv_carries_no_isolation_flag_by_default():
+    """-I implies -E and drops every PYTHON* variable the console script honours.
 
     The trampoline's own sys.path[:1] filter is what keeps a stray unsloth_cli in
     the working directory from shadowing the managed package, so -I is not needed
-    for that either.
+    for that either, and paying it would be an observable difference on a machine
+    with no policy at all.
+
+    Read off the ternary rather than off the whole file, because the file does
+    contain one -I: _interpreter_health_error opts in, since the launch it stands
+    in for is itself isolated (build_update_command, Isolation::Isolated). The
+    point of this test is that isolation is opt-in and the default is not it.
     """
-    source = _STUDIO.read_text(encoding = "utf-8")
-    assert (
-        '"-X", "utf8", "-c"' in source
-    ), "the interpreter argv must be `-X utf8 -c <trampoline>`, in that order"
-    assert '"-I"' not in source, "-I breaks PYTHON* parity with the console script"
+    argv_builder = None
+    for node in ast.walk(ast.parse(_STUDIO.read_text(encoding = "utf-8"))):
+        if isinstance(node, ast.FunctionDef) and node.name == "_managed_cli_argv":
+            argv_builder = node
+            break
+    assert argv_builder is not None, "_managed_cli_argv is gone; the argv is built somewhere else"
+
+    ternaries = [node for node in ast.walk(argv_builder) if isinstance(node, ast.IfExp)]
+    assert len(ternaries) == 1, "expected exactly one isolated/inherited choice to inspect"
+    isolated = ast.literal_eval(ternaries[0].body)
+    inherited = ast.literal_eval(ternaries[0].orelse)
+
+    assert inherited == ["-X", "utf8"], "the default argv must stay `-X utf8 -c <trampoline>`"
+    # -X utf8 before -I: -I implies -E, which discards PYTHONUTF8 but cannot
+    # touch a flag already on the command line.
+    assert isolated == ["-X", "utf8", "-I"]
+    assert ternaries[0].test.id == "isolated", "the ternary must key off the isolated parameter"
+
+    # And the default really is inherit, so a caller that says nothing gets parity.
+    default = argv_builder.args.defaults[-1] if argv_builder.args.defaults else None
+    kw_default = argv_builder.args.kw_defaults[-1] if argv_builder.args.kw_defaults else default
+    assert ast.literal_eval(kw_default) is False
+
+
+def test_only_the_updater_health_probe_asks_for_isolation():
+    """One caller, named, so a second one cannot arrive unnoticed.
+
+    Isolation is correct for a probe predicting an already-isolated launch and
+    wrong for everything else here, and the difference is invisible until a user
+    on an unpoliced machine loses their PYTHONPATH.
+    """
+    tree = ast.parse(_STUDIO.read_text(encoding = "utf-8"))
+    isolated_callers = set()
+    for parent in ast.walk(tree):
+        if not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(parent):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_managed_cli_argv"
+                and any(
+                    keyword.arg == "isolated" and keyword.value.value is True
+                    for keyword in node.keywords
+                    if isinstance(keyword.value, ast.Constant)
+                )
+            ):
+                isolated_callers.add(parent.name)
+    assert isolated_callers == {"_interpreter_health_error"}, (
+        f"unexpected isolated managed CLI callers: {sorted(isolated_callers)}"
+    )
 
 
 def test_the_windows_existence_gate_accepts_a_quarantined_venv():
