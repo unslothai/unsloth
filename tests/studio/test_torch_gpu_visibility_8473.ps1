@@ -151,20 +151,37 @@ function Test-Warns {
     param([string] $ErrText)
     $sb = [scriptblock]::Create(@"
 param(`$ErrText)
-`$script:Warned = `$false
-function substep { param(`$a, `$b) `$script:Warned = `$true }
+`$script:Lines = @()
+function substep { param(`$a, `$b) `$script:Lines += `$a }
+`$_gpuCheckPy = "C:\venv\Scripts\python.exe"
 `$_gpuVisibility = [pscustomobject]@{ Answered = `$false; Error = `$ErrText }
 $quietArm
-`$script:Warned
+,`$script:Lines
 "@)
-    return (& $sb $ErrText)
+    return @(& $sb $ErrText)
 }
-Check "an absent torch says nothing"      (-not (Test-Warns "ModuleNotFoundError: No module named 'torch'"))
-# The backend treats ANY torch import failure as detection failure and falls to CPU.
-Check "a missing transitive dep warns"    (Test-Warns "ModuleNotFoundError: No module named 'typing_extensions'")
-Check "a broken torch internal warns"     (Test-Warns "ModuleNotFoundError: No module named 'torch._C'")
-Check "a timeout still warns"             (Test-Warns "python did not answer within 90 seconds")
-Check "an OSError still warns"            (Test-Warns "OSError: [WinError 126] The specified module could not be found")
+Check "an absent torch says nothing"      ((Test-Warns "ModuleNotFoundError: No module named 'torch'").Count -eq 0)
+# The backend treats ANY torch import failure as detection failure and runs on CPU, so an installed
+# torch that cannot import is exactly the host that needs telling.
+Check "a missing transitive dep warns"    ((Test-Warns "ModuleNotFoundError: No module named 'typing_extensions'").Count -gt 0)
+Check "a broken torch internal warns"     ((Test-Warns "ModuleNotFoundError: No module named 'torch._C'").Count -gt 0)
+Check "a timeout still warns"             ((Test-Warns "python did not answer within 90 seconds").Count -gt 0)
+Check "an OSError still warns"            ((Test-Warns "OSError: [WinError 126] The specified module could not be found").Count -gt 0)
+
+# The reason is quoted from the FIRST non-empty line only. Interpolating the whole .Error put a
+# raw multi-line traceback through `substep`, which pads only its first line -- and line two of a
+# CPython SyntaxError traceback is the entire 250-character probe source.
+$_multi = Test-Warns "Traceback (most recent call last):`n  File `"<string>`", line 1`n    import signal; signal.alarm(90); import torch`nOSError: [WinError 126]"
+Check "the warning is not a traceback"    ($_multi.Count -eq 2)
+Check "it quotes the first line only"     ($_multi[0] -match 'Traceback \(most recent call last\):$')
+Check "and carries no probe source"       (-not ($_multi -match 'signal\.alarm'))
+Check "it says how to reproduce"          ($_multi[1] -match 'torch\.cuda\.is_available\(\)')
+# A non-zero exit with no stderr, or stdout that misses the line anchor, left a WARN ending in a
+# bare colon with nothing after it.
+$_empty = Test-Warns ""
+Check "an empty reason is not printed"    ($_empty.Count -eq 2)
+Check "and leaves no dangling colon"      ($_empty[0] -notmatch ':\s*$')
+
 
 Write-Host "and it costs nothing where it cannot help"
 Check "no-torch mode is excluded"         ($report -match '-not \$NoTorchMode')
@@ -189,6 +206,9 @@ Check "the NVIDIA arm ignores HIP"        (-not ($report -match 'NVIDIA\*\) \{\s
 # The mask predicate itself is run: a [string[]] cast turns an unset $env: read into "", the
 # hide-all value, so a typed parameter would mute every host.
 $maskFn = Get-FunctionText $setup "Test-VisibleMaskHidesAll"
+# The Intel arm of the chain calls both predicates, so both must be in scope when it runs.
+$zeFn = Get-FunctionText $setup "Test-ZeAffinityMaskHidesAll"
+Invoke-Expression $zeFn
 function Test-Mask {
     param($Masks)
     $sb = [scriptblock]::Create(@"
@@ -231,6 +251,8 @@ function Test-Arm {
         $sb = [scriptblock]::Create(@"
 param(`$_gpuCheckAnnounced)
 $maskFn
+$oneApiFn
+$zeFn
 $maskedExpr
 `$_gpuCheckMasked
 "@)
@@ -252,8 +274,41 @@ Check "nor shadow a real CUDA hide"       (Test-Arm "AMD GPU (gfx1201)" @{ ROCR_
 Check "a hidden NVIDIA card is masked"    (Test-Arm "NVIDIA GPU" @{ CUDA_VISIBLE_DEVICES = "-1" })
 Check "a selected NVIDIA card is not"     (-not (Test-Arm "NVIDIA GPU" @{ CUDA_VISIBLE_DEVICES = "0" }))
 Check "an idle HIP mask mutes nothing"    (-not (Test-Arm "NVIDIA GPU" @{ HIP_VISIBLE_DEVICES = "-1" }))
-# No Intel arm on purpose: an empty ZE_AFFINITY_MASK hides nothing, per the last check in this file.
-Check "an Intel host reads no mask"       (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "-1" }))
+# Both Intel hides, through the real chain. An EMPTY ZE_AFFINITY_MASK stays a no-op; a non-empty
+# one filters, and a negative entry can never name a root device.
+Check "an empty ZE mask hides nothing"    (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "" }))
+Check "'default' hides nothing"           (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "default" }))
+Check "ZE=-1 hides every device"          (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "-1" })
+Check "a ZE ordinal is a selection"       (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "0" }))
+Check "so is a ZE sub-device"             (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "0.1" }))
+Check "so is a ZE list"                   (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "0,1" }))
+Check "a mixed list is a selection"       (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "-1,0" }))
+Check "an all-negative list hides all"    (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "-1,-2" })
+Check "garbage fails open"                (-not (Test-Arm "Intel GPU" @{ ZE_AFFINITY_MASK = "hello" }))
+Check "the selector still hides too"      (Test-Arm "Intel GPU" @{ ONEAPI_DEVICE_SELECTOR = "*:cpu" })
+# ...and neither Intel variable may leak into the other vendors' arms.
+Check "a ZE mask mutes no NVIDIA host"    (-not (Test-Arm "NVIDIA GPU" @{ ZE_AFFINITY_MASK = "-1" }))
+Check "a ZE mask mutes no AMD host"       (-not (Test-Arm "AMD GPU (gfx1201)" @{ ZE_AFFINITY_MASK = "-1" }))
+
+# Called directly as well as through the chain: Windows PowerShell 5.1 cannot hold an empty
+# environment variable (setting one deletes it), so the `Set-Item` route above can never deliver
+# a set-but-empty mask and cannot see the early return that must keep it a no-op. A parent
+# process can set one, and pwsh 7.5+ can too, so the branch is live and needs its own case.
+Check "ZE '' is a no-op"                  (-not (Test-ZeAffinityMaskHidesAll ""))
+Check "ZE whitespace is a no-op"          (-not (Test-ZeAffinityMaskHidesAll "   "))
+Check "ZE unset is a no-op"               (-not (Test-ZeAffinityMaskHidesAll $null))
+Check "ZE 'default' is a no-op"           (-not (Test-ZeAffinityMaskHidesAll "default"))
+Check "ZE ',' alone is a no-op"           (-not (Test-ZeAffinityMaskHidesAll ",,"))
+Check "ZE -1 hides"                       (Test-ZeAffinityMaskHidesAll "-1")
+Check "ZE ' -1 ' hides"                   (Test-ZeAffinityMaskHidesAll " -1 ")
+Check "ZE -1,-2 hides"                    (Test-ZeAffinityMaskHidesAll "-1,-2")
+Check "ZE -1.0 hides"                     (Test-ZeAffinityMaskHidesAll "-1.0")
+Check "ZE 0 selects"                      (-not (Test-ZeAffinityMaskHidesAll "0"))
+Check "ZE 0.1 selects"                    (-not (Test-ZeAffinityMaskHidesAll "0.1"))
+Check "ZE 0,1 selects"                    (-not (Test-ZeAffinityMaskHidesAll "0,1"))
+Check "ZE -1,0 selects"                   (-not (Test-ZeAffinityMaskHidesAll "-1,0"))
+Check "ZE garbage fails open"             (-not (Test-ZeAffinityMaskHidesAll "hello"))
+Check "ZE '-' alone fails open"           (-not (Test-ZeAffinityMaskHidesAll "-"))
 Check "an unannounced host is not masked" (-not (Test-Arm "" @{ CUDA_VISIBLE_DEVICES = "-1" }))
 # Not $TorchIndexPinned / $CuTag: those are $null on the run this check exists for.
 Check "the pin is resolved fresh"         ($report -match '\$_gpuCheckPinLeaf = Get-TorchIndexLeaf \(Get-PinnedTorchIndexUrl\)')
@@ -405,10 +460,13 @@ $maskedPat = '(?s)(\$_gpuCheckMasked = if \(.*?\} else \{ \$false \}\n)'
 $masked = if ($maskedText -match $maskedPat) { $Matches[1] } else { "" }
 Check "the mask chain was found"        ($masked -ne "")
 Check "CRLF is normalised, not tolerated" (-not (($maskedText -replace "`n", "`r`n") -match $maskedPat))
-Check "the Intel arm calls the helper"  ($masked -match 'Intel\*[\s\S]{0,400}Test-OneApiSelectorExcludesGpu')
-# compute-runtime's parseAffinityMask returns early on an empty value, so an empty ZE_AFFINITY_MASK
-# hides nothing; reading it would mute a genuinely dead XPU runtime.
-Check "ZE_AFFINITY_MASK is not read here" (-not ($masked -match '\$env:ZE_AFFINITY_MASK'))
+Check "the Intel arm calls the helper"  ($masked -match 'Intel\*[\s\S]{0,900}Test-OneApiSelectorExcludesGpu')
+# Both Intel hides, and only in the Intel arm: parseAffinityMask returns early on an empty value,
+# so an empty ZE_AFFINITY_MASK hides nothing, but a non-empty all-negative one enables no device.
+Check "the Intel arm reads the ZE mask" ($masked -match 'Intel\*[\s\S]{0,900}Test-ZeAffinityMaskHidesAll')
+Check "and only the Intel arm does"     ((([regex]::Matches($masked, '\$env:ZE_AFFINITY_MASK')).Count) -eq 1)
+# Still off-limits: ROCR is Linux-only, so reading it on Windows would mute a real mismatch.
+Check "ROCR is still not read here"     (-not ($masked -match '\$env:ROCR_VISIBLE_DEVICES'))
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

@@ -2162,8 +2162,10 @@ function Test-VisibleDevicesPinned {
 }
 
 # True when the FIRST mask that is set hides every device ("" or "-1"), first-set-wins like
-# Resolve-VisibleGpuIndex and the runtime. Untyped: a [string[]] cast turns an unset $env: read
-# from $null into "", which reads as hide-all and would mute every host.
+# Resolve-VisibleGpuIndex and the runtime. Untyped: a [string] cast turns an unset $env: read from
+# $null into "", which reads as hide-all and would mute every host. ([string[]] does NOT -- bound
+# positionally it leaves $null elements alone -- but the singular cast is the one a future edit
+# reaches for, and it is the one that breaks this.)
 function Test-VisibleMaskHidesAll {
     param($Masks)
     foreach ($mask in @($Masks)) {
@@ -2179,7 +2181,10 @@ function Test-VisibleMaskHidesAll {
 # reference: `;`-separated `<backend>:<devices>`, `!` discards, discards outrank accepts and alone
 # imply accept-all. Only forms that PROVABLY admit no GPU count; an ordinal may name a GPU.
 function Test-OneApiSelectorExcludesGpu {
-    param([AllowNull()][string]$Selector)
+    # No [AllowNull()]: it is inert on a [string] parameter (the converter turns $null into "",
+    # so there is never a null to allow) and on a non-mandatory one, and carrying it here reads
+    # as a null path that is handled when none exists.
+    param([string]$Selector)
     $value = "$Selector".Trim()
     if ($value -eq "") { return $false }
     $accepts = @()
@@ -2196,6 +2201,28 @@ function Test-OneApiSelectorExcludesGpu {
     if ($accepts.Count -eq 0) { return $false }
     foreach ($t in $accepts) {
         if ($t -notmatch '^[^:!]+:\s*cpu\s*$') { return $false }
+    }
+    return $true
+}
+
+# The other Level Zero hide, and the one an Arc user reaches for out of CUDA habit.
+# compute-runtime's parseAffinityMask (execution_environment.cpp) returns early on "" and
+# "default", so an EMPTY value hides nothing and must stay a no-op here -- reading it as hide-all
+# would mute every Intel host whose runtime is genuinely broken, which is the report's whole
+# purpose. A non-empty value does filter: each entry is parsed as an unsigned root-device index,
+# anything out of range is skipped, and the device list is then rebuilt from the entries that
+# survived. A negative entry can never name a device, so a mask made only of them enables nothing
+# and leaves zero root devices -- the same fact "-1" states to CUDA_VISIBLE_DEVICES and
+# HIP_VISIBLE_DEVICES above. Nothing else is claimed: an in-range-looking index may well name the
+# card, so any other shape fails open to $false and the mismatch is still reported.
+function Test-ZeAffinityMaskHidesAll {
+    param([string]$Mask)
+    $value = "$Mask".Trim()
+    if ($value -eq "" -or $value -eq "default") { return $false }
+    $entries = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    if ($entries.Count -eq 0) { return $false }
+    foreach ($entry in $entries) {
+        if ($entry -notmatch '^-\d+(\.\d+)*$') { return $false }
     }
     return $true
 }
@@ -2808,9 +2835,11 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
 }
 
-# A no-op against the chain above, which already assigns this in every AMD arm with this exact
-# value and gate. It is here because that chain keeps growing arms, and an arm that forgets the
-# assignment fails silently, dropping the reconciliation on a host that does expect a GPU.
+# Backstop, and inert against the chain above with ONE exception: the $script:ROCmUnsupportedGfxArch
+# arm does not assign, and this is where a pinned RDNA 1 / Polaris host gets its announcement
+# (unpinned it stays $null -- $AmdHasGpuWheels is false whenever that arm is reached). Otherwise it
+# is here because that chain keeps growing arms, and an arm that forgets the assignment fails
+# silently, dropping the reconciliation on a host that does expect a GPU.
 if ($null -eq $script:GpuSummaryAnnounced -and
     ($HasROCm -or $ROCmGpuLabel -or $script:ROCmGfxArch) -and
     ($AmdHasGpuWheels -or $_amdPinIsGpu)) {
@@ -5279,9 +5308,12 @@ $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
 } elseif ($_gpuCheckAnnounced -like "AMD*") {
     Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
 } elseif ($_gpuCheckAnnounced -like "Intel*") {
-    # ZE_AFFINITY_MASK is deliberately NOT read: compute-runtime's parseAffinityMask returns early
-    # on an empty value, so an empty mask hides nothing and reading it would mute a dead runtime.
-    Test-OneApiSelectorExcludesGpu $env:ONEAPI_DEVICE_SELECTOR
+    # Both Intel hides, for the same reason the AMD arm reads two masks: either one on its own is
+    # a request. ZE_AFFINITY_MASK is read for a NON-EMPTY value only -- parseAffinityMask returns
+    # early on "" / "default", but a non-empty mask does filter and drops every entry it cannot
+    # enable, so "-1" leaves zero root devices, the same fact it states to the two masks above.
+    (Test-OneApiSelectorExcludesGpu $env:ONEAPI_DEVICE_SELECTOR) -or
+        (Test-ZeAffinityMaskHidesAll $env:ZE_AFFINITY_MASK)
 } else { $false }
 # The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose CUDA
 # is below 11 to the CPU index by design. $null is "did not say" and must still be reconciled.
@@ -5307,13 +5339,25 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu"
         # Name the symptom, so the user does not file it as a second, separate bug.
         substep "PyTorch training and GPU inference are unavailable; chat and GGUF still work." "Red"
         substep "If the Live monitor shows VRAM `"--`" and `"No visible GPU`", that is this, not a second bug." "Red"
-        substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "Red"
+        # "the two lines above" named the two ADVICE lines, which carry no diagnostic at all.
+        substep "Please report the torch.cuda and torch version lines above at" "Red"
+        substep "https://github.com/unslothai/unsloth/issues" "Red"
     } elseif (-not $_gpuVisibility.Answered) {
         # Quiet when TORCH is absent: nothing to reconcile, and a warning would be noise on every
         # update of a GGUF-only install. Only that one message, matched with the closing quote
         # CPython puts around the module name, so a missing transitive dep is not swallowed too.
         if (-not ($_gpuVisibility.Error -match "No module named 'torch'")) {
-            substep "[WARN] could not check whether PyTorch sees this GPU: $($_gpuVisibility.Error)" "Yellow"
+            # A fixed message plus the command to reproduce, the shape setup.sh:2226 already uses.
+            # Interpolating .Error put a raw multi-line traceback through `substep`, which pads
+            # only its first line, and the second line of a CPython SyntaxError traceback is the
+            # whole 250-character probe source. It can also be empty -- a non-zero exit with no
+            # stderr, or stdout that misses the line anchor -- leaving a WARN with nothing after
+            # the colon. The first line alone carries the reason without either failure.
+            $_gpuCheckWhy = @("$($_gpuVisibility.Error)" -split "`r?`n" |
+                Where-Object { $_.Trim() -ne "" } | Select-Object -First 1)
+            $_gpuCheckWhy = if ($_gpuCheckWhy.Count -gt 0) { ": $($_gpuCheckWhy[0].Trim())" } else { "" }
+            substep "[WARN] could not check whether PyTorch sees this GPU$_gpuCheckWhy" "Yellow"
+            substep "       $_gpuCheckPy -c `"import torch; print(torch.cuda.is_available())`"" "Yellow"
         }
     }
 }

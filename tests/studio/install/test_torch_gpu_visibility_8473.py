@@ -108,6 +108,8 @@ def _run_block(
     colab: bool = False,
     venv_dir: Path | None = None,
     path_python: str | None = None,
+    sabotage: tuple[str, ...] = (),
+    uname_machine: str | None = None,
 ) -> dict:
     """Run the real setup.sh block with stubbed printers and a stubbed `timeout`."""
     stub_bin = tmp_path / "stubbin"
@@ -143,11 +145,26 @@ def _run_block(
             "#!/bin/sh\n" f'printf "%s\\n" "$*" >> "{timeout_log}"\n' "shift\n" f"{enforcer}\n",
         )
     else:
-        # No `timeout` on PATH, and only the block's own utilities reachable.
-        for tool in ("bash", "grep", "tail", "cut", "sh", "sleep", "cat"):
+        # No `timeout` on PATH, and only the block's own utilities reachable. No `cut` and
+        # no `uname`: both are coreutils, and the block must answer without either.
+        for tool in ("bash", "grep", "tail", "sh", "sleep", "cat"):
             found = shutil.which(tool)
             assert found, f"missing {tool}"
             os.symlink(found, stub_bin / tool)
+
+    # A tool that answers 127 the way a missing one does, but is reachable, so the block runs
+    # with the rest of PATH intact and the failure is isolated to the one binary named.
+    for _tool in sabotage:
+        _write_exec(
+            stub_bin / _tool,
+            f'#!/bin/sh\necho "{_tool}: command not found" >&2\nexit 127\n',
+        )
+    # The host architecture the arch gate consults. Only a positive non-x86_64 answer demotes.
+    if uname_machine is not None:
+        _write_exec(
+            stub_bin / "uname",
+            f'#!/bin/sh\ncase "$1" in -m) echo {uname_machine} ;; *) echo Linux ;; esac\n',
+        )
 
     # Colab's system interpreter is found on PATH, so that is where the fake one goes.
     if colab:
@@ -918,3 +935,210 @@ def test_the_known_unwheeled_arches_are_absent_from_both_lists():
     for arch in ("gfx803", "gfx1010", "gfx1011", "gfx1012"):
         assert arch not in _posix_wheel_arches()
         assert arch not in _windows_wheel_arches()
+
+
+# ── The block must survive a host without coreutils, not just avoid `tr` ────────────────────────
+# The block twice refuses to depend on coreutils (the mask trim and the arch trim both say so),
+# and then split the probe answer with four `cut` calls. Under setup.sh's `set -euo pipefail` an
+# unguarded `x=$(cut ...)` does not degrade to an empty value the way a failed `tr` pipe does: it
+# exits 127 and takes the whole installer down, at the last step of an otherwise successful run.
+
+
+def test_a_missing_cut_cannot_abort_the_installer(block, tmp_path):
+    """127 from a split utility must not be fatal: this is the LAST step of `studio update`, and
+    aborting here fails an install that has already succeeded."""
+    venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+rocm6.4"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        sabotage = ("cut",),
+    )
+    assert result["returncode"] == 0
+    assert "BLOCK_DONE" in result["stdout"]
+    # ...and it still answers, rather than surviving by falling silent.
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+    assert "torch 2.9.0+rocm6.4" in result["stdout"]
+
+
+def test_the_probe_answer_is_split_without_a_subprocess(block):
+    """Pins the mechanism, not just the outcome: a future edit that reaches for `cut`, `awk` or
+    `sed` again reintroduces both the 127 and the coreutils dependency the comments disclaim."""
+    body = "\n".join(line for line in block.splitlines() if not line.strip().startswith("#"))
+    fields = body[body.index("_setup_torch_fields=") :]
+    for tool in ("cut", "awk", "sed", "tr"):
+        assert f"| {tool} " not in fields and f"|{tool} " not in fields, (
+            f"the probe answer is split with `{tool}`, which is coreutils and which setup.sh's "
+            f"`set -e` turns into a fatal 127 when it is absent"
+        )
+    assert "IFS='|' read" in fields
+
+
+# ── The host architecture, not just the GPU architecture ───────────────────────────────────────
+# PyTorch publishes ROCm wheels for linux-x86_64 only, so install.sh returns the cpu index for
+# every other machine BEFORE it looks at the gfx arch at all.
+
+
+def test_a_non_x86_amd_host_is_not_accused(block, tmp_path):
+    """aarch64 + a wheeled arch is CPU torch by install.sh's own routing, so reporting it accuses
+    a host behaving exactly as designed -- the same failure the arch table prevents for RDNA 1."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    for machine in ("aarch64", "arm64", "ppc64le", "riscv64"):
+        work = tmp_path / machine
+        work.mkdir()
+        result = _run_block(
+            block,
+            venv,
+            work,
+            amd = True,
+            gfx = "gfx942",
+            uname_machine = machine,
+        )
+        assert "gpu check" not in result["stdout"], machine
+        assert result["returncode"] == 0
+
+
+def test_an_x86_amd_host_is_still_reconciled(block, tmp_path):
+    """The other direction: the gate must not silence the hosts this report exists for."""
+    for machine in ("x86_64", "amd64"):
+        work = tmp_path / machine
+        work.mkdir()
+        venv = _make_venv(work, stdout = _answer("0"))
+        result = _run_block(
+            block,
+            venv,
+            work,
+            amd = True,
+            gfx = "gfx942",
+            uname_machine = machine,
+        )
+        assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"], machine
+
+
+def test_an_unreadable_architecture_does_not_silence_the_report(block, tmp_path):
+    """`uname` is coreutils too. An empty answer is no evidence about the host, and silencing the
+    whole report on no evidence is the failure the mask and arch gates both refuse."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        sabotage = ("uname",),
+    )
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+    assert result["returncode"] == 0
+
+
+def test_the_architecture_gate_does_not_touch_nvidia(block, tmp_path):
+    """install.sh scopes the x86_64 gate INSIDE its `no NVIDIA` branch, so aarch64 NVIDIA
+    (Jetson, GH200) keeps its CUDA wheels and must still be reconciled."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        nvidia = True,
+        uname_machine = "aarch64",
+    )
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
+
+
+def test_the_architecture_gate_does_not_touch_a_pin(block, tmp_path):
+    """install.sh honours an explicit index verbatim, returning before the arch gate, so a pinned
+    aarch64 host really does get whatever that index publishes and is still worth reconciling."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1010",
+        uname_machine = "aarch64",
+        env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.4"},
+    )
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+# ── The two escape hatches must read the same on both platforms ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON", " 1 ", "  true  "],
+)
+def test_the_skip_flag_matches_the_windows_spelling(block, tmp_path, value):
+    """setup.ps1:5314 accepts `^\\s*(?i:true|1|yes|on)\\s*$`. The flag is introduced by this
+    change and read in exactly two places, so a user told to set it must get the same answer on
+    both."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"UNSLOTH_SKIP_TORCH_GPU_CHECK": value},
+    )
+    assert "gpu check" not in result["stdout"], value
+    assert result["calls"].count("call") == 0, f"{value!r} launched the probe anyway"
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "  ", "garbage", "truthy"])
+def test_the_skip_flag_does_not_swallow_anything_else(block, tmp_path, value):
+    """The other direction: a value Windows would reject must not silence the report here."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"UNSLOTH_SKIP_TORCH_GPU_CHECK": value},
+    )
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"], value
+
+
+@pytest.mark.parametrize("value", ["cpu", "CPU", "Cpu", "cPU"])
+def test_a_cpu_backend_is_honoured_whatever_its_case(block, tmp_path, value):
+    """install_python_stack.py:3432 lowercases UNSLOTH_TORCH_BACKEND and :2400 tells users to set
+    it by hand, so a typed `CPU` gets CPU torch there and must not be accused here."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        nvidia = True,
+        env = {"UNSLOTH_TORCH_BACKEND": value},
+    )
+    assert "gpu check" not in result["stdout"], value
+    assert result["calls"].count("call") == 0
+
+
+@pytest.mark.parametrize("value", ["rocm", "cuda", "ROCM", "xpu", " cpu ", ""])
+def test_a_non_cpu_backend_is_still_reconciled(block, tmp_path, value):
+    """Folded, not trimmed, to match `.lower()` exactly: `" cpu "` is not cpu to
+    install_python_stack either, so silencing it here would be the same bug mirrored."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        nvidia = True,
+        env = {"UNSLOTH_TORCH_BACKEND": value},
+    )
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"], value
+
+
+def test_the_no_torch_flag_keeps_the_installers_own_spelling(block):
+    """UNSLOTH_NO_TORCH is NOT folded like the skip flag above, deliberately: install.sh:103 reads
+    that exact literal list, so a looser reading here would skip the check on a host the installer
+    decided to give torch to."""
+    body = "\n".join(line for line in block.splitlines() if not line.strip().startswith("#"))
+    line = next(ln for ln in body.splitlines() if "UNSLOTH_NO_TORCH" in ln)
+    assert "1|true|TRUE|yes|YES|on|ON" in line
+    install_sh = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+    assert 'case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON)' in install_sh

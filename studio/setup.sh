@@ -2207,7 +2207,9 @@ EOF
         # Name the symptom, so the user does not file it as a second, separate bug.
         substep "PyTorch training and GPU inference are unavailable; chat and GGUF still work." "$C_ERR"
         substep "If the Live monitor shows VRAM \"--\" and \"No visible GPU\", that is this, not a second bug." "$C_ERR"
-        substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
+        # "the two lines above" named the two ADVICE lines, which carry no diagnostic at all.
+        substep "Please report the torch.cuda and torch version lines above at" "$C_ERR"
+        substep "https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then
         # device_count() is CUDA-only, so 0 on a host suppressed by the XPU answer; named as such.
         verbose_substep "torch sees $_setup_torch_devices CUDA device(s), xpu $_setup_torch_sees_xpu (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"
