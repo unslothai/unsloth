@@ -407,9 +407,7 @@ def test_a_child_out_of_memory_is_not_cached_and_is_not_a_verdict(monkeypatch):
     # back in-process here would be worse than useless -- it would meet the same full GPU and pay
     # the context on the way -- so the OOM is answered without re-probing.
     _stub_torch(monkeypatch)
-    monkeypatch.setattr(
-        tq, "_child_probe_table", lambda device: {TQ_INT8: None, TQ_FP8: True}
-    )
+    monkeypatch.setattr(tq, "_child_probe_table", lambda device: {TQ_INT8: None, TQ_FP8: True})
     monkeypatch.setattr(
         tq, "_run_smoke_probe", lambda *a: pytest.fail("re-probed in-process after a child OOM")
     )
@@ -453,7 +451,9 @@ def test_the_child_entry_posts_one_table_covering_every_scheme(monkeypatch):
     # and the whole point of the child is to pay the CUDA context once.
     posted = []
     monkeypatch.setattr(
-        tq, "_run_smoke_probe", lambda scheme, device: {TQ_INT8: True, TQ_FP8: None}.get(scheme, False)
+        tq,
+        "_run_smoke_probe",
+        lambda scheme, device: {TQ_INT8: True, TQ_FP8: None}.get(scheme, False),
     )
     tq._child_probe_entry("cuda", tq.TQ_SCHEMES, types.SimpleNamespace(put = posted.append))
     assert posted == [{TQ_INT8: True, TQ_FP8: None, TQ_NVFP4: False, TQ_MXFP8: False}]
