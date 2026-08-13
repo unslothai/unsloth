@@ -2309,7 +2309,8 @@ esac
 # sent to CPU arrives as "cpu" with _setup_amd_detected still true. Only the exact "cpu": unset is
 # the normal standalone `studio update` state and must still be checked.
 #
-# Returns 0 when the AMD visibility mask hides every device ("" or "-1"). AMD needs its own rather
+# Returns 0 when the AMD visibility mask hides every device (empty, or a leading negative entry).
+# AMD needs its own rather
 # than _setup_cvd_hides_nvidia because the KFD sysfs fallback reads the kernel topology and ignores
 # the mask, so only this can tell a hidden GPU from a broken one. First-set-wins in hardware.py's
 # _pick_visible_index order, since ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to
@@ -2325,7 +2326,16 @@ _setup_amd_mask_hides_all() {
         return 1
     fi
     _setup_amd_mask="${_setup_amd_mask//[[:space:]]/}"
-    [ -z "$_setup_amd_mask" ] || [ "$_setup_amd_mask" = "-1" ]
+    # Any leading negative entry hides everything, not just an exact "-1": clr stops at the first
+    # invalid entry and discards the rest (rocdevice.cpp, "anything to the right of invalid
+    # deviceId has to be discarded"), and a negative index is invalid, so "-1,0" leaves zero
+    # agents exactly as "-1" does. Matched on the leading "-" because whitespace is already
+    # stripped and nothing legal can start with one: ordinals are non-negative and the UUID form
+    # clr also accepts is GPU-prefixed.
+    case "$_setup_amd_mask" in
+        "" | -*) return 0 ;;
+    esac
+    return 1
 }
 _setup_gpucheck_masked=false
 if [ "$_setup_amd_detected" = true ] && _setup_amd_mask_hides_all; then

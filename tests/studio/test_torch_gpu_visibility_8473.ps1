@@ -225,6 +225,11 @@ Check "an empty mask hides everything"    (Test-Mask "")
 Check "whitespace is trimmed"             (Test-Mask " -1 ")
 Check "a selected device is not hidden"   (-not (Test-Mask "0"))
 Check "a device list is not hidden"       (-not (Test-Mask "1,0"))
+# The runtime discards everything to the right of the first invalid entry, so a leading negative
+# leaves nothing visible, while a trailing one still leaves the devices named before it.
+Check "a leading negative hides all"      (Test-Mask "-1,0")
+Check "any negative index hides all"      (Test-Mask "-2")
+Check "a trailing negative is a selection" (-not (Test-Mask "0,-1"))
 Check "the first set mask wins"           (Test-Mask @("", "0"))
 Check "and an unset one is skipped"       (-not (Test-Mask @($null, "0")))
 Check "a bare CUDA mask still hides"      (Test-Mask @($null, "-1"))

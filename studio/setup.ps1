@@ -2182,7 +2182,8 @@ function Test-VisibleDevicesPinned {
     return $false
 }
 
-# True when the FIRST mask that is set hides every device ("" or "-1"), first-set-wins like
+# True when the FIRST mask that is set hides every device (empty, or a leading negative entry),
+# first-set-wins like
 # Resolve-VisibleGpuIndex and the runtime. Untyped: a [string] cast turns an unset $env: read from
 # $null into "", which reads as hide-all and would mute every host. ([string[]] does NOT -- bound
 # positionally it leaves $null elements alone -- but the singular cast is the one a future edit
@@ -2192,7 +2193,11 @@ function Test-VisibleMaskHidesAll {
     foreach ($mask in @($Masks)) {
         if ($null -eq $mask) { continue }
         $value = "$mask".Trim()
-        return ($value -eq "" -or $value -eq "-1")
+        # A leading negative entry hides everything, not just an exact "-1": both runtimes stop at
+        # the first invalid entry and discard everything after it, so "-1,0" leaves nothing
+        # visible. Nothing legal starts with "-" -- ordinals are non-negative and the UUID forms
+        # are GPU-/MIG-prefixed -- so this cannot swallow a selection like "0,-1".
+        return ($value -eq "" -or $value.StartsWith("-"))
     }
     return $false
 }

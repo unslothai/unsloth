@@ -541,6 +541,10 @@ def test_a_gpu_backend_or_no_backend_is_still_reconciled(block, tmp_path, backen
         {"HIP_VISIBLE_DEVICES": ""},
         {"ROCR_VISIBLE_DEVICES": "-1"},
         {"HIP_VISIBLE_DEVICES": " -1 "},
+        # clr discards everything to the right of the first invalid entry, and a negative index is
+        # invalid, so a leading negative leaves zero agents just as a bare "-1" does.
+        {"HIP_VISIBLE_DEVICES": "-1,0"},
+        {"ROCR_VISIBLE_DEVICES": "-2"},
     ],
 )
 def test_a_hidden_amd_gpu_is_not_a_broken_one(block, tmp_path, env):
@@ -552,7 +556,15 @@ def test_a_hidden_amd_gpu_is_not_a_broken_one(block, tmp_path, env):
     assert "gpu check" not in result["stdout"]
 
 
-@pytest.mark.parametrize("env", [{"HIP_VISIBLE_DEVICES": "0"}, {"ROCR_VISIBLE_DEVICES": "1,0"}])
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"HIP_VISIBLE_DEVICES": "0"},
+        {"ROCR_VISIBLE_DEVICES": "1,0"},
+        # The negative is not leading, so device 0 survives it: a selection, not a hide.
+        {"HIP_VISIBLE_DEVICES": "0,-1"},
+    ],
+)
 def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
     """Only a hide-ALL mask: muting on a selection would silence every host that pins its GPU."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
