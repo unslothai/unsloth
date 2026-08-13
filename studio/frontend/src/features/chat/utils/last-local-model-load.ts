@@ -62,9 +62,11 @@ function readLegacyRecord(): LastLocalModelLoad | null {
   }
 }
 
-export async function readLastLocalModelLoad(): Promise<LastLocalModelLoad | null> {
+export async function readLastLocalModelLoad(
+  signal?: AbortSignal,
+): Promise<LastLocalModelLoad | null> {
   try {
-    const res = await authFetch(API_PATH);
+    const res = await authFetch(API_PATH, { signal });
     if (res.ok) {
       const data = (await res.json()) as {
         id?: unknown;
@@ -81,7 +83,10 @@ export async function readLastLocalModelLoad(): Promise<LastLocalModelLoad | nul
         return record;
       }
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err;
+    }
     // Unreachable settings API: fall back to the legacy record.
   }
   return readLegacyRecord();
