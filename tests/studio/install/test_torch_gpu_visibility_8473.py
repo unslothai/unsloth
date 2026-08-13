@@ -34,7 +34,12 @@ _BLOCK_START = "# ── Does PyTorch see the GPU this installer just announced?
 _BLOCK_END = "# ── 7. Prefer prebuilt llama.cpp bundles"
 
 # Colour is the assertion surface for severity: a report demoted from $C_ERR to $C_WARN fails here.
+# setup.sh runs under `set -euo pipefail` (line 5), so the harness does too. Without it the
+# block is exercised more forgivingly than it ships: an unguarded command substitution whose
+# binary is missing exits 127 and takes the installer down, and every test here passed while
+# that was true. Reverting the `cut` -> `IFS` read fix now fails 4 checks instead of 2.
 _HARNESS_HEAD = """
+set -euo pipefail
 C_DIM="DIM"; C_RST=""; C_OK="OK"; C_WARN="WARN"; C_ERR="ERR"
 step()    { printf 'STEP|%s|%s|%s\\n' "$1" "$2" "${3:-OK}"; }
 substep() { printf 'SUB|%s|%s\\n' "$1" "${2:-DIM}"; }
