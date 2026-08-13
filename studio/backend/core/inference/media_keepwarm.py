@@ -184,7 +184,11 @@ def _completed_token(progress: dict[str, Any]) -> Optional[tuple[Any, ...]]:
     if progress.get("active") or phase not in ("completed", "failed"):
         return None
     video = progress.get("video")
-    return (phase, (video or {}).get("id") if isinstance(video, dict) else None, progress.get("error"))
+    return (
+        phase,
+        (video or {}).get("id") if isinstance(video, dict) else None,
+        progress.get("error"),
+    )
 
 
 def _probe(backend: Any) -> tuple[bool, Optional[tuple[Any, ...]]]:
@@ -281,7 +285,6 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
 def _effective_ttl() -> float:
     """The media TTL with the residency vetoes applied: 0 means nothing is unloaded."""
     from utils.openai_auto_switch_settings import get_media_auto_unload_idle_seconds
-
     return float(get_media_auto_unload_idle_seconds())
 
 
