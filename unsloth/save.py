@@ -3237,9 +3237,7 @@ def _preflight_merge_disk(
     # `save_pretrained` there, so a full fine-tune asked for "lora" fills
     # /kaggle/working exactly like a merge. A real PeftModel writes adapters
     # only and is still skipped.
-    full_model_lora = method == "lora" and not isinstance(
-        model, (PeftModel, PeftModelForCausalLM)
-    )
+    full_model_lora = method == "lora" and not isinstance(model, (PeftModel, PeftModelForCausalLM))
     if compressed is None and torchao is None and method != "merged_16bit" and not full_model_lora:
         return save_directory
     try:
@@ -3514,12 +3512,7 @@ def _preflight_gguf_disk(
     # it was.
     gguf_directory = _gguf_output_directory(save_directory)
     gguf_free = free_bytes(gguf_directory)
-    if (
-        free is not None
-        and gguf_free is not None
-        and gguf_free < free
-        and gguf_free < need_sibling
-    ):
+    if free is not None and gguf_free is not None and gguf_free < free and gguf_free < need_sibling:
         raise RuntimeError(
             f"Unsloth: Not enough disk space to convert to GGUF.\n"
             f"The GGUF files are written to `{gguf_directory}`, which is on a different "

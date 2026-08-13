@@ -1089,7 +1089,6 @@ class TestFullModelSavedAsLora:
     @staticmethod
     def _float32_model():
         import torch
-
         return torch.nn.Linear(8, 8, dtype = torch.float32)
 
     def test_a_full_model_lora_save_is_sized(self, sized):
