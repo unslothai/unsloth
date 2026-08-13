@@ -127,7 +127,16 @@ class TestOverrideParsing:
             sys.path.insert(0, str(path.parent))
         spec = importlib.util.spec_from_file_location("_stack_for_7331_cli", path)
         stack = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(stack)
+        # importlib's documented recipe registers the module BEFORE executing it. The
+        # module uses `from __future__ import annotations`, so every dataclass field
+        # annotation is a string, and @dataclass resolves those through
+        # sys.modules[cls.__module__] -- absent, that lookup is None and the module
+        # cannot be executed at all.
+        sys.modules[spec.name] = stack
+        try:
+            spec.loader.exec_module(stack)
+        finally:
+            sys.modules.pop(spec.name, None)
         for value in ("11.0.0", "11.5.1", "10.3.0", "9.0.10", "garbage", "", "11.0.16", "11.10.0"):
             assert studio_cli._hsa_override_gfx_arch(value) == stack._hsa_override_gfx_arch(
                 value

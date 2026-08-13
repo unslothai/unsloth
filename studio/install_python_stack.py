@@ -2993,10 +2993,15 @@ def _probe_rocm_torch() -> tuple[bool, str, bool, str]:
     probed at all" (segfault, missing runtime library, hang). Collapsing the two
     reads a broken torch as a wrong one and reinstalls gigabytes that cannot fix it.
 
-    The fourth is torch.version.cuda, the only CUDA clue an untagged wheel gives:
-    PyPI forbids the local +cuXXX version, so a stock `pip install torch` is a CUDA
-    build whose version string says nothing about CUDA. _ensure_cuda_torch already
-    reads the same field for the same reason.
+    The fourth is torch.version.cuda, the only CUDA clue a wheel whose __version__
+    carries no +cuXXX tag gives. PyPI forbids local versions in DISTRIBUTION metadata
+    ("Version: 2.9.1"), but the Linux x86_64 wheel still bakes "2.9.1+cu128" into
+    torch.__version__, which is what this probe reads -- so a stock `pip install
+    torch` is already covered by the tag. What is not covered is every rebuild that
+    keeps a CUDA runtime under a different local version: NGC and JetPack images
+    ("2.8.0a0+34c6371d24.nv25.08"), source builds, and vendor respins. Without this
+    field those read as replaceable and lose a working CUDA venv to the ROCm
+    reinstall. _ensure_cuda_torch already reads the same field for the same reason.
     """
     try:
         probe = subprocess.run(
@@ -3086,11 +3091,13 @@ def _rocm_cuda_wheel_preserved(
     tell the two suppressions apart. This one leaves a CUDA venv in place, which is not
     a ROCm-ready one, so the AMD bitsandbytes wheel must not be paired with it.
 
-    A CUDA build is recognised two ways because only one of them is always present.
-    The +cuXXX local tag is authoritative when it exists, but PyPI forbids local
-    versions, so `pip install torch` yields a plain "2.9.1" that nonetheless pulls the
-    whole CUDA stack. For those the probed torch.version.cuda is the only evidence,
-    and it is trustworthy only from a torch that actually imported.
+    A CUDA build is recognised two ways because neither clue is always present.
+    The +cuXXX local tag in torch.__version__ is authoritative when it exists, and
+    the pytorch.org and PyPI Linux wheels both carry it. Rebuilds do not: an NGC or
+    JetPack torch reports "2.8.0a0+34c6371d24.nv25.08" and a source build reports
+    whatever it was told, while both still link a CUDA runtime. For those the probed
+    torch.version.cuda is the only evidence, and it is trustworthy only from a torch
+    that actually imported.
     """
     if not (_cvd_hides_nvidia() and _has_physical_nvidia_gpu()):
         return None
