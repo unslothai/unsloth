@@ -429,8 +429,10 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ggml-cuda.cu: kernel launch failed",
             "error: invalid value for --n-gpu-layers",
             "ROCm error: out of memory",
-            "hipErrorInvalidDeviceFunction: invalid device function",
             "warning: the kernel module amdgpu is out of date",
+            # Near misses for the two codes added below: neither is the message.
+            "load_model: error loading model: invalid model file magic",
+            "error: invalid device id 3",
             "srv    load_model: the image is invalid",
             "device kernel image is valid",
             "common_init_from_params: failed to load model 'x.gguf'",
@@ -461,6 +463,15 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             # retry is not ROCm-gated, so an NVIDIA host with a build that has
             # no kernels for one of its cards recovers the same way.
             "CUDA error: no kernel image is available for execution on the device",
+            # hipErrorInvalidKernelFile / hipErrorInvalidDeviceFunction: clr raises
+            # them from the same fat-binary load as the two above and propagates
+            # them out of the launch path, so a build that surfaces either would
+            # otherwise be left on the misleading GGUF error.
+            "ROCm error: invalid kernel file",
+            "hipErrorInvalidDeviceFunction: invalid device function",
+            "ggml-cuda.cu:76: ROCm error\n  invalid device function\n  current device: 1",
+            # cudaErrorInvalidDeviceFunction, the NVIDIA spelling of the same thing.
+            "CUDA error: invalid device function",
         ],
     )
     def test_the_real_crash_matches(self, output):
@@ -473,6 +484,8 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ROCm error: DEVICE KERNEL IMAGE IS INVALID",
             "No kernel image is available for execution on the device",
             "ROCM ERROR: NO KERNEL IMAGE IS AVAILABLE FOR EXECUTION ON THE DEVICE",
+            "ROCm error: Invalid Kernel File",
+            "CUDA ERROR: INVALID DEVICE FUNCTION",
         ],
     )
     def test_matching_is_case_insensitive(self, output):

@@ -5618,10 +5618,13 @@ class LlamaCppBackend:
         crashes unless the survivors are masked in. Lazy: both probes run only where
         nothing else pins the child. Never raises."""
         try:
-            if not cls._host_torch_is_rocm():
-                return []
+            # Coverage first: a cached marker read, where _host_torch_is_rocm imports
+            # torch (~1.3s cold). A CUDA / Vulkan / CPU / macOS bundle records no
+            # mapped_targets, so a non-ROCm install answers [] without that import.
             if cls._installed_llama_gfx_archs(binary) is None:
                 return []  # unknown coverage: fail open, same as the probe
+            if not cls._host_torch_is_rocm():
+                return []
             if cls._visibility_mask_is_unmappable():
                 # A UUID/MIG mask leaves the ordinals unmapped, so the pin would
                 # swap it for numbers the runtime resolves against the whole host,
@@ -10218,9 +10221,14 @@ class LlamaCppBackend:
     # what both field logs show) and hipErrorNoBinaryForGpu, documented as code
     # compiled for a different arch. Matching only the first leaves a build that
     # raises the second on the misleading GGUF/memory error.
+    # The four codes clr returns for "no code object for THIS device": hip_fatbin.cpp
+    # raises them all, hip_platform.cpp propagates them out of the launch path, and
+    # ggml reprints hipGetErrorString verbatim.
     _KERNEL_IMAGE_INVALID_MARKERS = (
         "device kernel image is invalid",  # hipErrorInvalidImage
         "no kernel image is available for execution",  # hipErrorNoBinaryForGpu
+        "invalid kernel file",  # hipErrorInvalidKernelFile
+        "invalid device function",  # hipErrorInvalidDeviceFunction
     )
 
     @classmethod
