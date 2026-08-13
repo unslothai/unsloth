@@ -1188,9 +1188,7 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         per_slot = (
             self.route._ASSUMED_MAX_VOCAB * ubatch * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
         )
-        self.assertAlmostEqual(
-            self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6
-        )
+        self.assertAlmostEqual(self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6)
         # And one more buffer for a second slot, which pins the count as well as the floor.
         self.assertAlmostEqual(
             self._reserve(n_parallel = 2), (mask + 2 * per_slot) / (1024**3), places = 6
