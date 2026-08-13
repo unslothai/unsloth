@@ -1678,6 +1678,10 @@ class TrainingBackend:
                 config["resolved_gpu_ids"] = resolved_gpu_ids
                 config["gpu_selection"] = gpu_selection
 
+            # Names the worker's own log file. The child cannot ask for it: the run id lives
+            # here and nothing in the config carried it across the spawn boundary.
+            config["job_id"] = job_id
+
             from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
             cache_env = get_hf_cache_paths().child_env({})
@@ -2380,6 +2384,10 @@ class TrainingBackend:
                 self._ensure_db_run_created()
                 self._finalize_run_in_db(status = "error", error_message = msg)
                 return False
+
+            # Same run, second worker: reuse the id so the retry appends to the log the first
+            # attempt opened rather than starting a file the UI does not know about.
+            config["job_id"] = reservation_job_id
 
             with self._lock:
                 self._last_full_config = config

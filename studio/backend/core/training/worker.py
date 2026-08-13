@@ -3511,10 +3511,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # HF_HUB_DISABLE_PROGRESS_BARS reaches huggingface_hub's import-time constant.
     keep_progress_bars_countable()
 
+    # Before setup_logging: structlog's PrintLoggerFactory captures sys.stdout at configure
+    # time, so teeing after this point would send the console its lines and the run log
+    # nothing.
+    _run_log_path = None
+    try:
+        from utils.train_run_log import setup_run_log
+        _run_log_path = setup_run_log(config.get("job_id") or "unknown-run")
+    except Exception:
+        # A worker that cannot open its log still has a job to run.
+        pass
+
     LogConfig.setup_logging(
         service_name = "unsloth-studio-training-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    if _run_log_path is not None:
+        # Mirrors the server's own "Session log:" line, which is what the desktop diagnostics
+        # collector keys off to find the file it should attach.
+        print(f"Run log: {_run_log_path}", flush = True)
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
