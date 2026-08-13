@@ -1150,9 +1150,9 @@ def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
     *_, split_floor = _plan(floor_frac, 40)
     *_, split_default = _plan(lc._CTX_FIT_VRAM_FRACTION, 40)
     assert split_full is not None, "expected a weighted split at this model size"
-    assert split_full == split_floor, (
-        f"100% spent {split_full} per card where the floor allows {split_floor}"
-    )
+    assert (
+        split_full == split_floor
+    ), f"100% spent {split_full} per card where the floor allows {split_floor}"
     # The default still reserves its full 3% (737 MiB > the floor), so the floor
     # must not have flattened every budget onto the same number.
     assert all(d < f for d, f in zip(split_default, split_full))
