@@ -3295,6 +3295,7 @@ def _load_h3_native_offload(
     *,
     help_text,
     accelerator = True,
+    memory_mode = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -3355,6 +3356,7 @@ def _load_h3_native_offload(
         cancel_event = threading.Event(),
         repo_id = "leejet/MiniMax-H3-GGUF",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        memory_mode = memory_mode,
     )
     assert backend._state is not None
     return backend._state, list(backend._state.pipe.offload_flags)
@@ -3379,9 +3381,23 @@ def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_
     that has to carry it."""
     state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
     assert state.device == "cuda"
+    # auto offloads, which is what makes --stream-layers take effect.
+    assert "--offload-to-cpu" in offload
     assert offload[-3:] == ["--max-vram", "-1", "--stream-layers"]
     # A negative budget auto-detects per device. A fixed number would misjudge the other card.
     assert "0" not in offload
+
+
+def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path):
+    """fast keeps the params resident on the device, and upstream only honours --stream-layers when
+    the diffusion params backend is CPU: without --offload-to-cpu it warns and ignores the flag.
+    The budget still segments on its own, so --max-vram stays."""
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, memory_mode = "fast"
+    )
+    assert "--offload-to-cpu" not in offload
+    assert offload[-2:] == ["--max-vram", "-1"]
+    assert "--stream-layers" not in offload
 
 
 def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):

@@ -173,8 +173,12 @@ def metal_text_encoder_flags() -> list[str]:
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
-# Graph-cut segmented execution; a negative --max-vram auto-detects free VRAM per device, sparing that many GiB, and --stream-layers is a no-op without it.
-GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = ("--max-vram", "-1", "--stream-layers")
+# Graph-cut segmented execution; a negative --max-vram auto-detects free VRAM per device, sparing that many GiB. It segments on its own, so it stands alone.
+GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
+# Upstream only honours --stream-layers when the diffusion params backend is CPU, i.e. under --offload-to-cpu; otherwise it warns and ignores the flag.
+GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
+# The full set, for callers that already offload to CPU.
+GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
 # The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The SIGABRT takes sd-server down mid-generation.
 _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")

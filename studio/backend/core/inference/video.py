@@ -1478,7 +1478,12 @@ class VideoBackend:
         """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
         from huggingface_hub import HfApi
 
-        from .sd_cpp_args import GRAPH_CUT_AUTO_FLAGS, SdCppModelFiles, offload_flags
+        from .sd_cpp_args import (
+            GRAPH_CUT_STREAM_FLAGS,
+            GRAPH_CUT_VRAM_FLAGS,
+            SdCppModelFiles,
+            offload_flags,
+        )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
@@ -1726,8 +1731,11 @@ class VideoBackend:
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
         # H3 allocates each module WHOLE on the device (20.5 GB DiT, 17 GB encoder), so --offload-to-cpu alone still cudaMallocs; not gated on memory mode because auto and fast are what OOM.
+        # --max-vram segments on its own, but upstream ignores --stream-layers unless the params are on the CPU, so it only rides along with --offload-to-cpu.
         if supports_graph_cut:
-            native_offload += GRAPH_CUT_AUTO_FLAGS
+            native_offload += GRAPH_CUT_VRAM_FLAGS
+            if "--offload-to-cpu" in native_offload:
+                native_offload += GRAPH_CUT_STREAM_FLAGS
         from .video_minimax_h3 import MiniMaxH3NativeRuntime
 
         runtime = MiniMaxH3NativeRuntime(
