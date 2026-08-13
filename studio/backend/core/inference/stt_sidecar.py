@@ -1144,6 +1144,13 @@ class WhisperSttSidecar:
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
+        # Whether the resident engine is only being held to keep its memory
+        # accounted: a worker that outlived its own kill answers nothing, so it
+        # is not something a later dictation can be handed.
+        self._survivor = False
+        # A child that outlived the kill start() gave it, handed from _build_model
+        # to the load that called it. Written and read under _lock.
+        self._start_survivor = None
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -1256,6 +1263,11 @@ class WhisperSttSidecar:
         can take the full shutdown wait, and loaded_model reads the fields
         without this lock, so clearing them first would report nothing resident
         for that whole window.
+
+        A worker kept this way is flagged a survivor: it was asked to shut down,
+        terminated and killed, so it is held for its memory and not for its
+        answers, and a later dictation must load one of its own rather than be
+        handed this one and wait out the command timeout on it.
         """
         self._cancel_idle_unload_locked()
         engine = self._engine
@@ -1265,22 +1277,37 @@ class WhisperSttSidecar:
             self._engine = None
             self._model_id = None
             self._device = None
+            self._survivor = False
+        else:
+            self._survivor = True
         del engine
         _clear_device_cache(device)
         if not released:
             self._schedule_idle_unload_locked()
         return released
 
-    def _keep_survivor_locked(self, engine, model_id: str) -> None:
+    def _keep_survivor_locked(
+        self,
+        engine,
+        model_id: str,
+        device: Optional[str] = None,
+    ) -> None:
         """Hold an engine whose child outlived its close, so it stays accounted.
 
         Its device is the one the child reports, which after a CPU retry is not
-        the one this load started on. The idle timer is rearmed, so the release
-        is tried again rather than the survivor being stranded here.
+        the one this load started on; a child that never finished its load
+        reports none, so the device the attempt was made on stands in. The idle
+        timer is rearmed, so the release is tried again rather than the survivor
+        being stranded here.
+
+        Held for its memory, not for its answers: it is flagged so a later
+        dictation loads a worker of its own instead of being handed one that is
+        wedged, which would cost the caller the whole command timeout.
         """
         self._engine = engine
         self._model_id = model_id
-        self._device = getattr(engine, "device", None)
+        self._survivor = True
+        self._device = getattr(engine, "device", None) or device
         logger.error(
             "The dictation worker for %s outlived the kill and still holds its memory; "
             "keeping it resident so it is not reported unloaded",
@@ -1307,6 +1334,12 @@ class WhisperSttSidecar:
         who had it. The fallback waits for the CPU attempt, so a spawn failure
         on an accelerator still goes through the caller's own CPU retry rather
         than downgrading the user here.
+
+        A child that outlived start()'s own kill is left in ``_start_survivor``
+        for the caller. start() ends its child on every failure, so a handle
+        still reporting a live process is one holding memory that nothing else
+        knows about: dropping it here is what would let this failed load read as
+        nothing resident.
         """
         from core.inference.stt_transformers_worker import (
             InProcessWhisperEngine,
@@ -1329,6 +1362,10 @@ class WhisperSttSidecar:
             engine = InProcessWhisperEngine()
             engine.start(str(snapshot_path), "cpu", _dtype_name(dtype), cancel_event)
             return engine
+        except BaseException:
+            if _engine_is_alive(worker):
+                self._start_survivor = worker
+            raise
         return worker
 
     def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:
@@ -1336,10 +1373,15 @@ class WhisperSttSidecar:
 
         Returns the checkpoint's multilingual flag when local metadata provides
         it. Curated defaults are known multilingual.
+
+        A survivor is held for its memory alone, so it does not answer for the
+        model the way a resident one does: the snapshot is looked up on disk, or
+        the load it precedes would be turned away as a checkpoint that is not
+        downloaded.
         """
         model_id = resolve_model_id(model_id)
         with self._lock:
-            if self._engine is not None and self._model_id == model_id:
+            if self._engine is not None and self._model_id == model_id and not self._survivor:
                 resident_model = (
                     self._engine[0] if isinstance(self._engine, (tuple, list)) else self._engine
                 )
@@ -1388,7 +1430,7 @@ class WhisperSttSidecar:
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             self._release_dead_engine_locked()
-            if self._engine is not None and self._model_id == model_id:
+            if self._engine is not None and self._model_id == model_id and not self._survivor:
                 self._schedule_idle_unload_locked()
                 return self._engine
             import torch
@@ -1397,6 +1439,7 @@ class WhisperSttSidecar:
             candidate = None
             device: Optional[str] = None
             resident_released = False
+            self._start_survivor = None
             try:
                 self._raise_if_load_cancelled(cancel_event)
                 cached = self._ensure_model_downloaded(model_id)
@@ -1439,6 +1482,17 @@ class WhisperSttSidecar:
                         raise not_downloaded(exc) from exc
                     if device == "cpu":
                         raise
+                    if self._start_survivor is not None:
+                        # The attempt left a child that outlived its own kill and
+                        # still holds the device. A second child would sit beside
+                        # it, and installing that one would forget this one, which
+                        # is what lets training be admitted against memory that is
+                        # not free. Refuse the way a release that could not kill
+                        # its worker does, and let the idle timer try again.
+                        raise SttModelBusyError(
+                            "The previous dictation worker did not exit and still holds its "
+                            "memory. Try again shortly."
+                        ) from exc
                     logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
                     retry_on_cpu = True
                 if retry_on_cpu:
@@ -1468,6 +1522,7 @@ class WhisperSttSidecar:
                     self._engine = candidate
                     self._model_id = model_id
                     self._device = device
+                    self._survivor = False
                     self._load_cancel_event = None
                     self._load_owner_cancel_event = None
                     self._loading = False
@@ -1480,6 +1535,15 @@ class WhisperSttSidecar:
                 # and the check that rejects it. Nothing installed the candidate,
                 # and dropping the handle does not end the process holding the
                 # context that training is waiting for, so close it here.
+                if self._start_survivor is not None:
+                    # start() ends its own child, so this one outlived terminate
+                    # and kill inside it and never became a candidate. It holds
+                    # its memory all the same, and it is the only handle on the
+                    # process, so keep it rather than let the cancel report the
+                    # memory given back. The kill is retried by the idle timer.
+                    self._keep_survivor_locked(self._start_survivor, model_id, device)
+                    _clear_device_cache(device)
+                    raise
                 if not _close_engine(candidate):
                     # It outlived terminate and kill, so it is still holding the
                     # memory this cancel was made to free. Keep it, for the same
@@ -1503,7 +1567,17 @@ class WhisperSttSidecar:
                 else:
                     _clear_device_cache(device)
                 raise
+            except BaseException:
+                # Any other failed load, same reasoning: a child that outlived
+                # the kill start() gave it is still holding its memory, and this
+                # is the only handle on it. Reporting nothing resident is what
+                # lets training be admitted against memory that is not free.
+                if self._start_survivor is not None and self._engine is None:
+                    self._keep_survivor_locked(self._start_survivor, model_id, device)
+                    _clear_device_cache(device)
+                raise
             finally:
+                self._start_survivor = None
                 self._end_load(cancel_event)
 
     def _transcribe_decoded(

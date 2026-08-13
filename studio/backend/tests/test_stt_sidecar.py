@@ -699,6 +699,106 @@ def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(
     assert sidecar.is_loading() is False
 
 
+def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
+    # It is held for its memory, not for its answers: it already had its shutdown
+    # queued and a terminate and a kill, so handing it to a transcription costs
+    # the caller the whole command timeout under the model lock. Refuse the way a
+    # switch to another model is refused, and let the retry try the kill again.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+
+
+def _install_worker_that_survives_its_own_start(monkeypatch, error):
+    """A worker whose start() fails over a child that outlived its own kill.
+
+    start() ends its child on every failure, so a handle still reporting a live
+    process is one holding memory nothing else knows about.
+    """
+    workers = []
+
+    class SurvivingStartWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            # start() never got as far as naming the device it loaded on.
+            self.device = None
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            _device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            raise error
+
+        def is_alive(self):
+            return True
+
+        def close(self):
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker",
+        SurvivingStartWorker,
+        raising = True,
+    )
+    return workers
+
+
+def test_a_child_that_outlived_the_kill_inside_start_stays_accounted(monkeypatch):
+    # The cancel lands while the child is inside from_pretrained, which never
+    # reads it, so the load kills the child on the way out and the child outlives
+    # it. Nothing installed that handle, and it is the only one on the process:
+    # dropping it reports nothing resident while the context is still taken, and
+    # training is admitted against memory that is not free.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_worker_that_survives_its_own_start(
+        monkeypatch, SttLoadCancelledError("STT model loading was cancelled so training can start.")
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+    # The child never named a device, so the one the attempt was made on stands in.
+    assert sidecar.device == "cpu"
+    assert sidecar.is_loading() is False
+
+
+def test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child(monkeypatch):
+    # The accelerator attempt failed leaving a live child, so the CPU retry would
+    # put a second child beside it and, installing that one, forget the first.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", "float16"))
+    workers = _install_worker_that_survives_its_own_start(
+        monkeypatch, RuntimeError("the dictation worker stopped responding")
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cuda"
+    assert sidecar.is_loading() is False
+
+
 def test_an_idle_unload_retries_a_worker_that_outlived_the_kill(monkeypatch):
     # Keeping the survivor resident must not strand it: the idle timer is rearmed
     # so the release is tried again once the child finally goes.
@@ -883,8 +983,9 @@ def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch)
     monkeypatch.setattr(
         worker_module,
         "load_whisper",
-        lambda path, device, dtype, _cancel = None: loaded.append((path, device, dtype))
-        or (_FakeModel(), object()),
+        lambda path, device, dtype, _cancel = None: (
+            loaded.append((path, device, dtype)) or (_FakeModel(), object())
+        ),
     )
     monkeypatch.setattr(worker_module, "transcribe_window", lambda *_args, **_kwargs: "hello")
 
