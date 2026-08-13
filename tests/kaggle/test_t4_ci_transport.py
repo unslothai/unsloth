@@ -461,6 +461,50 @@ def test_the_deletion_deadline_covers_the_time_spent_pushing(monkeypatch, tmp_pa
     assert waits == [1800, 1800]
 
 
+def test_every_slug_a_push_filed_is_deleted_on_the_way_out(monkeypatch, tmp_path):
+    """An attempt whose response was lost may be running, and is untracked.
+
+    `push()` records every slug it filed precisely because Kaggle answers an
+    accepted push with a 5xx or a reset connection often enough to be a known
+    issue. Cleanup read only the ACCEPTED slug, so a failed final attempt
+    (which has none) and any earlier attempt whose best-effort discard was
+    refused kept a session slot and billed quota unseen.
+    """
+    _, deleted, result = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 0.0,
+        pushes = [
+            # Accepted on the third attempt; the first two may still be up.
+            {
+                "ok": True,
+                "slug": "someuser/unsloth-t4-ci-cccc",
+                "attempts": [
+                    "someuser/unsloth-t4-ci-aaaa",
+                    "someuser/unsloth-t4-ci-bbbb",
+                    "someuser/unsloth-t4-ci-cccc",
+                ],
+            },
+            # Never accepted, so no `slug` at all -- and the last attempt is
+            # exactly the ambiguous one.
+            {
+                "ok": False,
+                "reason": "push_failed",
+                "detail": "Connection reset by peer",
+                "attempts": ["someuser/unsloth-t4-ci-dddd", "someuser/unsloth-t4-ci-eeee"],
+            },
+        ],
+    )
+    assert sorted(deleted) == [
+        "someuser/unsloth-t4-ci-aaaa",
+        "someuser/unsloth-t4-ci-bbbb",
+        "someuser/unsloth-t4-ci-cccc",
+        "someuser/unsloth-t4-ci-dddd",
+        "someuser/unsloth-t4-ci-eeee",
+    ]
+    assert all(k["released"] for k in result["kernels"])
+
+
 def test_the_temp_dir_is_left_alone_when_the_log_is_not_json(tmp_path):
     """A plain-text log, and a JSON object that is not a record array."""
     kernel_dir = tmp_path / "unsloth-t4-ci-beef"

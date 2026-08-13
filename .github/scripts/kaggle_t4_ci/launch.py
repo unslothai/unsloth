@@ -286,6 +286,29 @@ def push(
         shutil.rmtree(workdir, ignore_errors = True)
 
 
+def _slugs_filed(entry: dict) -> list[str]:
+    """Every slug one kernel entry's push filed, in the order it filed them.
+
+    Cleanup has to reconcile ALL of them, not only the accepted one, and both
+    routes to a leaked slug are ambiguous-by-construction:
+
+    * The last attempt of a FAILED push. ``push()`` records the slug rather
+      than forgetting it precisely because Kaggle answers an accepted push
+      with a 5xx or a reset connection often enough to be a known issue, and
+      that entry then carries no ``slug`` at all.
+    * An EARLIER attempt of a push that later succeeded. ``_discard()`` runs
+      before each retry, but it is best effort and ``subprocess.run`` does
+      not raise on a nonzero exit, so a refused delete leaves the previous
+      attempt up.
+
+    Either one keeps a session slot and bills GPU quota with nobody reading
+    its result. A delete for a slug Kaggle never created is simply refused
+    and costs one call.
+    """
+    filed = [*(entry.get("attempted") or []), entry.get("slug")]
+    return list(dict.fromkeys(s for s in filed if s))
+
+
 def poll(api, slug: str) -> str:
     try:
         raw = str(getattr(api.kernels_status(slug), "status", ""))
@@ -537,23 +560,30 @@ def main() -> int:
         push-time timeout has been observed not to stop one that wedged. The
         measurement that settles it: deleting a two-hour-old stuck kernel
         took the account's used-hours figure DOWN.
+
+        Every slug the push FILED is reconciled, not only the accepted one.
+        See ``_slugs_filed`` for the two ways an unaccepted slug can still be
+        running.
         """
         if args.keep_kernel:
             return
         for entry in result.get("kernels") or []:
-            slug = entry.get("slug")
-            if not slug or entry.get("released"):
-                continue
-            try:
-                subprocess.run(
-                    ["kaggle", "kernels", "delete", slug, "-y"],
-                    capture_output = True,
-                    text = True,
-                    timeout = 180,
-                )
-                entry["released"] = True
-            except Exception:  # noqa: BLE001
-                _log(f"could not delete {slug}; it may keep billing")
+            done = set(entry.get("released_slugs") or [])
+            for slug in _slugs_filed(entry):
+                if slug in done:
+                    continue
+                try:
+                    subprocess.run(
+                        ["kaggle", "kernels", "delete", slug, "-y"],
+                        capture_output = True,
+                        text = True,
+                        timeout = 180,
+                    )
+                    done.add(slug)
+                except Exception:  # noqa: BLE001
+                    _log(f"could not delete {slug}; it may keep billing")
+            entry["released_slugs"] = sorted(done)
+            entry["released"] = all(s in done for s in _slugs_filed(entry))
 
     def finish(code: int = 0) -> int:
         release()

@@ -321,13 +321,18 @@ jobs:
     #                        + PUSH_BACKOFF_SEC backoffs 45 + 90 + 180
     #                        = 2715s
     #   two notebooks, pushed sequentially            5430s   (90.5 min)
-    #   polling, which only STARTS after both pushes  5400s   (90 min, from
-    #                                                  --max-wait below)
-    #   evidence download + release()'s two 180s deletions   ~360s
+    #   polling, which shares ONE deadline started before the first push,
+    #   so it does not stack on top of them          <=5400s  (--max-wait
+    #                                                  below, minus the
+    #                                                  pushes)
+    #   evidence download, two kernels                ~600s
+    #   release(): every slug each push FILED, so up to PUSH_ATTEMPTS
+    #   deletions per kernel at 180s                 <=1440s
     #   ----------------------------------------------------------------
-    #   total                                       ~11190s   (~187 min)
+    #   total                        max(5430, 5400) + 2040 = ~7470s
+    #                                                        (~125 min)
     #
-    # 200 leaves ~13 min of headroom on that. A normal run is ~15 min; this
+    # 200 leaves ~75 min of headroom on that. A normal run is ~15 min; this
     # only fires if the launcher wedged. Lower --max-wait or PUSH_ATTEMPTS
     # before lowering this.
     timeout-minutes: 200

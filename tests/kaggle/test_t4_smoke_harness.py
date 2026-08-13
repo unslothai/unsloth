@@ -1749,7 +1749,8 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
 
     The launcher's own constants bound how long it can take: two sequential
     pushes of PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus the
-    backoffs, then --max-wait of polling, then the deletions. The job timeout
+    backoffs, the polling that shares one deadline with them, the evidence
+    download, then a deletion for every slug each push filed. The job timeout
     has to sit above that, or a pushed kernel is orphaned and bills quota to
     its own ceiling.
     """
@@ -1762,9 +1763,13 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
 
     source = WORKFLOW.read_text(encoding = "utf-8")
     max_wait = int(_re.search(r"--max-wait (\d+)", source).group(1))
-    deletions = 2 * 180
+    kernels = int(_re.search(r"--kernels (\d+)", source).group(1))
+    evidence = kernels * 300
+    deletions = kernels * attempts * 180
 
-    worst = 2 * per_push + max_wait + deletions
+    # The polling deadline starts before the first push, so the two do not
+    # stack; the longer of them is what the run spends.
+    worst = max(kernels * per_push, max_wait) + evidence + deletions
     timeout_s = _workflow()["jobs"]["t4-smoke"]["timeout-minutes"] * 60
     assert (
         timeout_s > worst
