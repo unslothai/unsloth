@@ -85,9 +85,7 @@ class TestPowerShellHintIsConditional:
         ]
         assert len(invocations) >= 2, f"expected the frontend and OXC call sites, got {invocations}"
         for call in invocations:
-            assert "-FailureOutput" in call, (
-                f"call site passes no failure output: {call.strip()!r}"
-            )
+            assert "-FailureOutput" in call, f"call site passes no failure output: {call.strip()!r}"
 
     def test_setup_command_publishes_its_captured_output(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
@@ -98,9 +96,9 @@ class TestPowerShellHintIsConditional:
         # The slot has to be cleared per call, or one command's failure text
         # would explain the next command's failure.
         body = _ps_function_body(text, "Invoke-SetupCommand")
-        assert re.search(r'\$script:LastSetupCommandOutput\s*=\s*""', body), (
-            "Invoke-SetupCommand must reset $script:LastSetupCommandOutput before running"
-        )
+        assert re.search(
+            r'\$script:LastSetupCommandOutput\s*=\s*""', body
+        ), "Invoke-SetupCommand must reset $script:LastSetupCommandOutput before running"
 
     def test_local_failures_are_classified_before_network_ones(self):
         """npm names registry.npmjs.org even in a permission error, so order matters."""
@@ -113,9 +111,9 @@ class TestPowerShellHintIsConditional:
         body = _ps_function_body(text, "Show-NpmRegistryHint")
         local_use = body.find("NpmLocalFailureRe")
         network_use = body.find("NpmNetworkFailureRe")
-        assert local_use != -1 and network_use != -1, (
-            "Show-NpmRegistryHint must consult both classifiers"
-        )
+        assert (
+            local_use != -1 and network_use != -1
+        ), "Show-NpmRegistryHint must consult both classifiers"
         assert local_use < network_use, (
             "the local-failure check must come first: npm's FetchError line names "
             "registry.npmjs.org even when the failure is a local permission error"
