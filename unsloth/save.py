@@ -2311,7 +2311,10 @@ def unsloth_save_pretrained_merged(
     # do not fit move there; absolute paths, hub pushes and every non-Kaggle
     # machine are untouched.
     save_directory = _preflight_merge_disk(
-        self, save_directory, save_method, push_to_hub = push_to_hub,
+        self,
+        save_directory,
+        save_method,
+        push_to_hub = push_to_hub,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
@@ -2918,7 +2921,12 @@ def _hub_cache_prewarm_disabled(disable):
             os.environ[key] = previous
 
 
-def _preflight_merge_disk(model, save_directory, save_method, push_to_hub = False):
+def _preflight_merge_disk(
+    model,
+    save_directory,
+    save_method,
+    push_to_hub = False,
+):
     """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
 
     Never raises. A merge that is short of space on an ordinary machine is
@@ -2945,7 +2953,9 @@ def _preflight_merge_disk(model, save_directory, save_method, push_to_hub = Fals
         if need <= 0:
             return save_directory
         new_directory, message = kaggle_tmp_redirect(
-            save_directory, need_bytes = need, what = "16-bit merge",
+            save_directory,
+            need_bytes = need,
+            what = "16-bit merge",
         )
     except Exception:
         return save_directory
@@ -3062,7 +3072,9 @@ def _preflight_gguf_disk(
         return save_directory, True
 
     new_directory, message = kaggle_tmp_redirect(
-        save_directory, need_bytes = need_with_cache, what = "GGUF export",
+        save_directory,
+        need_bytes = need_with_cache,
+        what = "GGUF export",
     )
     if message is not None:
         print(message)
@@ -4750,7 +4762,10 @@ def unsloth_generic_save_pretrained_merged(
     # do not fit move there; absolute paths, hub pushes and every non-Kaggle
     # machine are untouched.
     save_directory = _preflight_merge_disk(
-        self, save_directory, save_method, push_to_hub = push_to_hub,
+        self,
+        save_directory,
+        save_method,
+        push_to_hub = push_to_hub,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.

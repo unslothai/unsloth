@@ -43,7 +43,6 @@ GB = 1024**3
 class _FakeModel:
     """Not a PeftModel; the preflight is called with an explicit needs_merge."""
 
-    pass
 
 
 @pytest.fixture
@@ -61,7 +60,11 @@ def stub_sizing(monkeypatch):
     def fake_free(path):
         return state["free"]
 
-    def fake_redirect(save_directory, need_bytes = 0, what = "export"):
+    def fake_redirect(
+        save_directory,
+        need_bytes = 0,
+        what = "export",
+    ):
         target, message = state["redirect"]
         if message is None:
             return save_directory, None
@@ -233,9 +236,7 @@ class TestKaggleRedirectWiring:
 
     @pytest.mark.parametrize("save_method", ["lora", "merged_4bit", "fp8"])
     def test_merge_preflight_only_applies_to_full_16bit_exports(self, monkeypatch, save_method):
-        monkeypatch.setattr(
-            S, "kaggle_tmp_redirect", lambda *a, **k: ("/tmp/x", "moved")
-        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("/tmp/x", "moved"))
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", lambda **k: 10 * GB)
         assert S._preflight_merge_disk(_FakeModel(), "model", save_method) == "model"
 
@@ -307,8 +308,17 @@ class TestNoLeakIntoSaveKwargs:
                 deleted.add(line.split('"')[1])
         # Every local that exists at the snapshot point and is not a parameter
         # of unsloth_generic_save has to be deleted before the call.
-        introduced = {"self", "base_model_name", "model_name", "is_vlm", "is_processor",
-                      "is_gpt_oss", "_gguf_prewarm_ok", "quantization_method",
-                      "first_conversion", "imatrix_file"}
+        introduced = {
+            "self",
+            "base_model_name",
+            "model_name",
+            "is_vlm",
+            "is_processor",
+            "is_gpt_oss",
+            "_gguf_prewarm_ok",
+            "quantization_method",
+            "first_conversion",
+            "imatrix_file",
+        }
         for name in introduced - accepted:
             assert name in deleted, f"{name} would be passed to unsloth_generic_save"
