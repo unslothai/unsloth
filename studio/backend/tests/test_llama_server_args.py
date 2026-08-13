@@ -1059,6 +1059,11 @@ def test_scrubbing_is_a_no_op_without_the_twins():
 def test_every_denied_env_var_names_a_denied_flag():
     # The twins are only worth scrubbing while the flag itself is refused; this
     # catches a group being dropped from the denylist and leaving a live back door.
+    #
+    # Both prefixes, because llama.cpp uses both: --api-key reads LLAMA_API_KEY while
+    # --api-key-file reads LLAMA_ARG_API_KEY_FILE, and which one a flag gets has
+    # changed between releases.
     for name in _lsa.DENIED_ENV_VARS:
-        flag = "--" + name.removeprefix("LLAMA_ARG_").lower().replace("_", "-")
+        stem = name.removeprefix("LLAMA_ARG_").removeprefix("LLAMA_")
+        flag = "--" + stem.lower().replace("_", "-")
         assert is_managed_flag(flag), f"{name} has no denied flag ({flag})"

@@ -1058,6 +1058,17 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     # today's builds, and is listed so it cannot arrive as one.
     "LLAMA_ARG_LOG_FILE",
     "LLAMA_ARG_LOG_DISABLE",
+    # --api-prefix moves every endpoint, including the /health Studio waits on, so an
+    # inherited one turns every load into a timeout.
+    "LLAMA_ARG_API_PREFIX",
+    # --api-key and its file. Studio terminates auth itself and sends the child no
+    # Authorization header, so an inherited key makes the healthy child refuse every
+    # request. The bundled build reads LLAMA_API_KEY for the flag and
+    # LLAMA_ARG_API_KEY_FILE for the file; the third spelling is listed because the
+    # name has moved between releases and none of them is ours to honour.
+    "LLAMA_API_KEY",
+    "LLAMA_ARG_API_KEY",
+    "LLAMA_ARG_API_KEY_FILE",
 )
 
 

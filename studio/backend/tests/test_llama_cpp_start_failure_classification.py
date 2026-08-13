@@ -1589,3 +1589,33 @@ class TestRejectedArguments:
         out = "llama_model_load: error loading model: invalid argument (22)"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "does not recognise" not in msg
+
+
+class TestArgumentErrorsAreQuotedShort:
+    """What a failed start copies out of the child's own output."""
+
+    def test_a_pathological_argument_is_truncated(self):
+        # A wrapper on LLAMA_SERVER_PATH can print anything, and the capture is a run
+        # of non-whitespace, so without a bound the API error becomes 64 KiB of it.
+        out = "error: invalid argument: " + "x" * 50_000
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert len(msg) < 1_000, len(msg)
+        assert "..." in msg
+        # Still says what happened, and still names the beginning of the argument.
+        assert "does not recognise the argument" in msg
+        assert "xxxx" in msg
+
+    def test_a_pathological_reason_is_truncated(self):
+        out = 'error while handling argument "--top-k": ' + "y" * 50_000
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert len(msg) < 1_000, len(msg)
+        assert "--top-k" in msg
+
+    def test_an_ordinary_argument_error_is_untouched(self):
+        out = "error: invalid argument: --tempp"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert "--tempp" in msg
+        assert "..." not in msg

@@ -1426,6 +1426,10 @@ export function ModelConfigPage({
   const [configState, setConfig] = useState<PerModelConfig>(() =>
     reconcileConfigGpuSelection(initial.config, isDiffusion, gpuDevices),
   );
+  // The live config, for the async reads below: an effect that closed over it would
+  // hold whatever it was when the request started.
+  const configRef = useRef(configState);
+  configRef.current = configState;
   const [remember, setRemember] = useState(() => initial.remembered);
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
@@ -1668,6 +1672,24 @@ export function ModelConfigPage({
           resolvedArgs,
           managed?.managed ?? new Set<string>(),
         );
+        // A list this build refuses can equally have come from local storage, saved
+        // by a build that still allowed it. The server copy is sanitised above; this
+        // is the same treatment for the one already in hand, which nothing else
+        // would catch while Advanced stays collapsed.
+        const local = configRef.current.llamaExtraArgs;
+        if (local != null && local.length > 0) {
+          const cleaned = sanitizeStoredExtraArgs(
+            local,
+            managed?.managed ?? new Set<string>(),
+          );
+          if (cleaned.length !== local.length) {
+            setConfig((current) =>
+              current.llamaExtraArgs === local
+                ? { ...current, llamaExtraArgs: cleaned.length > 0 ? cleaned : null }
+                : current,
+            );
+          }
+        }
         if (stored.length === 0) {
           return;
         }
@@ -1676,23 +1698,29 @@ export function ModelConfigPage({
         // override written through the API is only structurally validated), and
         // Load would be live for a request that comes back 400. The managed set is
         // enough for that: the value checks do not need the binary's catalogue.
-        setExtraArgsLoadable(
-          extraArgsAreLoadable(
-            diagnoseExtraArgs(formatExtraArgs(stored), {
-              flags: {},
-              managed: managed?.managed ?? new Set<string>(),
-              // Read without the probe, so nothing here knows which flags are
-              // switches, and nothing may be called a typo either.
-              switches: new Set<string>(),
-              maxBytes: managed?.maxBytes ?? 0,
-              windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
-              probeOk: false,
-            }),
-          ),
+        const hydratedIsLoadable = extraArgsAreLoadable(
+          diagnoseExtraArgs(formatExtraArgs(stored), {
+            flags: {},
+            managed: managed?.managed ?? new Set<string>(),
+            // Read without the probe, so nothing here knows which flags are
+            // switches, and nothing may be called a typo either.
+            switches: new Set<string>(),
+            maxBytes: managed?.maxBytes ?? 0,
+            windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
+            probeOk: false,
+          }),
         );
+        // Read from a ref rather than inside the updater below: an updater must stay
+        // free of side effects (StrictMode calls it twice), and this decides one.
+        if (configRef.current.llamaExtraArgs !== undefined) {
+          // Typed into while this was in flight. The row is judging that text and its
+          // verdict is the live one, so this answer about the stored list must not
+          // overwrite either of them: doing so re-enabled Load for invalid input.
+          return;
+        }
+        setExtraArgsLoadable(hydratedIsLoadable);
         setConfig((current) =>
-          // Only a config that has not read them yet, or a slow response would land
-          // on top of an edit made in the meantime.
+          // Guarded again, because the ref is only as fresh as the last render.
           current.llamaExtraArgs === undefined
             ? { ...current, llamaExtraArgs: stored }
             : current,

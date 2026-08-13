@@ -759,7 +759,13 @@ test("a hydrated list is judged even when the row cannot be", () => {
   // With Advanced collapsed the row never mounts, so nothing objects to a stored
   // list this build refuses (the overrides route only validates its shape), and
   // Load would be live for a request that comes back 400.
-  assert.match(body, /setExtraArgsLoadable\( extraArgsAreLoadable\( diagnoseExtraArgs\(formatExtraArgs\(stored\)/);
+  assert.match(body, /const hydratedIsLoadable = extraArgsAreLoadable\( diagnoseExtraArgs\(formatExtraArgs\(stored\)/);
+  // But not over an edit made while the request was out: the row is judging that
+  // text, and replacing its verdict re-enabled Load for invalid input.
+  assert.match(
+    body,
+    /if \(configRef\.current\.llamaExtraArgs !== undefined\) \{ .*return; \} setExtraArgsLoadable\(hydratedIsLoadable\)/,
+  );
 });
 
 test("the runtime preflight is sized with the arguments the load sends", () => {

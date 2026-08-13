@@ -488,6 +488,10 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # usage hint printed after it, small enough that a 10 MB unterminated line (which
 # _drain_stdout keeps whole) stays cheap to scan.
 _FAILURE_SCAN_TAIL_CHARS = 64 * 1024
+# How much of a quoted fragment from the child's own output an error message carries.
+# Long enough for any real flag or reason, short enough that a wrapper printing
+# megabytes cannot make the API error unreadable.
+_FAILURE_QUOTE_CHARS = 200
 # Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired with
 # an action verb. Sentence-anchored: mid-sentence the same words are prose that names
 # a tool ("The API I should invoke is foo() because ..."), and suppressing that loses
@@ -10409,6 +10413,21 @@ class LlamaCppBackend:
         # library name can itself be the pathological part. llama.cpp prints an
         # argument error and exits, so it is always at the end of the capture.
         scan_tail = (output or "")[-_FAILURE_SCAN_TAIL_CHARS:]
+
+        def _short(value: str) -> str:
+            """A quoted fragment of the child's output, kept to a readable length.
+
+            The capture is a run of non-whitespace, and nothing stops a wrapper on
+            LLAMA_SERVER_PATH from printing 64 KiB of it, so this is the bound that
+            keeps an API error the size of an error rather than the size of the
+            capture. _STARTUP_TAIL_CHARS bounds the surrounding diagnostics; this
+            bounds the one piece interpolated straight from the child.
+            """
+            value = value.strip()
+            return value if len(value) <= _FAILURE_QUOTE_CHARS else (
+                value[:_FAILURE_QUOTE_CHARS] + "..."
+            )
+
         unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", scan_tail, re.IGNORECASE)
         if unknown_arg:
             # Both owners in one sentence, because nothing reaching here says which
@@ -10419,7 +10438,7 @@ class LlamaCppBackend:
             # never opened.
             return (
                 f"llama-server does not recognise the argument "
-                f"'{unknown_arg.group(1)}'. Check it in this model's extra "
+                f"'{_short(unknown_arg.group(1))}'. Check it in this model's extra "
                 f"arguments, or reinstall llama.cpp if you did not set it."
             )
 
@@ -10429,8 +10448,8 @@ class LlamaCppBackend:
             re.IGNORECASE,
         )
         if bad_arg_value:
-            _arg = bad_arg_value.group(1).strip()
-            _why = (bad_arg_value.group(2) or "").strip()
+            _arg = _short(bad_arg_value.group(1))
+            _why = _short(bad_arg_value.group(2) or "")
             # "stoi" is what llama.cpp surfaces when std::stoi throws on a value
             # that is not a number; nobody outside the C++ standard library reads
             # that as an error message.

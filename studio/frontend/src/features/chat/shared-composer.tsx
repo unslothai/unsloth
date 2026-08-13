@@ -95,6 +95,7 @@ import {
   resolveInitialConfig,
   type PerModelConfig,
 } from "@/features/model-picker";
+import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -1264,6 +1265,31 @@ export function SharedComposer({
           });
           resolvedIsDiffusion = staged.isDiffusion;
           diffusionUnknown = staged.diffusionUnknown;
+        }
+        // Pass-through arguments can live only in the server's override map (set
+        // through the API, or from another browser), and this config comes from
+        // local storage. /load's omission path inherits them from a RESIDENT
+        // instance of the same model, which a compare pane starting cold or
+        // switching away from the other model does not have, so without this the
+        // experiment runs a different command from the one that was saved.
+        if (
+          targetIsGguf &&
+          // Not for the diffusion runner, which appends none of them.
+          resolvedIsDiffusion !== true &&
+          ownConfig.llamaExtraArgs === undefined
+        ) {
+          try {
+            const resolvedArgs = await fetchLoadExtraArgs(
+              sel.id,
+              sel.id,
+              sel.ggufVariant ?? null,
+            );
+            if (resolvedArgs.length > 0) {
+              ownConfig.llamaExtraArgs = resolvedArgs;
+            }
+          } catch {
+            // The load still works; a real overrides outage surfaces there.
+          }
         }
         // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
         // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
