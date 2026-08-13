@@ -429,6 +429,40 @@ def test_a_whitespace_only_pin_is_not_a_gpu_pin(block, tmp_path, env):
 @pytest.mark.parametrize(
     "env",
     [
+        {"UNSLOTH_TORCH_INDEX_URL": "   ", "UNSLOTH_TORCH_INDEX_FAMILY": "cpu"},
+        {"UNSLOTH_TORCH_INDEX_URL": "\t\n", "UNSLOTH_TORCH_INDEX_FAMILY": " CPU "},
+    ],
+)
+def test_a_blank_url_falls_back_to_the_family(block, tmp_path, env):
+    """get_torch_index_url trims the URL BEFORE choosing, so a blank URL is unset there and the
+    family wins -- the host really is installing the CPU wheel it asked for. Choosing with a
+    single ${URL:-${FAMILY}} picks the blank URL instead, because a space is non-empty to :-,
+    and the family never gets read: the leaf lands empty, the cpu exclusion misses, and every
+    later `studio update` accuses a host that is behaving exactly as pinned."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+def test_a_blank_url_falls_back_to_a_gpu_family(block, tmp_path):
+    """Same precedence, other direction: the family is what install.sh installs, so a cu128
+    family behind a blank URL is a GPU pin and reconciles on an arch with no wheels of its own."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1010",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "  ", "UNSLOTH_TORCH_INDEX_FAMILY": "cu128"},
+    )
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
         {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.4"},
         {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128"},
         {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.internal/whl/cpu-private"},

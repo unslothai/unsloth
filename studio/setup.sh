@@ -1918,7 +1918,6 @@ _setup_torch_hip=""
 # for a cpu leaf. Parsed here rather than reusing _setup_pin_leaf, which is assigned inside the
 # fast-path branch and unset on a fresh install. EXACT cpu leaf only: a cu128 or rocm pin still
 # expects a GPU.
-_setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
 # Trim before anything else, parity with get_torch_index_url (install.sh:3272) and
 # Trim-IndexPathSlashes (setup.ps1:863), which both trim first. The installer accepts a padded
 # " cpu " and installs the CPU wheel, so keeping the spaces here would fail the cpu exclusion and
@@ -1926,8 +1925,18 @@ _setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}
 # install.sh, and a leaf of spaces is non-empty, which reads as a GPU pin below and overrides the
 # arch gate. Leading/trailing only -- a value with inner spaces is not a pin shape any installer
 # here accepts, and stripping those would rewrite a URL rather than normalise it.
+# Trim each override separately and pick after, never `${URL:-${FAMILY}}`: a space is non-empty to
+# :- , so a blank URL would win and the family would never be read, while install.sh (3954) and
+# Get-PinnedTorchIndexUrl's IsNullOrWhiteSpace both fall through to the family and install what it
+# names. Same precedence as all three -- URL first, family only when the URL trims away.
+_setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_URL:-}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin#"${_setup_gpucheck_pin%%[![:space:]]*}"}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin%"${_setup_gpucheck_pin##*[![:space:]]}"}"
+if [ -z "$_setup_gpucheck_pin" ]; then
+    _setup_gpucheck_pin="${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+    _setup_gpucheck_pin="${_setup_gpucheck_pin#"${_setup_gpucheck_pin%%[![:space:]]*}"}"
+    _setup_gpucheck_pin="${_setup_gpucheck_pin%"${_setup_gpucheck_pin##*[![:space:]]}"}"
+fi
 _setup_gpucheck_pin="${_setup_gpucheck_pin%%\#*}"
 _setup_gpucheck_pin="${_setup_gpucheck_pin%%\?*}"
 while [ "${_setup_gpucheck_pin%/}" != "$_setup_gpucheck_pin" ]; do
