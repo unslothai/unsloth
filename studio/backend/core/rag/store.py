@@ -406,34 +406,51 @@ def search_dense(
     # The pre-tag spelling of the same request, kept acceptable so an existing index
     # keeps answering after an upgrade.
     untagged = config.embedding_identity_model(embedding_model) or embedding_model
-    scopes = [
-        s
-        for s in _scopes(scope)
-        if not conn.execute(
-            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (s,)
-        ).fetchone()
-    ]
+    # dict.fromkeys keeps the caller's order and collapses a scope named twice, which
+    # is now load-bearing: widening carries per-scope state, and a repeat would both
+    # multiply that scope's fetch twice per round and emit its hits twice into the merge.
+    scopes = list(
+        dict.fromkeys(
+            s
+            for s in _scopes(scope)
+            if not conn.execute(
+                "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (s,)
+            ).fetchone()
+        )
+    )
     # Over-fetch when filtering so stale-model hits don't starve the top-k. Their
     # distances come from another space, so they can fill every fetched slot while
     # compatible chunks sit further down the KNN list: widen until k of them survive
-    # the filter or the scopes have nothing left to give.
-    fetch = max(k * 3, k + 10)
-    out: list[tuple[str, float]] = []
-    while True:
-        candidates: list[tuple[str, float]] = []
-        saturated = False
-        for s in scopes:
+    # the filter or the scope has nothing left to give.
+    #
+    # Per scope, not across the merge. vec0 constrains its partition key by equality,
+    # so each scope is its own KNN list with its own stale prefix; a project scope
+    # buried under another embedder's vectors would otherwise stop widening the
+    # moment the thread scope handed over k weak hits, and the merge would then rank
+    # a stronger project chunk it never fetched.
+    kept: dict[str, list[tuple[str, float]]] = {}
+    fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
+    pending = list(scopes)
+    while pending:
+        widen: list[str] = []
+        for s in pending:
+            fetch = fetches[s]
             rows = conn.execute(
                 "SELECT chunk_id, distance FROM chunks_vec "
                 "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
                 (s, _f32(vector), fetch),
             ).fetchall()
-            saturated = saturated or len(rows) >= fetch
-            candidates.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
-        out = _drop_incompatible(conn, candidates, embedding_model, untagged)
-        if len(out) >= k or not saturated or fetch >= _MAX_DENSE_FETCH:
-            break
-        fetch = min(fetch * 4, _MAX_DENSE_FETCH)
+            kept[s] = _drop_incompatible(
+                conn,
+                [(r["chunk_id"], 1.0 - r["distance"]) for r in rows],
+                embedding_model,
+                untagged,
+            )
+            if len(kept[s]) < k and len(rows) >= fetch and fetch < _MAX_DENSE_FETCH:
+                fetches[s] = min(fetch * 4, _MAX_DENSE_FETCH)
+                widen.append(s)
+        pending = widen
+    out = [hit for s in scopes for hit in kept[s]]
     out.sort(key = lambda t: t[1], reverse = True)
     return out[:k]
 

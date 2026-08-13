@@ -346,3 +346,72 @@ def test_widening_survives_a_scope_larger_than_one_parameter_batch(rag_conn):
     _put(rag_conn, "kb_b", "new", ["alpha bravo"], current)
     hits = store.search_dense(rag_conn, "kb_b", _vector("alpha"), 5, embedding_model = current)
     assert [cid for cid, _ in hits] == ["new:0"]
+
+
+def test_a_saturated_scope_keeps_widening_after_another_scope_is_full(rag_conn):
+    """A project-and-thread search, which is the shape retrieval actually asks for.
+
+    vec0 constrains its partition key by equality, so each scope is its own KNN list
+    with its own stale prefix. A thread scope that hands over k compatible but weak
+    hits must not stop the project scope widening past the other embedder's vectors
+    burying a stronger chunk, or the merge ranks a top-k it never fetched."""
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    current = config.embedding_identity("sentence-transformers", MODEL)
+    # The thread scope answers on the first fetch, with the weakest hits in the corpus.
+    _put(rag_conn, "thread_t", "weak", ["alpha bravo charlie delta"] * 5, current)
+    # The project scope's whole first fetch is another embedder's, and the compatible
+    # chunk that outranks every thread hit sits just behind it.
+    _put(rag_conn, "kb_p", "old", ["alpha"] * 20, stale)
+    _put(rag_conn, "kb_p", "new", ["alpha bravo"], current)
+    hits = store.search_dense(
+        rag_conn, ["kb_p", "thread_t"], _vector("alpha"), 5, embedding_model = current
+    )
+    assert hits[0][0] == "new:0"
+
+
+def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home, monkeypatch):
+    """A concurrent ST failure swaps the process embedder for the rest of its life.
+
+    A page sentence-transformers had already encoded must not be stored as
+    llama-server: the hybrid query right below it then searches those mislabeled
+    vectors instead of filtering them out."""
+    from core.rag import web_rank
+
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(
+        embeddings, "token_counter", lambda model_name = None: lambda t: max(1, len(t.split()))
+    )
+
+    class _SwapsMidEncode:
+        def encode(
+            self,
+            texts,
+            *,
+            model_name = None,
+            normalize = True,
+        ):
+            vectors = [_vector(t) for t in texts]
+            monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+            return vectors
+
+    monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
+    monkeypatch.setattr(
+        embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower()
+    )
+
+    labels: list[str | None] = []
+    real_create = store.create_document
+
+    def record(conn, **kwargs):
+        labels.append(kwargs.get("embedding_model"))
+        return real_create(conn, **kwargs)
+
+    monkeypatch.setattr(web_rank.store, "create_document", record)
+    web_rank.retrieve_web_chunks(
+        [{"text": "alpha bravo charlie", "title": "page", "url": "https://a"}],
+        "alpha",
+        top_n = 3,
+        min_score = 0.0,
+        model_name = MODEL,
+    )
+    assert labels == [config.embedding_identity("sentence-transformers", MODEL)]
