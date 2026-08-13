@@ -567,6 +567,10 @@ async function generateTitleWithModel(payload: {
       repetition_penalty: 1.0,
       enable_thinking: false,
       reasoning_effort: "none",
+      // Titling is a one-shot summarisation: never let it enter the tool loop.
+      // Omitting the field would inherit the server's tools-on default and put
+      // python/terminal schemas in a 24-token prompt.
+      enable_tools: false,
       messages: [
         {
           role: "system",

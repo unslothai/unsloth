@@ -3462,3 +3462,32 @@ def test_download_dflash_reaches_the_complete_family_behind_an_incomplete_one(
         near_path = str(weight),
     )
     assert picked == "dflash-kquant.gguf"
+
+
+def test_split_completeness_reads_shard_indices_not_a_shard_count():
+    """A listing caught mid-publication can hold 00001-of-00002 beside a stray
+    00003-of-00002. Two files, so a count calls the set whole, while shard 2 is
+    still missing and llama-server cannot open it: the picker then ranks a family
+    it cannot load and the guard bills the training job for it."""
+    from utils.models.drafters import split_listing_is_complete
+
+    names = ["model-00001-of-00002.gguf", "model-00003-of-00002.gguf"]
+    assert not split_listing_is_complete(names, names[0])
+    # A duplicate listing of one shard is the same trap without the odd index.
+    dupes = ["dir/model-00001-of-00002.gguf", "dir/model-00001-of-00002.gguf"]
+    assert not split_listing_is_complete(dupes, dupes[0])
+    whole = ["model-00001-of-00002.gguf", "model-00002-of-00002.gguf"]
+    assert split_listing_is_complete(whole, whole[0])
+
+
+def test_split_completeness_is_scoped_to_the_files_own_directory():
+    """A repo laid out by quant can hold half of one broken set beside half of
+    another. Matching basenames alone calls both of them one whole set, and the
+    fetch then cannot load either."""
+    from utils.models.drafters import split_listing_is_complete
+
+    names = ["Q4/model-00001-of-00002.gguf", "Q8/model-00002-of-00002.gguf"]
+    assert not split_listing_is_complete(names, names[0])
+    assert not split_listing_is_complete(names, names[1])
+    whole = ["Q4/model-00001-of-00002.gguf", "Q4/model-00002-of-00002.gguf"]
+    assert split_listing_is_complete(whole, whole[0])

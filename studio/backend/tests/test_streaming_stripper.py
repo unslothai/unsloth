@@ -195,8 +195,7 @@ def test_scan_is_amortized_not_quadratic():
         return elapsed(stripper.strip, tokens)
 
     # 4x the tokens: the reference rescans everything (~16x), the incremental one resumes
-    # (~4x). Comparing growth ratios rather than absolutes keeps this meaningful on a
-    # noisy CI box while still catching a regression to full rescanning.
+    # (~4x). Ratios rather than absolutes keep this meaningful on a noisy CI box.
     reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
     incremental_growth = incremental(long) / max(incremental(short), 1e-9)
 
@@ -625,3 +624,35 @@ def test_an_append_only_stream_is_still_recognised_as_a_continuation():
     for i in range(600, len(text), 100):
         assert stripper._is_extension(text[:i]) is True
         stripper.strip(text[:i])
+
+
+def test_a_bounded_scan_still_takes_the_eos_after_a_malformed_mistral_array():
+    """The Mistral array arm keeps consuming an optional ``</s>`` after the ``]`` that the
+    bound is computed from, so bounding at the last ``]`` alone left the EOS in the
+    displayed text. Prose ``[1]`` before the marker is what turns the bound on, and a
+    malformed array is what gets past the string-aware pre-pass to this arm."""
+    text = 'See [1]. [TOOL_CALLS] [{"name": "get_weather", "ar}]</s> Done.'
+
+    assert tool_call_parser.strip_tool_markup(text, final = True) == "See [1].  Done."
+    assert tool_call_parser.strip_tool_markup(text, final = False) == "See [1].  Done."
+
+
+def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():
+    """The bound at the last closer is what keeps a tail of unclosed openers linear, so
+    deciding whether to apply it by probing a fixed window after the FIRST closer just
+    moves the cliff: put more prose than the window between the closed call and the
+    openers and the unbounded scan comes back. Prose length must not enter the decision."""
+    import time
+
+    def elapsed(n):
+        text = (
+            '<tool_call>{"name": "search", "arguments": {}}</tool_call>'
+            + "prose " * 60
+            + "<tool_call>" * n
+        )
+        start = time.perf_counter()
+        tool_healing.strip_tool_call_markup(text)
+        return time.perf_counter() - start
+
+    growth = elapsed(8000) / max(elapsed(2000), 1e-9)
+    assert growth < 8.0, f"4x the openers cost {growth:.1f}x; expected roughly linear"
