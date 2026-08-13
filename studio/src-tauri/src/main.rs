@@ -800,6 +800,40 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+// WebKitGTK ships two defaults that together break voice dictation on Linux:
+// `enable-media-stream` is off, and the stock `permission-request` handler
+// denies every request it never saw a listener override, including
+// microphone/camera grabs. Neither is fixable from outside the embedding
+// application, so opt in here and auto-allow only user-media requests --
+// every other permission kind (notifications, geolocation, ...) keeps the
+// default deny.
+#[cfg(target_os = "linux")]
+fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use webkit2gtk::{
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+    };
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    window.with_webview(|webview| {
+        let webview = webview.inner();
+        if let Some(settings) = webview.settings() {
+            settings.set_enable_media_stream(true);
+        }
+        webview.connect_permission_request(|_webview, request| {
+            match request.downcast_ref::<UserMediaPermissionRequest>() {
+                Some(request) => {
+                    request.allow();
+                    true
+                }
+                None => false,
+            }
+        });
+    })?;
+    Ok(())
+}
+
 // Compile in both Windows profiles so dependency skew fails in CI, even though
 // the guard is installed only in release builds.
 #[cfg(windows)]
@@ -1902,6 +1936,8 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(target_os = "linux")]
+            setup_linux_media_permissions(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]

@@ -5759,6 +5759,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "webkit2gtk",
  "webkit2gtk-sys",
  "webview2-com",
  "windows 0.62.2",
