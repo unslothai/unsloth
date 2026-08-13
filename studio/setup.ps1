@@ -1687,6 +1687,9 @@ function Invoke-SetupCommand {
     try {
         # Reset to avoid stale values from prior native commands.
         $global:LASTEXITCODE = 0
+        # Reset the captured-output slot: a stale value from a previous command
+        # must never be used to classify this one's failure.
+        $script:LastSetupCommandOutput = ""
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
             # Merge stderr into stdout so progress/warning output stays visible
             # without flipping $? on successful native commands (PS 5.1 treats
@@ -1698,7 +1701,11 @@ function Invoke-SetupCommand {
         } else {
             $output = & $Command 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
-                Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
+                $redacted = Redact-InstallOutput $output
+                # Keep the failure text so callers can tell *why* it failed.
+                # Redacted, because whatever reads this may print it back.
+                $script:LastSetupCommandOutput = $redacted
+                Write-StudioLine $redacted -ForegroundColor Red
             }
         }
         return [int]$LASTEXITCODE
@@ -1808,11 +1815,69 @@ function substep {
     }
 }
 
+# Local, non-network reasons an npm install dies: a locked/denied file in the npm
+# cache (antivirus is the usual culprit on Windows), a read-only or full disk.
+# npm reports these with a POSIX-style errno and its own "rejected by your
+# operating system" wording. Checked BEFORE the network markers because npm's
+# FetchError line names registry.npmjs.org even when the failure is local --
+# that URL is what made the old hint fire on a permission error (issue #8725).
+$script:NpmLocalFailureRe = 'EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE|operation was rejected by your operating system|EPERM: operation not permitted'
+
+# Markers that genuinely point at the registry being unreachable. Kept in sync
+# with the regex in studio/setup.sh's _suggest_npm_registry.
+$script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
+
+function Show-NpmLocalFailureHint {
+    # An npm failure the network cannot explain: permissions, a lock, or disk.
+    # Telling this user to configure a mirror sends them after the wrong thing.
+    param([string]$FailureOutput = "")
+
+    $nodeVer = try { if (Get-Command node -ErrorAction SilentlyContinue) { (& node -v 2>$null | Out-String).Trim() } else { "" } } catch { "" }
+    $npmVer = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (& npm -v 2>$null | Out-String).Trim() } else { "" } } catch { "" }
+
+    Write-StudioLine ""
+    step "frontend" "npm was blocked by the operating system, not by the network" "Yellow"
+    substep "npm reported a permission/lock error (EACCES/EPERM/EBUSY), so this is local."
+    if ($nodeVer -or $npmVer) {
+        substep "Runtime in use: node $nodeVer | npm $npmVer"
+    }
+    substep "Usual causes, in order:"
+    substep "  1. Antivirus or Windows Defender holding a file in the npm cache."
+    substep "  2. A previous install left an unwritable npm cache."
+    substep "  3. The install directory is read-only, or the disk is full."
+    substep "Things that usually clear it:"
+    substep "  npm cache clean --force"
+    substep "  Exclude the npm cache from your antivirus, then re-run the installer."
+    substep "  Or point npm at a writable cache: `$env:NPM_CONFIG_CACHE='C:\npm-cache'"
+    if ($FailureOutput -match 'EACCES|EPERM') {
+        substep "(Re-running as Administrator rarely helps here -- the file is locked, not privileged.)"
+    }
+}
+
 function Show-NpmRegistryHint {
     # Print actionable guidance when a frontend/OXC npm/bun install fails and the
     # registry lock is the likely cause (corporate firewall/proxy). No-op once the
     # user has opted in via UNSLOTH_NPM_REGISTRY. We never switch registries
     # automatically -- we only guide.
+    #
+    # $FailureOutput is the captured npm output (see Invoke-SetupCommand). It is
+    # what makes this hint conditional: without it every npm failure was reported
+    # as a blocked registry, including local permission errors (issue #8725).
+    # Empty output keeps the old unconditional behaviour, so a verbose-mode run
+    # -- where nothing is captured -- still gets the firewall guidance it had.
+    param([string]$FailureOutput = "")
+
+    if ($FailureOutput) {
+        if ($FailureOutput -imatch $script:NpmLocalFailureRe) {
+            Show-NpmLocalFailureHint -FailureOutput $FailureOutput
+            return
+        }
+        if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) {
+            # Nothing points at the registry. The raw npm error is already on
+            # screen and is more useful than a guess. Mirrors studio/setup.sh.
+            return
+        }
+    }
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
     $mirror = $env:NPM_CONFIG_REGISTRY
     if (-not $mirror) {
@@ -3696,13 +3761,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
     if (-not $UseBun) {
         $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+        $npmFailureOutput = $script:LastSetupCommandOutput
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
             Write-StudioLine "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
             Write-StudioLine "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
-            Show-NpmRegistryHint
+            Show-NpmRegistryHint -FailureOutput $npmFailureOutput
             Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
     }
@@ -3740,11 +3806,12 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+    $oxcFailureOutput = $script:LastSetupCommandOutput
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
         Write-StudioLine "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint
+        Show-NpmRegistryHint -FailureOutput $oxcFailureOutput
         Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
     Pop-Location
