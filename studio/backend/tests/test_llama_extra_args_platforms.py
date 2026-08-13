@@ -189,6 +189,9 @@ def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypat
     _apply_platform(monkeypatch, platform)
     monkeypatch.setenv("LLAMA_ARG_AGENT", "1")
     monkeypatch.setenv("LLAMA_ARG_TOOLS", "all")
+    # The logging twin matters most of all: Studio classifies a failed start by
+    # reading llama-server's output, and nothing it emits later overrides this.
+    monkeypatch.setenv("LLAMA_ARG_LOG_FILE", "/tmp/llama.log")
     monkeypatch.setenv("LLAMA_ARG_NO_WARMUP", "1")
 
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 20_000, 24_000)])
@@ -196,6 +199,7 @@ def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypat
 
     assert "LLAMA_ARG_AGENT" not in env
     assert "LLAMA_ARG_TOOLS" not in env
+    assert "LLAMA_ARG_LOG_FILE" not in env
     # Not a general purge: a variable that is not a denied flag's twin, and that
     # no other reconciliation claims, is the user's own configuration and stays.
     assert env.get("LLAMA_ARG_NO_WARMUP") == "1"

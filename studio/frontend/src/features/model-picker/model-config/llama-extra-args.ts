@@ -23,13 +23,37 @@ const UNDERSCORE = /_/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: mirroring the backend's own check
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 const INTEGER = /^-?[0-9]+$/;
-/**
- * Characters execve cannot carry: a NUL or any other control character, and an
- * unpaired surrogate, which the backend refuses because Popen raises while encoding
- * argv rather than starting llama-server.
- */
+/** Control characters, which execve either refuses (NUL) or passes on as noise. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: that is exactly what this finds
-const UNUSABLE_IN_ARGV = /[\u0000-\u0008\u000A-\u001F\u007F]|[\uD800-\uDFFF]/;
+const CONTROL_IN_ARGV = /[\u0000-\u0008\u000A-\u001F\u007F]/;
+
+/**
+ * Whether this token is something execve could not carry.
+ *
+ * The surrogate half is checked by walking the string rather than with a character
+ * class, because a class matches BOTH units of a well-formed pair: an emoji in a
+ * chat template or a grammar is a pair, Python encodes it without complaint, and
+ * treating it as unusable would quietly drop a valid argument. Only an UNPAIRED
+ * surrogate is refused, which is the one Popen raises on while encoding argv.
+ */
+function isUnusableInArgv(token: string): boolean {
+  if (CONTROL_IN_ARGV.test(token)) {
+    return true;
+  }
+  for (let index = 0; index < token.length; index += 1) {
+    const unit = token.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = token.charCodeAt(index + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) {
+        return true;
+      }
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
 // Hoisted for the same reason as the patterns above: this runs on every keystroke.
 const TEXT_ENCODER = new TextEncoder();
 
@@ -96,7 +120,7 @@ export function sanitizeStoredExtraArgs(
       skipNext = takesNextToken(token, flag, next);
       continue;
     }
-    if (UNUSABLE_IN_ARGV.test(token)) {
+    if (isUnusableInArgv(token)) {
       if (flag !== null) {
         skipNext = takesNextToken(token, flag, next);
       } else if (
@@ -112,7 +136,7 @@ export function sanitizeStoredExtraArgs(
       flag !== null &&
       takesNextToken(token, flag, next) &&
       next !== undefined &&
-      UNUSABLE_IN_ARGV.test(next)
+      isUnusableInArgv(next)
     ) {
       // Its value is about to be dropped, so the flag goes with it.
       continue;
@@ -464,6 +488,15 @@ export function diagnoseExtraArgs(
     out.push({
       level: "error",
       message: "Arguments cannot contain control characters.",
+    });
+  } else if (tokens.some((token) => isUnusableInArgv(token))) {
+    // What is left once control characters are ruled out: half a surrogate pair,
+    // which pasting a truncated string can produce. The load refuses it because
+    // Popen raises while encoding argv rather than starting llama-server. An emoji
+    // is a whole pair and stays perfectly fine.
+    out.push({
+      level: "error",
+      message: "Arguments contain an incomplete character.",
     });
   }
 

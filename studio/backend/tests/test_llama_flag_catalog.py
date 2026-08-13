@@ -202,3 +202,32 @@ def test_a_clean_help_run_says_so(monkeypatch, tmp_path):
     caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB)
 
     assert caps["help_probe_ok"] is True
+
+
+def test_the_denylist_can_be_read_without_probing(monkeypatch):
+    # The panel sanitizes a stored list with this before turning it into an explicit
+    # request, and a cold --help takes up to ten seconds. Waiting for the probe would
+    # leave a flag denied since that list was saved sitting in the request.
+    import asyncio
+
+    import routes.inference as inference_route
+
+    probed = False
+
+    class _Backend:
+        @staticmethod
+        def probe_server_capabilities():
+            nonlocal probed
+            probed = True
+            return {"found": True, "flags": {"--top-k": "x"}}
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
+    result = asyncio.run(
+        inference_route.get_llama_flags(managed_only = True, current_subject = "test")
+    )
+
+    assert probed is False
+    assert "--agent" in result.managed
+    assert result.flags == {}
+    # Nothing was checked against a binary, so nothing may be called a typo.
+    assert result.probe_ok is False

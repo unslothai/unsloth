@@ -988,6 +988,13 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_CORS_METHODS",
     "LLAMA_ARG_CORS_CREDENTIALS",
     "LLAMA_ARG_MEDIA_PATH",
+    # The twins of --log-file and --log-disable. Studio classifies a failed start by
+    # reading llama-server's own output, so an inherited redirect leaves every
+    # failure looking like the same opaque one; and unlike the flags, Studio emits
+    # nothing later that would override these. LLAMA_ARG_LOG_DISABLE has no twin in
+    # today's builds, and is listed so it cannot arrive as one.
+    "LLAMA_ARG_LOG_FILE",
+    "LLAMA_ARG_LOG_DISABLE",
 )
 
 

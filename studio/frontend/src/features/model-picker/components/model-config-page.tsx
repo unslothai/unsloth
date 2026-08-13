@@ -59,6 +59,7 @@ import {
 import {
   type LlamaFlagCatalog,
   loadLlamaFlagCatalog,
+  loadManagedLlamaFlags,
 } from "../api/llama-flags";
 import {
   fetchModelOverrides,
@@ -1435,15 +1436,17 @@ export function ModelConfigPage({
   // lands sends no llama_extra_args, and /load cannot inherit them from a process
   // that is not running, so a fast click would launch a cold model without the
   // arguments that were about to appear on screen.
-  const [extraArgsHydrating, setExtraArgsHydrating] = useState(true);
+  const [extraArgsHydrating, setExtraArgsHydrating] = useState(
+    () => target.isGguf,
+  );
   // The row does not withdraw its own objection when it unmounts, or collapsing
   // Advanced settings would re-enable Load for arguments the backend refuses. A
   // different model is the one thing that really does retire it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
-    setExtraArgsHydrating(true);
-  }, [configId, target.ggufVariant]);
+    setExtraArgsHydrating(target.isGguf);
+  }, [configId, target.ggufVariant, target.isGguf]);
 
   // The one field on this page whose stored value the local config may never have
   // seen. Everything else here is written by this panel, but llama_extra_args can be
@@ -1459,6 +1462,12 @@ export function ModelConfigPage({
   const extraArgsHydrated = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
+    if (!target.isGguf) {
+      // Nothing else even has this field: the row is GGUF-only and so is the load
+      // payload, so a Transformers or MLX model must not wait on either request.
+      setExtraArgsHydrating(false);
+      return;
+    }
     const keys = [modelOverrideKey(configId, target.ggufVariant), configId];
     // Joined because an array literal is a new value on every render.
     const identity = keys.join("\u0000");
@@ -1467,26 +1476,16 @@ export function ModelConfigPage({
       return;
     }
     let cancelled = false;
-    // The catalogue is only needed to sanitize what comes back, and its first read
-    // runs `llama-server --help` on a cold binary, which is far slower than the
-    // overrides request. Waiting on it without a deadline would hold Load shut on
-    // the probe; releasing the gate on that deadline instead would let a click
-    // through while the arguments were already in hand. So the DEADLINE IS ON THE
-    // CATALOGUE, not on the hydration: past it we sanitize with what we have and
-    // still apply the stored list.
-    let releaseCatalog: (value: LlamaFlagCatalog | null) => void = () => {};
-    const catalogOrNothing = Promise.race([
-      loadLlamaFlagCatalog(),
-      new Promise<LlamaFlagCatalog | null>((resolve) => {
-        releaseCatalog = resolve;
-      }),
-    ]);
-    const catalogDeadline = setTimeout(() => releaseCatalog(null), 4000);
-    // And a last-resort release, so an overrides request that never settles cannot
-    // disable Load for good: past this a load behaves as it did before the feature.
+    // The denylist, not the catalogue: sanitizing a stored list needs only the flags
+    // Unsloth refuses, and that route answers without running `llama-server --help`.
+    // Waiting on the probe instead would hold Load shut for as long as a cold --help
+    // takes, and releasing on a deadline would leave a legacy flag in an explicit
+    // request that /load then refuses.
+    // A last-resort release, so a request that never settles cannot disable Load for
+    // good: past this a load behaves as it did before the feature.
     const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
-    Promise.all([fetchModelOverrides(), catalogOrNothing])
-      .then(([overrides, catalog]) => {
+    Promise.all([fetchModelOverrides(), loadManagedLlamaFlags()])
+      .then(([overrides, managed]) => {
         // Marked here rather than before the request: StrictMode replays the effect
         // (setup, cleanup, setup), so a key marked up front would leave the first
         // fetch cancelled and the second setup returning early, and the box would
@@ -1496,15 +1495,16 @@ export function ModelConfigPage({
         }
         extraArgsHydrated.current = identity;
         // Through the resolver, not a literal lookup: the backend folds identities
-        // and falls back from repo:QUANT to the bare repo before it reads a row.
-        // Sanitised against this build's denylist before it becomes a request:
-        // hydrating turns a stored list into an EXPLICIT one, which /load validates
-        // strictly instead of putting it through the carry-over paths that drop a
-        // newly denied flag quietly. Without this, an install upgraded across a
-        // denylist change stops loading a model that worked the day before.
+        // and reads whole entries in its own order before it reads a field.
+        //
+        // Sanitised before it becomes a request: hydrating turns a stored list into
+        // an EXPLICIT one, which /load validates strictly instead of putting it
+        // through the carry-over paths that drop a newly denied flag quietly.
+        // Without this, an install upgraded across a denylist change stops loading a
+        // model that worked the day before.
         const stored = sanitizeStoredExtraArgs(
           resolveStoredExtraArgs(overrides, keys),
-          catalog?.managed ?? new Set<string>(),
+          managed ?? new Set<string>(),
         );
         if (stored.length === 0) {
           return;
@@ -1531,9 +1531,8 @@ export function ModelConfigPage({
     return () => {
       cancelled = true;
       clearTimeout(release);
-      clearTimeout(catalogDeadline);
     };
-  }, [configId, target.ggufVariant]);
+  }, [configId, target.ggufVariant, target.isGguf]);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =
@@ -1762,6 +1761,16 @@ export function ModelConfigPage({
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
+  // A model classified as diffusion after the box was typed into keeps the row's
+  // objection while the arguments themselves are stripped from what loads, and the
+  // row does not withdraw it when it unmounts. Retired here, or Load stays disabled
+  // over arguments the request no longer carries.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the classification, not on the setter
+  useEffect(() => {
+    if (resolvedIsDiffusion) {
+      setExtraArgsLoadable(true);
+    }
+  }, [resolvedIsDiffusion]);
   const pinFixedLayerContext =
     target.isGguf &&
     loadableConfig.gpuMemoryMode === "manual" &&

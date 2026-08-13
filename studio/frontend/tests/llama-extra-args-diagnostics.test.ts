@@ -376,6 +376,35 @@ test("the stored sanitizer removes everything this build would refuse", () => {
   assert.deepEqual(sanitizeStoredExtraArgs(clean, managed), clean);
 });
 
+test("a whole surrogate pair is a character, not a fault", () => {
+  // The class-based check matched both units of every emoji, so a chat template or
+  // grammar carrying one was dropped on hydration even though Python encodes it
+  // without complaint. Only half a pair is refused.
+  const emoji = String.fromCodePoint(0x1f600);
+  const lone = String.fromCharCode(0xd800);
+  const managed = new Set<string>();
+
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--chat-template", `hi ${emoji}`, "--top-k", "20"], managed),
+    ["--chat-template", `hi ${emoji}`, "--top-k", "20"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--chat-template", lone, "--top-k", "20"], managed),
+    ["--top-k", "20"],
+  );
+  // And the editor says the same about what is typed.
+  assert.ok(
+    !diagnoseExtraArgs(`--chat-template ${emoji}`, CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+  assert.ok(
+    diagnoseExtraArgs(`--chat-template ${lone}`, CATALOG).some(
+      (d) => d.level === "error" && d.message.includes("incomplete character"),
+    ),
+  );
+});
+
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 
@@ -462,7 +491,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
   // The panel retires it on a model change instead.
   assert.match(
     pageSource.replace(/\s+/g, " "),
-    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(true\); \}, \[configId, target\.ggufVariant\]\)/,
+    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(target\.isGguf\); \}, \[configId, target\.ggufVariant, target\.isGguf\]\)/,
   );
 });
 
@@ -545,5 +574,33 @@ test("load waits for the stored arguments to be read", () => {
   // And the short deadline is on the CATALOGUE, not on the gate: the first read of
   // it runs --help on a cold binary, and releasing Load on that timer would let a
   // click through while the stored arguments were already in hand.
-  assert.match(body, /setTimeout\(\(\) => releaseCatalog\(null\), \d+\)/);
+  // And it waits on the DENYLIST, which needs no binary, rather than on the
+  // catalogue behind a cold --help.
+  assert.match(body, /loadManagedLlamaFlags\(\)/);
+  assert.doesNotMatch(body, /loadLlamaFlagCatalog\(\)[^;]*Promise\.all/);
+});
+
+test("a model with no such field does not wait for one", () => {
+  const panel = pageSource.slice(
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  const body = panel.replace(/\s+/g, " ");
+  // The row and the load payload are both GGUF-only, so a Transformers or MLX model
+  // must not have Load held shut while two requests it will never use settle.
+  assert.match(body, /if \(!target\.isGguf\) \{ .*setExtraArgsHydrating\(false\); return; \}/);
+  assert.match(body, /useState\( \(\) => target\.isGguf, \)/);
+});
+
+test("a diffusion classification retires the argument objection", () => {
+  const panel = pageSource.slice(
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  const body = panel.replace(/\s+/g, " ");
+  // withoutUnsupportedDiffusionSettings strips the arguments from what loads while
+  // the row keeps its objection (it deliberately has no cleanup), so Load would
+  // stay disabled over arguments the request no longer carries.
+  assert.match(
+    body,
+    /if \(resolvedIsDiffusion\) \{ setExtraArgsLoadable\(true\); \}/,
+  );
 });

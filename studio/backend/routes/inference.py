@@ -9689,16 +9689,31 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
 
 
 @router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
-async def get_llama_flags(current_subject: str = Depends(get_current_subject)):
+async def get_llama_flags(
+    managed_only: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
     """Flags the installed llama-server accepts, for the extra-arguments editor.
 
     Cheap to call: ``probe_server_capabilities`` caches on the binary's revision, so
     only the first call after an install or an update runs the 10s ``--help`` probe.
     A failed probe answers ``probe_ok = false`` with no flags rather than erroring, so
     the editor degrades to "cannot verify" instead of blocking every argument.
+
+    ``managed_only`` skips the probe entirely. The denylist is Unsloth's own and needs
+    no binary to read, while the caller that needs it most is the panel sanitizing a
+    stored list before it becomes an explicit request: making that wait on a cold
+    ``--help`` would leave a legacy flag in the request for as long as the probe runs.
     """
     from core.inference.llama_server_args import sorted_managed_flags
 
+    if managed_only:
+        return LlamaFlagCatalogResponse(
+            flags = {},
+            managed = sorted_managed_flags(),
+            # No probe was attempted, so nothing here can say a flag is a typo.
+            probe_ok = False,
+        )
     try:
         backend = get_llama_cpp_backend()
         # Off the event loop: on a cold cache this runs `llama-server --help` with a

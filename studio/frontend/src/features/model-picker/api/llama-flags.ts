@@ -36,10 +36,51 @@ let inFlightCatalog: Promise<LlamaFlagCatalog | null> | null = null;
 let cachedCatalog: LlamaFlagCatalog | null = null;
 let cachedAt = 0;
 
+let inFlightManaged: Promise<ReadonlySet<string> | null> | null = null;
+let cachedManaged: ReadonlySet<string> | null = null;
+
 /** Drop the cache, for a caller that knows the binary just changed. */
 export function invalidateLlamaFlagCatalog(): void {
   cachedCatalog = null;
   cachedAt = 0;
+  // Not the denylist: that is Unsloth's own list and no binary changes it.
+}
+
+/**
+ * Just the flags Unsloth refuses, without the `--help` probe behind the catalogue.
+ *
+ * The panel sanitizes a stored list with this before turning it into an explicit
+ * request, and that must not wait on a cold probe (up to ten seconds), or a flag
+ * denied since the list was saved stays in the request for as long as it runs.
+ * Cached for the session: unlike the flag map, it describes this build of Studio.
+ */
+export function loadManagedLlamaFlags(): Promise<ReadonlySet<string> | null> {
+  if (cachedManaged) {
+    return Promise.resolve(cachedManaged);
+  }
+  if (cachedCatalog) {
+    return Promise.resolve(cachedCatalog.managed);
+  }
+  inFlightManaged ??= (async () => {
+    try {
+      const res = await authFetch(
+        "/api/inference/llama-flags?managed_only=true",
+      );
+      if (!res.ok) {
+        return null;
+      }
+      const body = (await res.json()) as ApiLlamaFlagCatalog;
+      // An older backend answers the route without the parameter and returns its
+      // full catalogue, which carries the same list.
+      cachedManaged = new Set(body.managed ?? []);
+      return cachedManaged;
+    } catch {
+      return null;
+    } finally {
+      inFlightManaged = null;
+    }
+  })();
+  return inFlightManaged;
 }
 
 /**
