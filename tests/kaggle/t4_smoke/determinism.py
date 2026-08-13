@@ -282,6 +282,16 @@ def compare_metrics(
                     result["identical"] = False
                     result["first_diff_step"] = ea.get("step")
                 continue
+            # Equal is equal, and subtracting is not safe once the value can
+            # be infinite. An fp16 overflow is logged as NaN OR as infinity --
+            # clip_grad_norm_ over a gradient holding an inf returns inf --
+            # and abs(inf - inf) is NaN, which is != 0.0, so two runs that
+            # both overflowed on the same step were reported as differing,
+            # with a max_abs_diff of 0.0 to show for it. One-sided and
+            # oppositely signed infinities still fall through to the
+            # subtraction, where they come out as inf and are differences.
+            if va == vb:
+                continue
             diff = abs(va - vb)
             worst = max(worst, diff)
             if diff != 0.0 and result["identical"]:

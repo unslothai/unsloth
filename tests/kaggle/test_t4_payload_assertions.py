@@ -80,6 +80,34 @@ def test_matching_step_coordinates_are_not_reported_as_a_difference():
     assert result["step_mismatch"] == []
 
 
+def test_two_runs_that_both_overflowed_on_the_same_step_agree():
+    """An fp16 overflow logs infinity as readily as NaN, and abs(inf-inf) is NaN.
+
+    NaN != 0.0, so the subtraction reported two identical traces as
+    nondeterministic -- with a max_abs_diff of 0.0 to show for it.
+    """
+    from determinism import compare_metrics
+
+    a = [{"step": 1, "loss": 10.0, "grad_norm": INF}, {"step": 2, "loss": 9.0, "grad_norm": 4.0}]
+    b = [{"step": 1, "loss": 10.0, "grad_norm": INF}, {"step": 2, "loss": 9.0, "grad_norm": 4.0}]
+    result = compare_metrics(a, b)
+    assert result["identical"] is True
+    assert result["first_diff_step"] is None
+    assert result["max_abs_diff"] == {"loss": 0.0, "grad_norm": 0.0}
+
+
+@pytest.mark.parametrize(
+    ("norm_a", "norm_b"),
+    [(INF, 4.0), (4.0, INF), (INF, -INF), (-INF, INF)],
+)
+def test_an_infinity_only_one_run_logged_is_still_a_difference(norm_a, norm_b):
+    from determinism import compare_metrics
+
+    a = [{"step": 1, "loss": 1.0, "grad_norm": norm_a}]
+    b = [{"step": 1, "loss": 1.0, "grad_norm": norm_b}]
+    assert compare_metrics(a, b)["identical"] is False
+
+
 # -------------------------------------------------- run_t4_smoke.py: canary
 
 
