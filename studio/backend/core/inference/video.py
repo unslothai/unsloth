@@ -1478,12 +1478,13 @@ class VideoBackend:
         """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
         from huggingface_hub import HfApi
 
-        from .sd_cpp_args import SdCppModelFiles, offload_flags
+        from .sd_cpp_args import GRAPH_CUT_AUTO_FLAGS, SdCppModelFiles, offload_flags
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
             ensure_h3_sd_cpp_binary,
             sd_cpp_lists_accelerator_device,
+            sd_cpp_supports_graph_cut,
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
@@ -1693,6 +1694,8 @@ class VideoBackend:
                     "again."
                 )
             binary_identity = _sd_cli_identity(binary)
+            # Under the claim like every other probe here, and never on CPU, which allocates from system RAM.
+            supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -1722,6 +1725,9 @@ class VideoBackend:
         native_offload = tuple(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
+        # H3 allocates each module WHOLE on the device (20.5 GB DiT, 17 GB encoder), so --offload-to-cpu alone still cudaMallocs; not gated on memory mode because auto and fast are what OOM.
+        if supports_graph_cut:
+            native_offload += GRAPH_CUT_AUTO_FLAGS
         from .video_minimax_h3 import MiniMaxH3NativeRuntime
 
         runtime = MiniMaxH3NativeRuntime(
