@@ -182,7 +182,7 @@ function remotePersonalization(language: string) {
   };
 }
 
-function setup(localeResult: "superseded" | "cancelled") {
+function setup(localeResult: "superseded" | "cancelled" | "stalled") {
   const runTimers = installWindow();
   const host = createReact();
   const saves: SavedPayload[] = [];
@@ -236,10 +236,20 @@ function setup(localeResult: "superseded" | "cancelled") {
     },
     "@/i18n": {
       DEFAULT_LOCALE_PREFERENCE: "auto",
+      LOCALE_INITIALIZATION_TIMEOUT_MS: 2_000,
       getLocalePreference: () => preference,
       isLocalePreference: (value: unknown) => typeof value === "string",
-      setLocale: async (value: unknown) => {
+      setLocale: async (value: unknown, options?: { timeoutMs?: number }) => {
         localeCalls.push(value);
+        // A catalog request the network accepted and never completed. It
+        // rejects nothing, so the only thing that can end this wait is the
+        // caller asking the store to bound it.
+        if (localeResult === "stalled") {
+          if (typeof options?.timeoutMs !== "number") {
+            return new Promise<string>(() => {});
+          }
+          return "failed";
+        }
         await localeSettled;
         if (localeResult === "superseded") preference = "fr";
         return localeResult;
@@ -308,4 +318,23 @@ test("a cancelled locale hydration stays paused, because it never finished", asy
   await settle();
 
   assert.equal(app.saves.length, 0);
+});
+
+test("a stalled locale catalog does not pause personalization saves", async () => {
+  const app = setup("stalled");
+
+  app.render();
+  await settle();
+  assert.deepEqual(app.localeCalls, ["de"]);
+
+  // Pre-fix hydration awaited the catalog with no bound, so it never finished
+  // and nothing the user changed for the rest of the session was written.
+  app.render();
+  app.rename("Ada");
+  app.render();
+  app.runTimers();
+  await settle();
+
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.profile.displayName, "Ada");
 });

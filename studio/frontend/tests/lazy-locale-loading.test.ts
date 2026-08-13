@@ -570,3 +570,57 @@ test("a rejected pick leaves a working auto preference named", async () => {
   assert.equal(localeStore.getLocale(), "en");
   assert.equal(shownLanguage(), "auto");
 });
+
+/** The result, or "pending" when the request is still holding its caller. */
+function settledWithin(request: unknown): Promise<unknown> {
+  return Promise.race([
+    request,
+    new Promise((resolve) => setTimeout(() => resolve("pending"), 200)),
+  ]);
+}
+
+test("a catalog that never settles does not hold the caller forever", async () => {
+  // Accepted, but neither completing nor rejecting: a stalled CDN, proxy or
+  // service worker. Nothing about this request will ever wake the awaiting
+  // hydration, so the store has to.
+  const outcome = await settledWithin(
+    localeStore.setLocale("hi", {
+      loadMessages: () => new Promise<void>(() => {}),
+      adoptOnFailure: true,
+      timeoutMs: 5,
+    }),
+  );
+
+  assert.equal(outcome, "failed");
+  // Adopted on the fallback catalog, exactly as a rejection would leave it.
+  assert.equal(localeStore.getLocalePreference(), "hi");
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(localeStore.getPendingLocalePreference(), null);
+  assert.equal(localeStore.getLocaleCatalogFailed(), true);
+});
+
+test("a catalog that arrives after the timeout still commits", async () => {
+  let finishLoading!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    finishLoading = resolve;
+  });
+
+  assert.equal(
+    await settledWithin(
+      localeStore.setLocale("ar", {
+        loadMessages: () => loading,
+        adoptOnFailure: true,
+        timeoutMs: 5,
+      }),
+    ),
+    "failed",
+  );
+  assert.equal(localeStore.getLocale(), "en");
+
+  finishLoading();
+  await loading;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(localeStore.getLocale(), "ar");
+  assert.equal(localeStore.getLocalePreference(), "ar");
+  assert.equal(localeStore.getLocaleCatalogFailed(), false);
+});

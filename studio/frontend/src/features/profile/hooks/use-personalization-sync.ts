@@ -19,6 +19,7 @@ import {
 } from "@/features/settings";
 import {
   DEFAULT_LOCALE_PREFERENCE,
+  LOCALE_INITIALIZATION_TIMEOUT_MS,
   type LocalePreference,
   getLocalePreference,
   isLocalePreference,
@@ -305,6 +306,10 @@ export function usePersonalizationSync(enabled: boolean): void {
               // baseline below is honest and the debounced push cannot overwrite
               // the remote language with a stale local one.
               adoptOnFailure: true,
+              // And a catalog request that is accepted but never completes
+              // must not hold hydration, and with it every save for the rest
+              // of the session, open forever. Same bound as startup.
+              timeoutMs: LOCALE_INITIALIZATION_TIMEOUT_MS,
             });
             if (cancelled) return;
             // "superseded" means a newer request took over, so this language is

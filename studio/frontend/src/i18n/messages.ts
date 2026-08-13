@@ -30,35 +30,113 @@ export const messages = loadedMessages as typeof loadedMessages & {
   en: typeof en;
 };
 
-const localeLoaders: Record<
-  Exclude<Locale, "en">,
-  () => Promise<MessageTree>
-> = {
-  "zh-CN": () => import("./locales/zh-CN").then((module) => module.zhCN),
-  ja: () => import("./locales/ja").then((module) => module.ja),
-  ko: () => import("./locales/ko").then((module) => module.ko),
-  es: () => import("./locales/es").then((module) => module.es),
-  "pt-BR": () => import("./locales/pt-br").then((module) => module.ptBR),
-  fr: () => import("./locales/fr").then((module) => module.fr),
-  de: () => import("./locales/de").then((module) => module.de),
-  it: () => import("./locales/it").then((module) => module.it),
-  ru: () => import("./locales/ru").then((module) => module.ru),
-  hi: () => import("./locales/hi").then((module) => module.hi),
-  ar: () => import("./locales/ar").then((module) => module.ar),
+type LazyLocale = Exclude<Locale, "en">;
+
+const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
+  "zh-CN": () => import("./locales/zh-CN"),
+  ja: () => import("./locales/ja"),
+  ko: () => import("./locales/ko"),
+  es: () => import("./locales/es"),
+  "pt-BR": () => import("./locales/pt-br"),
+  fr: () => import("./locales/fr"),
+  de: () => import("./locales/de"),
+  it: () => import("./locales/it"),
+  ru: () => import("./locales/ru"),
+  hi: () => import("./locales/hi"),
+  ar: () => import("./locales/ar"),
 };
 
-const localeLoads = new Map<Locale, Promise<void>>();
+/** A catalog exports its own tag with the separator dropped: zh-CN -> zhCN. */
+function readCatalog(module: unknown, locale: LazyLocale): MessageTree {
+  const name = locale.replace("-", "");
+  const catalog = (module as Record<string, unknown> | null)?.[name];
+  if (catalog === undefined) {
+    throw new Error(`Locale catalog "${locale}" has no "${name}" export.`);
+  }
+  return catalog as MessageTree;
+}
 
-export function loadLocaleMessages(locale: Locale): Promise<void> | undefined {
+export const CATALOG_RETRY_PARAM = "catalogRetry";
+
+const CHUNK_URL_PATTERN = /\bhttps?:\/\/[^\s"'`)]+/;
+
+let catalogRetryCount = 0;
+
+/**
+ * The URL to re-request a failed catalog from, or null when none can be read.
+ *
+ * Chrome, Edge and Firefox before 155 keep a failed module in the module map
+ * keyed by URL, so re-running the same import resolves to the stored failure
+ * without touching the network: dropping our own promise is not enough to make
+ * a retry a retry. A one-off query gives the request its own module map key and
+ * its own HTTP cache key, while the hashed filename it is appended to is
+ * unchanged, so the first load of every catalog keeps its normal long-lived
+ * caching and nothing about it moves until something has actually failed.
+ *
+ * The URL comes out of the browser's own message ("Failed to fetch dynamically
+ * imported module: <url>"), which is the only place the built chunk's URL is
+ * exposed to us; Safari reports no URL there, and it is also the one engine
+ * that already re-requests on its own.
+ */
+export function catalogRetryUrl(
+  error: unknown,
+  previousUrl: string | null = null,
+): string | null {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const found = message.match(CHUNK_URL_PATTERN)?.[0] ?? previousUrl;
+  if (found === null) return null;
+  let url: URL;
+  try {
+    url = new URL(found);
+  } catch {
+    return null;
+  }
+  // A preload failure names the stylesheet, not the module that wanted it.
+  if (url.pathname.endsWith(".css")) return null;
+  catalogRetryCount += 1;
+  url.searchParams.set(CATALOG_RETRY_PARAM, String(catalogRetryCount));
+  return url.href;
+}
+
+export type CatalogImporter = (
+  locale: LazyLocale,
+  retryUrl: string | null,
+) => Promise<unknown>;
+
+function importCatalog(
+  locale: LazyLocale,
+  retryUrl: string | null,
+): Promise<unknown> {
+  if (retryUrl === null) return localeLoaders[locale]();
+  return import(/* @vite-ignore */ retryUrl);
+}
+
+const localeLoads = new Map<Locale, Promise<void>>();
+const catalogRetryUrls = new Map<Locale, string>();
+
+export function loadLocaleMessages(
+  locale: Locale,
+  importer: CatalogImporter = importCatalog,
+): Promise<void> | undefined {
   if (loadedMessages[locale] !== undefined) return undefined;
   const pending = localeLoads.get(locale);
   if (pending) return pending;
 
   if (locale === "en") return undefined;
-  const load = localeLoaders[locale]()
-    .then((loaded) => {
-      loadedMessages[locale] = loaded;
-    })
+  const retryUrl = catalogRetryUrls.get(locale) ?? null;
+  const load = importer(locale, retryUrl)
+    .then(
+      (module) => {
+        loadedMessages[locale] = readCatalog(module, locale);
+        catalogRetryUrls.delete(locale);
+      },
+      (error: unknown) => {
+        const nextUrl = catalogRetryUrl(error, retryUrl);
+        if (nextUrl === null) catalogRetryUrls.delete(locale);
+        else catalogRetryUrls.set(locale, nextUrl);
+        throw error;
+      },
+    )
     .finally(() => {
       localeLoads.delete(locale);
     });

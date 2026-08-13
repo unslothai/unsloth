@@ -35,6 +35,16 @@ export type SetLocaleOptions = {
    * outbound save would push the stale local value back over it.
    */
   adoptOnFailure?: boolean;
+  /**
+   * Stop waiting on the catalog after this many ms and settle as a failure.
+   *
+   * A request that is accepted but never completes (a stalled CDN, proxy or
+   * service worker) rejects nothing, so without a bound the returned promise
+   * stays pending for the session and everything awaiting it waits with it.
+   * `initializeLocale` bounds startup for the same reason. A late arrival still
+   * commits, so a slow catalog is upgraded to rather than lost.
+   */
+  timeoutMs?: number;
 };
 
 export const DEFAULT_LOCALE_PREFERENCE: LocalePreference = AUTO_LOCALE;
@@ -231,6 +241,7 @@ function applyPreference(
   loadMessages: LocaleCatalogLoader = loadLocaleMessages,
   signal?: AbortSignal,
   adoptOnFailure = false,
+  timeoutMs?: number,
 ): LocaleChangeResult | Promise<LocaleChangeResult> {
   if (signal?.aborted) return "cancelled";
   const previousPending = pendingPreference;
@@ -260,24 +271,51 @@ function applyPreference(
   const cancel = () => cancelPreference(revision);
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
-  return pending
-    .then<LocaleChangeResult, LocaleChangeResult>(
-      () => {
-        if (signal?.aborted) return "cancelled";
-        return commitPreference(preference, locale, revision, persist);
-      },
-      () => {
-        if (signal?.aborted) return "cancelled";
-        if (revision !== preferenceRevision) return "superseded";
-        if (adoptOnFailure) {
-          commitFallbackLocale(preference, revision);
-        } else {
-          failPreference(revision, preference, locale);
-        }
-        return "failed";
-      },
-    )
-    .finally(() => signal?.removeEventListener("abort", cancel));
+  const settled = pending.then<LocaleChangeResult, LocaleChangeResult>(
+    () => {
+      if (signal?.aborted) return "cancelled";
+      return commitPreference(preference, locale, revision, persist);
+    },
+    () => {
+      if (signal?.aborted) return "cancelled";
+      if (revision !== preferenceRevision) return "superseded";
+      if (adoptOnFailure) {
+        commitFallbackLocale(preference, revision);
+      } else {
+        failPreference(revision, preference, locale);
+      }
+      return "failed";
+    },
+  );
+  const bounded =
+    timeoutMs === undefined
+      ? settled
+      : new Promise<LocaleChangeResult>((resolve) => {
+          const timeout = globalThis.setTimeout(
+            () => {
+              // Settle the way a rejection would. The load itself is left alone,
+              // so if it does arrive it still commits over this.
+              if (signal?.aborted) {
+                resolve("cancelled");
+              } else if (revision !== preferenceRevision) {
+                resolve("superseded");
+              } else {
+                if (adoptOnFailure) {
+                  commitFallbackLocale(preference, revision);
+                } else {
+                  failPreference(revision, preference, locale);
+                }
+                resolve("failed");
+              }
+            },
+            Math.max(0, timeoutMs),
+          );
+          void settled.then((outcome) => {
+            globalThis.clearTimeout(timeout);
+            resolve(outcome);
+          });
+        });
+  return bounded.finally(() => signal?.removeEventListener("abort", cancel));
 }
 
 function isLocaleStorageEvent(event: StorageEvent): boolean {
@@ -445,6 +483,7 @@ export function setLocale(
     loadMessages = loadLocaleMessages,
     signal,
     adoptOnFailure = false,
+    timeoutMs,
   }: SetLocaleOptions = {},
 ): LocaleChangeResult | Promise<LocaleChangeResult> {
   const requestedPreference = normalizePreference(preference);
@@ -453,7 +492,12 @@ export function setLocale(
   // writes storage, so a preference whose catalog failed is adopted for this
   // session without being recorded as a choice that worked.
   return applyPreference(
-    requestedPreference, true, loadMessages, signal, adoptOnFailure,
+    requestedPreference,
+    true,
+    loadMessages,
+    signal,
+    adoptOnFailure,
+    timeoutMs,
   );
 }
 
