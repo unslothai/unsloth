@@ -214,7 +214,9 @@ DESKTOP_FIXTURES = [
 ]
 
 
-@pytest.mark.parametrize("family,subdir,name", DESKTOP_FIXTURES, ids = [f[2] for f in DESKTOP_FIXTURES])
+@pytest.mark.parametrize(
+    "family,subdir,name", DESKTOP_FIXTURES, ids = [f[2] for f in DESKTOP_FIXTURES]
+)
 def test_the_desktop_shell_logs_are_offered(family, subdir, name):
     """The Tauri shell writes these beside the Python logs, and backend-*.log is
     the ONLY record when the backend dies before its own file logging starts.
@@ -223,9 +225,9 @@ def test_the_desktop_shell_logs_are_offered(family, subdir, name):
     directory.mkdir(parents = True, exist_ok = True)
     (directory / name).write_text("desktop output\n", encoding = "utf-8")
     sources = debug_log_sources.list_sources()
-    assert any(s.label == name and s.family == family for s in sources), (
-        f"{name} not offered; got {[(s.family, s.label) for s in sources]}"
-    )
+    assert any(
+        s.label == name and s.family == family for s in sources
+    ), f"{name} not offered; got {[(s.family, s.label) for s in sources]}"
 
 
 def test_a_desktop_log_resolves_and_reads_back():
@@ -273,7 +275,7 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     # is that times two with room to spare; what matters is that it does not
     # scale with the 400 files present.
     ceiling = debug_log_sources.MAX_SOURCES_PER_FAMILY * 3 * 2 + 8
-    assert calls["n"] <= ceiling, (
-        f"stat called {calls['n']} times for 400 files; the presort is not working"
-    )
+    assert (
+        calls["n"] <= ceiling
+    ), f"stat called {calls['n']} times for 400 files; the presort is not working"
     assert calls["n"] < 400, "cost still scales with the directory"

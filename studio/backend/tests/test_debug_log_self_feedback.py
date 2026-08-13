@@ -88,9 +88,7 @@ def test_the_viewer_only_ever_returns_content_it_did_not_write(session_log, clie
     first = client.get("/api/settings/debug/logs").json()
     assert first["lines"] == ["first"]
     for _ in range(10):
-        body = client.get(
-            "/api/settings/debug/logs", params = {"cursor": first["cursor"]}
-        ).json()
+        body = client.get("/api/settings/debug/logs", params = {"cursor": first["cursor"]}).json()
         # Every poll after the first has nothing to say. A line here would be
         # the viewer reading its own access record.
         assert body["lines"] == []
