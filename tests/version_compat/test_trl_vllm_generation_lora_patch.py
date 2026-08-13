@@ -255,9 +255,9 @@ def test_lora_reaches_engine_without_reload_weights_anchor(monkeypatch):
         f"vLLM was asked to sample without the adapter -> rollouts come from the "
         f"BASE model. lora_request values: {requests}"
     )
-    assert all("|True" in r for r in requests), (
-        f"the adapter tensors were not loaded (load_tensors=True): {requests}"
-    )
+    assert all(
+        "|True" in r for r in requests
+    ), f"the adapter tensors were not loaded (load_tensors=True): {requests}"
 
 
 def test_trl_0_22_shape_keeps_working(monkeypatch):
@@ -270,14 +270,14 @@ def test_trl_0_22_shape_keeps_working(monkeypatch):
     assert cls.generate(self, ["hello"]) == ["generated"]
 
     requests = _lora_requests(log)
-    assert requests and all(str(r).startswith("LORA[vllm_gen_lora") for r in requests), (
-        f"adapter missing on the 0.22.2-era shape: {log}"
-    )
+    assert requests and all(
+        str(r).startswith("LORA[vllm_gen_lora") for r in requests
+    ), f"adapter missing on the 0.22.2-era shape: {log}"
     # The shared engine already holds the live training weights, so a
     # reload_weights would drag the original checkpoint back off disk.
-    assert ("collective_rpc", "reload_weights") not in log, (
-        f"reload_weights reached the shared engine and clobbered the trained weights: {log}"
-    )
+    assert (
+        ("collective_rpc", "reload_weights") not in log
+    ), f"reload_weights reached the shared engine and clobbered the trained weights: {log}"
 
 
 def test_chat_rollouts_get_the_adapter_too(monkeypatch):
@@ -290,9 +290,9 @@ def test_chat_rollouts_get_the_adapter_too(monkeypatch):
     assert cls.generate(self, [[{"role": "user", "content": "hi"}]]) == ["chatted"]
 
     requests = _lora_requests(log, kind = "chat")
-    assert requests and all(str(r).startswith("LORA[vllm_gen_lora") for r in requests), (
-        f"adapter missing on llm.chat: {log}"
-    )
+    assert requests and all(
+        str(r).startswith("LORA[vllm_gen_lora") for r in requests
+    ), f"adapter missing on llm.chat: {log}"
 
 
 def test_engine_is_restored_after_the_call(monkeypatch):
@@ -313,9 +313,9 @@ def test_engine_is_restored_after_the_call(monkeypatch):
 
     log.clear()
     self.llm.generate(["direct call, e.g. model.fast_generate"])
-    assert _lora_requests(log) == ["ABSENT"], (
-        f"a direct engine call picked up an injected lora_request: {log}"
-    )
+    assert _lora_requests(log) == [
+        "ABSENT"
+    ], f"a direct engine call picked up an injected lora_request: {log}"
 
 
 def test_pre_existing_instance_attribute_is_put_back(monkeypatch):
@@ -333,9 +333,9 @@ def test_pre_existing_instance_attribute_is_put_back(monkeypatch):
     self.llm.generate = sentinel
     cls.generate(self, ["hello"])
 
-    assert self.llm.__dict__.get("generate", None) is sentinel, (
-        "the engine's own generate was deleted instead of restored"
-    )
+    assert (
+        self.llm.__dict__.get("generate", None) is sentinel
+    ), "the engine's own generate was deleted instead of restored"
     assert all(str(r).startswith("LORA[") for r in _lora_requests(log)), log
 
 
@@ -348,9 +348,9 @@ def test_engine_trl_created_itself_is_left_alone(monkeypatch):
     self = _make_generation(cls, log, shared_weights = False, with_lora = False)
     assert cls.generate(self, ["hello"]) == ["generated"]
 
-    assert _lora_requests(log) == ["ABSENT"], (
-        f"unsloth injected an adapter into an engine TRL owns: {log}"
-    )
+    assert _lora_requests(log) == [
+        "ABSENT"
+    ], f"unsloth injected an adapter into an engine TRL owns: {log}"
     assert ("collective_rpc", "reload_weights") in log, (
         f"TRL's own reload_weights was suppressed on an engine unsloth does not "
         f"share weights with: {log}"
