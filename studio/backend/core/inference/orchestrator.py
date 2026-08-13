@@ -326,12 +326,16 @@ class InferenceOrchestrator:
                 hub_ids = [
                     m["id"] for m in models if not m.get("id", "").upper().endswith("-GGUF")
                 ][:40]
+                # Counts at info, the ids at debug: each list is 40 repo names on one line,
+                # so the pair cost ~1.5 KB of every boot to say the catalog fetch worked.
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
-                    logger.info("Top GGUF models: %s", gguf_ids)
+                    logger.info("Fetched %d top GGUF models", len(gguf_ids))
+                    logger.debug("Top GGUF models: %s", gguf_ids)
                 if hub_ids:
                     self._top_hub_cache = hub_ids
-                    logger.info("Top hub models: %s", hub_ids)
+                    logger.info("Fetched %d top hub models", len(hub_ids))
+                    logger.debug("Top hub models: %s", hub_ids)
         except Exception as e:
             logger.warning("Failed to fetch top models: %s", e)
         finally:

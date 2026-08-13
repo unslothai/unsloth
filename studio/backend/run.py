@@ -151,7 +151,19 @@ install_torchao_windows_rocm_stub()
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
+from loggers.config import LogConfig
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
+
+# main.py configures structlog, but it does so on import, which happens several seconds into
+# run_server -- after the "startup begin" line below. That line therefore rendered through
+# structlog's defaults (ConsoleRenderer, local time) while everything after it rendered as
+# JSON in UTC, so a reader saw the clock jump hours between line one and line two of the same
+# stream. Configure here, with the same env, so the whole session reads as one log. Repeating
+# structlog.configure() is safe; main.py's call still wins for its own service name.
+LogConfig.setup_logging(
+    service_name = "unsloth-studio-backend",
+    env = os.getenv("ENVIRONMENT_TYPE", "production"),
+)
 
 logger = get_logger(__name__)
 
@@ -1866,9 +1878,8 @@ def _setup_server_disk_logging():
 
     # Best-effort retention: keep the newest 20 session logs.
     try:
-        logs = sorted(log_dir.glob("server-*.log"), key = lambda p: p.stat().st_mtime)
-        for old in logs[:-20]:
-            old.unlink(missing_ok = True)
+        from utils.log_retention import prune_log_dir
+        prune_log_dir(log_dir, "server-*.log")
     except Exception:
         pass
     return log_path

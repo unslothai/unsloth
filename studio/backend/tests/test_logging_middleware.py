@@ -190,6 +190,47 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
     assert paths.count("/api/models/browse-folders") == 3  # base dedup off -> all logged
 
 
+def test_liveness_probe_heartbeats(logs, monkeypatch):
+    # The desktop watchdog's own probe. Its sibling /api/health was already quiet, so a
+    # steady poll of this one alone used to be a per-request line.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(4):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 1
+
+
+def test_liveness_probe_errors_still_log(logs, monkeypatch):
+    # A watchdog probe that starts failing is the whole signal; heartbeating is 2xx-only.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"down"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 3
+
+
 def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
 

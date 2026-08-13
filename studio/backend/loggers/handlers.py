@@ -47,6 +47,11 @@ _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000
 _VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
+    # The desktop shell's own watchdog probe, roughly every 19s for as long as the app is
+    # open. /api/health was already here but its sibling was not, so on an idle 4h session
+    # it was 760 lines, 14% of tauri.log, saying only that the process is still up. Its
+    # start/stop transitions are recorded in the backend phase log either way.
+    "/api/liveness",
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
