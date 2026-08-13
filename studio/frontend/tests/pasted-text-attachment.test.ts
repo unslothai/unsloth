@@ -11,11 +11,13 @@ import {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentSample,
   attachmentContentText,
+  attachmentsPastedText,
   attachmentsSample,
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
   pasteLongTextAsFile,
+  pastedTextContentBody,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextFileName,
@@ -238,6 +240,44 @@ test("a paste-only message still has something to name the thread with", () => {
     attachmentContentSample(sent),
   );
   assert.equal(attachmentsSample(undefined), "");
+});
+
+test("chat search still finds what the paste moved out of the message", () => {
+  const body = `Fix the retry backoff\n${"detail\n".repeat(500)}closing line`;
+  const sent = attachmentContentText("Fix.txt", body, true, body.length);
+
+  // The whole body, not the opening: a term late in a paste has to stay
+  // findable or the paste is searchable only by its first line.
+  assert.equal(pastedTextContentBody(sent), body);
+  assert.equal(
+    attachmentsPastedText([{ content: [{ type: "text", text: sent }] }]),
+    body,
+  );
+
+  // Attachments that were never indexed stay that way.
+  assert.equal(pastedTextContentBody("[PDF: paper.pdf]\nAbstract"), "");
+  assert.equal(
+    pastedTextContentBody(attachmentContentText("notes.txt", body, false)),
+    "",
+  );
+  assert.equal(
+    attachmentsPastedText([
+      { content: [{ type: "text", text: "[PDF: paper.pdf]\nAbstract" }] },
+      { content: [{ type: "image" }] },
+    ]),
+    "",
+  );
+  assert.equal(attachmentsPastedText(undefined), "");
+
+  // Several pastes on one message all reach the index.
+  const second = attachmentContentText("Log.txt", "second body", true, 11);
+  assert.equal(
+    attachmentsPastedText([
+      { content: [{ type: "text", text: sent }] },
+      { content: [{ type: "text", text: second }] },
+    ]),
+    `${body} second body`,
+  );
 });
 
 test("a sample of unwrapped content is left as it is", () => {
