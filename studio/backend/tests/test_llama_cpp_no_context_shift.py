@@ -100,9 +100,9 @@ def test_the_flag_is_emitted_unless_the_build_lacks_it():
     """
     source = _load_model_source()
     assert 'cmd.append("--no-context-shift")' in source
-    assert 'if _caps.get("supports_no_context_shift", True):' in source, (
-        "the gate must default to True, so a failed probe still emits the flag"
-    )
+    assert (
+        'if _caps.get("supports_no_context_shift", True):' in source
+    ), "the gate must default to True, so a failed probe still emits the flag"
     # And the default really is True in both places the probe can return.
     probe_src = inspect.getsource(llama_cpp_module.LlamaCppBackend.probe_server_capabilities)
     assert '"supports_no_context_shift": True' in probe_src
