@@ -24,6 +24,8 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
+  isSandboxFileList,
+  isSandboxToolResult,
   type SandboxFile,
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
@@ -995,45 +997,6 @@ function serializeAssistantToolCallPart(
 export interface McpImageToolResult {
   text: string;
   images: { data: string; mimeType: string }[];
-}
-
-/**
- * A python/terminal result carrying the chat's sandbox context alongside the
- * text the model actually saw.
- */
-/** ``files`` as the cards need it: absent, or entries with a usable name. */
-export function isSandboxFileList(val: unknown): boolean {
-  if (val === undefined || val === null) return true;
-  if (!Array.isArray(val)) return false;
-  return val.every(
-    (entry) =>
-      typeof entry === "object" &&
-      entry !== null &&
-      typeof (entry as { name?: unknown }).name === "string",
-  );
-}
-
-export function isSandboxToolResult(
-  val: unknown,
-): val is { text: string; sessionId: string } {
-  if (typeof val !== "object" || val === null) return false;
-  const v = val as {
-    text?: unknown;
-    sessionId?: unknown;
-    images?: unknown;
-    files?: unknown;
-  };
-  // images too: it is always in Studio's own wrapper, and a tool result that
-  // merely has text and sessionId is someone else's, whose other fields would
-  // be dropped on export.
-  return (
-    typeof v.text === "string" &&
-    typeof v.sessionId === "string" &&
-    Array.isArray(v.images) &&
-    // Persisted content can carry anything: the cards map over this and read
-    // name off each entry, so anything else takes the whole chat view down.
-    isSandboxFileList(v.files)
-  );
 }
 
 /**

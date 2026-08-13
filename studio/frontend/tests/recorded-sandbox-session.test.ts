@@ -61,6 +61,52 @@ test("a chat that never ran a tool records nothing, leaving the caller its defau
   assert.equal(recordedSandboxSessionId(messages), undefined);
 });
 
+test("an mcp tool answering with its own session id is not read as a sandbox", () => {
+  const messages = [
+    {
+      id: "m2",
+      threadId: "thread-1",
+      role: "assistant",
+      createdAt: 2,
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call-1",
+          toolName: "search_docs",
+          result: {
+            text: "found 3 hits",
+            images: [],
+            sessionId: "someone-elses-session",
+            files: [],
+          },
+        },
+      ],
+    } as unknown as Message,
+  ];
+  assert.equal(recordedSandboxSessionId(messages), undefined);
+});
+
+test("a python result missing the wrapper shape is not read as a sandbox", () => {
+  const messages = [
+    {
+      id: "m2",
+      threadId: "thread-1",
+      role: "assistant",
+      createdAt: 2,
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call-1",
+          toolName: "python",
+          // No images/files: the app's own wrapper always carries both.
+          result: { text: "ok", sessionId: "not-a-wrapper" },
+        },
+      ],
+    } as unknown as Message,
+  ];
+  assert.equal(recordedSandboxSessionId(messages), undefined);
+});
+
 test("a result without a session id is skipped rather than read as one", () => {
   const messages = [
     {
@@ -70,7 +116,12 @@ test("a result without a session id is skipped rather than read as one", () => {
       createdAt: 2,
       content: [
         { type: "tool-call", toolCallId: "c", toolName: "python", result: "plain text" },
-        { type: "tool-call", toolCallId: "d", toolName: "python", result: { sessionId: "" } },
+        {
+          type: "tool-call",
+          toolCallId: "d",
+          toolName: "python",
+          result: { text: "ok", images: [], sessionId: "", files: [] },
+        },
       ],
     } as unknown as Message,
   ];

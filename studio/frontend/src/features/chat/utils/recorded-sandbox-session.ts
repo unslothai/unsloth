@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  SANDBOX_FILE_TOOLS,
+  isSandboxToolResult,
+} from "@/components/assistant-ui/sandbox-files";
+
 import type { MessageRecord } from "../types";
 
 /**
@@ -11,6 +16,10 @@ import type { MessageRecord } from "../types";
  * the files stay where they were written, so a scope derived from current
  * membership can name a folder this chat never used. The session id recorded on
  * a tool result is the one its files are under.
+ *
+ * Gated on the tool name and the full wrapper shape, as the adapter is: a
+ * custom or MCP tool answering with its own `sessionId` is someone else's, and
+ * reading it here would name an unrelated folder.
  */
 export function recordedSandboxSessionId(
   messages: MessageRecord[],
@@ -19,12 +28,21 @@ export function recordedSandboxSessionId(
     const content = messages[index]?.content;
     if (!Array.isArray(content)) continue;
     for (let part = content.length - 1; part >= 0; part -= 1) {
-      const result = (content[part] as { result?: unknown } | null)?.result;
-      if (!result || typeof result !== "object") continue;
-      const sessionId = (result as { sessionId?: unknown }).sessionId;
-      if (typeof sessionId === "string" && sessionId.length > 0) {
-        return sessionId;
+      const entry = content[part] as {
+        type?: unknown;
+        toolName?: unknown;
+        result?: unknown;
+      } | null;
+      if (entry?.type !== "tool-call") continue;
+      if (
+        typeof entry.toolName !== "string" ||
+        !SANDBOX_FILE_TOOLS.has(entry.toolName)
+      ) {
+        continue;
       }
+      const result: unknown = entry.result;
+      if (!isSandboxToolResult(result)) continue;
+      if (result.sessionId.length > 0) return result.sessionId;
     }
   }
   return undefined;
