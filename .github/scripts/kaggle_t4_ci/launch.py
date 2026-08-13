@@ -157,6 +157,16 @@ def _api():
     return api
 
 
+def _pushed(ok: bool, reason: str, out: str, attempted: list[str]) -> dict:
+    """A push outcome, always carrying the slugs the call filed.
+
+    A failed attempt may still have landed -- Kaggle answers a committed
+    push with a 5xx often enough for it to be a known issue -- so the slug
+    is reported rather than forgotten, and the caller can reconcile it.
+    """
+    return {"ok": ok, "reason": reason, "detail": out.strip()[:400], "attempts": attempted}
+
+
 def push(
     notebook: Path,
     user: str,
@@ -165,46 +175,80 @@ def push(
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
-    A fresh slug per attempt is not cosmetic: reusing one lets a later
-    status or output call attach a PREVIOUS attempt's results, which reads
-    as a pass that never happened.
+    A fresh slug per attempt is not cosmetic, and the reason is Kaggle's own
+    versioning. Pushing to an id that ALREADY exists does not replace or
+    supersede what is there: it files a new version and starts a SECOND
+    batch session, and the running one keeps running. Meanwhile
+    ``kernels status`` and ``kernels/output`` send no version label, so they
+    answer for the newest session only. Reuse a slug across a retry and the
+    evidence collected belongs to whichever execution happened to be latest,
+    while the other consumes a session slot and its quota unseen.
+
+    That matters here because the retried failures are exactly the ambiguous
+    ones -- a reset connection, an aborted transfer, a 5xx -- where Kaggle
+    may well have accepted the push whose response never arrived. So each
+    attempt also DELETES the previous attempt's slug before pushing again:
+    deletion is kernel-level, it costs one call, and it is what frees the
+    session slot the retry is likely waiting on.
+
+    Returns the slug of the accepted attempt, plus ``attempts``: every slug
+    this call filed, newest last.
     """
     base = _slugify("unsloth t4 ci")[:32]
-    slug_name = f"{base}-{uuid.uuid4().hex[:8]}"
-    # The slug is derived from the TITLE, not from the metadata id. A
-    # mismatch files the kernel at an unexpected address and every later
-    # status/output call 403s, so assert the round trip.
-    title = slug_name.replace("-", " ")
-    assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
+    attempted: list[str] = []
+
+    def _discard(slug: str) -> None:
+        """Best effort. The attempt usually created nothing at all."""
+        try:
+            subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+        except Exception:  # noqa: BLE001
+            _log(f"could not discard the previous push attempt {slug}")
 
     workdir = Path(tempfile.mkdtemp(prefix = "kaggle-t4-ci-"))
     try:
-        code_file = workdir / f"{slug_name}.ipynb"
-        shutil.copy(notebook, code_file)
-        (workdir / "kernel-metadata.json").write_text(
-            json.dumps(
-                {
-                    "id": f"{user}/{slug_name}",
-                    "title": title,
-                    "code_file": code_file.name,
-                    "language": "python",
-                    "kernel_type": "notebook",
-                    "is_private": "true",
-                    "enable_gpu": "true",
-                    "enable_internet": "true",
-                    "machine_shape": accelerator,
-                    "dataset_sources": [],
-                    "competition_sources": [],
-                    "kernel_sources": [],
-                    "model_sources": [],
-                },
-                indent = 2,
-            ),
-            encoding = "utf-8",
-        )
-
         out = ""
         for attempt in range(PUSH_ATTEMPTS):
+            if attempted:
+                _discard(attempted[-1])
+            slug_name = f"{base}-{uuid.uuid4().hex[:8]}"
+            # The slug is derived from the TITLE, not from the metadata id. A
+            # mismatch files the kernel at an unexpected address and every later
+            # status/output call 403s, so assert the round trip.
+            title = slug_name.replace("-", " ")
+            assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
+            attempted.append(f"{user}/{slug_name}")
+
+            for stale in workdir.glob("*.ipynb"):
+                stale.unlink()
+            code_file = workdir / f"{slug_name}.ipynb"
+            shutil.copy(notebook, code_file)
+            (workdir / "kernel-metadata.json").write_text(
+                json.dumps(
+                    {
+                        "id": f"{user}/{slug_name}",
+                        "title": title,
+                        "code_file": code_file.name,
+                        "language": "python",
+                        "kernel_type": "notebook",
+                        "is_private": "true",
+                        "enable_gpu": "true",
+                        "enable_internet": "true",
+                        "machine_shape": accelerator,
+                        "dataset_sources": [],
+                        "competition_sources": [],
+                        "kernel_sources": [],
+                        "model_sources": [],
+                    },
+                    indent = 2,
+                ),
+                encoding = "utf-8",
+            )
+
             proc = subprocess.run(
                 [
                     "kaggle",
@@ -225,19 +269,19 @@ def push(
             lowered = out.lower()
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
-                    return {"ok": False, "reason": "slug_mismatch", "detail": out.strip()[:400]}
-                return {"ok": True, "slug": f"{user}/{slug_name}"}
+                    return _pushed(False, "slug_mismatch", out, attempted)
+                return {"ok": True, "slug": attempted[-1], "attempts": attempted}
             if any(m in lowered for m in CAPACITY_MARKERS):
-                return {"ok": False, "reason": "at_capacity", "detail": out.strip()[:400]}
+                return _pushed(False, "at_capacity", out, attempted)
             if attempt + 1 == PUSH_ATTEMPTS or not any(m in lowered for m in THROTTLED_PUSH):
-                return {"ok": False, "reason": "push_failed", "detail": out.strip()[:400]}
+                return _pushed(False, "push_failed", out, attempted)
             delay = PUSH_BACKOFF_SEC * (2**attempt)
             _log(
                 f"push looks throttled, retrying in {delay}s "
                 f"(attempt {attempt + 1}/{PUSH_ATTEMPTS})"
             )
             time.sleep(delay)
-        return {"ok": False, "reason": "push_failed", "detail": out.strip()[:400]}
+        return _pushed(False, "push_failed", out, attempted)
     finally:
         shutil.rmtree(workdir, ignore_errors = True)
 
@@ -370,6 +414,29 @@ def fetch_evidence(
     return {"notebooks": fetched, "log": log_path.name if log_path.exists() else None}
 
 
+def _flatten_log(raw: str) -> str:
+    """A kernel log as flat text, whichever shape Kaggle returned it in.
+
+    ``kernels/output`` hands the log back as a JSON array of
+    ``{stream_name, time, data}`` records rather than as text, and the record
+    boundaries are not line boundaries. Scanning that file as-is finds no
+    line beginning with the report prefix, so a payload whose executed
+    notebook never came back -- the exact case this fallback exists for --
+    was read as no report at all and its verdict downgraded to ``infra``.
+
+    ``report.kernel_log_text`` does the same thing for the summary; both are
+    kept because the two scripts run as separate processes and neither
+    imports the other.
+    """
+    try:
+        records = json.loads(raw)
+    except ValueError:
+        return raw
+    if not isinstance(records, list):
+        return raw
+    return "".join(r.get("data", "") for r in records if isinstance(r, dict))
+
+
 def extract_reports(outdir: Path) -> list[dict]:
     """Every T4_SMOKE_REPORT payload found in the collected evidence.
 
@@ -410,7 +477,7 @@ def extract_reports(outdir: Path) -> list[dict]:
                     text = "".join(text)
                 _consume(text)
     for log_path in sorted(outdir.rglob("kernel.log")):
-        _consume(log_path.read_text(encoding = "utf-8", errors = "replace"))
+        _consume(_flatten_log(log_path.read_text(encoding = "utf-8", errors = "replace")))
     return reports
 
 
@@ -511,6 +578,10 @@ def main() -> int:
         entry = {
             "notebook": notebook,
             "slug": pushed.get("slug"),
+            # Every slug the push filed, accepted or not. A push that
+            # reported an error may still have landed, and this is the only
+            # record of what to reconcile against the account afterwards.
+            "attempted": pushed.get("attempts") or [],
             "state": None,
             "push_error": None
             if pushed["ok"]
