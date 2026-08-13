@@ -138,10 +138,29 @@ export function loadLocaleMessages(
       },
     )
     .finally(() => {
-      localeLoads.delete(locale);
+      // Only if it is still ours: a load evicted by its caller's timeout may
+      // already have been replaced by the retry it made room for.
+      if (localeLoads.get(locale) === load) localeLoads.delete(locale);
     });
   localeLoads.set(locale, load);
   return load;
+}
+
+/**
+ * Stop deduplicating onto a catalog load, so the next request starts its own.
+ *
+ * A load that never settles never reaches the `.finally()` above, so its entry
+ * would hand every later pick of that language the same permanently pending
+ * promise and the choice could not be retried without reloading the app.
+ * Whoever bounded the wait evicts the load it gave up on; the promise itself is
+ * left running, so a late arrival still populates the catalog.
+ *
+ * `load` identifies the attempt being forgotten, so a newer one for the same
+ * locale is never evicted by an older caller's timeout.
+ */
+export function forgetLocaleLoad(locale: Locale, load?: Promise<void>): void {
+  if (load !== undefined && localeLoads.get(locale) !== load) return;
+  localeLoads.delete(locale);
 }
 
 const PLACEHOLDER_PATTERN = /\{([a-zA-Z0-9_]+)\}/g;

@@ -5,6 +5,7 @@ import { useSyncExternalStore } from "react";
 import {
   LOCALES,
   type Locale,
+  forgetLocaleLoad,
   isSupportedLocale,
   loadLocaleMessages,
 } from "./messages";
@@ -306,7 +307,12 @@ function applyPreference(
     const timeout = globalThis.setTimeout(
       () => {
         // Settle the way a rejection would. The load itself is left alone,
-        // so if it does arrive it still commits over this.
+        // so if it does arrive it still commits over this. Its place in the
+        // in-flight map is not: a load that never settles never clears its own
+        // entry, so leaving it there would hand every later pick of this
+        // language the same dead promise and time out again without ever
+        // asking for the catalog a second time.
+        forgetLocaleLoad(locale, pending);
         if (signal?.aborted) {
           resolve("cancelled");
         } else if (revision !== preferenceRevision) {

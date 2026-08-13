@@ -654,3 +654,39 @@ test("a pick that names no bound of its own is still bounded", async () => {
   assert.equal(localeStore.getLocalePreference(), "en");
   assert.equal(localeStore.getLocaleCatalogFailed(), false);
 });
+
+test("a timed out catalog is evicted so the next pick asks for it again", async () => {
+  await localeStore.setLocale("en", { loadMessages: () => undefined });
+
+  // The real in-flight map, with an import that is accepted and then never
+  // settles: a stalled CDN, proxy or service worker.
+  let requests = 0;
+  const stalled = () => {
+    requests += 1;
+    return new Promise<unknown>(() => {});
+  };
+  const loadMessages = (
+    locale: Parameters<typeof messagesModule.loadLocaleMessages>[0],
+  ) => messagesModule.loadLocaleMessages(locale, stalled);
+
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const first = localeStore.setLocale("pt-BR", { loadMessages });
+    mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
+    assert.equal(await first, "failed");
+
+    // What the user does next: pick the language again once the network is back.
+    const retry = localeStore.setLocale("pt-BR", { loadMessages });
+    mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
+    assert.equal(await retry, "failed");
+  } finally {
+    mock.timers.reset();
+    messagesModule.forgetLocaleLoad("pt-BR");
+  }
+
+  assert.equal(
+    requests,
+    2,
+    "the retry was handed the timed out load instead of requesting the catalog again",
+  );
+});
