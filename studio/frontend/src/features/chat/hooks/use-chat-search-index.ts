@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSessionEpoch } from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
 import { batchListChatMessages, CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import type { MessageRecord } from "../types";
@@ -215,18 +216,32 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
 // Last built index, kept across opens so reopening paints the previous rows at
 // once and revalidates in place instead of collapsing back to the empty state.
 let cachedIndex: ChatSearchItem[] | null = null;
+let cachedIndexEpoch = -1;
+
+// The cache outlives the sidebar and a web logout only navigates, so it is scoped to the
+// auth session: a second account must never open onto the previous user's chats.
+function readCachedIndex(): ChatSearchItem[] | null {
+  if (cachedIndexEpoch !== getAuthSessionEpoch()) cachedIndex = null;
+  return cachedIndex;
+}
+
+function writeCachedIndex(next: ChatSearchItem[] | null): void {
+  cachedIndex = next;
+  cachedIndexEpoch = getAuthSessionEpoch();
+}
 
 // Whether a build has already established that the history is empty, readable during render
 // so the dialog can size itself before its opening paint.
 export function cachedChatSearchIndexIsEmpty(): boolean {
-  return cachedIndex !== null && cachedIndex.length === 0;
+  const cached = readCachedIndex();
+  return cached !== null && cached.length === 0;
 }
 
 export function useChatSearchIndex(enabled: boolean): {
   items: ChatSearchItem[];
   loading: boolean;
 } {
-  const [items, setItems] = useState<ChatSearchItem[]>(() => cachedIndex ?? []);
+  const [items, setItems] = useState<ChatSearchItem[]>(() => readCachedIndex() ?? []);
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
 
@@ -235,7 +250,7 @@ export function useChatSearchIndex(enabled: boolean): {
   const [wasEnabled, setWasEnabled] = useState(enabled);
   if (enabled !== wasEnabled) {
     setWasEnabled(enabled);
-    if (enabled && cachedIndex === null) {
+    if (enabled && readCachedIndex() === null) {
       if (items.length > 0) setItems([]);
       if (!loading) setLoading(true);
     }
@@ -248,7 +263,7 @@ export function useChatSearchIndex(enabled: boolean): {
       // than reopening onto rows for chats that no longer exist. Only the cache is
       // touched: clearing state would also re-render for every streaming chunk.
       const invalidate = () => {
-        cachedIndex = null;
+        writeCachedIndex(null);
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
       return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
@@ -261,14 +276,18 @@ export function useChatSearchIndex(enabled: boolean): {
 
     const run = () => {
       const seq = ++requestSeqRef.current;
+      // A build that straddles a logout describes the account it started under, so its
+      // result belongs to that session alone.
+      const epoch = getAuthSessionEpoch();
       // Only the first build has nothing to show; later ones refresh silently.
-      if (cachedIndex === null) setLoading(true);
+      if (readCachedIndex() === null) setLoading(true);
       buildIndex()
         .then((result) => {
           // Drop out-of-order responses so a slower rebuild can't clobber a fresher one,
           // and never repopulate the cache a close or an invalidation already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
-          cachedIndex = result;
+          if (epoch !== getAuthSessionEpoch()) return;
+          writeCachedIndex(result);
           // A build that started before the history event does not satisfy it, so the flag
           // only clears once no rebuild is still queued.
           if (debounceTimer === null) rebuildPending = false;
@@ -276,7 +295,7 @@ export function useChatSearchIndex(enabled: boolean): {
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
-          setItems(cachedIndex ?? []);
+          setItems(readCachedIndex() ?? []);
         })
         .finally(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
@@ -301,7 +320,7 @@ export function useChatSearchIndex(enabled: boolean): {
       // Closing before a history change was rebuilt cancels that rebuild, so the snapshot
       // left behind is known stale and must not survive into the next open. The rendered
       // rows stay put: clearing them here would tear the list down inside the exit animation.
-      if (rebuildPending) cachedIndex = null;
+      if (rebuildPending) writeCachedIndex(null);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     };
   }, [enabled]);
