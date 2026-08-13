@@ -1052,8 +1052,17 @@ class TestWindowsArm64WheelGapParity:
         index = source.index("is not supported by Unsloth Studio")
         message = source[index - 400 : index + 500]
         assert "pyarrow" in message
-        # 3.10 still resolves the whole set today, so the floor is 10, not 11.
-        assert '"$_req_minor" -lt 10' in message
+        # The floor is 11, and it is the plugins that make it 11 rather than a
+        # judgement call: both bundled Data Designer projects declare
+        # requires-python >= 3.11 and install_python_stack.py installs them
+        # unconditionally, so 3.10 dies on a local project uv refuses, at the END of
+        # setup -- the late failure this gate replaces.
+        assert '"$_req_minor" -lt 11' in message
+        for plugin in ("data-designer-unstructured-seed", "data-designer-github-repo-seed"):
+            pyproject = REPO_ROOT / "studio" / "backend" / "plugins" / plugin / "pyproject.toml"
+            assert 'requires-python = ">=3.11"' in pyproject.read_text(encoding = "utf-8"), (
+                f"{plugin} no longer needs 3.11; the gate's floor can move with it"
+            )
 
     def test_linux_arm64_is_not_swept_up(self):
         """aarch64 Linux has full wheel coverage and must keep installing natively;

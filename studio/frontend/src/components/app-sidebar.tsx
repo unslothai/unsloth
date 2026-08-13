@@ -657,8 +657,13 @@ export function AppSidebar() {
   // reason rather than chat_only, so an Intel Mac or a GPU-less Linux box -- chat-only
   // for hardware reasons but with datasets installed -- keeps Data Recipes.
   const datasetsUnavailable = chatOnlyMeasured && chatOnlyReason === "datasets_unavailable";
+  // Same reason the Train hint takes its wording from the backend: this branch is
+  // reachable off ARM64 Windows, and telling a Linux user to install x64 Python is
+  // advice for a machine they are not sitting at.
   const recipesDisabledHint: string | undefined = datasetsUnavailable
-    ? "Data Recipes needs the datasets and pandas libraries, which have no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable them."
+    ? chatOnlyDetail
+      ? `Data Recipes needs the datasets library. ${chatOnlyDetail}`
+      : "Data Recipes needs the datasets and pandas libraries, which have no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable them."
     : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);

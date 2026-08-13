@@ -405,7 +405,11 @@ def missing_requirements(
     return missing
 
 
-def _requirements_changed(recorded: object, current: Dict[str, str]) -> bool:
+def _requirements_changed(
+    recorded: object,
+    current: Dict[str, str],
+    strict: bool = False,
+) -> bool:
     """Has a requirement file this install was built from been edited since?
 
     Not plain dictionary equality, because TRACKED_REQUIREMENT_FILES grows: adding
@@ -418,12 +422,20 @@ def _requirements_changed(recorded: object, current: Dict[str, str]) -> bool:
     Everything the manifest DID record still has to match, and a file that has since
     disappeared still counts as a change, so a --local edit is caught exactly as
     before.
+
+    `strict` restores the missing-key check for the one install where a newly tracked
+    file DOES decide what gets installed: on the ARM64 tier, overrides-win-arm64.txt
+    picks the PyMuPDF, PyAV, scikit-learn and cryptography versions, so an install
+    whose manifest predates it must re-run once -- after which the manifest carries
+    the key and later edits are caught like any other.
     """
     if not isinstance(recorded, dict):
         return True
     for name, digest in recorded.items():
         if current.get(name) != digest:
             return True
+    if strict and set(current) - set(recorded):
+        return True
     return False
 
 
@@ -470,7 +482,12 @@ def verify_install(
         recorded = manifest.get("package_version")
         if current and recorded and current != recorded:
             reason = "studio_install_version_changed"
-        elif _requirements_changed(manifest.get("requirement_files"), requirement_digests(reqs)):
+        elif _requirements_changed(
+            manifest.get("requirement_files"),
+            requirement_digests(reqs),
+            # Only the tier: that is where a newly tracked file changes the install.
+            strict = bool(recorded_no_datasets(root)),
+        ):
             reason = "studio_install_requirements_changed"
         else:
             manifest_ok = True

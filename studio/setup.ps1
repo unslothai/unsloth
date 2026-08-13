@@ -3277,28 +3277,32 @@ $ReusedSetupPython = Resolve-ReusedSetupPython
 # setup, against an opt-in the user had stated explicitly.
 $NoDatasetsMode = ($null -ne $env:UNSLOTH_NO_DATASETS) -and
     (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())
+# Manifest first, marker second -- the order install_manifest.recorded_no_datasets()
+# uses. The manifest is written when a pass COMPLETES, so an explicit `no_datasets:
+# false` is the record of a finished full install and has to be able to override a
+# marker that a failed removal, or a copy that carried the dotfile along, left
+# behind. Reading the marker first made that impossible: a stale dotfile would send
+# an x64 environment back into the tier on every update, and record it as the tier
+# again. The marker still answers on its own, which is its job -- it survives a pass
+# that died before the manifest was written. (Get-PersistedNoTorch is the same shape
+# for no-torch.)
 if (-not $NoDatasetsMode -and $ReusedSetupPython) {
     try {
         # <venv>\Scripts\python.exe -> <venv>
         $_venvRoot = Split-Path -Parent (Split-Path -Parent $ReusedSetupPython)
-        if ($_venvRoot -and (Test-Path -LiteralPath (Join-Path $_venvRoot ".unsloth-no-datasets"))) {
-            $NoDatasetsMode = $true
-        }
-    } catch { }
-}
-# The manifest records the tier too, and a marker write can fail on its own (an
-# OSError there is swallowed) or be lost to a copy/restore that skipped dotfiles.
-# Get-PersistedNoTorch does exactly this for no-torch; same shape, same reason.
-if (-not $NoDatasetsMode -and $ReusedSetupPython) {
-    try {
-        $_venvRoot = Split-Path -Parent (Split-Path -Parent $ReusedSetupPython)
+        $_recorded = $null
         $_manifest = Join-Path $_venvRoot "unsloth_install_manifest.json"
         if ($_venvRoot -and (Test-Path -LiteralPath $_manifest -PathType Leaf)) {
             $_payload = $null
             try { $_payload = Get-Content -LiteralPath $_manifest -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $_payload = $null }
             if ($null -ne $_payload -and $null -ne $_payload.no_datasets) {
-                $NoDatasetsMode = ("$($_payload.no_datasets)" -match '^\s*(?i:true|1|yes|on)\s*$')
+                $_recorded = ("$($_payload.no_datasets)" -match '^\s*(?i:true|1|yes|on)\s*$')
             }
+        }
+        if ($null -ne $_recorded) {
+            $NoDatasetsMode = $_recorded
+        } elseif ($_venvRoot -and (Test-Path -LiteralPath (Join-Path $_venvRoot ".unsloth-no-datasets"))) {
+            $NoDatasetsMode = $true
         }
     } catch { }
 }

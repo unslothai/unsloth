@@ -311,3 +311,30 @@ def test_a_recorded_file_that_disappeared_is_still_stale(install_root, req_root)
 
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["reason"] == "studio_install_requirements_changed"
+
+
+def test_the_tier_does_invalidate_on_a_newly_tracked_file(install_root, req_root, monkeypatch):
+    """The exception to the rule above. On the ARM64 tier,
+    single-env/overrides-win-arm64.txt decides which PyMuPDF, PyAV, scikit-learn and
+    cryptography get installed, so an install whose manifest predates that file has
+    to re-run once. Everywhere else the file is inert and the old manifest is fine."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    dropped = sorted(data["requirement_files"])[0]
+    del data["requirement_files"][dropped]
+    data["no_datasets"] = True  # this install is the tier
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"
+
+    # And once the pass has run, the manifest carries every key and is current again.
+    im.write_manifest(
+        root = install_root,
+        req_root = req_root,
+        package_name = "pytest",
+        no_datasets = True,
+    )
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["manifest_ok"] is True

@@ -297,7 +297,7 @@ def test_setup_reads_the_tier_marker_not_just_the_env_var():
     full-install rule and refuse the environment the installer had just built."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
     index = source.index("$NoDatasetsMode = (")
-    block = source[index : index + 900]
+    block = source[index : index + 2600]
     assert ".unsloth-no-datasets" in block
     # And it has to come after the venv interpreter is resolved, or there is no
     # venv path to look in.
@@ -563,13 +563,33 @@ def test_setup_reads_the_tier_from_the_manifest_too():
     to be readable the same way or an update judges a tier venv by the full rule."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
     index = source.index("$_payload.no_datasets")
-    block = source[max(0, index - 900) : index + 400]
+    block = source[max(0, index - 900) : index + 700]
     assert "unsloth_install_manifest.json" in block
-    assert "$NoDatasetsMode = (" in block
-    # Env var, then marker, then manifest: the variable is what install.ps1 exports
-    # for its own run, and the marker is what survives an interrupted pass.
+    assert "$_recorded = (" in block
+    assert "$NoDatasetsMode = $_recorded" in block
+    # Env var, then manifest, then marker. The variable is this run's explicit
+    # request; the manifest records a COMPLETED pass, so its `false` has to be able
+    # to override a marker a failed removal left behind; the marker answers alone
+    # when a pass died before the manifest was written.
     assert (
         source.index("$NoDatasetsMode = ($null -ne $env:UNSLOTH_NO_DATASETS")
-        < source.index(".unsloth-no-datasets")
         < index
+        < source.index(".unsloth-no-datasets")
     )
+
+
+def test_setup_prefers_the_manifest_over_a_stale_marker():
+    """install_manifest.recorded_no_datasets() reads the manifest first, and the
+    manifest is written when a pass COMPLETES: an explicit `no_datasets: false` is
+    the record of a finished full install and must override a marker left behind by
+    a failed removal or carried along by a copy. Reading the marker first sent an x64
+    environment back into the tier on every update, and recorded it as the tier
+    again."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    index = source.index("$_recorded = $null")
+    block = source[index : index + 1400]
+    assert "unsloth_install_manifest.json" in block
+    assert "if ($null -ne $_recorded) {" in block
+    # The marker is the fallback, not the first answer: it still has to work alone,
+    # since it survives a pass that died before the manifest was written.
+    assert block.index("$_recorded = (") < block.index(".unsloth-no-datasets")

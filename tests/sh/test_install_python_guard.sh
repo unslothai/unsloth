@@ -294,10 +294,14 @@ assert_eq "--shortcuts-only does not judge the python request" \
     "accepted" "$(if sh "$_GATE" 3.9 true >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
 assert_eq "2.7 is rejected" \
     "rejected" "$(run_python_gate 2.7)"
-# 3.10 resolves the whole studio set today, so it stays allowed even though the
-# Windows installer's own floor is 3.11.
-assert_eq "3.10 is still allowed" \
-    "accepted" "$(run_python_gate 3.10)"
+# 3.10 is rejected with everything below it: both bundled Data Designer plugins
+# declare requires-python >= 3.11 and install_python_stack.py installs them
+# unconditionally, so a 3.10 run dies on a local project uv refuses, near the end
+# of setup -- the late failure this gate exists to replace.
+assert_eq "3.10 is rejected: the Data Designer plugins need 3.11" \
+    "rejected" "$(run_python_gate 3.10)"
+assert_eq "3.11 is the floor and is allowed" \
+    "accepted" "$(run_python_gate 3.11)"
 assert_eq "3.13 is allowed" \
     "accepted" "$(run_python_gate 3.13)"
 # Newer than tested is a warning, not a failure: unproven is not known-broken.

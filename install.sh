@@ -456,14 +456,18 @@ if [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ]; then
             case "$_req_major$_req_minor" in
                 ''|*[!0-9]*) ;;
                 *)
-                    # Hard-fail only what provably cannot resolve. 3.10 still installs
-                    # the whole set today, so it is allowed even though it is below the
-                    # 3.11 floor install.ps1 enforces; above 3.13 is unproven rather than
-                    # known-broken, so it warns and continues as it always has.
-                    if [ "$_req_major" -ne 3 ] || [ "$_req_minor" -lt 10 ]; then
-                        echo "❌ ERROR: Python $_USER_PYTHON is not supported by Unsloth Studio (need 3.10 or newer)." >&2
-                        echo "   pyarrow (via datasets), matplotlib, pymupdf, pymupdf4llm and fastmcp" >&2
-                        echo "   publish no wheels for it, so the install would fail during resolution" >&2
+                    # Hard-fail only what provably cannot resolve. 3.11 is the floor
+                    # install.ps1 has always enforced, and it is the real one here too:
+                    # both bundled Data Designer plugins declare requires-python >=3.11
+                    # and install_python_stack.py installs them unconditionally, so 3.10
+                    # dies near the END of every setup on a local project uv refuses --
+                    # the late failure this gate exists to replace. Above 3.13 is
+                    # unproven rather than known-broken, so it warns and continues.
+                    if [ "$_req_major" -ne 3 ] || [ "$_req_minor" -lt 11 ]; then
+                        echo "❌ ERROR: Python $_USER_PYTHON is not supported by Unsloth Studio (need 3.11-3.13)." >&2
+                        echo "   Below 3.11: pyarrow (via datasets), matplotlib, pymupdf, pymupdf4llm and" >&2
+                        echo "   fastmcp publish no wheels, and the bundled Data Designer plugins declare" >&2
+                        echo "   requires-python >= 3.11, so the install would fail during resolution" >&2
                         echo "   with a bare dependency name instead of this message." >&2
                         echo "   Re-run without --python to use the default, or pass a supported version." >&2
                         exit 1
