@@ -68,6 +68,38 @@ test("relation qualifiers are stripped before the owner is read", () => {
   assert.equal(providerLogoFromBaseModel("mergekit-community/x"), null);
 });
 
+test("a model built on a base does not borrow its mark", () => {
+  // Qwen3-8B is FLUX.2's text encoder, not its publisher.
+  assert.equal(
+    resolveOwnerProviderLogo("unsloth", "FLUX.2-klein-9B-ComfyUI", "Qwen/Qwen3-8B"),
+    null,
+  );
+  assert.equal(
+    resolveOwnerProviderLogo("unsloth", "flux-text-encoders", "google/t5-v1_1-xxl"),
+    null,
+  );
+  // A community finetune stays unbranded rather than being relabeled upstream.
+  assert.equal(
+    resolveOwnerProviderLogo(
+      "unsloth",
+      "Hermes-3-Llama-3.1-70B-bnb-4bit",
+      "meta-llama/Llama-3.1-70B",
+    ),
+    null,
+  );
+});
+
+test("a re-upload of the base keeps the mark, suffixes and all", () => {
+  for (const [repo, base, id] of [
+    ["Muse-Glimmer-30B-unsloth-bnb-4bit", "meta-models/Muse-Glimmer-30B", "meta-llama"],
+    ["whisper-large-v3-turbo", "openai/whisper-large-v3", "openai"],
+    ["mistral-7b-v0.3-bnb-4bit", "mistralai/Mistral-7B-v0.3", "mistralai"],
+    ["KernelLLM-GGUF", "facebook/KernelLLM", "meta-llama"],
+  ]) {
+    assert.equal(resolveOwnerProviderLogo("unsloth", repo, base)?.id, id, repo);
+  }
+});
+
 test("only relabeled owners inherit a provider mark", () => {
   assert.equal(
     resolveOwnerProviderLogo(

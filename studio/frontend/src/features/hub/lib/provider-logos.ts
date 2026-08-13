@@ -329,12 +329,27 @@ const BASE_MODEL_RELATIONS: readonly string[] = [
 ];
 
 /**
+ * True when the upload is the base model re-uploaded rather than a model built on
+ * it: unsloth/Muse-Glimmer-30B-GGUF over meta-models/Muse-Glimmer-30B, but not
+ * FLUX.2-klein-9B-ComfyUI over Qwen/Qwen3-8B, whose base names only a component.
+ */
+function isReuploadOf(uploadRepoName: string, baseRepoName: string): boolean {
+	if (!baseRepoName) return false;
+	return uploadRepoName.toLowerCase().startsWith(baseRepoName.toLowerCase());
+}
+
+/**
  * Provider behind a `base_model:` id, or null. Owner wins: it is the publisher of
  * record, and resolves even when the base repo name matches nothing. A bare id
  * with no owner is read as a repo name.
+ *
+ * `uploadRepoName` gates the lookup on the upload being that base re-uploaded, so a
+ * text encoder cannot lend its logo to the pack shipping it, and a community
+ * finetune is not relabeled as its upstream.
  */
 export function providerLogoFromBaseModel(
 	baseModelId: string | null | undefined,
+	uploadRepoName?: string,
 ): ProviderLogo | null {
 	let id = baseModelId?.trim();
 	if (!id) return null;
@@ -346,10 +361,13 @@ export function providerLogoFromBaseModel(
 	}
 	if (!id) return null;
 	const slash = id.indexOf("/");
+	const baseRepoName = slash === -1 ? id : id.slice(slash + 1);
+	if (uploadRepoName !== undefined && !isReuploadOf(uploadRepoName, baseRepoName)) {
+		return null;
+	}
 	if (slash === -1) return matchProviderLogo(id);
 	return (
-		matchProviderLogoByOwner(id.slice(0, slash)) ??
-		matchProviderLogo(id.slice(slash + 1))
+		matchProviderLogoByOwner(id.slice(0, slash)) ?? matchProviderLogo(baseRepoName)
 	);
 }
 
@@ -377,7 +395,9 @@ export function resolveOwnerProviderLogo(
 	repoName: string | null | undefined,
 	baseModelId?: string | null,
 ): ProviderLogo | null {
-	if (!isProviderRelabeledOwner(owner)) return null;
-	const named = repoName ? matchProviderLogo(repoName) : null;
-	return named ?? providerLogoFromBaseModel(baseModelId);
+	if (!isProviderRelabeledOwner(owner) || !repoName) return null;
+	return (
+		matchProviderLogo(repoName) ??
+		providerLogoFromBaseModel(baseModelId, repoName)
+	);
 }
