@@ -2070,3 +2070,36 @@ def test_dropped_parallel_call_opens_no_provisional_card():
     events = _events(lines)
     assert {e["tool_call_id"] for e in events if e["type"] == "tool_start"} == {"c0"}
     assert not [e for e in events if e["type"] == "tool_args" and e["tool_call_id"] == "c1"]
+
+
+def test_unterminated_markup_is_released_instead_of_buffered_forever():
+    """A runaway turn must not stay invisible: the client sees the text instead."""
+    from core.inference.external_tool_loop import MAX_SUPPRESSED_MARKUP_CHARS
+
+    runaway = "x" * (MAX_SUPPRESSED_MARKUP_CHARS + 64)
+    client = _FakeClient(
+        [
+            [
+                _chunk(content = "<tool_call>"),
+                _chunk(content = runaway),
+                _chunk(content = " still going"),
+                _finish("length"),
+                "data: [DONE]",
+            ]
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: "unused",
+            )
+        )
+    )
+    shown = _content(lines)
+    assert runaway in shown
+    # once released the gate stays open, so later deltas stream as they arrive.
+    assert shown.endswith(" still going")

@@ -90,6 +90,10 @@ BUDGET_EXHAUSTED_NUDGE = (
     "so far, provide your final answer now. Do not call any more tools."
 )
 
+# withheld markup past this never becomes a call, so it is released rather than
+# buffered to the end of a turn that may never terminate.
+MAX_SUPPRESSED_MARKUP_CHARS = 32768
+
 # longest partial marker worth holding back at a delta boundary.
 _MAX_SIGNAL_PREFIX = max(len(signal) for signal in TOOL_XML_SIGNALS) - 1
 
@@ -220,6 +224,7 @@ class _TurnAccumulator:
         self.pending: str = ""
         self.suppressed_tail: str = ""
         self.markup_seen: bool = False
+        self._gate_abandoned: bool = False
         self.reasoning: str = ""
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.finish_reason: Optional[str] = None
@@ -308,9 +313,24 @@ class _TurnAccumulator:
 
     def _gate_content(self, text: str) -> str:
         """Return the part of ``text`` safe to show; hold or drop tool markup."""
+        if self._gate_abandoned:
+            self.shown += text
+            return text
         if self.markup_seen:
             self.suppressed_tail += text
-            return ""
+            if len(self.suppressed_tail) <= MAX_SUPPRESSED_MARKUP_CHARS:
+                return ""
+            # no real call runs this long, and a turn that never terminates would
+            # otherwise stay invisible to the client, so stop gating and show it.
+            self._gate_abandoned = True
+            released = self.release_suppressed()
+            self.shown += released
+            logger.warning(
+                "External local tool loop released %d chars of unterminated tool "
+                "markup: the turn is being shown as prose",
+                len(released),
+            )
+            return released
         self.pending += text
         marker = _first_signal_index(self.pending)
         if marker is not None:
