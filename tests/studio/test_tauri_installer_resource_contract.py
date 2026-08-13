@@ -51,3 +51,17 @@ def test_each_bundle_ships_only_the_installer_it_runs() -> None:
 def test_no_installer_resource_leaks_through_the_shared_config() -> None:
     # A resource in the shared config lands in every bundle, which is how the split regresses.
     assert _resources("tauri.conf.json") == {}
+
+
+def test_windows_upgrade_removes_the_installer_it_no_longer_ships() -> None:
+    # NSIS writes the current resource manifest and deletes nothing, and the uninstaller
+    # deletes only what is in that manifest. An in-place upgrade from a release that
+    # bundled both installers would therefore keep install.sh on a Windows machine
+    # forever, and the non-recursive RMDir "$INSTDIR" would fail at uninstall.
+    hooks = (REPO / "studio/src-tauri/windows/hooks.nsh").read_text(encoding = "utf-8")
+    for macro in ("NSIS_HOOK_PREINSTALL", "NSIS_HOOK_PREUNINSTALL"):
+        assert f"!macro {macro}" in hooks, f"hooks.nsh must define {macro}"
+        body = hooks.split(f"!macro {macro}", 1)[1].split("!macroend", 1)[0]
+        assert 'Delete "$INSTDIR\\install.sh"' in body, (
+            f"{macro} must remove the install.sh a pre-split release left behind"
+        )

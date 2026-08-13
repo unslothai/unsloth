@@ -2529,7 +2529,9 @@ _uv_install_pinned() {
         _uip_dest="$HOME/.local/bin"
     fi
 
-    _uip_work=$(mktemp -d) || return 1
+    # 2>/dev/null: this is a speculative attempt whose failure falls back to astral's
+    # installer, so an unusable $TMPDIR must not print a line the user cannot act on.
+    _uip_work=$(mktemp -d 2>/dev/null) || return 1
     _uip_rc=1
     # astral's mirrors and precedence; each serves the identical asset, so one pin holds. A
     # configured mirror is EXCLUSIVE, as it is for astral's installer and for Install-UvFromRelease:
