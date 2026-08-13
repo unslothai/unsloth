@@ -460,21 +460,36 @@ def pin_relative_sys_path(
     pathmod = _os.path,
     syspath = None,
     abspath = None,
+    isdir = None,
 ):
     """Anchor the relative import roots this interpreter is already carrying.
 
     sys.path holds PYTHONPATH entries as written, so the same two spellings that
     follow the process rather than the caller reach it: an empty entry means the
     working directory itself, and a leading `~` is never expanded there.
+
+    Only an entry that is a directory right now is touched. The rest of the list
+    is other people's strings: setuptools registers a relative sentinel for an
+    editable namespace install and its own path hook accepts that sentinel by
+    exact equality, and a relative .zip keeps the spelling that its already
+    imported packages hold in their loaders. Rewriting either breaks the import
+    it was meant to protect.
     """
     if syspath is None:
         import sys as _sys
+
         syspath = _sys.path
+    if isdir is None:
+        isdir = _os.path.isdir
     pinned = []
     for index, entry in enumerate(syspath):
         if not isinstance(entry, str):
             continue
         try:
+            # The empty entry is the working directory by definition, so it needs
+            # no test; anything else has to be a real directory.
+            if entry.strip() and not isdir(entry):
+                continue
             anchored = _anchor_list_entry("PYTHONPATH", entry, cwd, pathmod, abspath, None)
         except Exception:
             # Best effort, unlike the environment: an import root this process
@@ -659,6 +674,7 @@ def check_working_directory(
         return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
 
     target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs, home_isdir)
+    unpinnable = None
     if target is not None:
         try:
             # Before moving, or a relative override the caller wrote would end up
@@ -667,9 +683,13 @@ def check_working_directory(
             # This interpreter read PYTHONPATH before the guard ran, and it keeps
             # the entries as written: a relative one is resolved on every import,
             # so it has to be anchored here as well as in the environment.
-            pin_relative_sys_path(cwd, pathmod, syspath, abspath)
-        except Exception:
+            pin_relative_sys_path(cwd, pathmod, syspath, abspath, isdir)
+        except Exception as error:
             # An environment we cannot pin is one we must not move underneath.
+            # Both reasons are real: a drive with no current directory of its own,
+            # and a list that no longer fits in a Windows environment variable
+            # once every entry names its folder in full.
+            unpinnable = error
             target = None
     if target is not None:
         try:
@@ -684,6 +704,20 @@ def check_working_directory(
                     target = None
             except OSError:
                 target = None
+    if unpinnable is not None:
+        # Named separately from the profile case below: blaming the user folder
+        # for an override that could not be preserved sends them looking in the
+        # wrong place.
+        return (
+            (
+                f"Unsloth cannot run from {cwd}, and could not move out of it\n"
+                "without changing where one of its path settings points\n"
+                f"({type(unpinnable).__name__}: {unpinnable}).\n"
+                "Set that value to a full path, or start Unsloth from a normal folder."
+            ),
+            "red",
+            True,
+        )
     if target is None:
         # Fail closed: nowhere usable outside the Windows tree. This text lands
         # in the desktop's logs, so it describes that case, not a shell.

@@ -341,6 +341,7 @@ def _guard_outcome(
     drive_cwd: dict[str, str] | None = None,
     missing_homes: tuple[str, ...] = (),
     syspath: list[str] | None = None,
+    real_dirs: tuple[str, ...] = (),
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -401,7 +402,10 @@ def _guard_outcome(
         expanduser = lambda _p: userprofile,
         makedirs = _makedirs,
         # Only a folder that really holds System32 counts as a Windows directory.
-        isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
+        # A Windows root holds System32; sys.path entries are directories only
+        # when the caller says so, the way the filesystem would answer.
+        isdir = lambda path: ntpath.normcase(path) in real_windows_dirs
+        or ntpath.normcase(path) in {ntpath.normcase(d) for d in real_dirs},
         abspath = _abspath,
         home_isdir = lambda path: ntpath.normcase(path)
         not in {ntpath.normcase(home) for home in missing_homes},
@@ -1130,13 +1134,24 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
     r"""PYTHONPATH entries reach sys.path as written and are resolved on every
     import, so a move would let whatever sits in ~/.unsloth shadow them."""
     environ_out: dict[str, str] = {}
-    syspath = [r"C:\Python\Lib", "lib", "", r".\plugins"]
+    syspath = [
+        r"C:\Python\Lib",
+        "lib",
+        "",
+        r".\plugins",
+        # setuptools registers this for an editable namespace install and its own
+        # path hook accepts it by exact string; it names no directory.
+        "__editable__.unsloth-2026.8.15.finder.__path_hook__",
+        # A relative archive: its already-imported packages hold this spelling.
+        "modules.zip",
+    ]
     _message, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "--api-only"],
         environ_extra = {"PYTHONPATH": r"lib;C:\shared\lib"},
         environ_out = environ_out,
         syspath = syspath,
+        real_dirs = ("lib", r".\plugins"),
     )
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     assert environ_out["PYTHONPATH"] == r"C:\Windows\System32\lib;C:\shared\lib"
@@ -1147,6 +1162,9 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         r"C:\Windows\System32",
         # join, not normpath: the same spelling the environment pinning uses.
         r"C:\Windows\System32\.\plugins",
+        # Neither of these is a directory, so neither is rewritten.
+        "__editable__.unsloth-2026.8.15.finder.__path_hook__",
+        "modules.zip",
     ]
 
 
@@ -1211,3 +1229,21 @@ def test_cli_guard_pins_the_token_path_and_the_special_pythonpath_entries():
     assert environ_out["PYTHONPATH"] == (
         r"C:\Windows\System32;C:\Windows\System32\~\plugins;C:\shared\lib"
     )
+
+
+def test_cli_guard_says_which_setting_stopped_the_move():
+    r"""A value that cannot be pinned is a different failure from a missing
+    profile: an oversized PYTHONPATH (Windows caps a variable at 32767 chars) or
+    a drive with no current directory of its own. Blaming the user folder for it
+    sends the reader looking in the wrong place."""
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        # No current directory for drive D, so the OS cannot resolve this.
+        environ_extra = {"HF_HOME": "D:cache"},
+        drive_cwd = {},
+    )
+    assert (colour, chdir_calls) == ("red", [])
+    assert _message is not None
+    assert "path settings" in _message
+    assert "user profile" not in _message
