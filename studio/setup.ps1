@@ -6115,26 +6115,36 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
 # -- naming a package that is already installed. Say so here instead, while the
 # user is still looking at the installer.
 if (-not $SkipPythonDeps) {
-    $torchcodecState = try {
-        (& python -c "
+    # Importing torchcodec imports torch, so this goes through the bounded probe:
+    # a wedged GPU runtime must not hang setup. No double quotes in the code --
+    # Invoke-BoundedPythonProbe wraps it in them.
+    $_torchcodecProbe = @'
 try:
     import torchcodec  # noqa: F401
 except ModuleNotFoundError:
     print('absent')
 except Exception:
-    print('unloadable')  # installed, native libraries missing: the case worth reporting
+    import traceback
+    # torchcodec folds every native load failure into one "Could not load
+    # libtorchcodec" message that lists FFmpeg, an ABI mismatch and "another
+    # runtime dependency" together. This only separates that loader from an
+    # unrelated import error; it does not pick between the causes it lists.
+    print('ffmpeg' if 'libtorchcodec' in traceback.format_exc() else 'broken')
 else:
     print('ok')
-" 2>$null | Out-String).Trim()
-    } catch { "" }
+'@
+    $_torchcodecProbeResult = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_torchcodecProbe -TimeoutSec 60
+    $torchcodecState = $_torchcodecProbeResult.Output.Trim()
 
-    if ($torchcodecState -eq "unloadable") {
+    if ($torchcodecState -eq "ffmpeg") {
         step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "Yellow"
+    } elseif ($torchcodecState -eq "broken") {
+        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "Yellow"
     } elseif ($torchcodecState -eq "ok") {
         step "torchcodec" "FFmpeg libraries loaded"
     }
-    # 'absent' and a probe that could not run are silent: neither says anything about
-    # FFmpeg, and audio decoding still has the soundfile path.
+    # 'absent', a timeout and a probe that could not run are silent: none of them says
+    # anything about FFmpeg, and audio decoding still has the soundfile path.
 }
 
 # ==========================================================================

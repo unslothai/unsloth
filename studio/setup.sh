@@ -3317,25 +3317,42 @@ fi
 # notebook_validator enforces, then fails at import. `datasets` 4.x decodes audio
 # only through it and reports that as "please install 'torchcodec'", naming a
 # package that is already installed. Say so here, while setup is still on screen.
-if [ "$_SKIP_PYTHON_DEPS" != true ]; then
-    _TORCHCODEC_STATE="$(python - <<'PY' 2>/dev/null || true
+# Skipped in llama-only mode: it installs no Python deps, so there is nothing new
+# to report, and _SKIP_PYTHON_DEPS is not assigned on that path at all -- the block
+# that sets it is the base install, which ends well above here.
+if [ "$_LLAMA_ONLY" != "1" ] && [ "${_SKIP_PYTHON_DEPS:-false}" != true ]; then
+    # Importing torchcodec imports torch, so this is bounded like the XPU probe
+    # above: a wedged GPU runtime must not hang setup.
+    _TORCHCODEC_PROBE='
 try:
     import torchcodec  # noqa: F401
 except ModuleNotFoundError:
     print("absent")
 except Exception:
-    print("unloadable")  # installed, native libraries missing: the case worth reporting
+    import traceback
+    # torchcodec folds every native load failure into one "Could not load
+    # libtorchcodec" message that lists FFmpeg, an ABI mismatch and "another
+    # runtime dependency" together. This only separates that loader from an
+    # unrelated import error; it does not pick between the causes it lists.
+    print("ffmpeg" if "libtorchcodec" in traceback.format_exc() else "broken")
 else:
     print("ok")
-PY
-)"
-    if [ "$_TORCHCODEC_STATE" = "unloadable" ]; then
+'
+    if command -v timeout >/dev/null 2>&1; then
+        _TORCHCODEC_STATE="$(timeout 60 python -c "$_TORCHCODEC_PROBE" 2>/dev/null || true)"
+    else
+        _TORCHCODEC_STATE="$(python -c "$_TORCHCODEC_PROBE" 2>/dev/null || true)"
+    fi
+
+    if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
         step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "$C_WARN"
+    elif [ "$_TORCHCODEC_STATE" = "broken" ]; then
+        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "ok" ]; then
         step "torchcodec" "FFmpeg libraries loaded"
     fi
-    # "absent" and a probe that could not run stay silent: neither says anything
-    # about FFmpeg, and audio decoding still has the soundfile path.
+    # "absent", a timeout and a probe that could not run stay silent: none of them
+    # says anything about FFmpeg, and audio decoding still has the soundfile path.
 fi
 
 # ── Footer ──
