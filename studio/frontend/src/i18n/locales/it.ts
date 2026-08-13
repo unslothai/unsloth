@@ -972,6 +972,9 @@ export const it = {
       archivedChatsDescription:
         "Visualizza e gestisci le chat che hai archiviato.",
       manageAction: "Gestisci",
+      manageChats: "Gestisci chat",
+      manageChatsDescription:
+        "Seleziona più chat da spostare, fissare, archiviare, esportare o eliminare.",
       exportArchivedChats: "Esporta",
       exportingArchivedChats: "Esportazione...",
       exportedOneArchivedChat: "1 chat archiviata esportata",

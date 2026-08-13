@@ -963,6 +963,9 @@ export const en = {
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
       manageAction: "Manage",
+      manageChats: "Manage chats",
+      manageChatsDescription:
+        "Select multiple chats to move, pin, archive, export, or delete.",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",
       exportedOneArchivedChat: "Exported 1 archived chat",

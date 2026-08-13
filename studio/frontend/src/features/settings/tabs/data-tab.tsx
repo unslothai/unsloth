@@ -65,6 +65,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
+import { ManageChatsView } from "../components/manage-chats-view";
 import {
   createFineTuneRecipeFromChats,
   loadFineTuneDatasetInTrainTab,
@@ -93,9 +94,9 @@ export function DataTab() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
-  const [subpage, setSubpage] = useState<"main" | "archived" | "files">(
-    archivedChatsRequested ? "archived" : "main",
-  );
+  const [subpage, setSubpage] = useState<
+    "main" | "manage" | "archived" | "files"
+  >(archivedChatsRequested ? "archived" : "main");
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
@@ -407,6 +408,35 @@ export function DataTab() {
     }
   };
 
+  if (subpage === "manage") {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {t("settings.data.manageChats")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.data.manageChatsDescription")}
+          </p>
+        </div>
+        <ManageChatsView />
+      </div>
+    );
+  }
+
   if (subpage === "archived") {
     return (
       <div className="flex flex-col gap-6">
@@ -561,6 +591,19 @@ export function DataTab() {
               )}
             </Button>
           </div>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.manageChats")}
+          description={t("settings.data.manageChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("manage")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
         </SettingsRow>
 
         <SettingsRow

@@ -980,6 +980,9 @@ export const ru = {
       archivedChatsDescription:
         "Просматривайте чаты, отправленные в архив, и управляйте ими.",
       manageAction: "Управлять",
+      manageChats: "Управление чатами",
+      manageChatsDescription:
+        "Выберите несколько чатов, чтобы переместить, закрепить, архивировать, экспортировать или удалить их.",
       exportArchivedChats: "Экспорт",
       exportingArchivedChats: "Экспорт…",
       exportedOneArchivedChat: "Экспортирован 1 архивный чат",

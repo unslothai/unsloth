@@ -969,6 +969,9 @@ export const ko = {
       archivedChats: "보관된 채팅",
       archivedChatsDescription: "보관한 채팅을 확인하고 관리합니다.",
       manageAction: "관리",
+      manageChats: "채팅 관리",
+      manageChatsDescription:
+        "여러 채팅을 선택해 이동, 고정, 보관, 내보내기 또는 삭제할 수 있습니다.",
       exportArchivedChats: "내보내기",
       exportingArchivedChats: "내보내는 중...",
       exportedOneArchivedChat: "보관된 채팅 1개를 내보냈습니다",

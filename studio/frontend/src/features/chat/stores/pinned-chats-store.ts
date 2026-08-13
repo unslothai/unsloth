@@ -11,6 +11,7 @@ export interface PinnedChatsState {
   pinnedIds: string[];
   togglePin: (id: string) => void;
   unpin: (id: string) => void;
+  setManyPinned: (ids: string[], pinned: boolean) => void;
 }
 
 export const usePinnedChatsStore = create<PinnedChatsState>()(
@@ -27,6 +28,17 @@ export const usePinnedChatsStore = create<PinnedChatsState>()(
         set((state) => ({
           pinnedIds: state.pinnedIds.filter((x) => x !== id),
         })),
+      setManyPinned: (ids, pinned) =>
+        set((state) => {
+          if (!pinned) {
+            const drop = new Set(ids);
+            return {
+              pinnedIds: state.pinnedIds.filter((x) => !drop.has(x)),
+            };
+          }
+          const additions = ids.filter((id) => !state.pinnedIds.includes(id));
+          return { pinnedIds: [...additions, ...state.pinnedIds] };
+        }),
     }),
     {
       name: "unsloth_pinned_chats",

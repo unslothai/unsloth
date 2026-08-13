@@ -977,6 +977,9 @@ export const hi = {
       archivedChatsDescription:
         "आपने जो चैट संग्रहित की हैं उन्हें देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
+      manageChats: "चैट प्रबंधित करें",
+      manageChatsDescription:
+        "कई चैट चुनें और उन्हें स्थानांतरित, पिन, संग्रहित, निर्यात या हटाएं।",
       exportArchivedChats: "एक्सपोर्ट करें",
       exportingArchivedChats: "एक्सपोर्ट हो रहा है...",
       exportedOneArchivedChat: "1 संग्रहित चैट एक्सपोर्ट की गई",

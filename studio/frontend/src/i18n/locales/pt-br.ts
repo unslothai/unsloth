@@ -982,6 +982,9 @@ export const ptBR = {
       archivedChats: "Chats arquivados",
       archivedChatsDescription: "Veja e gerencie os chats que você arquivou.",
       manageAction: "Gerenciar",
+      manageChats: "Gerenciar chats",
+      manageChatsDescription:
+        "Selecione vários chats para mover, fixar, arquivar, exportar ou excluir.",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
       exportedOneArchivedChat: "1 chat arquivado exportado",

@@ -1005,6 +1005,9 @@ export const fr = {
       archivedChatsDescription:
         "Consultez et gérez les discussions que vous avez archivées.",
       manageAction: "Gérer",
+      manageChats: "Gérer les discussions",
+      manageChatsDescription:
+        "Sélectionnez plusieurs discussions pour les déplacer, les épingler, les archiver, les exporter ou les supprimer.",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",
       exportedOneArchivedChat: "1 discussion archivée a été exportée",

@@ -1007,6 +1007,9 @@ export const de = {
       archivedChatsDescription:
         "Zeigen Sie die von Ihnen archivierten Chats an und verwalten Sie sie.",
       manageAction: "Verwalten",
+      manageChats: "Chats verwalten",
+      manageChatsDescription:
+        "Wählen Sie mehrere Chats aus, um sie zu verschieben, anzupinnen, zu archivieren, zu exportieren oder zu löschen.",
       exportArchivedChats: "Exportieren",
       exportingArchivedChats: "Wird exportiert...",
       exportedOneArchivedChat: "1 archivierter Chat exportiert",
