@@ -3372,6 +3372,40 @@ def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
         return
 
 
+def _warn_if_a_cancelled_redirect_leaves_no_room(save_directory, sibling_bytes):
+    """Say so when the export is handed back a filesystem that cannot hold it.
+
+    Cancelling the torchao redirect returns the quantized sibling to
+    `save_directory`, and outside `UNSLOTH_KAGGLE_USE_TMP=1` the only reason
+    the redirect fired at all is that that filesystem measured too small for
+    it. Nothing downstream covers the sibling: the torchao merge is staged in
+    TMPDIR, so `merge_and_overwrite_lora`'s `free * 0.95` measures the staging
+    disk and never this one, and the sibling is written at the very end of a
+    long quantization. Cancelling is still the right move - /tmp cannot hold
+    the staging merge and the sibling together, so relocating fails too - but
+    it must not be silent for the minutes the quantization takes.
+
+    A warning and not a refusal, for the same reason as the two warnings
+    beside it: this preflight never raises, and the sibling is an estimate.
+    """
+    try:
+        if sibling_bytes <= 0:
+            return
+        free = free_bytes(save_directory)
+        if free is None or free >= sibling_bytes:
+            return
+        print(
+            f"Unsloth: `{save_directory}` has {free / 1024**3:.1f}GB free and the quantized "
+            f"checkpoint needs about {sibling_bytes / 1024**3:.1f}GB there.\n"
+            f"The export was left here rather than moved to a larger filesystem, because "
+            f"that filesystem cannot hold the temporary 16-bit merge as well.\n"
+            f"Free space here, or point TMPDIR at a filesystem with room for the merge, "
+            f"before the quantization runs: it is written at the end of the export."
+        )
+    except Exception:
+        return
+
+
 def _merge_writer_disposition(model, save_method):
     """What `save_pretrained_merged`'s writer does with a supplied `state_dict`.
 
@@ -3592,6 +3626,7 @@ def _preflight_merge_disk(
         return save_directory
     if message is not None:
         if not _destination_holds_torchao_staging(new_directory, need, staging):
+            _warn_if_a_cancelled_redirect_leaves_no_room(save_directory, need)
             _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
             _warn_if_sibling_filesystem_is_short(save_directory, sibling_suffix, sibling_bytes)
             return save_directory
@@ -4075,9 +4110,30 @@ def _preflight_gguf_disk(
     if need <= 0:
         return save_directory, True
 
+    # The redirect has to be asked for the same figure the refusal below reads.
+    # `need_with_cache` is the aggregate, and a disposable merge is reclaimed
+    # before the quants are written, so an export whose phased peak fits in
+    # /kaggle/working was relocated to a /tmp Kaggle does not keep as notebook
+    # output. Same predicates as the branch that lowers `need_here`, read
+    # against the directory as it stands BEFORE any move, and it can only ever
+    # lower the ask: nothing that used to stay put is relocated now.
+    redirect_need = need_with_cache
+    if (
+        merge_is_disposable
+        and needs_merge
+        and has_quantize_pass
+        and need_merge_phase > 0
+        and need_sibling > 0
+        and not _on_separate_filesystems(save_directory, _gguf_output_directory(save_directory))
+        and _merge_reclamation_is_possible(save_directory)
+    ):
+        redirect_peak = max(need_merge_phase, need_sibling)
+        if redirect_peak < need:
+            redirect_need = redirect_peak + max(0, need_with_cache - need)
+
     new_directory, message = kaggle_tmp_redirect(
         save_directory,
-        need_bytes = need_with_cache,
+        need_bytes = redirect_need,
         what = "GGUF export",
     )
     if message is not None:

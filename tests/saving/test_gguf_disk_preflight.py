@@ -910,6 +910,62 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert asked == [self._SIBLING]
 
+    def test_a_cancelled_redirect_says_the_filesystem_is_short(self, monkeypatch, capsys):
+        """The one outcome nothing downstream measures.
+
+        The redirect fired because /kaggle/working could not hold the 5GB
+        sibling, and it was cancelled because /tmp cannot hold that sibling
+        and the 10GB staging merge together. The export is handed back a
+        filesystem with 4GB free, the torchao merge guard only ever measures
+        the staging disk, and the sibling is written at the end of a long
+        quantization, so this has to be said up front.
+        """
+        import tempfile
+
+        working, scratch = 4 * GB, 12 * GB
+        on_tmp = lambda path: str(path).startswith("/tmp") or str(path) == tempfile.gettempdir()
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                ("/tmp/unsloth_saves/model", "moved")
+                if working < need_bytes <= scratch
+                else (save_directory, None)
+            ),
+        )
+        monkeypatch.setattr(S, "free_bytes", lambda path: scratch if on_tmp(path) else working)
+        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: on_tmp(left) == on_tmp(right))
+        assert (
+            S._preflight_merge_disk(_FakeModel(), "kaggle/working/model", "torchao_fp8")
+            == "kaggle/working/model"
+        )
+        printed = capsys.readouterr().out
+        assert "4.0GB free" in printed
+        assert "5.0GB" in printed
+
+    def test_a_cancelled_redirect_onto_a_roomy_filesystem_is_silent(self, monkeypatch, capsys):
+        """`UNSLOTH_KAGGLE_USE_TMP=1` moves without measuring, so silence is right."""
+        import tempfile
+
+        on_tmp = lambda path: str(path).startswith("/tmp") or str(path) == tempfile.gettempdir()
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                "/tmp/unsloth_saves/model",
+                "moved",
+            ),
+        )
+        monkeypatch.setattr(S, "free_bytes", lambda path: 12 * GB if on_tmp(path) else 500 * GB)
+        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: on_tmp(left) == on_tmp(right))
+        assert (
+            S._preflight_merge_disk(_FakeModel(), "kaggle/working/model", "torchao_fp8")
+            == "kaggle/working/model"
+        )
+        assert capsys.readouterr().out == ""
+
     def test_a_real_stat_of_the_destination_cancels_the_redirect(self, monkeypatch):
         """The same cancellation, with `_same_filesystem` left unstubbed.
 
@@ -2456,6 +2512,60 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
         assert "141.0GB" in str(error.value)
+
+    def _redirect_ask(self, phases, monkeypatch, **kwargs):
+        """What `kaggle_tmp_redirect` is asked for, with the move declined.
+
+        On Kaggle, which is the only environment the redirect fires in, and
+        where nothing is ever charged for a cache copy.
+        """
+        asked = []
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", True)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        try:
+            self._preflight(phases, **kwargs)
+        except RuntimeError:
+            # The ask is recorded before the refusal, and it is the ask this
+            # is about: a declined move followed by a refusal is exactly what
+            # a too-small aggregate produces.
+            pass
+        return asked
+
+    def test_the_redirect_is_asked_for_the_peak_and_not_the_aggregate(
+        self, phases, monkeypatch
+    ):
+        """Or Kaggle relocates an export that fits to a /tmp it does not keep.
+
+        The refusal below reads the 123GB peak, so the redirect above it has
+        to as well: asked for the 141GB aggregate, a 132GB /kaggle/working
+        looks too small and the export is moved off notebook storage.
+        """
+        assert self._redirect_ask(phases, monkeypatch) == [self.MERGE_PHASE]
+
+    def test_a_merge_that_is_not_disposable_still_asks_the_aggregate(
+        self, phases, monkeypatch
+    ):
+        asked = self._redirect_ask(phases, monkeypatch, merge_is_disposable = False)
+        assert asked == [self.AGGREGATE]
+
+    def test_split_storage_asks_the_aggregate(self, phases, monkeypatch):
+        """The reclamation declines across filesystems, so the ask must too."""
+        phases.update(separate = True)
+        asked = self._redirect_ask(phases, monkeypatch)
+        assert asked == [self.AGGREGATE]
+
+    def test_a_reused_output_directory_asks_the_aggregate(self, phases, monkeypatch):
+        directory = phases["directory"]
+        os.makedirs(directory, exist_ok = True)
+        with open(os.path.join(directory, "model.safetensors"), "w") as handle:
+            handle.write("x")
+        assert self._redirect_ask(phases, monkeypatch) == [self.AGGREGATE]
 
     def test_save_to_gguf_passes_the_flag_through(self):
         """The preflight and the reclamation must agree about disposability."""
