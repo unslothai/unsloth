@@ -29,14 +29,13 @@ if _is_entry_point:
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
 # Running from System32 or any subdir WILL cause errors if not prevented. A
-# command that cannot be affected by the folder (the ones Unsloth Desktop spawns,
-# see issue #8510) moves out of it; everything else stops in the callback below.
+# command the folder cannot affect (the ones Unsloth Desktop spawns, issue #8510)
+# moves out of it; everything else stops in the callback below.
 #
-# This runs before the command imports because unsloth_cli.commands.studio
-# resolves STUDIO_HOME at import time, and a relative UNSLOTH_STUDIO_HOME would
-# otherwise be pinned to the folder we are about to leave. The message is held
-# until typer exists to render it. A library import reaches the same check from
-# the callback instead, where argv is still the only thing to go on.
+# Before the command imports, since unsloth_cli.commands.studio resolves
+# STUDIO_HOME at import time and a relative UNSLOTH_STUDIO_HOME would otherwise
+# be pinned to the folder we are leaving. The message waits for typer to render
+# it. A library import reaches the same check from the callback instead.
 _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
@@ -86,10 +85,10 @@ if _TyperGroup is not None:
     class _ArgvCapturingGroup(_TyperGroup):
         """Remember the tokens this invocation was given.
 
-        Click hands the group its full argument list here and then keeps the
-        tail on the child context, where the callback below cannot see it. Both
-        `app(args = [...])` and CliRunner reach this, so a library call is
-        classified by its own arguments rather than by the host's argv.
+        Click hands the group its full argument list here and then keeps the tail
+        on the child context, out of the callback's reach. Both `app(args = [...])`
+        and CliRunner reach this, so a library call is classified by its own
+        arguments rather than by the host's argv.
         """
 
         def parse_args(self, ctx, args):
@@ -110,21 +109,18 @@ app = typer.Typer(
 def _invocation_args(ctx):
     """The arguments this invocation was given, not the host process's argv.
 
-    A library that calls `app(args = [...])` or CliRunner never touches sys.argv,
-    so reading it there would classify somebody else's command line: a host whose
-    own argv happened to look like a desktop command would move the process out
-    from under the caller's relative paths.
-
-    The `unsloth` console script never reaches here: it is classified at import,
-    from the real argv, before any command is imported.
+    A library calling `app(args = [...])` or CliRunner never touches sys.argv, so
+    reading it there would classify somebody else's command line and could move
+    the process out from under the caller's relative paths. The `unsloth` console
+    script never reaches here: it is classified at import, from the real argv.
     """
     captured = ctx.meta.get(_ARGV_META_KEY)
     if captured is not None:
         return list(captured)
     if not ctx.invoked_subcommand:
         return _sys.argv[1:]
-    # No capture and no tail to read: assume the tail holds a path, so an
-    # invocation that cannot be read in full is refused rather than relocated.
+    # No capture and no tail to read: assume it holds a path, so an invocation
+    # that cannot be read in full is refused rather than relocated.
     return [ctx.invoked_subcommand, *(list(getattr(ctx, "args", None) or []) or ["..."])]
 
 
@@ -140,16 +136,13 @@ def main(
         help = "Show version and exit.",
     ),
 ):
-    # Consume the import-time result once. A host that imports us and calls the
-    # app more than once gets a fresh check each time, since it can chdir between
-    # calls; the console script has already been checked before this point.
+    # Consume the import-time result once: a host calling the app repeatedly can
+    # chdir between calls, so each later call is checked afresh.
     global _startup_guard
     _guard, _startup_guard = _startup_guard, None
     if _guard is None:
-        # A host reaches this after unsloth_cli.commands.studio has already
-        # resolved STUDIO_HOME at import time, so moving now would leave that
-        # cached root behind in the folder being left. The console script never
-        # gets here: it is checked above, before any command is imported.
+        # A host reaches this after commands.studio has resolved STUDIO_HOME at
+        # import time, so moving now would leave that cached root behind.
         _guard = _check_working_directory(
             _invocation_args(ctx),
             _os.environ,

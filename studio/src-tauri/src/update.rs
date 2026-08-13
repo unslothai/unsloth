@@ -98,8 +98,7 @@ fn spawn_update(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
-    // to run from, and the Windows branch above reaches the same guard through
-    // the managed interpreter. Pin the directory for both.
+    // to run from; the Windows branch above hits the same guard. Pin both.
     crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
         format!(
             "Failed to pick a working directory for the update: {}",
@@ -107,10 +106,9 @@ fn spawn_update(
         )
     })?;
 
-    // After the context, not before: pinning an inherited relative PYTHONPATH
-    // would otherwise put back what the Windows branch above dropped, and the
-    // update's PowerShell and setup descendants start further Python processes
-    // that do not clear it. -I only covers the first interpreter.
+    // After the context, not before: pinning a relative PYTHONPATH would put back
+    // what the Windows branch dropped, and -I only covers the first interpreter
+    // while the update's descendants start further Python processes.
     #[cfg(windows)]
     cmd.env_remove("PYTHONPATH");
 

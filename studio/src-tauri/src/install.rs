@@ -392,8 +392,7 @@ fn spawn_script(
 
     // Scripts create ~/.unsloth/studio/ themselves but need a writable cwd, and
     // unlike the CLI children they always want ~/.unsloth. No Windows-directory
-    // rejection: install.ps1 detects a SYSTEM profile itself and says what to do
-    // about it, which beats a one-line Rust error.
+    // rejection: install.ps1 detects a SYSTEM profile itself and explains it.
     let work_dir = crate::process::managed_cli_working_dir_from(dirs::home_dir(), &[])?;
 
     #[cfg(unix)]

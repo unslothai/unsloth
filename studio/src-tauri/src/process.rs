@@ -936,27 +936,23 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     find_unsloth_binary_in_studio_dir(&studio)
 }
 
-/// Whether the user's profile is reachable at all.
-///
-/// The managed install lives under it, so an unmounted roaming profile looks
-/// like no install. One is fixed by reconnecting, the other by installing.
+/// Whether the user's profile is reachable at all: the managed install lives
+/// under it, so an unmounted roaming profile looks like no install.
 pub(crate) fn home_dir_available() -> Result<(), String> {
     usable_home_dir(dirs::home_dir(), &windows_roots()).map(|_| ())
 }
 
-/// The profile a managed install may live under, or why it cannot.
-///
-/// One policy for both callers: a home reported available that the resolver then
-/// rejects sends a SYSTEM account to an install flow that cannot start.
+/// The profile a managed install may live under, or why it cannot. One policy for
+/// both callers: a home reported available but then rejected by the resolver sends
+/// a SYSTEM account to an install flow that cannot start.
 fn usable_home_dir(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
 ) -> Result<std::path::PathBuf, String> {
     let home = home.ok_or_else(|| "Could not determine the home directory".to_string())?;
 
-    // A service or SYSTEM account reports a home under the Windows tree
-    // (C:\Windows\System32\config\systemprofile); handing that to the child
-    // walks straight back into the folder the CLI rejects.
+    // A SYSTEM account's home is under the Windows tree
+    // (C:\Windows\System32\config\systemprofile), the folder the CLI rejects.
     if is_inside_windows_dir(&home, windirs) {
         return Err(format!(
             "Home directory {} is inside the Windows directory",
@@ -977,19 +973,16 @@ fn usable_home_dir(
 /// tell a desktop-managed launch from a user typing the same command in a shell.
 pub(crate) const DESKTOP_MANAGED_ENV: &str = "UNSLOTH_DESKTOP_MANAGED";
 
-/// Windows registers "run at login" as an HKCU Run value, which cannot carry a
-/// working directory, so the app starts in C:\Windows\system32 and every child
-/// inherits it. The Python CLI refuses to run from there, which is why a login
-/// start produced a tray icon and no backend. Pick the directory explicitly
-/// rather than passing on whatever the launcher happened to give us.
+/// Windows registers "run at login" as an HKCU Run value, which carries no working
+/// directory, so the app starts in C:\Windows\system32 and every child inherits it.
+/// The CLI refuses to run there, so pick the directory explicitly.
 pub(crate) fn managed_cli_working_dir_from(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
 ) -> Result<std::path::PathBuf, String> {
     let home = usable_home_dir(home, windirs)?;
 
-    // Same directory the installer already runs from, so no new state location
-    // is introduced and ~/.unsloth stays the one Unsloth-owned working root.
+    // Where the installer already runs, so ~/.unsloth stays the one working root.
     let work_dir = home.join(".unsloth");
     if !work_dir.exists() {
         std::fs::create_dir_all(&work_dir)
@@ -1004,8 +997,7 @@ pub(crate) fn managed_cli_working_dir_from(
 // Case-insensitive, either separator, no trailing one, no \\?\ prefix. Not
 // cfg-gated, so the check stays unit-testable from Linux CI.
 fn normalize_windows_path(path: &std::path::Path) -> String {
-    // Lowercased first: the object manager accepts \\?\unc\ too, and reading
-    // that as an ordinary path would compare a share against a relative name.
+    // Lowercased first: \\?\unc\ is accepted too, and must not read as relative.
     let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
     let text = match text.strip_prefix("\\\\?\\unc\\") {
         Some(rest) => format!("\\\\{rest}"),
@@ -1018,19 +1010,15 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
     let normalized = normalize_windows_path(path);
     windirs.iter().any(|windir| {
         let root = normalize_windows_path(windir);
-        // "c:" (from a WINDIR of "C:\") would match the whole drive, so require
-        // something under a drive letter before treating it as the Windows tree.
+        // "c:" (a WINDIR of "C:\") would otherwise match the whole drive.
         root.len() > 2 && (normalized == root || normalized.starts_with(&(root.clone() + "\\")))
     })
 }
 
-/// Directory a desktop-spawned `unsloth` CLI child should run from.
-///
-/// The inherited one, unless it is unusable (on Windows, a system folder), so
-/// `./models` and other cwd-relative defaults keep resolving where a manually
-/// launched desktop resolved them and only the login start moves. Resolved per
-/// call, so a profile that mounts late recovers without an app restart. Never
-/// falls back to a temp dir: that scatters state and hides a broken profile.
+/// Directory a desktop-spawned `unsloth` CLI child should run from: the inherited
+/// one, unless unusable (on Windows, a system folder), so cwd-relative defaults
+/// keep resolving where they did and only the login start moves. Resolved per call
+/// so a late-mounting profile recovers, and never falls back to a temp dir.
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
     if let Ok(cwd) = std::env::current_dir() {
@@ -1041,12 +1029,9 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     managed_cli_working_dir_from(dirs::home_dir(), &windirs)
 }
 
-/// The directories the CLI guard refuses to run from, and only those.
-///
-/// The rest of the Windows tree still disqualifies a *home* (a service account
-/// living under System32), but a child that was already running from, say,
-/// C:\Windows\Temp keeps doing so: the guard allowed it before this change, and
-/// moving it would put that install's state somewhere else than the CLI does.
+/// The directories the CLI guard refuses to run from, and only those. The rest of
+/// the Windows tree still disqualifies a *home*, but a child already running from
+/// C:\Windows\Temp keeps doing so: the guard allowed that before this change.
 fn is_unusable_cwd(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
     windirs.iter().any(|windir| {
         ["System32", "SysWOW64"]
@@ -1055,12 +1040,9 @@ fn is_unusable_cwd(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bo
     })
 }
 
-/// Every real Windows directory, empty off Windows.
-///
-/// Candidates are checked, not trusted. Trusting one variable lets whoever sets
-/// it aim the check somewhere harmless; trusting all of them is worse, since a
-/// WINDIR aimed at the user's profile would reject that profile and leave the
-/// backend nowhere to start. So a directory counts only if it holds System32.
+/// Every real Windows directory, empty off Windows. Candidates are checked, not
+/// trusted: a settable variable could aim the check somewhere harmless, and a
+/// WINDIR aimed at the profile would reject it. So a root must hold System32.
 fn windows_roots() -> Vec<std::path::PathBuf> {
     if !cfg!(windows) {
         return Vec::new();
@@ -1096,8 +1078,7 @@ fn windows_roots_from(
         }
     }
     if roots.is_empty() {
-        // Nothing on this machine looks like a Windows installation. Keep the
-        // check alive, on SystemRoot or the default, never on a settable value.
+        // No Windows install found: keep the check alive on a non-settable value.
         roots.push(fallback);
     }
     roots

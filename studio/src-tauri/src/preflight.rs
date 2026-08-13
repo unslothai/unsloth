@@ -34,14 +34,12 @@ fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
-/// Whether the managed install sits on a profile the app cannot reach. Reported
-/// as `Unavailable` when the binary could not be looked up, and as `Stale` when
-/// it was found but has nowhere to run from.
+/// Whether the managed install sits on a profile the app cannot reach:
+/// `Unavailable` if the binary was never looked up, `Stale` if it has nowhere to run.
 fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     match managed {
         ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
-            // Either context failure: the profile the repair needs, or a path
-            // setting the repair would resolve exactly as badly.
+            // Either context failure: repair needs the same profile or path setting.
             managed::is_context_reason(reason)
         }
         ManagedProbe::Ready { .. } | ManagedProbe::Missing => false,
@@ -49,15 +47,13 @@ fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
 }
 
 /// Repair reinstalls through the managed CLI, which needs the profile the probe
-/// just failed to reach, and stops the backend to do it: that trades one that
-/// still answers for one that cannot come back.
+/// just failed to reach, and stops a backend that still answers to do it.
 fn stale_auto_repair(managed: &ManagedProbe) -> bool {
     release_auto_repair() && !managed_profile_unreachable(managed)
 }
 
-/// What to tell the user about a stale backend. The unreachable profile comes
-/// first, since the frontend answers every other reason with "update", which
-/// needs that same profile. The backend's own reason stays in the log.
+/// What to tell the user about a stale backend: the unreachable profile wins,
+/// since the frontend answers every other reason with "update", which needs it.
 fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     if managed_profile_unreachable(managed) {
         info!("Desktop preflight: stale backend ({reason}) reported as an unusable managed context");
@@ -104,8 +100,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
-                // Reinstalling cannot conjure up a home directory, and the repair
-                // itself needs the same one, so do not offer to run it.
+                // The repair needs the same home directory, so do not offer it.
                 can_auto_repair: release_auto_repair() && !managed::is_context_reason(&reason),
                 reason: Some(reason),
                 port: None,
@@ -118,8 +113,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
                 can_auto_repair: false,
                 managed_bin: None,
             },
-            // Not "install Unsloth": there may well be an install, sitting on a
-            // profile that is not mounted. Reinstalling would need it too.
+            // Not "install Unsloth": the install may exist on an unmounted profile.
             ManagedProbe::Unavailable { reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
                 reason: Some(reason),
@@ -458,8 +452,7 @@ mod tests {
                 false,
                 None,
             ),
-            // An unreachable profile is not a missing install: the install may
-            // well be there, and reinstalling would need the same folder.
+            // An unreachable profile is not a missing install.
             (
                 ManagedProbe::Unavailable {
                     reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
@@ -532,14 +525,13 @@ mod tests {
         for managed in &unreachable {
             assert!(managed_profile_unreachable(managed), "{managed:?}");
             assert!(!stale_auto_repair(managed), "{managed:?}");
-            // Repair would stop a backend that still answers, to run an install
-            // that cannot reach the folder it needs.
+            // Repair would stop a working backend for an install that cannot run.
             for result in [owned(managed), ownerless(managed)] {
                 assert_eq!(result.disposition, DesktopPreflightDisposition::OwnedStale);
                 assert_eq!(result.port, Some(8000));
                 assert!(!result.can_auto_repair, "{managed:?}");
-                // The frontend answers "backend_outdated" with "run the update",
-                // which is the one thing an unreachable profile cannot do.
+                // The frontend answers "backend_outdated" with "update", which needs
+                // the profile.
                 assert_eq!(
                     result.reason.as_deref(),
                     Some(managed::WORKING_DIRECTORY_UNAVAILABLE),

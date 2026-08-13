@@ -15,14 +15,10 @@ export function preflightStaleMessage(
   disposition: string,
   reason: string | null,
 ): string {
-  // Not an install problem: the home folder itself is unreachable. Telling this
-  // user to update points them at a command that needs the same folder.
-  //
-  // The roaming-profile explanation is a Windows one, and this reason is
-  // reachable on every platform: `home_dir_available()` is called ungated from
-  // the preflight probe. On Linux or macOS the same symptom means an unmounted
-  // home or a permissions problem, so the cause is only offered where it
-  // applies rather than asserted everywhere.
+  // Not an install problem: the home folder itself is unreachable, and updating
+  // needs the same folder. The roaming-profile cause is a Windows one, but this
+  // reason reaches every platform (`home_dir_available()` is probed ungated), so
+  // it is offered rather than asserted.
   if (reason === WORKING_DIRECTORY_UNAVAILABLE) {
     const cause =
       typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")
@@ -30,9 +26,8 @@ export function preflightStaleMessage(
         : "";
     return `Unsloth cannot reach your user folder, so it has nowhere to run from.${cause} Reconnect and try again.`;
   }
-  // Also not an install problem, and a different one from the folder: one of
-  // Unsloth's own path settings names somewhere Windows cannot resolve, so the
-  // fix is in that value rather than in the profile or in an update.
+  // Also not an install problem, and not the folder either: one of Unsloth's own
+  // path settings names somewhere unresolvable, so the value is the fix.
   if (reason === PATH_SETTING_UNRESOLVABLE) {
     return "One of Unsloth's folder settings points somewhere that cannot be resolved, so it has nowhere safe to run from. Set it to a full path, such as D:\\unsloth-cache, and try again.";
   }

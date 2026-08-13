@@ -47,9 +47,9 @@ test("the reason string matches the one the Rust side sends", () => {
 });
 
 test("the roaming-profile cause is offered on Windows and withheld elsewhere", () => {
-  // `home_dir_available()` is called ungated from the preflight probe, so this
-  // reason reaches Linux and macOS too. There the same symptom is an unmounted
-  // home or a permissions problem, and a roaming profile is a Windows concept.
+  // The probe calls `home_dir_available()` ungated, so this reason reaches Linux
+  // and macOS, where the same symptom is an unmounted home or a permissions
+  // problem rather than a roaming profile.
   const original = globalThis.navigator;
   const withPlatform = (platform: string) => {
     Object.defineProperty(globalThis, "navigator", {

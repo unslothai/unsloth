@@ -3,11 +3,9 @@
 
 import sys
 
-# unsloth_cli keeps its console-script setup (stream encoding, the `-np<N>`
-# rewrite, the Windows system-folder guard) for argv[0] == "unsloth", so it never
-# reaches a host that merely imports it. Run directly, this file is that entry
-# point, and the guard must precede the command imports: commands.studio resolves
-# STUDIO_HOME at import time.
+# unsloth_cli only runs its console-script setup (stream encoding, `-np<N>`,
+# the Windows folder guard) for argv[0] == "unsloth", and it must precede the
+# command imports: commands.studio resolves STUDIO_HOME at import time.
 if __name__ == "__main__":
     sys.argv[0] = "unsloth"
 

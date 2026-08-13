@@ -33,8 +33,8 @@ pub(super) enum ManagedProbe {
     Missing,
     Ready { bin: PathBuf },
     Stale { bin: PathBuf, reason: String },
-    /// The install could not be looked at, rather than found wanting: there is no
-    /// binary path to report and nothing to repair until the profile is back.
+    /// The install could not be looked at, rather than found wanting: no binary
+    /// path to report and nothing to repair until the profile is back.
     Unavailable { reason: String },
 }
 
