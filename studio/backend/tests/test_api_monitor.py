@@ -720,11 +720,18 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
     )
     # set_reply never stamps TTFT; this is the case the prompt_ms fallback exists for.
     monitor.set_reply(entry_id, "hi")
-    monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 123.4, stop_reason = "length")
+    monitor.set_perf(
+        entry_id,
+        tok_per_sec = 42.5,
+        prompt_tok_per_sec = 81.25,
+        prompt_ms = 123.4,
+        stop_reason = "length",
+    )
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
     assert entry["tok_per_sec"] == 42.5
+    assert entry["prompt_tok_per_sec"] == 81.25
     assert entry["ttft_ms"] == 123
     assert entry["stop_reason"] == "length"
 
@@ -756,12 +763,18 @@ def test_set_perf_rejects_non_finite_values():
         model = "local-model",
         prompt = "user: hello",
     )
-    monitor.set_perf(entry_id, tok_per_sec = float("nan"), prompt_ms = float("inf"))
-    monitor.set_perf(entry_id, tok_per_sec = "bogus", prompt_ms = None)
+    monitor.set_perf(
+        entry_id,
+        tok_per_sec = float("nan"),
+        prompt_tok_per_sec = float("inf"),
+        prompt_ms = float("inf"),
+    )
+    monitor.set_perf(entry_id, tok_per_sec = "bogus", prompt_tok_per_sec = -1, prompt_ms = None)
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
     assert entry["tok_per_sec"] is None
+    assert entry["prompt_tok_per_sec"] is None
     assert entry["ttft_ms"] is None
 
 
@@ -1493,6 +1506,7 @@ def test_wants_stream_usage_reads_the_callers_opt_in(include_usage, expected):
     assert inf._wants_stream_usage(SimpleNamespace(stream_options = None)) is False
 
 
+
 def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
     # With UNSLOTH_LLAMA_ADMISSION_CONTROL=off the queue readout is None, so a caption or
     # OCR call (which opens no row) would leave the row saying Ready while the server works.
@@ -1507,6 +1521,7 @@ def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
     app = FastAPI()
     app.include_router(inf.studio_router)
     app.dependency_overrides = {get_current_subject: lambda: "alice"}
+
     body = TestClient(app).get("/monitor").json()
 
     assert body["active_requests"] == 0
@@ -1541,13 +1556,19 @@ def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
         entry_id,
         {"prompt_tokens": 11, "completion_tokens": 50},
         4096,
-        timings = {"prompt_ms": 9000.0, "predicted_ms": 1000.0, "predicted_per_second": 50.0},
+        timings = {
+            "prompt_ms": 9000.0,
+            "prompt_per_second": 11.0,
+            "predicted_ms": 1000.0,
+            "predicted_per_second": 50.0,
+        },
     )
     monitor.finish(entry_id)
 
     [row] = monitor.snapshot()
     assert row["decode_ms"] == 1000
     assert row["completion_tokens"] / (row["decode_ms"] / 1000) == 50.0
+    assert row["prompt_tok_per_sec"] == 11.0
 
 
 def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):

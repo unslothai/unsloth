@@ -34,6 +34,18 @@ from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
+def _progress(*, processed: int, cached: int, time_ms: int) -> str:
+    return "data: " + json.dumps(
+        {
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
+            "prompt_progress": {
+                "total": processed,
+                "processed": processed,
+                "cache": cached,
+                "time_ms": time_ms,
+            },
+        }
+    ) + "\n"
 
 
 def _done() -> str:
@@ -105,6 +117,65 @@ def _make_backend(
     return backend
 
 
+def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(monkeypatch):
+    stream = [
+        _progress(processed = 1000, cached = 100, time_ms = 100),
+        "data: " + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {"content": "OK"}}],
+                "timings": {
+                    "prompt_n": 900,
+                    "prompt_ms": 100,
+                    "prompt_per_second": 9000,
+                    "predicted_n": 4,
+                    "predicted_ms": 20,
+                    "predicted_per_second": 200,
+                },
+            }
+        ) + "\n",
+        _done(),
+    ]
+    payloads: list[dict] = []
+    samples: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "benchmark"}],
+            perf_callback = samples.append,
+        )
+    )
+
+    assert payloads[0]["return_progress"] is True
+    assert payloads[0]["timings_per_token"] is True
+    assert samples[0]["prompt_n"] == 900
+    assert samples[0]["prompt_per_second"] == 9000
+    assert samples[-1]["predicted_per_second"] == 200
+
+
+def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
+    stream = [
+        _progress(processed = 512, cached = 0, time_ms = 64),
+        _sse({"content": "done"}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    samples: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "benchmark"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+            perf_callback = samples.append,
+        )
+    )
+
+    assert payloads[0]["return_progress"] is True
+    assert payloads[0]["timings_per_token"] is True
+    assert samples[0]["prompt_per_second"] == 8000
+    assert [event["text"] for event in events if event["type"] == "content"] == ["done"]
 def _patch_successful_respawn(
     monkeypatch,
     backend,

@@ -3247,6 +3247,33 @@ def _backfill_usage_from_timings(usage, timings):
         out.get("completion_tokens") or 0
     )
     return out
+def _report_live_llama_timings(callback, chunk) -> None:
+    """Report request-scoped llama.cpp progress without altering the public stream."""
+    if callback is None or not isinstance(chunk, dict):
+        return
+    timings = chunk.get("timings")
+    sample = dict(timings) if isinstance(timings, dict) else {}
+    progress = chunk.get("prompt_progress")
+    if isinstance(progress, dict):
+        try:
+            processed = max(0.0, float(progress.get("processed", 0)))
+            cached = max(0.0, float(progress.get("cache", 0)))
+            elapsed_ms = float(progress.get("time_ms", 0))
+            prompt_n = max(0.0, processed - cached)
+            if math.isfinite(elapsed_ms) and elapsed_ms > 0 and math.isfinite(prompt_n):
+                sample.update(
+                    prompt_n = prompt_n,
+                    prompt_ms = elapsed_ms,
+                    prompt_per_second = prompt_n / (elapsed_ms / 1000.0),
+                )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not sample:
+        return
+    try:
+        callback(sample)
+    except Exception:
+        logger.debug("Ignoring API monitor throughput callback failure", exc_info = True)
 
 
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
@@ -18586,6 +18613,7 @@ class LlamaCppBackend:
         continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -18622,6 +18650,9 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
+        if perf_callback is not None:
+            payload["return_progress"] = True
+            payload["timings_per_token"] = True
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
         _reasoning_kw = self._request_reasoning_kwargs(
             enable_thinking, reasoning_effort, preserve_thinking
@@ -18697,6 +18728,7 @@ class LlamaCppBackend:
 
                         try:
                             data = json.loads(line[6:])
+                            _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame (per-step canvas) from the shim: forward untouched so
                             # the frontend renders it in place. No assistant text, so it never enters
                             # the cumulative content.
@@ -18787,6 +18819,7 @@ class LlamaCppBackend:
                     continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
+                    perf_callback = perf_callback,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -18830,6 +18863,7 @@ class LlamaCppBackend:
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -19110,6 +19144,10 @@ class LlamaCppBackend:
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
             }
+
+            if perf_callback is not None:
+                payload["return_progress"] = True
+                payload["timings_per_token"] = True
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
@@ -19229,6 +19267,8 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+
+                                _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
                                 if _ct:
                                     _iter_timings = _ct
@@ -20273,6 +20313,10 @@ class LlamaCppBackend:
             stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
+        if perf_callback is not None:
+            stream_payload["return_progress"] = True
+            stream_payload["timings_per_token"] = True
+
         cumulative = ""
         _last_emitted = ""
         in_thinking = False
@@ -20332,6 +20376,8 @@ class LlamaCppBackend:
 
                         try:
                             chunk_data = json.loads(line[6:])
+
+                            _report_live_llama_timings(perf_callback, chunk_data)
                             # Capture server timings/usage from final chunks.
                             _chunk_timings = chunk_data.get("timings")
                             if _chunk_timings:

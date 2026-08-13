@@ -34,6 +34,7 @@ export {
   type ScanFolderInfo,
 } from "./api/chat-api";
 export type {
+  ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
   InferenceStatusResponse,
