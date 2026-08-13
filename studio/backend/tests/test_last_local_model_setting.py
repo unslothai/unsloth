@@ -121,6 +121,7 @@ def test_put_unstamped_write_keeps_last_write_wins(client):
 def test_put_clamps_future_dated_stamps(client):
     c, _ = client
     import time as _time
+
     r = c.put(
         "/last-local-model",
         json = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": 9_999_999_999_999},
