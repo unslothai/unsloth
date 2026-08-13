@@ -88,6 +88,20 @@ def test_image_preset_payload_accepts_generation_control_limits(monkeypatch):
     assert response.status_code == 200
 
 
+def test_preset_negative_prompts_match_the_unbounded_generation_contract(monkeypatch):
+    client = _client(monkeypatch)
+    negative_prompt = "x" * 20_001
+    for kind in ("image", "video"):
+        response = client.put(
+            f"/api/settings/generation-presets/{kind}",
+            json = {
+                "currentParams": {"negativePrompt": negative_prompt},
+                "activePreset": "Default",
+            },
+        )
+        assert response.status_code == 200
+
+
 def test_state_writes_cannot_add_or_remove_named_presets(monkeypatch):
     client = _client(monkeypatch)
     params = {"steps": 9}
@@ -279,11 +293,38 @@ def test_one_unreadable_state_field_does_not_reset_the_recipe(monkeypatch):
     assert [preset["name"] for preset in body["customPresets"]] == ["Keep"]
 
 
+def test_one_unreadable_nested_recipe_field_does_not_reset_its_siblings(monkeypatch):
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "activePreset": "Keep",
+                "currentParams": {"steps": 24, "guidance": 100},
+                "customPresets": [{"name": "Keep", "params": {"steps": 24}}],
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    assert body["activePreset"] == "Keep"
+    assert body["currentParams"]["steps"] == 24
+    assert body["currentParams"]["guidance"] == 0
+    assert [preset["name"] for preset in body["customPresets"]] == ["Keep"]
+
+
 def test_preset_bounds_match_the_generation_request(monkeypatch):
     # A preset the generate endpoint would refuse is not usable: selecting it would make every
     # following Generate fail validation.
     client = _client(monkeypatch)
-    for params in ({"steps": 500}, {"guidance": 100}, {"width": 8192}, {"height": 64}):
+    for params in (
+        {"steps": 500},
+        {"guidance": 100},
+        {"width": 8192},
+        {"height": 64},
+        {"width": 257},
+        {"height": 257},
+    ):
         assert (
             client.put(
                 "/api/settings/generation-presets/image/custom",

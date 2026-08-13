@@ -63,7 +63,7 @@ export function useMediaGenerationPresets<Params extends object>({
   >([]);
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET_NAME);
   const [hydrationSource, setHydrationSource] = useState<
-    "pending" | "fresh" | "saved" | "unreadable"
+    "pending" | "fresh" | "saved" | "claimed" | "unreadable"
   >("pending");
   // Settled, not readable: an unreadable store still answers "stored settings do not own the form",
   // which is what the load-state controls wait for. Only the preset UI itself needs a readable store.
@@ -72,7 +72,9 @@ export function useMediaGenerationPresets<Params extends object>({
   // opposite of the rule for load options, which the resident build owns (features/resident-load).
   const storedRecipe = hydrationSource === "saved";
   const presetsReady =
-    hydrationSource === "fresh" || hydrationSource === "saved";
+    hydrationSource === "fresh" ||
+    hydrationSource === "saved" ||
+    hydrationSource === "claimed";
   const currentParamsRef = useRef(currentParams);
   const latestSettingsRef = useRef<MediaGenerationPresetState<Params> | null>(
     null,
@@ -119,6 +121,12 @@ export function useMediaGenerationPresets<Params extends object>({
     (settings: MediaGenerationPresetSettings<Params>) => {
       const custom = settings.customPresets ?? [];
       setCustomPresets(custom);
+      // A model pick made while the request was in flight is newer than storage. Keep its form
+      // values, but still hydrate the named presets so the user's library remains available.
+      if (formClaim.current !== 0) {
+        setHydrationSource("claimed");
+        return;
+      }
       const available = new Set([
         DEFAULT_PRESET_NAME,
         ...custom.map((preset) => preset.name),
@@ -171,6 +179,11 @@ export function useMediaGenerationPresets<Params extends object>({
       cancelled = true;
     };
   }, [hydrateLocalSettings, hydrateSavedSettings, kind]);
+
+  // Explicit model picks own the form over a settings request that was already in flight.
+  const claimRecipe = useCallback(() => {
+    claimForm(formClaim);
+  }, []);
 
   const settings = useMemo<MediaGenerationPresetState<Params>>(
     () => ({
@@ -341,6 +354,7 @@ export function useMediaGenerationPresets<Params extends object>({
     hydrated,
     storedRecipe,
     presetsReady,
+    claimRecipe,
     hasUnsavedChanges,
     selectPreset,
     savePreset,

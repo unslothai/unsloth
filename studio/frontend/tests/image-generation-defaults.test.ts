@@ -50,7 +50,29 @@ test("routed image picks apply and transactionally roll back model defaults", ()
   );
   assert.ok(routeStart >= 0 && routeEnd > routeStart);
   const routeBlock = source.slice(routeStart, routeEnd);
+  assert.match(routeBlock, /imagePresets\.hydrated/);
   assert.match(routeBlock, /quantRevert\.current = revert/);
   assert.match(routeBlock, /applyImageModelDefaults\(wanted\)/);
+  assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
+});
+
+test("routed video picks apply and transactionally roll back model defaults", () => {
+  const source = readFileSync(
+    new URL("../src/features/video/video-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const routeStart = source.indexOf(
+    "const pick = diffusionRoutePick(",
+    source.indexOf("const handledRouteModel"),
+  );
+  const routeEnd = source.indexOf(
+    "// The task dialog defers the load",
+    routeStart,
+  );
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  const routeBlock = source.slice(routeStart, routeEnd);
+  assert.match(routeBlock, /videoPresets\.hydrated/);
+  assert.match(routeBlock, /quantRevert\.current = revert/);
+  assert.match(routeBlock, /applyVideoModelDefaults\(/);
   assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
 });

@@ -1383,17 +1383,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     currentParams: imagePresetParams,
     applyParams: applyImagePresetParams,
   });
-  const applyImageModelDefaults = useCallback((repoId: string) => {
-    const recommended = defaultsFor(repoId);
-    setPendingModelDefaults(recommended);
-    setSteps(recommended.steps);
-    setGuidance(recommended.guidance);
-    const revert = quantRevert.current;
-    if (revert) {
-      revert.appliedSteps = recommended.steps;
-      revert.appliedGuidance = recommended.guidance;
-    }
-  }, []);
+  const claimImageRecipe = imagePresets.claimRecipe;
+  const applyImageModelDefaults = useCallback(
+    (repoId: string) => {
+      claimImageRecipe();
+      const recommended = defaultsFor(repoId);
+      setPendingModelDefaults(recommended);
+      setSteps(recommended.steps);
+      setGuidance(recommended.guidance);
+      const revert = quantRevert.current;
+      if (revert) {
+        revert.appliedSteps = recommended.steps;
+        revert.appliedGuidance = recommended.guidance;
+      }
+    },
+    [claimImageRecipe],
+  );
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -2718,6 +2723,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     // A hidden page owns no query: both diffusion pages stay mounted.
     if (!active) return;
+    if (!imagePresets.hydrated) return;
     const wanted = routeSearch?.model;
     // Key on the model AND the quant, and release the marker once the query is gone: this page stays mounted, so a marker that
     // outlived the query made re-picking the same checkpoint a click that neither loaded nor cleared the URL.
@@ -2771,6 +2777,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [
     active,
     applyImageModelDefaults,
+    imagePresets.hydrated,
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,

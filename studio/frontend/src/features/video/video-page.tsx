@@ -87,6 +87,7 @@ import {
   type VideoGenerationPresetParams,
   closestDurationIndex,
   closestResolutionIndex,
+  shouldApplyModelDefaults,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
@@ -737,6 +738,8 @@ type PickRevert = {
   // What the pick applied. A field the user changed after that is theirs, not ours to put back.
   appliedSteps?: number;
   appliedGuidance?: number;
+  modelSeeded?: boolean;
+  familySeeded?: boolean;
 };
 // Resolved Advanced controls pinned across preflight, staging, and load.
 type VideoLoadAdvanced = Pick<
@@ -809,12 +812,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [negativeOpen, setNegativeOpen] = useState(false);
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  const modelSeeded = useRef(false);
+  const familySeeded = useRef(false);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
     setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
     setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    if (r.modelSeeded != null) modelSeeded.current = r.modelSeeded;
+    if (r.familySeeded != null) familySeeded.current = r.familySeeded;
   }, []);
   // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
   // it. Without this the Default preset would read as "modified" for the whole download.
@@ -1189,17 +1196,28 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     applyParams: applyVideoPresetParams,
     normalizeParams: normalizeVideoPresetParams,
   });
-  const applyVideoModelDefaults = useCallback((repoId: string) => {
-    const recommended = defaultsFor(repoId);
-    setPendingModelDefaults(recommended);
-    setSteps(recommended.steps);
-    setGuidance(recommended.guidance);
-    const revert = quantRevert.current;
-    if (revert) {
-      revert.appliedSteps = recommended.steps;
-      revert.appliedGuidance = recommended.guidance;
-    }
-  }, []);
+  const claimVideoRecipe = videoPresets.claimRecipe;
+  const applyVideoModelDefaults = useCallback(
+    (repoId: string) => {
+      claimVideoRecipe();
+      const recommended = defaultsFor(repoId);
+      setPendingModelDefaults(recommended);
+      setSteps(recommended.steps);
+      setGuidance(recommended.guidance);
+      const revert = quantRevert.current;
+      if (revert) {
+        revert.modelSeeded ??= modelSeeded.current;
+        revert.familySeeded ??= familySeeded.current;
+        revert.appliedSteps = recommended.steps;
+        revert.appliedGuidance = recommended.guidance;
+      }
+      // This explicit pick owns the first status confirmation. On failure, revertPick restores
+      // both markers so a previously saved recipe can still outrank a merely discovered resident.
+      modelSeeded.current = true;
+      familySeeded.current = true;
+    },
+    [claimVideoRecipe],
+  );
 
   useEffect(() => {
     setResolutionIdx((current) => {
@@ -1239,7 +1257,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // A newly loaded family brings its own default clip length; without this the pre-load fallback
     // sticks and every default run is a ~1s clip. Intent moves with it, so the recipe a preset is
     // compared against and the frame count generation sends never disagree.
-    if (familyChanged && loadedFamily && familyDefaultFrames) {
+    const applyFamilyDefault = shouldApplyModelDefaults(
+      familySeeded.current,
+      videoPresets.storedRecipe,
+    );
+    if (familyChanged && loadedFamily) familySeeded.current = true;
+    if (familyChanged && loadedFamily && familyDefaultFrames && applyFamilyDefault) {
       const option =
         durationOptions[
           closestDurationIndex(durationOptions, familyDefaultFrames / fps)
@@ -1258,7 +1281,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         ]?.frames ?? cur
       );
     });
-  }, [durationIntentSeconds, durationOptions, familyDefaultFrames, fps, loadedFamily]);
+  }, [
+    durationIntentSeconds,
+    durationOptions,
+    familyDefaultFrames,
+    fps,
+    loadedFamily,
+    videoPresets.storedRecipe,
+  ]);
 
   // Seed steps/guidance from the loaded model's backend defaults: on mount with a model already loaded only refreshStatus runs, so the
   // controls would stick at the pre-load DEFAULT_GEN and a base checkpoint wanting 40/4 generates a degraded clip. Keyed on the resolved
@@ -1267,7 +1297,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     ? `${status.repo_id ?? ""}|${defaultSteps ?? ""}|${defaultGuidance ?? ""}|${defaultFlowShift ?? ""}|${defaultAudioFlowShift ?? ""}`
     : null;
   const prevLoadedModelRef = useRef<string | null>(null);
-  const modelSeeded = useRef(false);
   useEffect(() => {
     const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
     prevLoadedModelRef.current = loadedModelKey;
@@ -1276,10 +1305,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       setPendingModelDefaults(null);
       // A stored recipe is the user's own choice, so it outranks the model's defaults on the first
       // seed. Every later model change still seeds, as picking a model always has.
-      if (!modelSeeded.current) {
-        modelSeeded.current = true;
-        if (videoPresets.storedRecipe) return;
-      }
+      const applyDefaults = shouldApplyModelDefaults(
+        modelSeeded.current,
+        videoPresets.storedRecipe,
+      );
+      modelSeeded.current = true;
+      if (!applyDefaults) return;
       setSteps(defaultSteps);
       setGuidance(defaultGuidance);
       setFlowShift(defaultFlowShift);
@@ -2431,6 +2462,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   useEffect(() => {
     // A hidden page owns no query: both diffusion pages stay mounted.
     if (!active) return;
+    if (!videoPresets.hydrated) return;
     const wanted = routeSearch?.model;
     // Model AND quant, released once the query is gone: this page stays mounted, so a marker that outlived the query made re-picking a dead click.
     if (!wanted) {
@@ -2468,6 +2500,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
       return;
     }
+    // Match every direct picker branch: the routed intent owns both the visible build label and
+    // the model-specific Default recipe, and a load that never becomes resident rolls both back.
+    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+    quantRevert.current = revert;
+    setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
+    applyVideoModelDefaults(
+      pick.opts.filename ? `${pick.repoId}/${pick.opts.filename}` : pick.repoId,
+    );
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
     if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
       setPendingH3Load({
@@ -2478,9 +2518,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       });
       return;
     }
-    void loadOrStage(pick.repoId, pick.opts, "hub", token);
+    void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
+      if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
+        revertPick(revert);
+        quantRevert.current = null;
+      }
+    });
   }, [
     active,
+    applyVideoModelDefaults,
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
@@ -2488,6 +2534,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     loadGgufRepoPick,
     navigateSelf,
     pickGuard,
+    quant,
+    revertPick,
+    videoPresets.hydrated,
   ]);
 
 

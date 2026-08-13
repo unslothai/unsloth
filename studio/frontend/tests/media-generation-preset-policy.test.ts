@@ -8,6 +8,7 @@ import {
   closestDurationIndex,
   closestResolutionIndex,
   getBuiltinVariantName,
+  shouldApplyModelDefaults,
 } from "../src/features/generation-presets/preset-policy.ts";
 
 test("saving over Default creates a protected custom variant", () => {
@@ -34,4 +35,10 @@ test("video duration mapping uses the closest supported temporal lattice", () =>
   ];
   assert.equal(closestDurationIndex(options, 4.9), 3);
   assert.equal(closestDurationIndex(options, 2.4), 1);
+});
+
+test("a stored recipe owns only the first model-default seed", () => {
+  assert.equal(shouldApplyModelDefaults(false, true), false);
+  assert.equal(shouldApplyModelDefaults(false, false), true);
+  assert.equal(shouldApplyModelDefaults(true, true), true);
 });

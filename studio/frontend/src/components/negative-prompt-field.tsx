@@ -8,8 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 /** Collapsible negative prompt, shared by the Images and Video Create panels. */
-// Matches the bound the preset store validates against, so a prompt that types fine cannot make
-// every autosave of the page's recipe fail validation.
+// Keep normal input below the unload request budget. Restored legacy recipes may be longer, and
+// the preset API accepts them because the generation contract does too.
 export const NEGATIVE_PROMPT_MAX_LENGTH = 20_000;
 
 export function NegativePromptField({

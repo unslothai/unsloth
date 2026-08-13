@@ -118,9 +118,9 @@ class ImageGenerationPresetParams(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    negativePrompt: str = Field(default = "", max_length = 20_000)
-    width: int = Field(default = 1024, ge = 256, le = 2048)
-    height: int = Field(default = 1024, ge = 256, le = 2048)
+    negativePrompt: str = ""
+    width: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
@@ -132,7 +132,7 @@ class VideoGenerationPresetParams(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    negativePrompt: str = Field(default = "", max_length = 20_000)
+    negativePrompt: str = ""
     width: int = Field(default = 768, ge = 32, le = 2048)
     height: int = Field(default = 512, ge = 32, le = 2048)
     durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
@@ -226,24 +226,40 @@ def _readable(model: type[BaseModel], value: Any) -> Any:
     return readable
 
 
+def _without_field_at_location(value: Any, location: tuple[Any, ...]) -> tuple[Any, bool]:
+    """Return a copy with one invalid leaf removed from a nested model payload."""
+    if not location:
+        return value, False
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    if not rest:
+        result.pop(key)
+        return result, True
+    nested, removed = _without_field_at_location(result[key], tuple(rest))
+    if removed:
+        result[key] = nested
+    return result, removed
+
+
 def _validated_without_invalid_fields(schema: type[BaseModel], payload: dict) -> BaseModel:
     """Validate, dropping only the fields that fail.
 
     Resetting the whole recipe over one unreadable field would hand the client schema defaults,
     which it then autosaves over the rest of a perfectly good stored recipe.
     """
-    remaining = dict(payload)
+    remaining = payload
     while True:
         try:
             return schema.model_validate(remaining)
         except ValidationError as exc:
-            invalid = {
-                error["loc"][0] for error in exc.errors() if error.get("loc")
-            } & remaining.keys()
-            if not invalid:
+            for error in exc.errors():
+                remaining, removed = _without_field_at_location(remaining, error.get("loc", ()))
+                if removed:
+                    break
+            else:
                 return schema()
-            for key in invalid:
-                remaining.pop(key, None)
 
 
 def _get_generation_preset_settings(kind, schema):

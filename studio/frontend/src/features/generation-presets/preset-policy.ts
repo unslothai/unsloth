@@ -59,3 +59,11 @@ export function closestDurationIndex(
   });
   return bestIndex;
 }
+
+/** A stored recipe owns the first status seed. Later model changes apply their own defaults. */
+export function shouldApplyModelDefaults(
+  alreadySeeded: boolean,
+  storedRecipe: boolean,
+): boolean {
+  return alreadySeeded || !storedRecipe;
+}
