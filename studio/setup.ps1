@@ -2377,11 +2377,9 @@ if (-not $HasNvidiaSmi) {
     # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
     # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
     # so the name-based inference below can still attempt an arch lookup.
-    # Gated on the ARCH, like install.ps1: amd-smi can report GPUs with no gfx token and
-    # only the first market name, which sets $HasROCm with no arch. Gated that way the
-    # scan was skipped, so $script:ROCmGpuLabels held one name and the inference below
-    # judged a whole multi-GPU host on it. Same condition as that inference, so a host
-    # that already has an arch still does no WMI work here.
+    # Gated on the ARCH, like install.ps1: amd-smi can set $HasROCm with no arch, and gated
+    # that way the scan was skipped, so $script:ROCmGpuLabels held one name and the inference
+    # below judged a whole multi-GPU host on it. Same condition as that inference.
     if (-not $script:ROCmGfxArch) {
         try {
             # Keep every AMD adapter, not just the first: WMI orders controllers as the

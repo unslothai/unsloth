@@ -3317,8 +3317,7 @@ exit 0
         $wmiAmdNames = @()
         # Keyed on the ARCH, not on $HasROCm: amd-smi can report GPUs with no gfx token and
         # only the first market name, which sets $HasROCm and used to skip this scan, leaving
-        # the peer guard below blind on exactly the multi-GPU host it exists for. A host that
-        # already has an arch never reaches that lookup, so it still does no WMI work here.
+        # the peer guard below blind. A host with an arch never reaches that lookup anyway.
         if (-not $ROCmGfxArch) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
@@ -3740,10 +3739,9 @@ exit 0
         # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
         # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
         # VAR=value resolves as a command name here and sets nothing.
-        # Both claims below are conditional, and both conditions are read here rather than
-        # asserted: an explicit index pin reaches the ROCm install path further down even
-        # for an arch Unsloth has no wheels for, and Windows ARM64 has no Vulkan bundle at
-        # all, where studio/setup.ps1 THROWS on the very variable the advice names.
+        # Both claims below are conditional: an explicit index pin reaches the ROCm install
+        # path further down even for an arch Unsloth has no wheels for, and studio/setup.ps1
+        # THROWS on the Vulkan variable on Windows ARM64, where no bundle is published.
         $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                        (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
         $unsupArm64 = (Get-HostMachineArch) -eq "arm64"

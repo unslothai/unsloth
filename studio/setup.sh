@@ -1786,10 +1786,9 @@ if [ "$_setup_torch_is_xpu" = true ]; then
     run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
 fi
-# The supported name table, as a matcher so the report below can ask it about a PEER
-# adapter without disturbing $_setup_gfx. Kept in sync with the table in install.sh
-# (and the PS nameArchTable). gfx1102 matched BEFORE gfx1100 so the spaceless
-# "RX 7700S" lands on gfx1102 (bash case has no negative lookahead like the PS tables).
+# The supported name table, as a matcher so the report below can ask it about a PEER adapter
+# without disturbing $_setup_gfx. Kept in sync with install.sh (and the PS nameArchTable).
+# gfx1102 before gfx1100 so the spaceless "RX 7700S" lands on gfx1102 (case has no lookahead).
 _setup_supported_gfx_from_name() {
     _sup_gfx_in="$1"
     _sup_gfx_out=""
@@ -1903,11 +1902,10 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
-        # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market
-        # name, the first device's, so on a host whose RX 5700 precedes an RX 7900 the
-        # name IS the 5700 and "no override can help" is false there. Only when lspci can
-        # answer -- with no adapter list there is no peer to find, and suppressing on that
-        # would silence the single-card host this report exists for.
+        # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
+        # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
+        # Only when lspci can answer: with no adapter list there is no peer to find, and
+        # suppressing there would silence the single-card host this report exists for.
         _setup_unsup_pci=""
         if command -v lspci >/dev/null 2>&1; then
             _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
