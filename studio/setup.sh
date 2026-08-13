@@ -1785,9 +1785,10 @@ _setup_persist_uv_path() {
     # The PATH a new shell inherits, not the one this process has already prepended to, and
     # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
     _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
-    if [ "$(basename "${SHELL:-}")" = "fish" ]; then
-        _supp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
-        mkdir -p "$_supp_fish_dir" 2>/dev/null || return 0
+    # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
+    # file, and it is written regardless of the current shell for the same reason.
+    _supp_fish_dir="$HOME/.config/fish/conf.d"
+    if mkdir -p "$_supp_fish_dir" 2>/dev/null; then
         _supp_fish="$_supp_fish_dir/unsloth.fish"
         if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qF "$_supp_dir"; then
             # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
@@ -1795,32 +1796,27 @@ _setup_persist_uv_path() {
             echo "# Added by Unsloth setup" >> "$_supp_fish"
             echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
         fi
-        return 0
     fi
-    _supp_profile=""
-    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
-        _supp_profile="${ZDOTDIR:-$HOME}/.zshrc"
-    elif [ -f "$HOME/.bashrc" ]; then
-        _supp_profile="$HOME/.bashrc"
-    elif [ -f "$HOME/.profile" ]; then
-        _supp_profile="$HOME/.profile"
-    elif [ -w "$HOME" ]; then
-        _supp_profile="$HOME/.profile"
-    fi
-    [ -n "$_supp_profile" ] || return 0
     # Comments stripped and the directory anchored as a whole entry: a commented-out old export,
     # or /opt/uv-old when we want /opt/uv, is not an active entry, and taking either for one
     # leaves the next shell unable to resolve uv.
     _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[^$*\\/]/\\&/g')
-    if ! grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
-        | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
-        # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
-        # terminated by the shell that reads it.
-        _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
+    # terminated by the shell that reads it.
+    _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # Every startup file astral's installer wired, because it is the installer this replaced:
+    # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
+    # file for the shell that happens to be running would leave a bash user whose .bash_profile
+    # does not source .bashrc, or anyone who later switches shells, without uv on PATH.
+    for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                         "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+        if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
         echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
-    fi
+    done
 }
 
 USE_UV=false

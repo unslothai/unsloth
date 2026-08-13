@@ -1004,6 +1004,42 @@ else
     bad "the NSIS hooks only tidy a directory that already holds an Unsloth install"
 fi
 
+# astral's installer wired EVERY startup file it knew: ~/.profile, each bash file that exists,
+# zsh under ZDOTDIR, and a fish drop-in. Writing only the one for the current shell would leave
+# a bash user whose .bash_profile does not source .bashrc without uv on PATH, so the replacement
+# has to cover the same set, once each.
+_ph="$WORK/parity_home"
+mkdir -p "$_ph/.local/bin" "$_ph/opt/uv"
+: > "$_ph/.bashrc"; : > "$_ph/.bash_profile"; : > "$_ph/.zshrc"
+for _pass in 1 2; do
+    (
+        set +e
+        step() { :; }
+        HOME="$_ph"; export HOME
+        SHELL="/bin/bash"; export SHELL
+        unset ZSH_VERSION ZDOTDIR UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+        _LOCAL_BIN="$HOME/.local/bin"
+        _STUDIO_HOME_REDIRECT="none"
+        _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+        _UNSLOTH_UV_BIN_DIR="$HOME/opt/uv"
+        # shellcheck disable=SC1090
+        . "$WORK/path_guard.sh"
+    ) >/dev/null 2>&1 || true
+done
+_missing=""
+for _f in .profile .bashrc .bash_profile .zshrc .config/fish/conf.d/unsloth.fish; do
+    _n=$(grep -c "opt/uv" "$_ph/$_f" 2>/dev/null) || _n=0
+    [ "$_n" = "1" ] || _missing="$_missing $_f=$_n"
+done
+# .bash_login and .zshenv did not exist, so they must not have been created.
+[ -f "$_ph/.bash_login" ] && _missing="$_missing .bash_login=created"
+[ -f "$_ph/.zshenv" ] && _missing="$_missing .zshenv=created"
+if [ -z "$_missing" ]; then
+    ok "the uv PATH entry reaches every startup file astral wired, once each"
+else
+    bad "the uv PATH entry reaches every startup file astral wired, once each ($_missing)"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

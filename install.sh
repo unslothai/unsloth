@@ -5428,31 +5428,44 @@ _path_has_dir() {
     return "$_phd_found"
 }
 
+# fish reads none of the POSIX rc files, so an `export` line is a no-op for a fish user: the
+# next session resolves neither uv nor the shim. conf.d is fish's own drop-in directory and
+# fish_add_path is idempotent by design. ~/.config, not XDG_CONFIG_HOME, because that is where
+# astral's installer put its own fish file.
+_persist_fish_path_dir() {
+    _pfp_dir="$1"; _pfp_label="${2:-$1}"
+    [ -n "${HOME:-}" ] || return 0
+    _pfp_dir_conf="$HOME/.config/fish/conf.d"
+    mkdir -p "$_pfp_dir_conf" 2>/dev/null || return 0
+    _pfp_file="$_pfp_dir_conf/unsloth.fish"
+    if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qF "$_pfp_dir"; then
+        # Single-quoted: an unquoted path with a space is two arguments to fish_add_path and
+        # neither exists. Inside fish single quotes only \\ and \' carry meaning.
+        _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        echo "# Added by Unsloth installer" >> "$_pfp_file"
+        echo "fish_add_path '$_pfp_quoted'" >> "$_pfp_file"
+        step "path" "added $_pfp_label to PATH in $_pfp_file"
+    fi
+}
+
 # Put a directory on the PATH of the NEXT shell, not just this process.
 #   $1 the directory  $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always
 #   has)  $3 how to name it in the line we print  $4 the grep that says it is already there
+#   $5 an explicit profile file, or empty to pick one the way this installer always has
 _persist_login_path_dir() {
-    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"
+    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"; _plp_file="${5:-}"
     [ -n "${HOME:-}" ] || return 0
     # fish reads none of the POSIX rc files, so an `export` line there is a no-op for a fish
     # user: the next session resolves neither uv nor the shim. conf.d is fish's own drop-in
     # directory and fish_add_path is idempotent by design.
-    if [ "$(basename "${SHELL:-}")" = "fish" ]; then
-        _plp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
-        mkdir -p "$_plp_fish_dir" 2>/dev/null || return 0
-        _plp_fish="$_plp_fish_dir/unsloth.fish"
-        if ! grep -v '^[[:space:]]*#' "$_plp_fish" 2>/dev/null | grep -qF "$_plp_dir"; then
-            # Single-quoted: an unquoted path with a space is two arguments to fish_add_path
-            # and neither exists. Inside fish single quotes only \\ and \' carry meaning.
-            _plp_quoted=$(printf '%s' "$_plp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-            echo "# Added by Unsloth installer" >> "$_plp_fish"
-            echo "fish_add_path '$_plp_quoted'" >> "$_plp_fish"
-            step "path" "added $_plp_label to PATH in $_plp_fish"
-        fi
+    if [ -z "$_plp_file" ] && [ "$(basename "${SHELL:-}")" = "fish" ]; then
+        _persist_fish_path_dir "$_plp_dir" "$_plp_label"
         return 0
     fi
-    _SHELL_PROFILE=""
-    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+    _SHELL_PROFILE="$_plp_file"
+    if [ -n "$_SHELL_PROFILE" ]; then
+        :
+    elif [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
         _SHELL_PROFILE="${ZDOTDIR:-$HOME}/.zshrc"
     elif [ -f "$HOME/.bashrc" ]; then
         _SHELL_PROFILE="$HOME/.bashrc"
@@ -5501,8 +5514,22 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN
         # Anchored on both sides, so /opt/uv is not satisfied by /opt/uv-old and the match has
         # to be a whole PATH entry rather than any occurrence of the text.
         _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')
-        _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
-            "$_UNSLOTH_UV_BIN_DIR" "(^|[^[:alnum:]_.~/-])$_uv_grep_esc([^[:alnum:]_.~/-]|\$)"
+        _uv_pattern="(^|[^[:alnum:]_.~/-])$_uv_grep_esc([^[:alnum:]_.~/-]|\$)"
+        # Every startup file astral's installer wired, because it is the installer we replaced:
+        # ~/.profile always, each of the bash files that exists, zsh under ZDOTDIR, and the fish
+        # drop-in regardless of the current shell. Writing only the one file for the shell that
+        # happens to be running would leave a bash user whose .bash_profile does not source
+        # .bashrc, or anyone who later switches shells, without uv on PATH.
+        for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                        "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            # ~/.profile is created when absent, as astral does; the rest are only touched when
+            # the user already has them.
+            if [ "$_uv_prof" = "$HOME/.profile" ] || [ -f "$_uv_prof" ]; then
+                _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
+                    "$_UNSLOTH_UV_BIN_DIR" "$_uv_pattern" "$_uv_prof"
+            fi
+        done
+        _persist_fish_path_dir "$_UNSLOTH_UV_BIN_DIR"
     fi
 fi
 # end of the PATH persistence block
