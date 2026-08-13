@@ -45,7 +45,7 @@ def test_get_with_nothing_stored(client):
     c, _ = client
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {"id": None, "kind": None, "gguf_variant": None}
+    assert r.json() == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
 
 
 def test_put_then_get_round_trips(client):
@@ -53,12 +53,12 @@ def test_put_then_get_round_trips(client):
     payload = {"id": "unsloth/gemma-4-E2B-it-GGUF", "kind": "gguf", "gguf_variant": "UD-Q4_K_XL"}
     r = c.put("/last-local-model", json = payload)
     assert r.status_code == 200
-    assert r.json() == payload
-    assert store[settings.LAST_LOCAL_MODEL_SETTING_KEY] == payload
+    assert r.json() == {**payload, "loaded_at": None}
+    assert store[settings.LAST_LOCAL_MODEL_SETTING_KEY] == {**payload, "loaded_at": None}
 
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == payload
+    assert r.json() == {**payload, "loaded_at": None}
 
 
 def test_put_accepts_path_qualified_variant(client):
@@ -70,11 +70,20 @@ def test_put_accepts_path_qualified_variant(client):
     assert r.json()["gguf_variant"] == variant
 
 
+def test_put_round_trips_loaded_at(client):
+    c, _ = client
+    payload = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": 1765432100000}
+    r = c.put("/last-local-model", json = payload)
+    assert r.status_code == 200
+    assert r.json()["loaded_at"] == 1765432100000
+    assert c.get("/last-local-model").json()["loaded_at"] == 1765432100000
+
+
 def test_put_without_variant(client):
     c, _ = client
     r = c.put("/last-local-model", json = {"id": "unsloth/Qwen3-4B", "kind": "model"})
     assert r.status_code == 200
-    assert r.json() == {"id": "unsloth/Qwen3-4B", "kind": "model", "gguf_variant": None}
+    assert r.json() == {"id": "unsloth/Qwen3-4B", "kind": "model", "gguf_variant": None, "loaded_at": None}
 
 
 def test_put_rejects_bad_payloads(client):
@@ -89,9 +98,9 @@ def test_get_tolerates_corrupt_stored_value(client):
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = {"id": "x", "kind": "lora"}
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {"id": None, "kind": None, "gguf_variant": None}
+    assert r.json() == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
 
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = "not-a-dict"
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {"id": None, "kind": None, "gguf_variant": None}
+    assert r.json() == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}

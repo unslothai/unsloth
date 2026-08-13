@@ -976,12 +976,17 @@ class LastLocalModelPayload(BaseModel):
     id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
     kind: Literal["gguf", "model"]
     gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    # Epoch milliseconds of the load. Surfaces keep independent local shadows; a
+    # shadow whose fire-and-forget PUT was dropped compares against this to decide
+    # whether it is actually newer than what another surface stored since.
+    loaded_at: Optional[int] = Field(default = None, ge = 0)
 
 
 class LastLocalModelResponse(BaseModel):
     id: Optional[str] = None
     kind: Optional[Literal["gguf", "model"]] = None
     gguf_variant: Optional[str] = None
+    loaded_at: Optional[int] = None
 
 
 @router.get("/last-local-model", response_model = LastLocalModelResponse)

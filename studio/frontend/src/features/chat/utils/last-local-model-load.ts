@@ -57,6 +57,7 @@ function sameRecord(a: LastLocalModelLoad, b: LastLocalModelLoad): boolean {
 function writeLegacyRecord(
   record: LastLocalModelLoad,
   pendingSync: boolean,
+  loadedAt: number,
 ): void {
   try {
     localStorage.setItem(
@@ -67,9 +68,9 @@ function writeLegacyRecord(
         ggufVariant: record.ggufVariant,
         // The pre-backend v1 reader rejects entries without a numeric loadedAt,
         // and an older bundle or still-open tab shares this key.
-        loadedAt: Date.now(),
+        loadedAt,
         // True until the backend PUT for this record confirms: a differing
-        // pending shadow is newer than whatever the GET returns.
+        // pending shadow may be newer than whatever the GET returns.
         pendingSync,
       }),
     );
@@ -78,7 +79,11 @@ function writeLegacyRecord(
   }
 }
 
-type LegacyEntry = { record: LastLocalModelLoad; pendingSync: boolean };
+type LegacyEntry = {
+  record: LastLocalModelLoad;
+  pendingSync: boolean;
+  loadedAt: number | null;
+};
 
 function readLegacyEntry(): LegacyEntry | null {
   try {
@@ -91,7 +96,11 @@ function readLegacyEntry(): LegacyEntry | null {
     if (!record) {
       return null;
     }
-    return { record, pendingSync: parsed.pendingSync === true };
+    return {
+      record,
+      pendingSync: parsed.pendingSync === true,
+      loadedAt: typeof parsed.loadedAt === "number" ? parsed.loadedAt : null,
+    };
   } catch {
     return null;
   }
@@ -108,6 +117,8 @@ export async function readLastLocalModelLoad(
         kind?: unknown;
         // biome-ignore lint/style/useNamingConvention: API schema
         gguf_variant?: unknown;
+        // biome-ignore lint/style/useNamingConvention: API schema
+        loaded_at?: unknown;
       };
       const record = toRecord({
         id: data.id,
@@ -116,15 +127,29 @@ export async function readLastLocalModelLoad(
       });
       if (record) {
         const legacy = readLegacyEntry();
-        if (legacy?.pendingSync && !sameRecord(legacy.record, record)) {
-          // A load whose PUT was dropped at teardown: the shadow is newer
-          // than the backend copy. Prefer it and re-sync the backend.
-          recordLastLocalModelLoad(legacy.record);
+        const backendLoadedAt =
+          typeof data.loaded_at === "number" ? data.loaded_at : null;
+        if (
+          legacy?.pendingSync &&
+          !sameRecord(legacy.record, record) &&
+          legacy.loadedAt !== null &&
+          (backendLoadedAt === null || legacy.loadedAt > backendLoadedAt)
+        ) {
+          // A load whose PUT was dropped at teardown, and the backend has seen
+          // nothing newer from any surface since (pendingSync alone proves the
+          // write was dropped, not that it is the latest load -- only the
+          // backend timestamp orders loads across surfaces). Prefer the shadow
+          // and re-sync the backend, keeping its original load time.
+          recordLastLocalModelLoad({
+            ...legacy.record,
+            loadedAt: legacy.loadedAt,
+          });
           return legacy.record;
         }
         if (legacy?.pendingSync) {
-          // Backend caught up (the PUT landed but its callback was dropped).
-          writeLegacyRecord(record, false);
+          // The backend holds this record or a newer one: the shadow lost.
+          // Adopt the backend copy and clear the marker.
+          writeLegacyRecord(record, false, backendLoadedAt ?? Date.now());
         }
         return record;
       }
@@ -142,16 +167,20 @@ export function recordLastLocalModelLoad(input: {
   id: string;
   kind: LastLocalModelKind;
   ggufVariant?: string | null;
+  // Reconcile re-issues keep the original load time; fresh loads stamp now.
+  loadedAt?: number;
 }): void {
   const record = toRecord(input);
   if (!record) {
     return;
   }
+  const loadedAt =
+    typeof input.loadedAt === "number" ? input.loadedAt : Date.now();
   // Shadow write first, synchronously: a fetch still pending at document
   // teardown is dropped without running either callback, and the pre-backend
   // record was this surface's only memory of the load. It also covers the
   // pre-route backend that answers 404 without rejecting.
-  writeLegacyRecord(record, true);
+  writeLegacyRecord(record, true, loadedAt);
   authFetch(API_PATH, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -160,6 +189,8 @@ export function recordLastLocalModelLoad(input: {
       kind: record.kind,
       // biome-ignore lint/style/useNamingConvention: API schema
       gguf_variant: record.ggufVariant,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      loaded_at: loadedAt,
     }),
   })
     .then((res) => {
@@ -170,7 +201,7 @@ export function recordLastLocalModelLoad(input: {
       // replaced the shadow while the PUT was in flight.
       const legacy = readLegacyEntry();
       if (legacy?.pendingSync && sameRecord(legacy.record, record)) {
-        writeLegacyRecord(record, false);
+        writeLegacyRecord(record, false, loadedAt);
       }
     })
     .catch(() => {
