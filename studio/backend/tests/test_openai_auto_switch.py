@@ -5003,10 +5003,23 @@ def _drive_idle_loop(
     kw,
     poll_seconds = 0.02,
     run_for = 0.2,
+    until = None,
+    timeout = 10.0,
 ):
+    """Pass `until` when the test asserts something the loop must DO: a loaded
+    runner can otherwise be cancelled mid-sequence (save recorded, unload not),
+    which is a flake, not a failure. Without it the loop runs the fixed window,
+    which is what tests asserting the loop does NOT act need."""
+    import time as _time
+
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = poll_seconds))
-        await asyncio.sleep(run_for)
+        if until is None:
+            await asyncio.sleep(run_for)
+        else:
+            deadline = _time.monotonic() + timeout
+            while not until() and _time.monotonic() < deadline:
+                await asyncio.sleep(poll_seconds / 4)
         task.cancel()
         try:
             await task
@@ -5049,7 +5062,7 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: events == ["save", "unload"])
     # KV must be saved while the server is still alive, then exactly one unload.
     assert events == ["save", "unload"]
     assert kw.get_last_unloaded_model()[:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
@@ -5086,7 +5099,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert unloads == [1]  # the save failure must not skip the unload
     assert kw.get_last_unloaded_model() is not None
     assert kw.take_kv_resume() is None
@@ -5116,7 +5129,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert saves == []
     assert unloads == [1]
     assert kw.take_kv_resume() is None
@@ -5158,7 +5171,7 @@ def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert unloads == [1]  # still unloads; only the stash is dropped
     assert kw.take_kv_resume() is None
     assert not state_file.exists()
@@ -7339,7 +7352,7 @@ def test_idle_unload_still_frees_a_user_loaded_model_by_default(monkeypatch):
     backend = _idle_backend(kw, monkeypatch, user_loaded = True)
     monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: backend.is_loaded is False)
     assert backend.is_loaded is False
 
 
@@ -7354,7 +7367,7 @@ def test_api_only_spares_a_user_loaded_model_but_not_an_api_one(monkeypatch):
     assert kw.get_last_unloaded_model() is None  # nothing stashed either
 
     api_loaded = _idle_backend(kw, monkeypatch, user_loaded = False)
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: api_loaded.is_loaded is False)
     assert api_loaded.is_loaded is False
 
 
@@ -7379,7 +7392,7 @@ def test_an_idle_restored_model_is_api_provenance(monkeypatch):
     assert rec.calls and backend._loaded_by_user_action is False
 
     backend.unload_model = lambda: setattr(backend, "is_loaded", False)
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: backend.is_loaded is False)
     assert backend.is_loaded is False
 
 
