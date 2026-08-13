@@ -240,6 +240,7 @@ import {
   type ReactNode,
   Fragment,
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -1327,11 +1328,13 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
+// Memoized on three primitive props: chat-page builds this element inline inside a component
+// that subscribes to stores, so without it a parent render reconciles the whole message list.
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
+}> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -1642,7 +1645,8 @@ export const Thread: FC<{
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
-};
+});
+Thread.displayName = "Thread";
 
 const GeneratedImageViewportOverlay: FC<{
   hideComposer?: boolean;
@@ -2041,16 +2045,17 @@ const Composer: FC<{
   const researchThreadClaimed = useResearchRunStore((state) =>
     researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
   );
-  const activeResearchRun = useResearchRunStore((state) => {
+  // Derive inside the selector, as useThreadResearchActive does: a bare run selector re-renders
+  // the composer on every streamed research delta.
+  const isResearchActive = useResearchRunStore((state) => {
     const runId = researchThreadId
       ? state.latestRunByThreadId[researchThreadId]
       : undefined;
-    return runId ? state.sessions[runId]?.run : undefined;
+    const run = runId ? state.sessions[runId]?.run : undefined;
+    return Boolean(
+      run && !["completed", "failed", "cancelled"].includes(run.status),
+    );
   });
-  const isResearchActive = Boolean(
-    activeResearchRun &&
-      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
-  );
   const hasResearchMessage = useAuiState(({ thread }) =>
     thread.messages.some((message) => {
       const custom = (
@@ -5094,47 +5099,53 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  const activeResearchRun = useResearchRunStore((state) => {
+  // Two primitives rather than the run object: the composer actions only need the id and the
+  // status, and the run identity changes on every streamed research delta.
+  const activeResearchRunId = useResearchRunStore((state) =>
+    activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
+  );
+  const activeResearchRunStatus = useResearchRunStore((state) => {
     const runId = activeThreadId
       ? state.latestRunByThreadId[activeThreadId]
       : undefined;
-    return runId ? state.sessions[runId]?.run : undefined;
+    return runId ? state.sessions[runId]?.run.status : undefined;
   });
   const isResearchActive = Boolean(
-    activeResearchRun &&
-      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+    activeResearchRunStatus &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRunStatus),
   );
   const [stoppingResearchRunId, setStoppingResearchRunId] = useState<
     string | null
   >(null);
   const stoppingResearchRunIdRef = useRef<string | null>(null);
   const researchStopping = Boolean(
-    activeResearchRun &&
-      (activeResearchRun.status === "cancelling" ||
-        stoppingResearchRunId === activeResearchRun.id),
+    activeResearchRunStatus &&
+      (activeResearchRunStatus === "cancelling" ||
+        (activeResearchRunId !== undefined &&
+          stoppingResearchRunId === activeResearchRunId)),
   );
   useEffect(() => {
     if (
       !isResearchActive ||
       (stoppingResearchRunIdRef.current &&
-        stoppingResearchRunIdRef.current !== activeResearchRun?.id)
+        stoppingResearchRunIdRef.current !== activeResearchRunId)
     ) {
       stoppingResearchRunIdRef.current = null;
       setStoppingResearchRunId(null);
     }
-  }, [activeResearchRun?.id, isResearchActive]);
+  }, [activeResearchRunId, isResearchActive]);
   const stop = () => {
-    if (isResearchActive && activeResearchRun) {
+    if (isResearchActive && activeResearchRunId) {
       if (
-        activeResearchRun.status === "cancelling" ||
-        stoppingResearchRunIdRef.current === activeResearchRun.id
+        activeResearchRunStatus === "cancelling" ||
+        stoppingResearchRunIdRef.current === activeResearchRunId
       ) {
         return;
       }
       if (isQueueRunning) onStopClick?.();
-      stoppingResearchRunIdRef.current = activeResearchRun.id;
-      setStoppingResearchRunId(activeResearchRun.id);
-      void cancelResearchRun(activeResearchRun.id)
+      stoppingResearchRunIdRef.current = activeResearchRunId;
+      setStoppingResearchRunId(activeResearchRunId);
+      void cancelResearchRun(activeResearchRunId)
         .then((run) => ingestResearchUpdate(run))
         .catch((error) => {
           stoppingResearchRunIdRef.current = null;
