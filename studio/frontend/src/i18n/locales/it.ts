@@ -1199,7 +1199,6 @@ export const it = {
     searchAriaLabel: "Cerca {noun}",
     modelSourceAriaLabel: "Origine del modello",
     hubSectionAriaLabel: "Sezione Hub",
-    pickModelFile: "Scegli un file del modello dal disco",
     modelDropped: "Non più offerto",
     modelDroppedByProvider: "{provider} · non più offerto",
     modelDisabled: "Non attivato",

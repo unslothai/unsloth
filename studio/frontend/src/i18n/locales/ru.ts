@@ -17,7 +17,6 @@ export const ru = {
     searchAriaLabel: "Поиск: {noun}",
     modelSourceAriaLabel: "Источник модели",
     hubSectionAriaLabel: "Раздел Hub",
-    pickModelFile: "Выбрать файл модели на диске",
     modelDropped: "Больше не предлагается",
     modelDroppedByProvider: "{provider} · больше не предлагается",
     modelDisabled: "Не включена",

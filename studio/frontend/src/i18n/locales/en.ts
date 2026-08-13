@@ -13,7 +13,6 @@ export const en = {
     searchAriaLabel: "Search {noun}",
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
-    pickModelFile: "Pick a model file from disk",
     modelDropped: "No longer offered",
     modelDroppedByProvider: "{provider} · no longer offered",
     modelDisabled: "Not enabled",

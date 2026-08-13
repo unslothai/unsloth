@@ -18,7 +18,6 @@ export const ja = {
     searchAriaLabel: "{noun}を検索",
     modelSourceAriaLabel: "モデルのソース",
     hubSectionAriaLabel: "Hub セクション",
-    pickModelFile: "ディスクからモデルファイルを選択",
     modelDropped: "提供終了",
     modelDroppedByProvider: "{provider} · 提供終了",
     modelDisabled: "無効",

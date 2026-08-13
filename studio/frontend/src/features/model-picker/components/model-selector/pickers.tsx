@@ -78,7 +78,6 @@ import {
   Flag01Icon,
   FlimSlateIcon,
   Folder02Icon,
-  FolderSearchIcon,
   HelpCircleIcon,
   Image03Icon,
   PinIcon,
@@ -2314,8 +2313,6 @@ export function HubModelPicker({
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
-  onPickLocalModel,
-  pickLocalModelLabel,
   onModelsChange,
   onConfigure,
   deleteDisabled = false,
@@ -2341,10 +2338,6 @@ export function HubModelPicker({
   onFoldersChange?: () => void;
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
-  /** Load a model file the user points at. Native builds only, so it is absent in the browser. */
-  onPickLocalModel?: () => void;
-  /** Its translated label. This file holds no translations, so the caller passes the string. */
-  pickLocalModelLabel?: string;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
@@ -5008,27 +5001,6 @@ export function HubModelPicker({
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             )}
           </div>
-          {/* The local twin of Search Hub, and shown for the same reason: this row is where a
-              search that found nothing ends, so both "look elsewhere" answers belong on it. On
-              Device only, since a file off the disk is not something the Hub sections list.
-              Labelled, not icon-only: an unlabelled glyph here reads as search chrome. Its width
-              matches Search Hub, which is the second control --picker-panel-w already budgets. */}
-          {section === "downloaded" && onPickLocalModel ? (
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={onPickLocalModel}
-                  aria-label={pickLocalModelLabel}
-                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
-                >
-                  <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
-                  From disk
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>{pickLocalModelLabel}</TooltipContent>
-            </Tooltip>
-          ) : null}
           {onBrowseHub ? (
             <Tooltip>
               <TooltipTrigger asChild={true}>

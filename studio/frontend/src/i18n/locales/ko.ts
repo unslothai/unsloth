@@ -16,7 +16,6 @@ export const ko = {
     searchAriaLabel: "{noun} 검색",
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
-    pickModelFile: "디스크에서 모델 파일 선택",
     modelDropped: "더 이상 제공되지 않음",
     modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
     modelDisabled: "사용 안 함",

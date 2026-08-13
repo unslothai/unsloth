@@ -162,7 +162,6 @@ interface ModelSelectorProps {
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
-  onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
@@ -361,7 +360,6 @@ function ModelSelectorContent({
   resolveDownloadFootprint,
   onEject,
   onFoldersChange,
-  onPickLocalModel,
   onBrowseHub,
   onModelsChange,
   deleteDisabled,
@@ -387,7 +385,6 @@ function ModelSelectorContent({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
-  onPickLocalModel?: () => void;
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -604,8 +601,6 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
-              onPickLocalModel={onPickLocalModel}
-              pickLocalModelLabel={t("picker.pickModelFile")}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -653,7 +648,6 @@ export function ModelSelector({
   resolveDownloadFootprint,
   onEject,
   onFoldersChange,
-  onPickLocalModel,
   onModelsChange,
   deleteDisabled,
   variant = "outline",
@@ -793,11 +787,6 @@ export function ModelSelector({
     setOpen(false);
   }
 
-  function handlePickLocalModel() {
-    setOpen(false);
-    void onPickLocalModel?.();
-  }
-
   function handleBrowseHub() {
     setOpen(false);
     void navigate({ to: "/hub", search: { tab: "discover" } });
@@ -833,7 +822,6 @@ export function ModelSelector({
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         // A curated task picker (Images / Video) is self-contained, so it omits this.
         // A community-enabled one (Audio) already lists past unsloth, so it keeps it.
         onBrowseHub={
