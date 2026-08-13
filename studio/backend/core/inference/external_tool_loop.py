@@ -219,6 +219,7 @@ class _TurnAccumulator:
         self.usage: dict[str, Any] = {}
         self.provisional_cards: dict[str, str] = {}
         self._provisional_tool_names = provisional_tool_names
+        self._real_id_slots: set[int] = set()
         self._args_streamed: set[str] = set()
         self._final_chunk: Optional[dict[str, Any]] = None
 
@@ -234,7 +235,8 @@ class _TurnAccumulator:
 
     def feed(self, line: str) -> list[str]:
         if not line.startswith("data:"):
-            return []
+            # an sse comment is the provider's keepalive; dropping it idles the stream out.
+            return [line] if line.startswith(":") else []
         data_str = line[len("data:") :].strip()
         if not data_str or data_str == "[DONE]":
             return []
@@ -334,31 +336,40 @@ class _TurnAccumulator:
                 continue
             index = fragment.get("index")
             slot = index if isinstance(index, int) else position
+            # a server that omits the id still needs one: the replayed call and its tool
+            # message are paired by it, as in llama_cpp.py's accumulator.
+            fallback_id = f"call_{slot}"
             call = self.tool_calls.setdefault(
                 slot,
-                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                {"id": fallback_id, "type": "function", "function": {"name": "", "arguments": ""}},
             )
             call_id = fragment.get("id")
             if isinstance(call_id, str) and call_id:
                 call["id"] = call_id
+                self._real_id_slots.add(slot)
             function = fragment.get("function")
             if not isinstance(function, dict):
                 continue
             name = function.get("name")
             if isinstance(name, str) and name:
-                call["function"]["name"] = name
+                # a name can be split across deltas the way arguments are.
+                call["function"]["name"] += name
             arguments = function.get("arguments")
             if isinstance(arguments, str):
                 call["function"]["arguments"] += arguments
-            events.extend(self._provisional_events(call, arguments))
+            events.extend(
+                self._provisional_events(call, arguments, has_real_id = slot in self._real_id_slots)
+            )
         return events
 
-    def _provisional_events(self, call: dict[str, Any], fragment: Optional[str]) -> list[str]:
+    def _provisional_events(
+        self, call: dict[str, Any], fragment: Optional[str], *, has_real_id: bool
+    ) -> list[str]:
         """Open an early card for a large payload, then stream its argument text."""
         call_id = call["id"]
         name = call["function"]["name"]
-        # a synthetic id cannot reconcile with the real tool_start, so it would strand a card.
-        if not call_id or not name or name not in self._provisional_tool_names:
+        # a synthetic id may still be replaced by a real one, which would strand the card.
+        if not has_real_id or not name or name not in self._provisional_tool_names:
             return []
         events: list[str] = []
         arguments = call["function"]["arguments"]
@@ -493,6 +504,14 @@ async def _drain_step_task(task: Optional["asyncio.Future"], cancel_event: threa
     worker actually finishes.
     """
     if task is None:
+        return
+    if task.done():
+        # its worker already returned, and the loop recovers from a tool error below,
+        # so signalling cancellation here would abort the rest of the request.
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
         return
     cancel_event.set()
     while not task.done():
@@ -635,6 +654,9 @@ async def stream_chat_completion_with_local_tools(
 
     try:
         while True:
+            # Stop arrives as a POST that sets this event, so every boundary honours it.
+            if cancel_event.is_set():
+                break
             # past the budget the catalog is dropped, so the last pass has to answer.
             tools_allowed = remaining_iterations > 0 and not controller.force_final_answer
             active_tools = controller.active_tools() if tools_allowed else []
@@ -659,6 +681,8 @@ async def stream_chat_completion_with_local_tools(
             resume_partial_request = False
             try:
                 async for line in gen:
+                    if cancel_event.is_set():
+                        break
                     for forwarded in turn.feed(line):
                         yield forwarded
             finally:
@@ -668,6 +692,11 @@ async def stream_chat_completion_with_local_tools(
                     # httpcore asyncgen cleanup on Python 3.13, suppressed as in the route.
                     pass
             _merge_usage(usage_totals, turn.usage)
+
+            if cancel_event.is_set():
+                for line in _close_provisional_cards(turn, set()):
+                    yield line
+                break
 
             if turn.failed:
                 # the error line already went out, so do not re-prompt from a half-finished turn.
@@ -801,6 +830,8 @@ async def stream_chat_completion_with_local_tools(
             turn_executed_real_tool = False
 
             for raw_call in pending_calls:
+                if cancel_event.is_set():
+                    break
                 decision = controller.prepare_call(raw_call)
                 if not decision.should_execute:
                     completion = controller.record_noop(decision)

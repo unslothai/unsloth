@@ -1756,3 +1756,193 @@ def test_suppressed_duplicate_closes_its_provisional_card():
     ended = {e["tool_call_id"] for e in events if e["type"] == "tool_end"}
     assert "call_1" in started
     assert started == ended
+
+
+def test_fragmented_function_name_is_accumulated():
+    """A split name must not resolve to its last fragment and read as disabled."""
+    executed = []
+    client = _FakeClient(
+        [
+            [
+                _chunk(tool_calls = [{"index": 0, "id": "c0", "function": {"name": "web_"}}]),
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "function": {"name": "search", "arguments": '{"query":"x"}'},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "found it."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+
+    def _execute(name, arguments, **kwargs):
+        executed.append(name)
+        return "Title: x"
+
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                execute_tool = _execute,
+            )
+        )
+    )
+    assert executed == ["web_search"]
+
+
+def test_tool_call_without_an_id_still_pairs_its_result():
+    """An omitted id would leave the replayed call and its tool message unlinked."""
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [{"index": 0, "function": {"name": "python", "arguments": "{}"}}]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "done."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: "4",
+            )
+        )
+    )
+    followup = client.calls[1]["messages"]
+    assistant, tool_message = followup[-2], followup[-1]
+    assert assistant["tool_calls"][0]["id"] == "call_0"
+    assert tool_message["tool_call_id"] == "call_0"
+
+
+def test_provider_keepalive_comments_are_forwarded():
+    """Swallowing them lets an nginx or tunnel idle limit close a healthy stream."""
+    client = _FakeClient(
+        [
+            [
+                ": ping",
+                _chunk(content = "hi"),
+                _finish("stop"),
+                "data: [DONE]",
+            ]
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+            )
+        )
+    )
+    assert ": ping" in lines
+
+
+def test_a_raising_tool_does_not_cancel_the_request():
+    """The error is handed back to the model, so the shared event must stay clear."""
+    route_event = threading.Event()
+    calls = []
+
+    def _execute(name, arguments, **kwargs):
+        calls.append(name)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return "second call ran"
+
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {"index": 0, "id": "c0", "function": {"name": "python", "arguments": "{}"}}
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [
+                _chunk(
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {"name": "python", "arguments": '{"code":"2"}'},
+                        }
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "done."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                cancel_event = route_event,
+                execute_tool = _execute,
+            )
+        )
+    )
+    # a cancelled request would break before the second turn ever reached the tool.
+    assert calls == ["python", "python"]
+    assert _content(lines) == "done."
+
+
+def test_a_set_cancel_event_stops_the_loop():
+    """Stop arrives as a POST that sets the event; the loop must not keep generating."""
+    route_event = threading.Event()
+
+    def _execute(name, arguments, **kwargs):
+        route_event.set()
+        return "cancelled mid-run"
+
+    client = _FakeClient(
+        [
+            [
+                _chunk(
+                    tool_calls = [
+                        {"index": 0, "id": "c0", "function": {"name": "python", "arguments": "{}"}}
+                    ]
+                ),
+                _finish("tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(content = "should never be requested."), _finish("stop"), "data: [DONE]"],
+        ]
+    )
+    lines = asyncio.run(
+        _collect(
+            stream_chat_completion_with_local_tools(
+                client,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                cancel_event = route_event,
+                execute_tool = _execute,
+            )
+        )
+    )
+    assert len(client.calls) == 1
+    assert "should never be requested." not in _content(lines)
+    assert lines[-1] == "data: [DONE]"
