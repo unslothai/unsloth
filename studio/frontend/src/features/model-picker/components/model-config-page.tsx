@@ -24,11 +24,13 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   type VramBudgetSettings,
+  dropVramBudgetRetry,
   flushVramBudgetSave,
   loadVramBudgetSettings,
   settleVramBudgetSave,
   stageVramBudgetSave,
   subscribeVramBudgetSettings,
+  updateVramBudgetSettings,
 } from "@/features/settings/api/vram-budget";
 import {
   type GpuIndexKind,
@@ -95,6 +97,10 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
+
+// A Run waiting on the budget sends whatever a drag stages mid-flight, but only so
+// many times: past this it starts the load rather than let dragging starve it.
+const BUDGET_SETTLE_ATTEMPTS = 3;
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -411,7 +417,9 @@ function VramBudgetRow() {
       return;
     }
     let cancelled = false;
-    loadVramBudgetSettings().then((loaded) => {
+    // Forced: a read that began before the load finished describes the child being
+    // replaced, and sharing it would republish the notice this refresh is clearing.
+    loadVramBudgetSettings({ force: true }).then((loaded) => {
       if (cancelled || !loaded) {
         return;
       }
@@ -447,6 +455,28 @@ function VramBudgetRow() {
   }
 
   const defaultPercent = vramFractionToPercent(settings.defaultFraction);
+  // Stored beats UNSLOTH_VRAM_FRACTION, so once the slider has been touched there
+  // is otherwise no way back to inheriting it: dragging to the same number stores
+  // that number, and a later change to the variable stays masked. Clearing is what
+  // the null the API already accepts is for.
+  const resetBudget = () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    // Drop a queued drag, or its debounce would store back what this clears.
+    stageVramBudgetSave(null);
+    updateVramBudgetSettings(null)
+      .then((next) => {
+        setSettings(next);
+        setPercent(vramFractionToPercent(next.fraction));
+      })
+      .catch((error: unknown) => {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to reset VRAM budget",
+        );
+      });
+  };
   const commit = (next: number) => {
     setPercent(next);
     // Debounced: the slider fires per pointer move, so a drag would be dozens of
@@ -492,6 +522,10 @@ function VramBudgetRow() {
               margin on each card, up to the 512 MiB llama.cpp keeps for its own
               fitter, and never more than the default would have reserved.
             </div>
+            <div>
+              Reset clears the stored value, so UNSLOTH_VRAM_FRACTION applies
+              again if it is set.
+            </div>
           </div>
         }
       />
@@ -501,6 +535,15 @@ function VramBudgetRow() {
             ? "Above the default fits more context but leaves less slack, so a load can run out of memory. llama.cpp treats that as a hard failure rather than falling back."
             : "Below the default is safer on a shared GPU, but a tight fit may push layers onto the CPU and generate slowly."}
         </p>
+      )}
+      {settings.isStored && (
+        <button
+          type="button"
+          onClick={resetBudget}
+          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-nav-fg"
+        >
+          Reset to the server default
+        </button>
       )}
       {settings.reloadRequired && (
         <p className="text-ui-11 text-muted-foreground">
@@ -1336,6 +1379,19 @@ export function ModelConfigPage({
   // Held for the window where Run is waiting on a budget PUT rather than on the
   // load it looks like it started.
   const [budgetSettling, setBudgetSettling] = useState(false);
+  // The budget is server-wide and on no per-model field, so changing it leaves this
+  // page at its baseline and the Reload button disabled: the row's notice asked for
+  // a reload the user had no way to start. Read off the same publish the row uses,
+  // so nothing has to be threaded through GpuMemorySettings, and so a row that
+  // never mounts (Mac, no GPU, Manual) leaves this false.
+  const [budgetReloadRequired, setBudgetReloadRequired] = useState(false);
+  useEffect(
+    () =>
+      subscribeVramBudgetSettings((next) => {
+        setBudgetReloadRequired(next.reloadRequired);
+      }),
+    [],
+  );
   const stagedMetadataPending =
     contextFetchKey != null &&
     stagedDims == null &&
@@ -1582,22 +1638,35 @@ export function ModelConfigPage({
       setBudgetSettling(true);
       // Caught, not voided: finally alone re-rejects into an unhandled rejection,
       // and the load would proceed on the old fraction with nothing said.
-      void stagedBudget
-        .catch((error: unknown) => {
-          // Dropped rather than left for the next flush: the picker teardown that
-          // onRun triggers flushes it, and that PUT would then race the load
-          // request this click is about to send. Either fraction could win, which
-          // is the one thing this control promises cannot happen. The toast says
-          // the budget did not change, and the slider is still there to retry.
-          stageVramBudgetSave(null);
-          toast.error(
-            error instanceof Error ? error.message : "Failed to save VRAM budget",
-          );
-        })
-        .finally(() => {
-          setBudgetSettling(false);
-          onRun(effectiveLoadConfig, classifiedIsDiffusion);
-        });
+      const settleThenRun = (pending: Promise<unknown>, attempt: number) => {
+        void pending
+          .catch((error: unknown) => {
+            // Dropped rather than left for the next flush: the picker teardown that
+            // onRun triggers flushes it, and that PUT would then race the load
+            // request this click is about to send. Either fraction could win, which
+            // is the one thing this control promises cannot happen. Only the retry
+            // goes, never a newer edit staged over it. The toast says the budget
+            // did not change, and the slider is still there to retry.
+            dropVramBudgetRetry();
+            toast.error(
+              error instanceof Error ? error.message : "Failed to save VRAM budget",
+            );
+          })
+          .finally(() => {
+            // The slider stays live while this settles, so a drag can stage a newer
+            // fraction mid-flight. Send that too, or the teardown would flush it
+            // alongside the load request and either could size the child. Capped, so
+            // continued dragging cannot starve the load forever.
+            const next = attempt < BUDGET_SETTLE_ATTEMPTS ? settleVramBudgetSave() : null;
+            if (next) {
+              settleThenRun(next, attempt + 1);
+              return;
+            }
+            setBudgetSettling(false);
+            onRun(effectiveLoadConfig, classifiedIsDiffusion);
+          });
+      };
+      settleThenRun(stagedBudget, 1);
       return;
     }
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
@@ -1788,7 +1857,10 @@ export function ModelConfigPage({
             disabled={
               stagedMetadataPending ||
               budgetSettling ||
-              (isActiveModel && atBaseline && !rememberChanged)
+              (isActiveModel &&
+                atBaseline &&
+                !rememberChanged &&
+                !budgetReloadRequired)
             }
             onClick={handleRun}
           >

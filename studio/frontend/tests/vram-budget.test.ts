@@ -296,7 +296,7 @@ test("a failed save is re-staged, but never over a newer edit", () => {
     rejection,
     /generation === vramBudgetWriteGeneration && stagedVramBudgetFraction === null/,
   );
-  assert.match(rejection, /stagedVramBudgetFraction = fraction;/);
+  assert.match(rejection, /stageVramBudgetSave\(fraction\);/);
   // Still rejects, so the caller can report it.
   assert.match(rejection, /throw error;/);
 });
@@ -336,10 +336,100 @@ test("Run waits out the budget save without starting two loads", () => {
 test("a save that fails during Run is dropped, not left to race the load", () => {
   const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
   const rejection = run
-    .slice(run.indexOf("void stagedBudget"))
+    .slice(run.indexOf("const settleThenRun ="))
     .replace(/\s+/g, " ");
   // onRun tears the picker down, and that unmount flushes whatever is staged. A
   // re-staged retry would therefore PUT alongside the load request this click is
   // sending, and either fraction could size the child.
-  assert.match(rejection, /stageVramBudgetSave\(null\); toast\.error\(/);
+  assert.match(rejection, /dropVramBudgetRetry\(\); toast\.error\(/);
+});
+
+test("only the retry is dropped, never a newer edit staged over it", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  const flat = client.replace(/\s+/g, " ");
+  // Run drops the failed fraction so it cannot race the load, but a drag landing
+  // during that PUT stages a newer one, and dropping that would discard the edit
+  // the user is looking at.
+  assert.match(flat, /stagedVramBudgetSequence \+= 1;/);
+  assert.match(
+    flat,
+    /export function dropVramBudgetRetry\(\) \{ if \(stagedVramBudgetSequence === retryVramBudgetSequence\)/,
+  );
+  assert.match(
+    flat,
+    /stageVramBudgetSave\(fraction\); retryVramBudgetSequence = stagedVramBudgetSequence;/,
+  );
+});
+
+test("a post-load read is not answered by one taken before the load finished", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  const flat = client.replace(/\s+/g, " ");
+  // reloadRequired describes the running child, so an in-flight GET answers about
+  // the child being replaced; sharing it republishes the stale notice.
+  assert.match(flat, /if \(options\.force\) \{[^}]*inFlightVramBudget = null;/);
+  // The displaced read must not then clear the newer handle on its way out.
+  assert.match(
+    flat,
+    /if \(inFlightVramBudget === read\) \{ inFlightVramBudget = null;/,
+  );
+  const row = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/components/model-config-page.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.match(row, /loadVramBudgetSettings\(\{ force: true \}\)/);
+});
+
+test("an edit made while Run waits is sent before the load starts", () => {
+  const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
+  const body = run.slice(0, run.indexOf("\n  return (")).replace(/\s+/g, " ");
+  // The slider stays live for the round trip, so a drag can stage a newer fraction
+  // mid-flight. The teardown would otherwise flush it alongside the load request.
+  assert.match(
+    body,
+    /const next = attempt < BUDGET_SETTLE_ATTEMPTS \? settleVramBudgetSave\(\) : null;/,
+  );
+  assert.match(body, /settleThenRun\(next, attempt \+ 1\);/);
+  // Capped, so continued dragging cannot starve the load.
+  assert.match(pageSource, /const BUDGET_SETTLE_ATTEMPTS = 3;/);
+});
+
+test("a stored budget can be cleared back to the inherited one", () => {
+  const row = vramBudgetRowSource().replace(/\s+/g, " ");
+  // Stored beats UNSLOTH_VRAM_FRACTION, so without this the first drag masks the
+  // variable for good: dragging back to the same number stores that number.
+  assert.match(row, /\{settings\.isStored && \( <button/);
+  assert.match(row, /updateVramBudgetSettings\(null\)/);
+  // A queued drag would otherwise store back what the reset just cleared.
+  assert.match(
+    row,
+    /stageVramBudgetSave\(null\); updateVramBudgetSettings\(null\)/,
+  );
+});
+
+test("Reload is reachable when only the server-wide budget changed", () => {
+  // The budget is on no per-model field, so the page stays at its baseline and the
+  // button stayed disabled while the row asked for a reload.
+  assert.match(
+    pageSource.replace(/\s+/g, " "),
+    /isActiveModel && atBaseline && !rememberChanged && !budgetReloadRequired/,
+  );
+  assert.match(
+    pageSource.replace(/\s+/g, " "),
+    /subscribeVramBudgetSettings\(\(next\) => \{ setBudgetReloadRequired\(next\.reloadRequired\); \}\)/,
+  );
 });

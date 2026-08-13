@@ -38,9 +38,26 @@ let inFlightVramBudget: Promise<VramBudgetSettings> | null = null;
 // and the load must still be able to flush that edit.
 let stagedVramBudgetFraction: number | null = null;
 
+// Bumped on every stage, so a retry put back by a failed write can be told apart
+// from a newer edit the user staged over it.
+let stagedVramBudgetSequence = 0;
+let retryVramBudgetSequence = -1;
+
 /** Record a fraction a debounced save has not sent yet. */
 export function stageVramBudgetSave(fraction: number | null) {
   stagedVramBudgetFraction = fraction;
+  stagedVramBudgetSequence += 1;
+}
+
+/**
+ * Drop a retry a failed write put back, unless something newer is staged over it.
+ * For a caller that is about to start a load: the retry would otherwise be flushed
+ * by the teardown and race the load request.
+ */
+export function dropVramBudgetRetry() {
+  if (stagedVramBudgetSequence === retryVramBudgetSequence) {
+    stagedVramBudgetFraction = null;
+  }
 }
 
 /**
@@ -109,19 +126,34 @@ async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
  * concurrent calls share one request. Returns null rather than throwing when the
  * endpoint is absent, so a newer UI on an older backend hides the control.
  */
-export async function loadVramBudgetSettings(): Promise<VramBudgetSettings | null> {
+export async function loadVramBudgetSettings(
+  options: { force?: boolean } = {},
+): Promise<VramBudgetSettings | null> {
   // Read behind any open write: a row remounting right after a flushed drag can
   // otherwise GET the old fraction before the PUT commits and answer after it,
   // repainting the control with the value the server just replaced. The
   // subscription cannot untangle that, since only the order is wrong.
   const pendingWrites =
     vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
-  inFlightVramBudget ??= pendingWrites
-    .then(fetchVramBudgetSettings)
-    .then(publishVramBudget)
-    .finally(() => {
-      inFlightVramBudget = null;
-    });
+  if (options.force) {
+    // reloadRequired describes the running child, so a read that started before a
+    // load finished answers about the child being replaced. Sharing it would
+    // republish that stale answer as if it described the new one.
+    inFlightVramBudget = null;
+  }
+  if (!inFlightVramBudget) {
+    const read: Promise<VramBudgetSettings> = pendingWrites
+      .then(fetchVramBudgetSettings)
+      .then(publishVramBudget)
+      .finally(() => {
+        // Identity-checked: a forced read displaces this one, and clearing blindly
+        // would drop the newer request's handle and leave it unshared.
+        if (inFlightVramBudget === read) {
+          inFlightVramBudget = null;
+        }
+      });
+    inFlightVramBudget = read;
+  }
   try {
     return await inFlightVramBudget;
   } catch {
@@ -184,7 +216,8 @@ export function updateVramBudgetSettings(
         generation === vramBudgetWriteGeneration &&
         stagedVramBudgetFraction === null
       ) {
-        stagedVramBudgetFraction = fraction;
+        stageVramBudgetSave(fraction);
+        retryVramBudgetSequence = stagedVramBudgetSequence;
       }
       throw error;
     },

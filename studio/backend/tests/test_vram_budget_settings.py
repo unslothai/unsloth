@@ -374,7 +374,7 @@ class TestLaunchFinalization:
         compact = self._load_model_source()
         lock_at = compact.index("withself._serial_load_scope():")
         resolve_at = compact.index("_vram_frac=_active_vram_fraction()")
-        dedupe_at = compact.index("ifself.adopt_load_intent_if_matched(intent,")
+        dedupe_at = compact.index("ifself.adopt_load_intent_if_matched(intent)")
         assert lock_at < resolve_at < dedupe_at
 
     def test_a_healthy_spawn_keeps_the_pending_value_until_the_commit(self):
@@ -421,7 +421,7 @@ class TestPreLaunchWindow:
         # no live process, so it was told no reload was needed.
         compact = self._compact()
         armed = compact.index("self._vram_fraction_pending=_vram_frac")
-        dedupe = compact.index("ifself.adopt_load_intent_if_matched(intent,")
+        dedupe = compact.index("ifself.adopt_load_intent_if_matched(intent)")
         assert armed < dedupe
 
     def test_the_pending_value_is_armed_before_the_download(self):
@@ -596,10 +596,11 @@ class TestRetriesAndDedup:
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
-        assert "adopt_load_intent_if_matched(intent,vram_fraction=_vram_frac)" in compact
+        assert "self._vram_fraction_pending=_vram_frac" in compact
+        assert "adopt_load_intent_if_matched(intent)" in compact
 
     def test_the_route_fast_path_still_resolves_its_own(self, monkeypatch):
-        # It has no load to inherit from, so the parameter defaults to a live read.
+        # It has no load to inherit from, so with no marker armed it reads live.
         import core.inference.llama_cpp as lc
 
         backend = lc.LlamaCppBackend()
@@ -613,5 +614,80 @@ class TestRetriesAndDedup:
         intent = lc.GgufLoadIntent(model_identifier = "owner/repo")
 
         assert not backend.adopt_load_intent_if_matched(intent)
-        # ...and an explicit fraction wins over the live read.
-        assert backend.adopt_load_intent_if_matched(intent, vram_fraction = 0.97)
+        # ...and a load in flight hands its captured fraction over, ahead of that read.
+        backend._vram_fraction_pending = 0.97
+        assert backend.adopt_load_intent_if_matched(intent)
+
+
+class TestFitTarget:
+    """The budget has to reach llama.cpp's own fitter on the --fit fallback.
+
+    ``--fit-target`` is documented by the bundled llama-server as the "target
+    margin per device for --fit ... default: 1024". Studio passes a tighter 512
+    under Manual + Auto and nothing at all on the legacy auto path, so a lowered
+    budget stopped at the planner and the fitter still packed to its own margin.
+    """
+
+    _CAPS = {"supports_fit_ctx": True, "supports_fit_target": True, "supports_kv_unified": True}
+
+    def _flags(self, *, auto_fit, extra):
+        import core.inference.llama_cpp as lc
+        return lc.LlamaCppBackend._ctx_integrity_flags(
+            1,
+            True,
+            auto_fit,
+            0,
+            0,
+            self._CAPS,
+            fit_target_extra_mib = extra,
+        )
+
+    def test_the_default_budget_emits_exactly_what_it_did_before(self):
+        # The acceptance bar for the whole feature: an untouched slider must not
+        # move a single flag.
+        assert self._flags(auto_fit = True, extra = 0.0)[-2:] == ["--fit-target", "512"]
+        assert "--fit-target" not in self._flags(auto_fit = False, extra = 0.0)
+
+    def test_a_lowered_budget_reaches_the_fitter_on_both_paths(self):
+        # Raised from each path's own starting margin, not from zero: measuring
+        # from zero would hand the legacy path 512 where it used to keep 1024, so
+        # lowering the slider would have made llama.cpp pack MORE onto the card.
+        assert self._flags(auto_fit = True, extra = 4096.0)[-2:] == ["--fit-target", "4608"]
+        assert self._flags(auto_fit = False, extra = 4096.0)[-2:] == ["--fit-target", "5120"]
+
+    def test_the_margin_grows_as_the_budget_falls(self):
+        seen = [
+            int(self._flags(auto_fit = auto, extra = extra)[-1])
+            for auto in (True, False)
+            for extra in (512.0, 1024.0, 2048.0)
+        ]
+        assert seen == sorted(seen[:3]) + sorted(seen[3:])
+
+    def test_nothing_is_emitted_without_the_capability(self):
+        # An older llama-server rejects unknown flags outright.
+        caps = {"supports_fit_ctx": True, "supports_fit_target": False}
+        import core.inference.llama_cpp as lc
+
+        flags = lc.LlamaCppBackend._ctx_integrity_flags(
+            1,
+            True,
+            True,
+            0,
+            0,
+            caps,
+            fit_target_extra_mib = 4096.0,
+        )
+        assert "--fit-target" not in flags
+
+    def test_the_extra_is_measured_from_the_largest_card(self):
+        # --fit-target takes a per-device list, but in llama.cpp's device order,
+        # not ours. One broadcast value sized by the largest card leaves no device
+        # under the budget.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert "if_vram_frac<_CTX_FIT_VRAM_FRACTIONand" in compact
+        assert "_fit_target_extra_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*max(" in compact
+        assert "fit_target_extra_mib=_fit_target_extra_mib," in compact
