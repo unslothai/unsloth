@@ -2108,6 +2108,7 @@ const Composer: FC<{
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       // Bulk text pastes attach as a file instead of filling the input, except
       // in image-edit mode, whose submit path takes an inline instruction only.
+      const input = event.currentTarget;
       const attachedPastedText = !overlay && pasteLongTextAsFile(
         event,
         (file) => aui.composer().addAttachment(file),
@@ -2116,7 +2117,17 @@ const Composer: FC<{
             description: "Paste it again, or paste it in smaller pieces.",
           }),
       );
-      if (attachedPastedText) return;
+      if (attachedPastedText) {
+        // Swallowing the paste also swallowed the replacement the browser
+        // would have made, so drop the selection the paste was meant to cover.
+        const { selectionStart, selectionEnd, value } = input;
+        if (selectionStart !== selectionEnd) {
+          aui
+            .composer()
+            .setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
+        }
+        return;
+      }
       pasteClipboardFiles(
         event,
         async (files) => {
@@ -2180,15 +2191,11 @@ const Composer: FC<{
         isPastedTextFile((attachment as { file?: File }).file),
       ),
   );
-  // Identities only: draft autosave keys off this, and the bodies behind it can
-  // be megabytes.
-  const pastedTextDraftSignature = useAuiState(({ composer }) =>
-    composer.attachments
-      .filter((attachment) =>
-        isPastedTextFile((attachment as { file?: File }).file),
-      )
-      .map((attachment) => attachment.id)
-      .join(","),
+  // Identities only: paste autosave keys off this, and the bodies behind it can
+  // be megabytes. Every attachment counts, not just pasted ones, so removing an
+  // ordinary file also releases the paste restore waiting on it.
+  const composerAttachmentSignature = useAuiState(({ composer }) =>
+    composer.attachments.map((attachment) => attachment.id).join(","),
   );
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
@@ -2581,18 +2588,10 @@ const Composer: FC<{
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     if (restoredPasteKeyRef.current === pasteDraftKey) return;
-    // The composer outlives a thread switch, so wait for the outgoing paste to
-    // clear rather than stacking this thread's draft on top of it. Changing
-    // attachments re-runs this effect, which is how that retry happens.
-    if (
-      composer
-        .getState()
-        .attachments.some((attachment) =>
-          isPastedTextFile((attachment as { file?: File }).file),
-        )
-    ) {
-      return;
-    }
+    // The composer outlives a thread switch, so restore only into an empty one
+    // rather than mixing this thread's draft with whatever the last one left.
+    // Changing attachments re-runs this effect, which is how the retry happens.
+    if (composer.getState().attachments.length > 0) return;
     const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
     if (stored.length === 0) {
       restoredPasteKeyRef.current = pasteDraftKey;
@@ -2605,7 +2604,7 @@ const Composer: FC<{
     ).finally(() => {
       restoredPasteKeyRef.current = pasteDraftKey;
     });
-  }, [pasteDraftKey, pastedTextDraftSignature, aui]);
+  }, [pasteDraftKey, composerAttachmentSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
@@ -2618,7 +2617,7 @@ const Composer: FC<{
         return text === undefined ? [] : [text];
       });
     writePasteDraft(pasteDraftKey, pastes);
-  }, [pastedTextDraftSignature, pasteDraftKey, aui]);
+  }, [composerAttachmentSignature, pasteDraftKey, aui]);
   useEffect(() => {
     // After a thread switch composerText can still hold the previous
     // thread's text; skip that cycle so it isn't saved under the new key.
