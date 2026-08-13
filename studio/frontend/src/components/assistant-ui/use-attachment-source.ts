@@ -67,7 +67,7 @@ export const useAttachmentSource = (): AttachmentSource => {
         contentSrc: isImage
           ? parts.find((part) => part.type === "image")?.image
           : audio
-            ? attachmentAudioSrc(audio, contentType)
+            ? attachmentAudioSrc(audio, contentType, attachment.name)
             : undefined,
         text: text || undefined,
       };

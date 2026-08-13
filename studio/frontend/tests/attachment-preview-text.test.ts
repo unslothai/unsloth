@@ -13,6 +13,7 @@ const {
   countAttachmentTextLines,
   isAudioAttachment,
   parseAttachmentText,
+  readAttachmentText,
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
 
@@ -60,18 +61,51 @@ test("countAttachmentTextLines counts empty and single-line text", () => {
 test("attachmentAudioSrc keeps the uploaded audio MIME", () => {
   const part = { data: "AAA", format: "wav" };
   assert.equal(
-    attachmentAudioSrc(part, "audio/ogg"),
+    attachmentAudioSrc(part, "audio/ogg", "clip.ogg"),
     "data:audio/ogg;base64,AAA",
   );
   assert.equal(
-    attachmentAudioSrc({ data: "AAA", format: "mp3" }, undefined),
+    attachmentAudioSrc({ data: "AAA", format: "mp3" }, undefined, "clip.mp3"),
     "data:audio/mpeg;base64,AAA",
   );
-  assert.equal(attachmentAudioSrc(part, ""), "data:audio/wav;base64,AAA");
   assert.equal(
-    attachmentAudioSrc(part, "application/octet-stream"),
+    attachmentAudioSrc(part, "", "clip.wav"),
     "data:audio/wav;base64,AAA",
   );
+});
+
+// An extension-only upload reaches the sent preview with an empty content type
+// and format "wav", so the filename is what identifies the container.
+test("attachmentAudioSrc falls back to the extension for untyped uploads", () => {
+  const part = { data: "AAA", format: "wav" };
+  assert.equal(
+    attachmentAudioSrc(part, "", "clip.m4a"),
+    "data:audio/mp4;base64,AAA",
+  );
+  assert.equal(
+    attachmentAudioSrc(part, "application/octet-stream", "clip.flac"),
+    "data:audio/flac;base64,AAA",
+  );
+  assert.equal(
+    attachmentAudioSrc(part, undefined, "clip"),
+    "data:audio/wav;base64,AAA",
+  );
+});
+
+// TextAttachmentAdapter accepts plain text with no size limit, so opening a
+// preview must not materialize the whole file.
+test("readAttachmentText reads a bounded slice of a large text file", async () => {
+  const oversized = new File(["a".repeat(2_000_000)], "huge.txt", {
+    type: "text/plain",
+  });
+  const { label, text } = await readAttachmentText(
+    oversized,
+    oversized.name,
+    oversized.type,
+  );
+  assert.equal(label, null);
+  assert.equal(text.length, 1_000_000);
+  assert.equal(truncateAttachmentPreviewText(text).truncated, true);
 });
 
 test("isAudioAttachment matches by MIME and by extension", () => {

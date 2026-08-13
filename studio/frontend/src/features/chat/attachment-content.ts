@@ -25,9 +25,24 @@ const TAGGED_ATTACHMENT_TEXT_RE =
   /^<attachment name=[^\n]*>\n([\s\S]*)\n<\/attachment>$/;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const AUDIO_EXTENSION_MIMES: Record<string, string> = {
+  wav: "audio/wav",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  mp4: "audio/mp4",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  flac: "audio/flac",
+  aac: "audio/aac",
+  webm: "audio/webm",
+};
 // Long attachments still have to render inside a dialog, so the preview stops
 // well before the point where a single <pre> stalls the webview.
 const MAX_PREVIEW_TEXT_LENGTH = 200_000;
+// Plain text has no size limit at upload, so a preview reads a bounded slice
+// instead of the whole file. Five bytes per character keeps the slice past the
+// character cap for any UTF-8 input, so truncation is still detected.
+const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
 
 export function isAudioAttachment(
   name: string | undefined,
@@ -39,17 +54,19 @@ export function isAudioAttachment(
   );
 }
 
-// The audio part keeps only the coarse format the backend needs, so the
-// attachment's own content type wins when it names a real audio MIME.
+// The audio part keeps only the coarse format the backend needs ("mp3" or
+// "wav"), so the content type wins, then the extension for uploads the browser
+// typed as empty, and the part format only as a last resort.
 export function attachmentAudioSrc(
   audio: { data: string; format: string },
   contentType: string | undefined,
+  name: string | undefined,
 ): string {
+  const extension = name?.toLowerCase().split(".").pop() ?? "";
   const mime = AUDIO_MIME_RE.test(contentType ?? "")
     ? (contentType as string)
-    : audio.format === "mp3"
-      ? "audio/mpeg"
-      : "audio/wav";
+    : (AUDIO_EXTENSION_MIMES[extension] ??
+      (audio.format === "mp3" ? "audio/mpeg" : "audio/wav"));
   return `data:${mime};base64,${audio.data}`;
 }
 
@@ -141,7 +158,15 @@ export async function readAttachmentText(
     );
     return { label, text };
   }
-  return { label: null, text: await file.text() };
+  return { label: null, text: await readBoundedText(file) };
+}
+
+function readBoundedText(file: File): Promise<string> {
+  return (
+    file.size > MAX_PREVIEW_TEXT_BYTES
+      ? file.slice(0, MAX_PREVIEW_TEXT_BYTES)
+      : file
+  ).text();
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview
