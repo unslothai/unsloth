@@ -70,9 +70,7 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
 # gap is what it always was: a manifest that does not describe this install, and the
 # dependency pass runs. Empty this tuple once the release that introduced them is
 # far enough back that no manifest predates it.
-LATE_TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
-    "single-env/overrides-win-arm64.txt",
-)
+LATE_TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = ("single-env/overrides-win-arm64.txt",)
 
 # Entries in studio.txt that the ARM64 inference-only tier deliberately never
 # installs, so verification must not demand them back. Kept in step with

@@ -329,9 +329,7 @@ def test_the_env_snapshot_is_taken_before_anything_can_fail():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     snapshot = source.index("$script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS")
     first_failure = source.index("return (Exit-InstallFailure")
-    assert snapshot < first_failure, (
-        "the snapshot must precede every Exit-InstallFailure call site"
-    )
+    assert snapshot < first_failure, "the snapshot must precede every Exit-InstallFailure call site"
 
 
 def test_install_ps1_falls_back_to_the_inference_only_tier():

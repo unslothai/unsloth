@@ -320,8 +320,7 @@ def test_a_manifest_missing_a_long_standing_file_is_still_stale(install_root, re
     data = json.loads(path.read_text(encoding = "utf-8"))
     recorded = data["requirement_files"]
     long_standing = [
-        name for name in sorted(recorded)
-        if name not in im.LATE_TRACKED_REQUIREMENT_FILES
+        name for name in sorted(recorded) if name not in im.LATE_TRACKED_REQUIREMENT_FILES
     ]
     assert long_standing, "the fixture should record a file that predates the tier"
     del recorded[long_standing[0]]
