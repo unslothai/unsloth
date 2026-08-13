@@ -4117,7 +4117,7 @@ def _preflight_gguf_disk(
     # output. Same predicates as the branch that lowers `need_here`, read
     # against the directory as it stands BEFORE any move, and it can only ever
     # lower the ask: nothing that used to stay put is relocated now.
-    redirect_need = need_with_cache
+    phased_need = 0
     if (
         merge_is_disposable
         and needs_merge
@@ -4125,17 +4125,40 @@ def _preflight_gguf_disk(
         and need_merge_phase > 0
         and need_sibling > 0
         and not _on_separate_filesystems(save_directory, _gguf_output_directory(save_directory))
-        and _merge_reclamation_is_possible(save_directory)
     ):
         redirect_peak = max(need_merge_phase, need_sibling)
         if redirect_peak < need:
-            redirect_need = redirect_peak + max(0, need_with_cache - need)
+            phased_need = redirect_peak + max(0, need_with_cache - need)
+
+    redirect_need = need_with_cache
+    if phased_need > 0 and _merge_reclamation_is_possible(save_directory):
+        redirect_need = phased_need
 
     new_directory, message = kaggle_tmp_redirect(
         save_directory,
         need_bytes = redirect_need,
         what = "GGUF export",
     )
+    # Asked the aggregate because THIS directory already holds weights the
+    # reclamation may not touch, and declined. The relocation writes the merge
+    # into a directory of the export's own, where it can be reclaimed, so the
+    # move is worth a second ask at the phased peak: 63GB merge, 60GB
+    # intermediate, 18GB Q4_K_M asks 141GB, a 130GB /tmp declines it, and the
+    # 123GB peak it would really have peaked at there fits.
+    #
+    # Gated on this directory already being too small for the aggregate the
+    # refusal below will read, which is what makes the lower ask safe. A lower
+    # ask can otherwise CANCEL a move: /kaggle/working with room for the peak
+    # but not the aggregate keeps an export that has no reclamation here, and
+    # then the refusal reads the aggregate anyway.
+    if message is None and 0 < phased_need < redirect_need:
+        free_before_move = free_bytes(save_directory)
+        if free_before_move is not None and free_before_move < need:
+            new_directory, message = kaggle_tmp_redirect(
+                save_directory,
+                need_bytes = phased_need,
+                what = "GGUF export",
+            )
     if message is not None:
         print(message)
         save_directory = new_directory

@@ -2560,12 +2560,92 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         asked = self._redirect_ask(phases, monkeypatch)
         assert asked == [self.AGGREGATE]
 
-    def test_a_reused_output_directory_asks_the_aggregate(self, phases, monkeypatch):
+    def _reuse(self, phases):
+        """Leave a previous export's checkpoint in the output directory."""
         directory = phases["directory"]
         os.makedirs(directory, exist_ok = True)
         with open(os.path.join(directory, "model.safetensors"), "w") as handle:
             handle.write("x")
+        return directory
+
+    def test_a_reused_output_directory_asks_the_aggregate_first(self, phases, monkeypatch):
+        """Then asks the peak, because the move writes into a fresh directory.
+
+        The reclamation this directory cannot offer is available at the
+        redirect target, so a declined move is worth a second ask: 132GB free
+        here is already less than the 141GB aggregate, and the export really
+        does peak at 123GB once it is relocated.
+        """
+        self._reuse(phases)
+        assert self._redirect_ask(phases, monkeypatch) == [self.AGGREGATE, self.MERGE_PHASE]
+
+    def test_a_reused_output_directory_with_room_here_is_asked_once(self, phases, monkeypatch):
+        """Nothing is refused here, so there is nothing a move could rescue."""
+        self._reuse(phases)
+        phases.update(free = self.AGGREGATE)
         assert self._redirect_ask(phases, monkeypatch) == [self.AGGREGATE]
+
+    def _zoo_redirect(self, phases, monkeypatch, tmp_path, working_free, tmp_free):
+        """Run the preflight against `kaggle_tmp_redirect`'s own move rule.
+
+        Returns `(asks, directory)`, with `directory` the one the export ends
+        up writing to.
+        """
+        target = str(tmp_path / "overlay" / "unsloth_saves" / "model")
+        asked = []
+
+        def redirect(save_directory, need_bytes = 0, what = "export"):
+            asked.append(need_bytes)
+            if tmp_free <= working_free or need_bytes <= 0:
+                return save_directory, None
+            if working_free >= need_bytes or tmp_free < need_bytes:
+                return save_directory, None
+            os.makedirs(target, exist_ok = True)
+            return target, f"Unsloth: moved to {target}"
+
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", True)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", redirect)
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: tmp_free if str(path).startswith(target) else working_free,
+        )
+        directory, _ = self._preflight(phases)
+        return asked, directory
+
+    def test_a_reused_directory_is_relocated_instead_of_refused(
+        self, phases, monkeypatch, tmp_path, capsys
+    ):
+        """100GB here, 130GB on the overlay: the 123GB peak fits after the move.
+
+        Asked only the 141GB aggregate, the overlay declines it too and the
+        export is refused on a filesystem it never had to use.
+        """
+        self._reuse(phases)
+        phases.update(free = 100 * GB)
+        asked, directory = self._zoo_redirect(
+            phases, monkeypatch, tmp_path, working_free = 100 * GB, tmp_free = 130 * GB
+        )
+        assert asked == [self.AGGREGATE, self.MERGE_PHASE]
+        assert directory == str(tmp_path / "overlay" / "unsloth_saves" / "model")
+        assert "moved to" in capsys.readouterr().out
+
+    def test_a_move_the_aggregate_would_have_made_is_not_cancelled(
+        self, phases, monkeypatch, tmp_path
+    ):
+        """130GB here holds the peak but not the aggregate, and no merge is
+
+        reclaimable here, so the refusal would read 141GB. Asking the peak
+        outright keeps the export on a filesystem that cannot run it; the
+        second ask only ever follows a move this directory could not avoid.
+        """
+        self._reuse(phases)
+        phases.update(free = 130 * GB)
+        asked, directory = self._zoo_redirect(
+            phases, monkeypatch, tmp_path, working_free = 130 * GB, tmp_free = 200 * GB
+        )
+        assert asked == [self.AGGREGATE]
+        assert directory == str(tmp_path / "overlay" / "unsloth_saves" / "model")
 
     def test_save_to_gguf_passes_the_flag_through(self):
         """The preflight and the reclamation must agree about disposability."""
