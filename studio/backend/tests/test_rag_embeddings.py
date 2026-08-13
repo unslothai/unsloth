@@ -195,14 +195,18 @@ def test_device_defaults_to_cpu_on_an_accelerator_host(monkeypatch):
     """
     monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "auto")
     monkeypatch.setattr(
-        embeddings, "get_device", lambda: embeddings.DeviceType.CUDA,
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
     )
     assert embeddings._device() == "cpu"
 
 
 def test_device_opts_in_to_the_accelerator(monkeypatch):
     monkeypatch.setattr(
-        embeddings, "get_device", lambda: embeddings.DeviceType.CUDA,
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
     )
     for requested in ("gpu", "GPU", " cuda "):
         monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
