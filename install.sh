@@ -439,7 +439,12 @@ esac
 # has enforced 3.11-3.13 all along; this is the same window.
 # Only a plain X.Y / X.Y.Z is judged. A path or a uv download name is not a version
 # and passes through untouched, matching _python_request's own screening.
-if [ -n "$_USER_PYTHON" ]; then
+# And only when this run will actually select an interpreter. `unsloth studio update`
+# re-runs the installer with --shortcuts-only to refresh the launcher, passing the
+# caller's whole environment through, so a stale UNSLOTH_PYTHON=3.9 exported years
+# ago would fail a step that never touches Python -- a regression on a machine that
+# is not installing anything.
+if [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ]; then
     case "$_USER_PYTHON" in
         */*|*\\*) ;;
         [0-9]*.[0-9]*)

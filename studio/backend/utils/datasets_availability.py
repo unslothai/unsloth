@@ -181,12 +181,19 @@ def is_inference_only_tier() -> bool:
         return False
 
 
-def require_datasets_http() -> None:
+async def require_datasets_http() -> None:
     """FastAPI dependency: 503 with a stated reason when datasets is absent.
 
     Mirrors routes/rag.py's _require_rag -- a 503 the UI can read, instead of the
     500 plus traceback a bare ModuleNotFoundError from a lazy ``from datasets
     import ...`` deeper in the call produces on every poll.
+
+    ``async`` although it does no I/O: FastAPI runs a *synchronous* dependency in
+    the AnyIO worker pool, so on a healthy install where this only reads a bool,
+    every gated request would still have to win a worker token before it could
+    even be rejected as unauthenticated. Under load from the sync routes elsewhere
+    in this app that is a queue in front of a dict lookup. Async runs it on the
+    event loop, which is what the work actually costs.
     """
     if not datasets_available():
         # Imported here rather than at module scope: this module is also read by

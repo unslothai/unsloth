@@ -14,6 +14,7 @@ promise: startup does not touch ``datasets``, and the endpoints that do answer
 from __future__ import annotations
 
 import ast
+import asyncio
 import sys
 import tempfile
 from unittest import mock
@@ -105,7 +106,7 @@ class TestAvailabilityProbe:
         from fastapi import HTTPException
 
         with pytest.raises(HTTPException) as excinfo:
-            datasets_availability.require_datasets_http()
+            asyncio.run(datasets_availability.require_datasets_http())
         assert excinfo.value.status_code == 503
         assert "datasets" in str(excinfo.value.detail).lower()
 
@@ -116,7 +117,21 @@ class TestAvailabilityProbe:
         assert (
             datasets_availability.datasets_available() is datasets_availability.DATASETS_AVAILABLE
         )
-        datasets_availability.require_datasets_http()
+        asyncio.run(datasets_availability.require_datasets_http())
+
+    def test_the_gate_is_async_so_it_never_queues_for_a_worker(self):
+        """FastAPI runs a SYNCHRONOUS dependency in the AnyIO worker pool. On a
+        healthy install this gate only reads a bool, but as a sync dependency every
+        gated request would have to win a worker token before it could even be
+        rejected as unauthenticated, which under load from this app's sync routes
+        puts a queue in front of a dict lookup."""
+        import inspect
+
+        assert inspect.iscoroutinefunction(datasets_availability.require_datasets_http)
+        # And the one direct caller awaits it, or the tier would accept MCP training
+        # jobs again: an un-awaited coroutine raises nothing.
+        mcp = (_BACKEND / "mcp_server.py").read_text(encoding = "utf-8")
+        assert "await require_datasets_http()" in mcp
 
 
 class TestStartupDoesNotNeedDatasets:

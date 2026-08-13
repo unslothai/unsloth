@@ -272,8 +272,10 @@ rm -f "$_HELPERS" "$_GUARD" "$_DRIVER"
 # after install.sh changed, which is the failure mode this file exists to avoid.
 _GATE=$(mktemp)
 {
-    printf '_USER_PYTHON="$1"\n'
-    awk '/^if \[ -n "\$_USER_PYTHON" \]; then$/{f=1} f{print} f && /^fi$/{exit}' "$INSTALL_SH"
+    # $2 is the --shortcuts-only flag: the gate only judges a run that will
+    # actually select an interpreter.
+    printf '_USER_PYTHON="$1"\n_SHORTCUTS_ONLY="${2:-false}"\n'
+    awk '/^if \[ -n "\$_USER_PYTHON" \] && \[ "\$_SHORTCUTS_ONLY" != true \]; then$/{f=1} f{print} f && /^fi$/{exit}' "$INSTALL_SH"
 } > "$_GATE"
 grep -q '_req_minor' "$_GATE" || { echo "  FAIL: could not extract the python range gate"; FAIL=$((FAIL + 1)); }
 
@@ -283,6 +285,13 @@ run_python_gate() {  # version -> "rejected" | "accepted"
 
 assert_eq "3.9 is rejected before uv is asked for a venv" \
     "rejected" "$(run_python_gate 3.9)"
+# `unsloth studio update` re-runs the installer with --shortcuts-only to refresh the
+# launcher, handing it the caller's whole environment (unsloth_cli/commands/studio.py).
+# That run selects no interpreter, so a stale UNSLOTH_PYTHON=3.9 exported years ago
+# must not fail it: the helper only prints the status, so the update would look
+# successful with the launcher left unwritten.
+assert_eq "--shortcuts-only does not judge the python request" \
+    "accepted" "$(if sh "$_GATE" 3.9 true >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
 assert_eq "2.7 is rejected" \
     "rejected" "$(run_python_gate 2.7)"
 # 3.10 resolves the whole studio set today, so it stays allowed even though the

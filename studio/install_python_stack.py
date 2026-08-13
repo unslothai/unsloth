@@ -3973,6 +3973,20 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     return Path(tmp.name)
 
 
+def _no_deps_mode_label() -> str:
+    """Why this install is taking the --no-deps route, in the user's own terms.
+
+    The tier is reachable on x64 as well, through UNSLOTH_NO_DATASETS=1, and on a
+    machine that is not ARM64 "ARM64 inference-only mode" is a false explanation of
+    a real change.
+    """
+    if NO_TORCH:
+        return "no-torch mode"
+    if IS_WINDOWS_ARM64_PYTHON:
+        return "ARM64 inference-only mode"
+    return "no-datasets mode"
+
+
 def _win_arm64_lifts() -> dict[str, str]:
     """{canonical name: requirement} from overrides-win-arm64.txt, or {}.
 
@@ -4578,7 +4592,9 @@ def install_python_stack() -> int:
         _progress("base packages (no torch)" if NO_TORCH else "base packages (inference-only)")
         pip_install(
             f"Updating {package_name} + unsloth-zoo "
-            f"({'no-torch mode' if NO_TORCH else 'ARM64 inference-only mode'})",
+            # The tier is reachable on x64 through UNSLOTH_NO_DATASETS=1, where the
+            # architecture is not the reason and saying so would be a false one.
+            f"({_no_deps_mode_label()})",
             "--no-cache-dir",
             "--no-deps",
             "--upgrade-package",

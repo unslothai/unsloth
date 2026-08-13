@@ -4350,7 +4350,11 @@ exit 0
         $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f ([guid]::NewGuid().ToString("N")))
         Set-Content -LiteralPath $filtered -Value $kept -Encoding UTF8
         $script:ArmFilteredRequirementFiles += $filtered
-        substep "windows on arm: dropped $($script:ArmInferenceSkipPackages -join ', ') (no win_arm64 wheels)"
+        # UNSLOTH_NO_DATASETS=1 turns this tier on for an x64 install too, where the
+        # reason is the flag rather than the architecture. Saying "windows on arm"
+        # there would be a false explanation of a real change.
+        $why = if ($applyLifts) { "windows on arm" } else { "no-datasets install" }
+        substep "${why}: dropped $($script:ArmInferenceSkipPackages -join ', ') (no win_arm64 wheels)"
         return $filtered
     }
 

@@ -144,7 +144,8 @@ def create_studio_mcp() -> FastMCP:
         # inference-only tier accepts an MCP training job and the spawned trainer dies
         # on `import datasets` instead, so the tool reports a started run that cannot
         # exist. Same 503 the HTTP route raises; FastMCP renders the HTTPException.
-        require_datasets_http()
+        # Awaited: the dependency is async so FastAPI keeps it off the worker pool.
+        await require_datasets_http()
 
         request = TrainingStartRequest.model_validate(config)
         # Pass via_api_key explicitly (a direct call leaves it a Depends object).
