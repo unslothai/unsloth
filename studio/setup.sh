@@ -1528,6 +1528,42 @@ fi
 # Skip all Python dependency work if versions match (fast update path).
 # On Colab (no venv), skip this version check (it needs $VENV_DIR/bin/python)
 # but still run install_python_stack below (it uses sys.executable).
+# Ask the repair implementation for its exact install plan. The same plan is executed
+# by _ensure_rocm_torch, so the fast path cannot drift from the repair it unlocks.
+# Defined at this level because it is also consulted AFTER a dependency pass, which is
+# a path where the fast-path block below never runs.
+# Exit 3 is a successful "no action" result. Exit 4 asks this parent shell to clear a
+# confirmed stale HSA override without reinstalling a matching wheel; exit 5 combines
+# that clear with a dependency pass. Any other non-zero status is a startup, import,
+# argument, or timeout failure and must remain diagnosable.
+_setup_rocm_fast_path_probe() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --rocm-fast-path-needs-repair
+    else
+        "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --rocm-fast-path-needs-repair
+    fi
+}
+_setup_rocm_repair_rc=3
+_setup_run_rocm_fast_path_probe() {
+    _setup_rocm_repair_rc=3
+    if _setup_rocm_fast_path_probe >/dev/null 2>&1; then
+        _setup_rocm_repair_rc=0
+    else
+        _setup_rocm_repair_rc=$?
+    fi
+}
+# install_python_stack can only unset a confirmed stale HSA_OVERRIDE_GFX_VERSION inside
+# its own process, so the parent shell applies the same clear here.
+_setup_apply_rocm_hsa_clear() {
+    if [ "$_setup_rocm_repair_rc" -eq 4 ] || [ "$_setup_rocm_repair_rc" -eq 5 ]; then
+        unset HSA_OVERRIDE_GFX_VERSION
+        substep "confirmed stale HSA_OVERRIDE_GFX_VERSION cleared for this setup run."
+        substep "Remove its export from ~/.bashrc or ~/.profile so a new shell does not restore it."
+    fi
+}
+
 _SKIP_PYTHON_DEPS=false
 _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
@@ -1669,34 +1705,9 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # Ask the repair implementation for its exact install plan. The same plan is executed
-        # by _ensure_rocm_torch, so the fast path cannot drift from the repair it unlocks.
         if [ "$_SKIP_PYTHON_DEPS" = true ]; then
-            _setup_rocm_fast_path_probe() {
-                if command -v timeout >/dev/null 2>&1; then
-                    timeout -k 5 180 "$VENV_DIR/bin/python" \
-                        "$SCRIPT_DIR/install_python_stack.py" --rocm-fast-path-needs-repair
-                else
-                    "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
-                        --rocm-fast-path-needs-repair
-                fi
-            }
-            # Exit 3 is a successful "no action" result. Exit 4 asks this parent
-            # shell to clear a confirmed stale HSA override without reinstalling a
-            # matching wheel; exit 5 combines that clear with a dependency pass.
-            # Any other non-zero status is a startup, import, argument, or timeout
-            # failure and must remain diagnosable.
-            _setup_rocm_repair_rc=3
-            if _setup_rocm_fast_path_probe >/dev/null 2>&1; then
-                _setup_rocm_repair_rc=0
-            else
-                _setup_rocm_repair_rc=$?
-            fi
-            if [ "$_setup_rocm_repair_rc" -eq 4 ] || [ "$_setup_rocm_repair_rc" -eq 5 ]; then
-                unset HSA_OVERRIDE_GFX_VERSION
-                substep "confirmed stale HSA_OVERRIDE_GFX_VERSION cleared for this setup run."
-                substep "Remove its export from ~/.bashrc or ~/.profile so a new shell does not restore it."
-            fi
+            _setup_run_rocm_fast_path_probe
+            _setup_apply_rocm_hsa_clear
             if [ "$_setup_rocm_repair_rc" -eq 0 ] || [ "$_setup_rocm_repair_rc" -eq 5 ]; then
                 substep "installed PyTorch needs ROCm reconciliation -- forcing dependency pass to repair..."
                 _SKIP_PYTHON_DEPS=false
@@ -1713,6 +1724,14 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+    # A forced pass never consults the plan above, so the per-architecture wheel it just
+    # installed would still be read through the spoofed ISA by this shell's health probe
+    # and by anything it launches. Gated on the variable actually being set, so the
+    # ordinary install spawns nothing extra.
+    if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && [ -x "$VENV_DIR/bin/python" ]; then
+        _setup_run_rocm_fast_path_probe
+        _setup_apply_rocm_hsa_clear
+    fi
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"

@@ -23,6 +23,18 @@ SETUP_SH="${1:-$SCRIPT_DIR/../../studio/setup.sh}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+# The delegated ROCm probe helpers live above the block (they are also called after a
+# forced dependency pass). Extract the real ones rather than stub them, so the arm below
+# exercises the same rc handling setup.sh ships.
+awk '/^_setup_rocm_fast_path_probe\(\) \{/{on=1} on && /^_SKIP_PYTHON_DEPS=false$/{exit} on{print}' \
+    "$SETUP_SH" > "$WORK/helpers.sh"
+for _need in _setup_rocm_fast_path_probe _setup_run_rocm_fast_path_probe \
+             _setup_apply_rocm_hsa_clear; do
+    grep -q "^$_need() {" "$WORK/helpers.sh" || {
+        echo "FATAL: helper $_need not extracted" >&2; exit 1; }
+done
+bash -n "$WORK/helpers.sh" || { echo "FATAL: extracted helpers do not parse" >&2; exit 1; }
+
 # From the pin read to the end of the acting if/elif chain.
 # Stop at the `fi` that closes the escape chain, NOT after the Nth _SKIP_PYTHON_DEPS=false:
 # counting assignments truncates the block as soon as an arm is added, silently.
@@ -79,6 +91,8 @@ escape() {
         _SKIP_PYTHON_DEPS=true
         # shellcheck disable=SC2317
         substep() { :; }
+        # shellcheck disable=SC1091
+        . "$WORK/helpers.sh"
         # shellcheck disable=SC1091
         . "$WORK/blk.sh"
         echo "$_SKIP_PYTHON_DEPS"

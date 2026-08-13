@@ -2209,6 +2209,21 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return url
 
 
+def _manifest_torch_index_url() -> "str | None":
+    """The pin to persist: this run's explicit one, else the one already recorded.
+
+    The fallback is what keeps the choice: the dependency pass drops the manifest
+    before it starts, so writing only the currently exported pin would erase a
+    deliberate CPU or CUDA index the first time `unsloth studio update` runs a pass.
+    Stored without credentials -- reconciliation only classifies the index family,
+    and the manifest is written with the ordinary process umask.
+    """
+    pin = _explicit_torch_index_url()
+    if pin:
+        return _strip_index_url_credentials(pin)
+    return _RECORDED_TORCH_INDEX_URL
+
+
 def _recorded_non_rocm_torch_pin() -> "str | None":
     """A deliberate non-ROCm wheel index recorded at install time, else None.
 
@@ -2219,10 +2234,7 @@ def _recorded_non_rocm_torch_pin() -> "str | None":
     """
     if _explicit_torch_index_url() is not None:
         return None
-    try:
-        url = install_manifest.recorded_torch_index_url()
-    except Exception:
-        return None
+    url = _RECORDED_TORCH_INDEX_URL
     if url is None:
         return None
     return None if _is_pip_rocm_family_leaf(_torch_index_leaf(url)) else url
@@ -2872,6 +2884,10 @@ class _LinuxRocmTorchPlan:
     clear_hsa_spoof_gfx: "str | None" = None
     # Identifies this repair so an identical one that already failed is not repeated.
     repair_key: str = ""
+    # A repair that WAS needed and was suppressed. Distinct from a satisfied wheel:
+    # suppressed is not converged, so it must neither clear the repair ledger nor
+    # remove the HSA override the still-unrepaired wheel may depend on.
+    blocked: bool = False
 
 
 def _probe_rocm_torch() -> tuple[bool, str, bool]:
@@ -2953,18 +2969,30 @@ def _rocm_reinstall_blocked(
                 "   Unset CUDA_VISIBLE_DEVICES, or set UNSLOTH_TORCH_INDEX_URL, to choose "
                 "the ROCm wheels deliberately."
             )
-    if repair_key and install_manifest.recorded_rocm_repair_attempt() == repair_key:
-        detail = (
-            "torch still does not import"
-            if not torch_importable
-            else f"torch is still {installed_version or 'not a ROCm build'}"
-        )
-        return (
-            f"   the same ROCm torch repair already ran and {detail} -- not repeating it.\n"
-            "   See docs.unsloth.ai/get-started/install-and-update/amd, or reinstall Studio "
-            "to retry from scratch."
-        )
-    return None
+    return _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
+
+
+def _rocm_repair_already_attempted(
+    repair_key: str, installed_version: str, torch_importable: bool
+) -> "str | None":
+    """Why this exact repair must not be repeated, or None.
+
+    Split out because the two suppressions in _rocm_reinstall_blocked mean opposite
+    things to the caller: declining to touch a working CUDA wheel is a final answer,
+    while a suppressed repeat is a repair still owed.
+    """
+    if not repair_key or install_manifest.recorded_rocm_repair_attempt() != repair_key:
+        return None
+    detail = (
+        "torch still does not import"
+        if not torch_importable
+        else f"torch is still {installed_version or 'not a ROCm build'}"
+    )
+    return (
+        f"   the same ROCm torch repair already ran and {detail} -- not repeating it.\n"
+        "   See docs.unsloth.ai/get-started/install-and-update/amd, or reinstall Studio "
+        "to retry from scratch."
+    )
 
 
 def _installed_torch_local_tag(installed_version: str) -> str:
@@ -3083,11 +3111,36 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
         reinstall = _GFX906_LEGACY_TAG not in installed_version
 
     repair_key = _rocm_repair_key(desired_url, installed_version, torch_importable)
+    repair_blocked = False
     if reinstall and pin is None:
         blocked = _rocm_reinstall_blocked(installed_version, torch_importable, repair_key)
         if blocked is not None:
             _safe_print(blocked)
             reinstall = False
+            repair_blocked = (
+                _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
+                is not None
+            )
+
+    if repair_blocked:
+        # Suppressed, not satisfied. Reported as an explicit no-op plan so the caller
+        # cannot read it as convergence: clearing the ledger here would re-arm the same
+        # multi-gigabyte reinstall on the next update, and clearing a confirmed HSA
+        # override would strip the spoof that the un-repaired wheel still runs through.
+        return (
+            _LinuxRocmTorchPlan(
+                index_url = desired_url,
+                packages = _rocm_packages_for_index(desired_url),
+                label = label,
+                reason = reason,
+                install_torch = False,
+                clear_hsa_spoof_gfx = None,
+                repair_key = repair_key,
+                blocked = True,
+            ),
+            has_rocm_torch,
+            runtime_is_gfx906,
+        )
 
     # Clearing a confirmed HSA spoof and reinstalling torch are independent actions.
     # A matching per-arch wheel needs only the clear; coupling the two would download
@@ -3420,6 +3473,15 @@ def _infer_no_torch() -> bool:
 
 
 NO_TORCH = _infer_no_torch()
+
+# Read at import for the same reason as NO_TORCH: install_python_stack() drops the
+# manifest before the dependency pass, so a lazy read inside the torch repair finds
+# nothing and an AMD host installed with a deliberate CPU or CUDA index is migrated
+# to ROCm by its first update. Do not defer this call into main().
+try:
+    _RECORDED_TORCH_INDEX_URL = install_manifest.recorded_torch_index_url()
+except Exception:
+    _RECORDED_TORCH_INDEX_URL = None
 
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
 # "cpu"; empty = standalone `studio update`, where we re-detect).
@@ -4790,7 +4852,7 @@ def install_python_stack() -> int:
             steps_total = _TOTAL,
             package_name = package_name,
             no_torch = NO_TORCH,
-            torch_index_url = _explicit_torch_index_url(),
+            torch_index_url = _manifest_torch_index_url(),
         )
         is None
     ):

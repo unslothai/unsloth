@@ -208,7 +208,7 @@ def test_visible_device_selection_keeps_a_record_with_a_blank_name(tmp_path, scr
 # The dependency fast path delegates to the same Python implementation that performs repair.
 
 
-def _plan(
+def _plan_tuple(
     monkeypatch,
     *,
     imports_as_rocm = False,
@@ -251,6 +251,8 @@ def _plan(
         "recorded_torch_index_url",
         lambda *_a, **_k: defaults["recorded_pin"],
     )
+    # Captured at import, before the dependency pass drops the manifest.
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", defaults["recorded_pin"])
     monkeypatch.setattr(stack, "_cvd_hides_nvidia", lambda: defaults["cvd_hides_nvidia"])
     monkeypatch.setattr(stack, "_has_physical_nvidia_gpu", lambda: defaults["physical_nvidia"])
     monkeypatch.setattr(stack, "NO_TORCH", defaults["NO_TORCH"])
@@ -279,7 +281,11 @@ def _plan(
             "_selected_linux_strix_gfx",
             lambda *_args, **_kwargs: defaults["selected_strix_result"],
         )
-    return stack._linux_rocm_torch_plan()[0]
+    return stack._linux_rocm_torch_plan()
+
+
+def _plan(monkeypatch, **kwargs):
+    return _plan_tuple(monkeypatch, **kwargs)[0]
 
 
 @pytest.mark.parametrize("version", ["2.11.0+cpu", "2.10.0", "2.10.0+cu128"])
@@ -575,19 +581,36 @@ def test_shell_bounds_and_diagnoses_the_delegated_probe():
     source = SETUP_SH.read_text(encoding = "utf-8")
     assert "--kill-after" not in source
     assert source.count("timeout -k 5") == 3
-    start = source.index("            _setup_rocm_fast_path_probe()")
-    block = source[start : start + 3500]
+    start = source.index("_setup_rocm_fast_path_probe() {")
+    block = source[start : source.index("_SKIP_PYTHON_DEPS=false\n_SKIP_VERSION_CHECK", start)]
     assert 'timeout -k 5 180 "$VENV_DIR/bin/python"' in block
     assert "--rocm-fast-path-needs-repair" in block
     assert "--amd-detected" not in block
     assert "--nvidia-detected" not in block
-    assert 'verbose_substep "ROCm reconciliation probe failed' in block
     assert "unset HSA_OVERRIDE_GFX_VERSION" in block
     assert '"$_setup_rocm_repair_rc" -eq 4' in block
     assert '"$_setup_rocm_repair_rc" -eq 5' in block
+    decision = source[
+        source.index('if [ "$_SKIP_PYTHON_DEPS" = true ]; then\n            _setup_run') :
+    ]
+    assert 'verbose_substep "ROCm reconciliation probe failed' in decision[:1200]
     stack_source = STACK_PATH.read_text(encoding = "utf-8")
     assert "def _linux_rocm_fast_path_exit_code" in stack_source
     assert "return 3" in stack_source
+
+
+def test_a_forced_dependency_pass_still_applies_the_hsa_clear_in_this_shell():
+    """install_python_stack can only unset the override inside its own process, so the
+    per-architecture wheel it just installed would still be read through the spoofed ISA."""
+    source = SETUP_SH.read_text(encoding = "utf-8")
+    start = source.index('if [ "$_SKIP_PYTHON_DEPS" = false ]; then\n    install_python_stack')
+    block = source[start : source.index("\nelse", start)]
+    assert '[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]' in block
+    assert "_setup_run_rocm_fast_path_probe" in block
+    assert "_setup_apply_rocm_hsa_clear" in block
+    # Defined unconditionally: the fast-path block that used to own it never runs here.
+    assert source.index("_setup_rocm_fast_path_probe() {") < start
+    assert source.index("_setup_apply_rocm_hsa_clear() {") < start
 
 
 # ── setup.sh: the GPU summary must report the runtime answer ──
@@ -711,17 +734,55 @@ def test_the_same_failed_repair_is_not_repeated(monkeypatch):
     """Without this the fast path force-reinstalls GB on every `studio update`, forever."""
     first = _plan(monkeypatch, version = "", importable = False)
     repeat = _plan(monkeypatch, version = "", importable = False, recorded_attempt = first.repair_key)
-    assert repeat is None
+    assert repeat is not None
+    assert repeat.blocked is True
+    assert repeat.install_torch is False
+    assert stack._linux_rocm_fast_path_exit_code(repeat) == 3
+
+
+def test_a_blocked_repair_is_not_reported_as_a_converged_one(monkeypatch):
+    """torch_ready would clear the ledger, re-arming the same multi-GB reinstall."""
+    first = _plan(monkeypatch, version = "", importable = False)
+    _, torch_ready, _ = _plan_tuple(
+        monkeypatch, version = "", importable = False, recorded_attempt = first.repair_key
+    )
+    assert torch_ready is False
+
+
+def test_a_blocked_repair_does_not_clear_a_confirmed_hsa_spoof(monkeypatch):
+    """The un-repaired generic wheel may run only through that override."""
+    strix = ("gfx1151", "gfx1151", "gfx1151", {"gfx1151"})
+    first = _plan(
+        monkeypatch,
+        version = "2.10.0+rocm6.4",
+        imports_as_rocm = True,
+        installed_rocm_family = "gfx1150",
+        selected_strix_result = strix,
+    )
+    assert first.install_torch is True and first.clear_hsa_spoof_gfx == "gfx1151"
+    repeat = _plan(
+        monkeypatch,
+        version = "2.10.0+rocm6.4",
+        imports_as_rocm = True,
+        installed_rocm_family = "gfx1150",
+        selected_strix_result = strix,
+        recorded_attempt = first.repair_key,
+    )
+    assert repeat.blocked is True
+    assert repeat.clear_hsa_spoof_gfx is None
+    assert stack._linux_rocm_fast_path_exit_code(repeat) == 3
 
 
 def test_a_repair_that_changed_the_installed_torch_is_still_attempted(monkeypatch):
     """The key covers the observed state, so a moved-on host is never blocked by it."""
     stale = _plan(monkeypatch, version = "2.9.0+cpu").repair_key
-    assert _plan(monkeypatch, version = "2.10.0+cpu", recorded_attempt = stale) is not None
+    fresh = _plan(monkeypatch, version = "2.10.0+cpu", recorded_attempt = stale)
+    assert fresh is not None and fresh.install_torch is True and fresh.blocked is False
 
 
 def test_an_unrelated_recorded_attempt_does_not_block_a_repair(monkeypatch):
-    assert _plan(monkeypatch, version = "", importable = False, recorded_attempt = "0" * 32)
+    plan = _plan(monkeypatch, version = "", importable = False, recorded_attempt = "0" * 32)
+    assert plan is not None and plan.install_torch is True and plan.blocked is False
 
 
 def test_the_repair_key_is_not_the_raw_index_url(monkeypatch):
@@ -739,12 +800,45 @@ def test_the_attempt_is_recorded_before_the_install_runs():
     )
 
 
-def test_a_converged_host_forgets_the_last_attempt():
+def _run_ensure_rocm_torch(monkeypatch, plan, torch_ready):
+    cleared = []
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_linux_rocm_torch_plan", lambda: (plan, torch_ready, False))
+    monkeypatch.setattr(stack, "_clear_confirmed_hsa_spoof", lambda *_a: None)
+    monkeypatch.setattr(stack, "_bnb_rocm_prerelease_url", lambda: None)
+    monkeypatch.setattr(stack, "_bnb_rocm_arch_has_binary", lambda: True)
+    monkeypatch.setattr(stack, "pip_install", lambda *args, **kwargs: None)
+    monkeypatch.setattr(stack, "pip_install_try", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "clear_rocm_repair_attempt",
+        lambda *_a, **_k: cleared.append(True),
+    )
+    stack._ensure_rocm_torch()
+    return cleared
+
+
+def test_a_converged_host_forgets_the_last_attempt(monkeypatch):
     """Otherwise a later, genuinely new breakage in the same state stays unrepairable."""
-    source = STACK_PATH.read_text(encoding = "utf-8")
-    block = source[source.index("def _ensure_rocm_torch()") :]
-    assert "if plan is None and rocm_torch_ready:" in block
-    assert "install_manifest.clear_rocm_repair_attempt()" in block
+    assert _run_ensure_rocm_torch(monkeypatch, None, True) == [True]
+
+
+def test_a_blocked_repair_keeps_the_ledger(monkeypatch):
+    """Clearing it here is what recreated the loop the ledger exists to stop."""
+    blocked = stack._LinuxRocmTorchPlan(
+        index_url = "https://download.pytorch.org/whl/rocm7.2",
+        packages = ("torch", "torchvision", "torchaudio"),
+        label = "ROCm torch (rocm7.2)",
+        reason = "ROCm 7.2",
+        install_torch = False,
+        clear_hsa_spoof_gfx = None,
+        repair_key = "a" * 32,
+        blocked = True,
+    )
+    assert _run_ensure_rocm_torch(monkeypatch, blocked, False) == []
 
 
 def test_the_repair_ledger_survives_the_manifest_being_dropped(tmp_path):
@@ -822,9 +916,54 @@ def test_the_installer_records_the_explicit_pin_and_not_the_detected_backend():
     """install.sh invents UNSLOTH_TORCH_BACKEND from autodetection; freezing it would
     outlive the host it described."""
     source = STACK_PATH.read_text(encoding = "utf-8")
-    assert "torch_index_url = _explicit_torch_index_url()," in source
+    assert "torch_index_url = _manifest_torch_index_url()," in source
     manifest_source = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
     assert "torch_backend" not in manifest_source
+
+
+# ── The recorded pin must survive the pass that drops the manifest ──
+
+
+def test_the_recorded_pin_is_read_before_the_dependency_pass_drops_the_manifest(
+    monkeypatch, tmp_path
+):
+    """A lazy read finds nothing: remove_manifest() runs first, so the CPU or CUDA index
+    the user chose would be silently replaced with ROCm on the first update."""
+    import install_manifest
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    pin = "https://download.pytorch.org/whl/cpu"
+    install_manifest.write_manifest(root = tmp_path, req_root = tmp_path, torch_index_url = pin)
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", pin)
+    install_manifest.remove_manifest(root = tmp_path)
+    assert stack._recorded_non_rocm_torch_pin() == pin
+    assert stack._manifest_torch_index_url() == pin
+
+
+def test_this_runs_explicit_pin_replaces_the_recorded_one(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "rocm7.2")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cpu")
+    assert stack._manifest_torch_index_url() == "https://download.pytorch.org/whl/rocm7.2"
+
+
+@pytest.mark.parametrize(
+    "pin, stored",
+    [
+        ("https://user:tok@mirror.internal/whl/cpu", "https://mirror.internal/whl/cpu"),
+        ("https://mirror.internal/whl/cpu?token=abc", "https://mirror.internal/whl/cpu"),
+    ],
+    ids = ["userinfo", "query"],
+)
+def test_the_recorded_pin_carries_no_credentials(monkeypatch, pin, stored):
+    """The manifest is written with the ordinary umask; reconciliation only needs the family."""
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", pin)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", None)
+    recorded = stack._manifest_torch_index_url()
+    assert recorded == stored
+    assert "tok" not in recorded and "abc" not in recorded
 
 
 # ── A hidden NVIDIA GPU must not cost the user a working CUDA torch ──
