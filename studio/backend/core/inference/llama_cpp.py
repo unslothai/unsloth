@@ -17630,6 +17630,9 @@ class LlamaCppBackend:
                 # Collect no-op feedback and flush it after the batch, so a
                 # suppressed call never drops a later parallel call.
                 deferred_noop_msgs: list = []
+                # Which tools those no-ops were about, so the flush below can tell
+                # whether the trailing result belongs to the same tool.
+                deferred_noop_tools: set = set()
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -17670,6 +17673,7 @@ class LlamaCppBackend:
                             }
                         completion = tool_controller.record_noop(decision)
                         deferred_noop_msgs.append(completion.model_message())
+                        deferred_noop_tools.add(decision.tool_name)
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
                         logger.info(
@@ -17816,15 +17820,26 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
-                if deferred_noop_msgs and assistant_appended:
-                    # A mixed execute/no-op batch already has a real tool result.
-                    # Keep the controller feedback with that result instead of
-                    # appending a newer user turn, which can make templates hide
-                    # this turn's structured reasoning.
+                # A mixed execute/no-op batch already has a real tool result, so keeping the
+                # feedback with that result beats appending a newer user turn, which makes
+                # templates hide this turn's structured reasoning. Only when the result is
+                # the SAME tool the feedback is about: templates label the whole block with
+                # the result's own tool name (gemma-4.jinja resolves tool_call_id -> name and
+                # wraps the body), so folding a note about tool A into tool B's result reads
+                # as B's own output. Then the user turn is the lesser loss.
+                _fold_target_matches = (
+                    len(deferred_noop_tools) == 1
+                    and bool(conversation)
+                    and conversation[-1].get("role") == "tool"
+                    and conversation[-1].get("name") in deferred_noop_tools
+                )
+                if deferred_noop_msgs and assistant_appended and _fold_target_matches:
                     if not _attach_internal_feedback_to_tool_result(
                         deferred_nudge_text(deferred_noop_msgs)
                     ):
                         append_deferred_nudges(conversation, deferred_noop_msgs)
+                elif deferred_noop_msgs and assistant_appended:
+                    append_deferred_nudges(conversation, deferred_noop_msgs)
                 else:
                     # A blank trace is not a turn: reuse the same emptiness test as
                     # the field above so a whitespace-only split never appends an

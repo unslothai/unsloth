@@ -833,6 +833,114 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
     )
 
 
+def test_noop_feedback_is_not_folded_into_another_tool_s_result(monkeypatch):
+    """Feedback about tool A must never ride tool B's result.
+
+    Templates label the whole block with the result's OWN tool name (gemma-4.jinja
+    resolves tool_call_id -> name and wraps the body), so a note about a suppressed
+    ``python`` call folded into a ``web_search`` result reads as web_search's output.
+    Only a same-tool result may carry it; otherwise the user turn is the lesser loss.
+    """
+    tool_stream = [
+        _sse({"reasoning_content": "Plan the batch."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_mixed_{index}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for index, (name, args) in enumerate(
+                        [
+                            ("web_search", {"query": "a"}),
+                            ("python", {"code": "print(1)"}),  # disabled -> internal no-op
+                            ("web_search", {"query": "b"}),
+                        ]
+                    )
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: f"RESULT_OF_{name}",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    for message in messages:
+        if message.get("role") == "tool":
+            assert "not executed" not in message["content"], message
+            assert message["content"] == "RESULT_OF_web_search"
+    assert [
+        message
+        for message in messages
+        if message.get("role") == "user" and "not executed" in message.get("content", "")
+    ]
+
+
+def test_same_tool_noop_feedback_still_rides_its_own_result(monkeypatch):
+    """The fold is kept where attribution is unambiguous: a duplicate names the
+    same tool as the result it lands on, so no newer user turn is opened."""
+    tool_stream = [
+        _sse({"reasoning_content": "Plan the batch."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_dup_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps(args),
+                        },
+                    }
+                    for index, args in enumerate(
+                        [{"query": "a"}, {"query": "a"}, {"query": "b"}]
+                    )
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    assert not [m for m in messages[1:] if m.get("role") == "user"]
+    assert any(
+        m.get("role") == "tool" and "not executed" in m["content"] for m in messages
+    )
+
+
 def test_tool_loop_does_not_mutate_the_caller_s_messages(monkeypatch):
     """The caller's own message dicts stay untouched across a fold.
 
