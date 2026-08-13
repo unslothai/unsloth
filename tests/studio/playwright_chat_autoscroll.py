@@ -60,9 +60,7 @@ MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "25"))
 FOLLOW_SETTLE_MS = 600
 # What the settle check trades away: growth no observer can see is followed on a timer rather
 # than on the next frame. Generous against 115ms measured, tight enough to catch a regression.
-SILENT_GROWTH_REPIN_BUDGET_MS = int(
-    os.environ.get("SMOKE_REPIN_BUDGET_MS", "250")
-)
+SILENT_GROWTH_REPIN_BUDGET_MS = int(os.environ.get("SMOKE_REPIN_BUDGET_MS", "250"))
 
 PUMP_INIT = """
 (() => {
@@ -127,9 +125,7 @@ def run() -> dict:
         )
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
-            lambda route: route.fulfill(
-                status = 200, content_type = "application/json", body = "{}"
-            ),
+            lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
         )
         page = context.new_page()
         page.goto(f"{BASE}/smoke-autoscroll.html", wait_until = "domcontentloaded")
@@ -165,17 +161,13 @@ def run() -> dict:
             "wall_ms": TOKEN_COUNT * TOKEN_GAP_MS,
             "raf_callbacks": page.evaluate("window.__rafCount"),
             "long_tasks": len(long_tasks),
-            "worst_long_task_ms": round(
-                max((t["duration"] for t in long_tasks), default = 0.0), 1
-            ),
+            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
             "layout_count": delta(before, after, "LayoutCount"),
             "recalc_style_count": delta(before, after, "RecalcStyleCount"),
             "layout_ms": round(delta(before, after, "LayoutDuration") * 1000, 1),
             "recalc_style_ms": round(delta(before, after, "RecalcStyleDuration") * 1000, 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
-            "pinned_after_stream": page.evaluate(
-                "window.__autoscroll.distanceFromBottom()"
-            ),
+            "pinned_after_stream": page.evaluate("window.__autoscroll.distanceFromBottom()"),
             "is_at_bottom": page.evaluate("window.__autoscroll.isAtBottom()"),
         }
 

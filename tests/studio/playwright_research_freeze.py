@@ -142,9 +142,7 @@ def run() -> dict:
         # throttles requestAnimationFrame to a few callbacks a second with no compositor, which
         # silently flattens the very per-frame loop this file exists to measure.
         headless = os.environ.get("SMOKE_HEADLESS", "0") == "1"
-        browser = p.chromium.launch(
-            headless = headless, args = chromium_launch_args()
-        )
+        browser = p.chromium.launch(headless = headless, args = chromium_launch_args())
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
         # Deliberately NOT installing the view-transition killer: it forces
         # `body { pointer-events: auto !important }`, which is precisely the symptom under test.
@@ -157,9 +155,7 @@ def run() -> dict:
         )
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
-            lambda route: route.fulfill(
-                status = 200, content_type = "application/json", body = "{}"
-            ),
+            lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
         )
         page = context.new_page()
         page.goto(f"{BASE}/smoke-research.html", wait_until = "domcontentloaded")
@@ -272,7 +268,9 @@ def run() -> dict:
         page.wait_for_timeout(300)
         page.evaluate("() => { for (let i = 100; i < 130; i += 1) window.__research.step(i); }")
         page.wait_for_timeout(1500)
-        overflowing = page.evaluate(f"() => {{ const el = document.querySelector('{SCROLLER}'); return el.scrollHeight > el.clientHeight; }}")
+        overflowing = page.evaluate(
+            f"() => {{ const el = document.querySelector('{SCROLLER}'); return el.scrollHeight > el.clientHeight; }}"
+        )
         followed_distance = page.evaluate(DISTANCE_FROM_BOTTOM)
         latest_while_following = page.evaluate(LATEST_BUTTON_VISIBLE)
         # A mutation, then one macrotask so the observer has queued its follow step, then a small
