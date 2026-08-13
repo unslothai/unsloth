@@ -3684,9 +3684,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         unsafe_partial_keys = [
             key
             for key, value in updates.items()
-            if key in corrupt
-            and isinstance(value, dict)
-            and key not in _ATOMIC_SETTING_KEYS
+            if key in corrupt and isinstance(value, dict) and key not in _ATOMIC_SETTING_KEYS
         ]
         if unsafe_partial_keys:
             conn.commit()

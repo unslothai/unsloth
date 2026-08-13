@@ -88,9 +88,7 @@ def test_rag_source_replaces_rather_than_merges():
 def _corrupt_stored_setting(key: str) -> None:
     conn = get_connection()
     try:
-        conn.execute(
-            "UPDATE chat_settings SET value_json = ? WHERE key = ?", ("{not json", key)
-        )
+        conn.execute("UPDATE chat_settings SET value_json = ? WHERE key = ?", ("{not json", key))
         conn.commit()
     finally:
         conn.close()
