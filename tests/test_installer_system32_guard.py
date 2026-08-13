@@ -1241,11 +1241,16 @@ def test_cli_guard_refuses_a_value_that_would_not_fit_in_the_environment():
     r"""A scalar that was already near the 32767-character limit crosses it once
     it names its folder in full, and a variable Windows will not accept is a
     failure to report here rather than in the next process."""
-    message, colour, chdir_calls = _guard_outcome(
-        r"C:\Windows\System32",
-        ["unsloth", "studio", "--api-only"],
-        environ_extra = {"HF_HOME": "x" * 32767},
-    )
+    # The limit is lowered rather than the value grown: the harness sets the
+    # environment through os.environ, and Windows will not store 32767
+    # characters there. The value fits until it is anchored, so a guard that
+    # measured the raw value would fail this.
+    with mock.patch.object(_system_dir_guard, "_WINDOWS_ENV_VALUE_LIMIT", 64):
+        message, colour, chdir_calls = _guard_outcome(
+            r"C:\Windows\System32",
+            ["unsloth", "studio", "--api-only"],
+            environ_extra = {"HF_HOME": "x" * 50},
+        )
     assert (colour, chdir_calls) == ("red", [])
     assert "path settings" in message
     assert "HF_HOME" in message
@@ -1255,12 +1260,15 @@ def test_cli_guard_refuses_a_list_that_would_not_fit_in_the_environment():
     r"""Windows caps a variable at 32767 characters, and a list of relative
     entries can cross that once each names its folder in full. Reporting it here
     names the setting; discovering it when the next process starts does not."""
-    entries = ";".join(["entry"] * 7000)
-    message, colour, chdir_calls = _guard_outcome(
-        r"C:\Windows\System32",
-        ["unsloth", "studio", "--api-only"],
-        environ_extra = {"PYTHONPATH": entries},
-    )
+    # Same reason as the scalar above, and the raw list fits where the anchored
+    # one does not.
+    entries = ";".join(["entry"] * 3)
+    with mock.patch.object(_system_dir_guard, "_WINDOWS_ENV_VALUE_LIMIT", 64):
+        message, colour, chdir_calls = _guard_outcome(
+            r"C:\Windows\System32",
+            ["unsloth", "studio", "--api-only"],
+            environ_extra = {"PYTHONPATH": entries},
+        )
     assert (colour, chdir_calls) == ("red", [])
     assert "path settings" in message
     assert "PYTHONPATH" in message

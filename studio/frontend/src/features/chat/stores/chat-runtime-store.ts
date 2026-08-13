@@ -16,7 +16,11 @@ import {
   recoverDroppedDiffusionSplit,
   shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import {
+  externalModelSupportsStudioTools,
+  isExternalModelId,
+  parseExternalModelId,
+} from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
@@ -1955,7 +1959,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // stale persisted local id would race the freshly-loaded model. See
       // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      if (isExternalModelId(modelId)) {
+      // Only disarm research for a connection that cannot drive it. Gating on
+      // the id prefix alone silently switched it off for capable providers too,
+      // forcing the user to re-enable it after every model switch.
+      if (isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId)) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
       // Clear stale per-turn usage on model change; the relaxed external-provider
@@ -1987,9 +1994,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
       }
       const nextGgufVariant = ggufVariant ?? null;
-      const nextDeepResearchEnabled = isExternalModelId(modelId)
-        ? false
-        : state.deepResearchEnabled;
+      const nextDeepResearchEnabled =
+        isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId)
+          ? false
+          : state.deepResearchEnabled;
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         {
           checkpoint: state.params.checkpoint,
@@ -2028,9 +2036,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to an external provider disables Deep Research, which only
-        // applies to the local base model.
-        ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
+        // Switching to a connection whose provider cannot run Studio's tool
+        // loop disables Deep Research; a capable one keeps the user's choice.
+        ...(isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId)
+          ? { deepResearchEnabled: false }
+          : {}),
       };
     }),
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished

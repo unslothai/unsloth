@@ -604,6 +604,49 @@ mod studio_runtime_launch_guard_tests {
         with_named_studio_runtime_launch_guard(&name, || Ok(())).unwrap();
     }
 
+    // Since issue #8490 the long-lived Studio image is Scripts\python.exe, not
+    // Scripts\unsloth.exe. ensure_managed_environment_is_idle matches by venv
+    // root, so both must still register as "the environment is in use" -- a
+    // miss here would let an update mutate a venv somebody is running.
+    #[test]
+    fn idle_scan_still_covers_a_python_hosted_studio() {
+        let venv = std::env::temp_dir().join(format!(
+            "unsloth-idle-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let scripts = venv.join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let python = scripts.join("python.exe");
+        let stub = scripts.join("unsloth.exe");
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(&stub, "").unwrap();
+
+        let root = normalized_existing_windows_path(&venv).unwrap();
+        for image in [&python, &stub] {
+            let key = normalized_existing_windows_path(image).unwrap();
+            assert!(
+                windows_path_is_within(&key, &root).unwrap(),
+                "{key} escaped the managed venv root {root}"
+            );
+        }
+
+        // A sibling directory sharing the root's prefix must still be outside.
+        let sibling = venv.with_file_name(format!(
+            "{}-other",
+            venv.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sibling_key = normalized_existing_windows_path(&sibling).unwrap();
+        assert!(!windows_path_is_within(&sibling_key, &root).unwrap());
+
+        std::fs::remove_dir_all(&venv).unwrap();
+        std::fs::remove_dir_all(&sibling).unwrap();
+    }
+
     #[test]
     fn managed_environment_scan_finds_a_process_inside_the_target_root() {
         let current_exe = std::env::current_exe().unwrap();
@@ -1012,6 +1055,33 @@ pub(crate) fn force_kill_process_tree(
     info!("{} process tree force stopped", label);
 }
 
+/// Whether a Windows venv's site-packages still holds something the CLI trampoline
+/// could import.
+///
+/// The dist-info is accepted alongside the package directory, and for the same reason
+/// `_managed_cli_site_packages_layout` in unsloth_cli/commands/studio.py accepts it: a
+/// PEP 660 editable install of the checkout leaves a .pth and a `unsloth-*.dist-info`
+/// here and no `unsloth_cli/` at all. Ranking that below an empty new layout would send
+/// every capability probe at the interpreter with nothing to import.
+///
+/// It cannot prove the package imports, and does not try to. This runs on the launch
+/// path, so it stays filesystem-only; the two Python-side probes that DO run an import
+/// are the ones allowed to spawn an interpreter.
+#[cfg(windows)]
+fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> bool {
+    if site_packages.join("unsloth_cli").exists() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(site_packages) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("unsloth-") && name.ends_with(".dist-info")
+    })
+}
+
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
@@ -1021,12 +1091,69 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
     // Old layout (bundled scripts, older upstream)
     let old_base = studio.join(".venv");
 
-    for base in [new_base, old_base] {
+    let bases = [new_base, old_base];
+
+    // Three passes rather than one, because a migration interrupted by an open
+    // handle can leave HALF of either layout behind (install.ps1 says so where it
+    // renames the tree), and layout order alone then picks the half that cannot
+    // run. Preference is by usefulness first, layout second:
+    //
+    //   1. a launcher with the interpreter beside it -- a complete environment;
+    //   2. Windows only, an interpreter with no launcher -- quarantine takes the
+    //      unsigned stub and leaves a working install, and nothing executes the
+    //      stub any more, so its absence no longer means "not installed". Within
+    //      this pass, a layout that still holds the CLI package outranks one
+    //      that holds only an interpreter, whichever layout it is;
+    //   3. a launcher with no interpreter -- useless to every caller here, but it
+    //      is what this function answered before, and its error message names the
+    //      missing interpreter, which is more use than "not installed".
+    //
+    // The returned path is the canonical handle whether or not the file exists:
+    // every Windows caller reaches the CLI through its parent directory.
+    for base in &bases {
         #[cfg(unix)]
         let bin = base.join("bin").join("unsloth");
         #[cfg(windows)]
         let bin = base.join("Scripts").join("unsloth.exe");
 
+        #[cfg(unix)]
+        let complete = bin.exists();
+        #[cfg(windows)]
+        let complete = bin.exists() && base.join("Scripts").join("python.exe").exists();
+
+        if complete {
+            return Some(bin);
+        }
+    }
+
+    // Pass 2 twice over, package first. When an interrupted migration leaves an
+    // interpreter in BOTH layouts, layout order alone would hand back the new
+    // one even if its site-packages is empty and the old one still carries the
+    // package the trampoline imports, and every capability probe would then
+    // report an install that cannot start. A directory test, not an import
+    // probe: this is called on the launch path and from the capability checks,
+    // so it must stay a stat rather than an interpreter spawn. It cannot prove
+    // the package is importable, only that one candidate has something to
+    // import and the other has nothing, which is the whole difference here.
+    #[cfg(windows)]
+    for base in &bases {
+        if base.join("Scripts").join("python.exe").exists()
+            && windows_site_packages_carries_the_cli(&base.join("Lib").join("site-packages"))
+        {
+            return Some(base.join("Scripts").join("unsloth.exe"));
+        }
+    }
+
+    #[cfg(windows)]
+    for base in &bases {
+        if base.join("Scripts").join("python.exe").exists() {
+            return Some(base.join("Scripts").join("unsloth.exe"));
+        }
+    }
+
+    #[cfg(windows)]
+    for base in &bases {
+        let bin = base.join("Scripts").join("unsloth.exe");
         if bin.exists() {
             return Some(bin);
         }
@@ -1040,6 +1167,169 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     let studio = home.join(".unsloth").join("studio");
 
     find_unsloth_binary_in_studio_dir(&studio)
+}
+
+/// The Windows console script is a generated, unsigned PE wrapper. Application
+/// Control (AppLocker, WDAC, Smart App Control) denies it while the managed
+/// python.exe beside it - a copy of the signed CPython binary - still runs, so
+/// every managed CLI invocation goes through the interpreter instead.
+///
+/// The leading sys.path edit is what `-I` used to buy, without the rest of it.
+/// `python -c` puts the working directory on sys.path[0] and the console script
+/// never does, so a stray unsloth_cli beside the caller would shadow the managed
+/// package; stripping that one entry closes it and leaves alone everything the
+/// console script honours. `-I` implies `-E`, which discarded PYTHONPATH,
+/// PYTHONWARNINGS, PYTHONHASHSEED, PYTHONPROFILEIMPORTTIME and user
+/// site-packages, an observable difference on machines with no policy at all.
+///
+/// The safe_path guard is why the comprehension is not simply `x not in (...)`.
+/// Under -P or PYTHONSAFEPATH there is no implicit `-c` entry to remove, so
+/// whatever sits at sys.path[0] is an explicit PYTHONPATH entry the console
+/// script would have honoured; a PYTHONPATH that starts at the working
+/// directory was measured selecting a different package before and after.
+/// getattr, not sys.flags.safe_path: the attribute is 3.11+ and this repo
+/// supports 3.9.
+///
+/// -X utf8 is the one deliberate divergence from the console script, and it
+/// predates this work: the shipped updater already spelled it this way, and
+/// mangled setup output on a non-UTF-8 console code page is what it exists to
+/// prevent (see tests/python/test_windows_setup_output_encoding.py). Under an
+/// explicit PYTHONUTF8=0 the child therefore runs in UTF-8 mode where the stub
+/// would not have.
+///
+/// sys.argv[0] is assigned before the import because unsloth_cli decides at
+/// import time whether it is the console script, which gates the Windows UTF-8
+/// stream reconfigure and the -np<N> argv rewrite. It also sets Typer's
+/// prog_name to "unsloth"; the stub prints "unsloth.exe", so usage text reads
+/// slightly cleaner here rather than matching byte for byte.
+#[cfg(windows)]
+pub(crate) const WINDOWS_CLI_ENTRYPOINT: &str =
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())";
+
+/// The program and argument vector that run the managed CLI without executing
+/// `bin` itself. On non-Windows platforms `bin` is a plain script with a
+/// shebang and stays the program.
+#[derive(Debug)]
+pub(crate) struct ManagedCliInvocation {
+    pub program: std::path::PathBuf,
+    pub args: Vec<std::ffi::OsString>,
+}
+
+impl ManagedCliInvocation {
+    /// The single place an invocation becomes a process. Callers that need the
+    /// resolved program before spawning, to log what they are about to start,
+    /// resolve first and come back through here rather than rebuilding argv.
+    pub(crate) fn to_command(&self) -> Command {
+        let mut cmd = Command::new(&self.program);
+        cmd.args(&self.args);
+        cmd
+    }
+}
+
+/// Resolve how to run `bin <args>` for the managed install. Fails closed on
+/// Windows when the interpreter is missing rather than falling back to the
+/// stub, which is exactly what a policy-blocked machine cannot run.
+pub(crate) fn resolve_managed_cli_invocation(
+    bin: &std::path::Path,
+    args: &[&str],
+) -> Result<ManagedCliInvocation, String> {
+    resolve_managed_cli_invocation_with(bin, args, Isolation::Inherit)
+}
+
+/// Whether a managed invocation runs isolated from the ambient Python environment.
+///
+/// Everything the user could equally have typed themselves inherits, because the
+/// console script does and the swap has to be invisible. The desktop updater does
+/// not: it shipped with `-I` before any of this, nobody types it, and it rewrites
+/// the very environment it runs in, so a `pip install --user unsloth_cli` deciding
+/// which package gets updated is a real hazard rather than a parity question.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Isolation {
+    Inherit,
+    Isolated,
+}
+
+pub(crate) fn resolve_managed_cli_invocation_with(
+    bin: &std::path::Path,
+    args: &[&str],
+    isolation: Isolation,
+) -> Result<ManagedCliInvocation, String> {
+    #[cfg(windows)]
+    {
+        let python = bin
+            .parent()
+            .ok_or_else(|| "Managed Unsloth executable has no parent directory.".to_string())?
+            .join("python.exe");
+        if !python.is_file() {
+            return Err(format!(
+                "Managed Python interpreter not found beside Unsloth: {}",
+                python.display()
+            ));
+        }
+        // No -I, for the reason on WINDOWS_CLI_ENTRYPOINT. -X utf8 stays, so this
+        // process writes UTF-8 into read_lossy_lines whatever the locale, and a
+        // caller's PYTHONIOENCODING overrides it exactly as it overrides the
+        // console script's.
+        // -X utf8 before -I: -I implies -E, which would discard PYTHONUTF8, and the
+        // flag form survives it.
+        let mut argv: Vec<std::ffi::OsString> = match isolation {
+            Isolation::Inherit => vec!["-X", "utf8", "-c", WINDOWS_CLI_ENTRYPOINT],
+            Isolation::Isolated => vec!["-X", "utf8", "-I", "-c", WINDOWS_CLI_ENTRYPOINT],
+        }
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
+        argv.extend(args.iter().copied().map(std::ffi::OsString::from));
+        Ok(ManagedCliInvocation {
+            program: python,
+            args: argv,
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        // Isolation is a Windows-only concept: POSIX executes the console script
+        // itself, so there is no interpreter command line to isolate.
+        let _ = isolation;
+        Ok(ManagedCliInvocation {
+            program: bin.to_path_buf(),
+            args: args.iter().copied().map(std::ffi::OsString::from).collect(),
+        })
+    }
+}
+
+/// Blocking flavour of [`resolve_managed_cli_invocation`].
+pub(crate) fn build_managed_cli_command(
+    bin: &std::path::Path,
+    args: &[&str],
+) -> Result<Command, String> {
+    build_managed_cli_command_with(bin, args, Isolation::Inherit)
+}
+
+pub(crate) fn build_managed_cli_command_with(
+    bin: &std::path::Path,
+    args: &[&str],
+    isolation: Isolation,
+) -> Result<Command, String> {
+    let cmd = resolve_managed_cli_invocation_with(bin, args, isolation)?.to_command();
+    // PYTHONHOME and PYTHONPATH are deliberately left alone. Removing them was
+    // belt and braces under -I, which dropped them anyway. Without -I it would
+    // bite: the console script honours both, so scrubbing them here would make
+    // the swap observable.
+    Ok(cmd)
+}
+
+/// Async flavour of [`resolve_managed_cli_invocation`], for the probe and
+/// provisioning call sites that already drive tokio children.
+pub(crate) fn build_managed_cli_command_tokio(
+    bin: &std::path::Path,
+    args: &[&str],
+) -> Result<tokio::process::Command, String> {
+    let invocation = resolve_managed_cli_invocation(bin, args)?;
+    let mut cmd = tokio::process::Command::new(&invocation.program);
+    cmd.args(&invocation.args);
+    // PYTHONHOME / PYTHONPATH left alone, for the reason in the blocking flavour.
+    Ok(cmd)
 }
 
 /// Whether the user's profile is reachable at all: the managed install lives
@@ -2083,6 +2373,373 @@ mod tests {
         );
     }
 
+    // issue #8490: Application Control denies the generated unsloth.exe. Every
+    // managed invocation must reach the CLI through the interpreter beside it.
+    #[cfg(windows)]
+    fn managed_venv(test_name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = temp_studio_dir(test_name);
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        fs::write(&python, "").unwrap();
+        fs::write(&bin, "").unwrap();
+        (dir, python, bin)
+    }
+
+    // Quarantine takes the unsigned stub and leaves the environment intact. The
+    // finder gates the backend, the updater and the install-status probe, so a None
+    // here reports "not installed" for a Studio that still runs.
+    #[cfg(windows)]
+    #[test]
+    fn a_quarantined_stub_is_still_a_managed_install() {
+        let studio = temp_studio_dir("quarantined-stub");
+        let scripts = studio.join("unsloth_studio").join("Scripts");
+        fs::create_dir_all(&scripts).unwrap();
+
+        // No interpreter yet: there is genuinely nothing to run.
+        assert_eq!(find_unsloth_binary_in_studio_dir(&studio), None);
+
+        fs::write(scripts.join("python.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(scripts.join("unsloth.exe")),
+            "a stub-less environment with an interpreter is still an install"
+        );
+
+        // And the handle it hands back drives the interpreter as usual.
+        let invocation =
+            resolve_managed_cli_invocation(&scripts.join("unsloth.exe"), &["studio"]).unwrap();
+        assert_eq!(invocation.program, scripts.join("python.exe"));
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // An interrupted migration leaves a half-built new environment beside a legacy
+    // one that still works. A launcher anywhere outranks a bare interpreter, or the
+    // desktop would drive the broken half and report an install it cannot start.
+    #[cfg(windows)]
+    #[test]
+    fn a_legacy_launcher_outranks_a_stubless_new_environment() {
+        let studio = temp_studio_dir("interrupted-migration");
+        let new_scripts = studio.join("unsloth_studio").join("Scripts");
+        let old_scripts = studio.join(".venv").join("Scripts");
+        fs::create_dir_all(&new_scripts).unwrap();
+        fs::create_dir_all(&old_scripts).unwrap();
+        fs::write(new_scripts.join("python.exe"), "").unwrap();
+        fs::write(old_scripts.join("python.exe"), "").unwrap();
+        fs::write(old_scripts.join("unsloth.exe"), "").unwrap();
+
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_scripts.join("unsloth.exe")),
+            "a working legacy install must win over a partial new one"
+        );
+
+        // Once the new layout has its own launcher, layout order takes over again.
+        fs::write(new_scripts.join("unsloth.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_scripts.join("unsloth.exe"))
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // The other half of the same interruption: the new layout kept the launcher and
+    // the legacy one kept the interpreter. Returning the new launcher there fails
+    // later with "Managed Python interpreter not found beside Unsloth" while a
+    // usable environment sits in the other base.
+    #[cfg(windows)]
+    #[test]
+    fn a_complete_legacy_environment_beats_a_launcher_with_no_interpreter() {
+        let studio = temp_studio_dir("split-migration");
+        let new_scripts = studio.join("unsloth_studio").join("Scripts");
+        let old_scripts = studio.join(".venv").join("Scripts");
+        fs::create_dir_all(&new_scripts).unwrap();
+        fs::create_dir_all(&old_scripts).unwrap();
+        fs::write(new_scripts.join("unsloth.exe"), "").unwrap();
+        fs::write(old_scripts.join("python.exe"), "").unwrap();
+        fs::write(old_scripts.join("unsloth.exe"), "").unwrap();
+
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_scripts.join("unsloth.exe")),
+            "a complete environment must win over a launcher that cannot start"
+        );
+
+        // With nothing usable anywhere, still answer what this function always
+        // answered: the caller's error then names the missing interpreter.
+        fs::remove_file(old_scripts.join("python.exe")).unwrap();
+        fs::remove_file(old_scripts.join("unsloth.exe")).unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_scripts.join("unsloth.exe"))
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // Both halves of an interrupted migration kept an interpreter and neither kept
+    // a launcher, so pass 1 cannot decide and layout order alone would hand back
+    // the new base whether or not anything is installed in it. The base that still
+    // holds the package the trampoline imports has to win, in either direction, or
+    // every capability probe drives an interpreter with nothing to run.
+    #[cfg(windows)]
+    #[test]
+    fn an_interpreter_that_still_has_the_package_outranks_one_that_does_not() {
+        let studio = temp_studio_dir("stubless-both-halves");
+        let new_base = studio.join("unsloth_studio");
+        let old_base = studio.join(".venv");
+        for base in [&new_base, &old_base] {
+            fs::create_dir_all(base.join("Scripts")).unwrap();
+            fs::write(base.join("Scripts").join("python.exe"), "").unwrap();
+        }
+
+        // Neither carries the package: layout order decides, exactly as before.
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_base.join("Scripts").join("unsloth.exe")),
+            "with nothing to choose between them the new layout still wins"
+        );
+
+        // The legacy base has the package and the new one does not.
+        fs::create_dir_all(old_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe")),
+            "the only base with a package to import must win"
+        );
+
+        // Once the new base has it too, layout order takes over again.
+        fs::create_dir_all(new_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_base.join("Scripts").join("unsloth.exe")),
+            "package on both sides is not a reason to prefer the legacy layout"
+        );
+
+        // A complete environment anywhere still outranks this whole pass.
+        fs::write(old_base.join("Scripts").join("unsloth.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe"))
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // An editable install of the checkout leaves a .pth and a dist-info in
+    // site-packages and no unsloth_cli/ directory at all, so a package-directory test
+    // alone would rank a working legacy venv below an empty new one. The Python side
+    // accepts the dist-info for this exact shape; this side has to agree.
+    #[cfg(windows)]
+    #[test]
+    fn an_editable_install_counts_as_carrying_the_package() {
+        let studio = temp_studio_dir("stubless-editable");
+        let new_base = studio.join("unsloth_studio");
+        let old_base = studio.join(".venv");
+        for base in [&new_base, &old_base] {
+            fs::create_dir_all(base.join("Scripts")).unwrap();
+            fs::write(base.join("Scripts").join("python.exe"), "").unwrap();
+            fs::create_dir_all(base.join("Lib").join("site-packages")).unwrap();
+        }
+
+        let legacy_site_packages = old_base.join("Lib").join("site-packages");
+        fs::create_dir_all(legacy_site_packages.join("unsloth-2026.8.1.dist-info")).unwrap();
+        fs::write(legacy_site_packages.join("__editable__.unsloth.pth"), "").unwrap();
+
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe")),
+            "an editable install has a package to import and must outrank an empty venv"
+        );
+
+        // Unrelated metadata is not this package. A dist-info for something else must
+        // not make an empty venv look installed.
+        fs::create_dir_all(
+            new_base
+                .join("Lib")
+                .join("site-packages")
+                .join("unsloth_zoo-2026.8.1.dist-info"),
+        )
+        .unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_base.join("Scripts").join("unsloth.exe")),
+            "a dist-info for another distribution must not count"
+        );
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_invocation_runs_python_with_the_trampoline_and_caller_args() {
+        use std::ffi::OsString;
+
+        let (dir, python, bin) = managed_venv("managed-cli-invocation");
+        let invocation =
+            resolve_managed_cli_invocation(&bin, &["studio", "--api-only", "-p", "8888"]).unwrap();
+
+        assert_eq!(invocation.program, python);
+        assert_ne!(invocation.program, bin);
+        assert_eq!(
+            invocation.args,
+            vec![
+                // No -I; see WINDOWS_CLI_ENTRYPOINT.
+                OsString::from("-X"),
+                OsString::from("utf8"),
+                OsString::from("-c"),
+                OsString::from(WINDOWS_CLI_ENTRYPOINT),
+                // Caller arguments follow the script, in order.
+                OsString::from("studio"),
+                OsString::from("--api-only"),
+                OsString::from("-p"),
+                OsString::from("8888"),
+            ]
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_invocation_does_not_isolate_the_interpreter() {
+        // Measured on a machine with no policy: PYTHONPROFILEIMPORTTIME=1 gave
+        // ~24 KB of stderr from the console script and nothing from a -I
+        // trampoline, and PYTHONPATH stopped shadowing.
+        let (dir, _python, bin) = managed_venv("managed-cli-no-isolation");
+        let invocation = resolve_managed_cli_invocation(&bin, &["-h"]).unwrap();
+
+        assert!(
+            !invocation.args.iter().any(|arg| arg == "-I"),
+            "{:?}",
+            invocation.args
+        );
+        assert!(
+            WINDOWS_CLI_ENTRYPOINT.contains("sys.path[:1]"),
+            "{WINDOWS_CLI_ENTRYPOINT}"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // The exception, and the only one: the updater rewrites the environment it
+    // runs in, so it stays isolated exactly as it shipped. Asserted here as well
+    // as in update.rs so the two halves of the rule are stated together.
+    #[cfg(windows)]
+    #[test]
+    fn only_the_isolated_flavour_carries_the_isolation_flag() {
+        let (dir, _python, bin) = managed_venv("managed-cli-isolated");
+
+        let inherit =
+            resolve_managed_cli_invocation_with(&bin, &["studio"], Isolation::Inherit).unwrap();
+        let isolated =
+            resolve_managed_cli_invocation_with(&bin, &["studio"], Isolation::Isolated).unwrap();
+
+        assert!(!inherit.args.iter().any(|arg| arg == "-I"), "{:?}", inherit.args);
+        assert!(isolated.args.iter().any(|arg| arg == "-I"), "{:?}", isolated.args);
+        // -X utf8 comes first either way: -I implies -E, which would drop
+        // PYTHONUTF8, and the flag form survives it.
+        assert_eq!(isolated.args[0], std::ffi::OsString::from("-X"));
+        assert_eq!(isolated.args[1], std::ffi::OsString::from("utf8"));
+        assert_eq!(isolated.args[2], std::ffi::OsString::from("-I"));
+        // Same program, same trailing arguments; only the flag differs.
+        assert_eq!(inherit.program, isolated.program);
+        assert_eq!(inherit.args.last(), isolated.args.last());
+        // And the default entry point is the inheriting one.
+        assert_eq!(
+            resolve_managed_cli_invocation(&bin, &["studio"]).unwrap().args,
+            inherit.args
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_trampoline_assigns_argv0_before_importing_the_cli() {
+        // The order is the whole point: unsloth_cli decides at import time
+        // whether it is the console script, which gates the UTF-8 stream
+        // reconfigure, the -np<N> rewrite and Typer's prog_name.
+        let strip = WINDOWS_CLI_ENTRYPOINT.find("sys.path[:1]");
+        let assignment = WINDOWS_CLI_ENTRYPOINT.find("sys.argv[0] = 'unsloth'");
+        let import = WINDOWS_CLI_ENTRYPOINT.find("from unsloth_cli import app");
+        assert!(strip.is_some() && assignment.is_some() && import.is_some());
+        assert!(assignment < import, "{WINDOWS_CLI_ENTRYPOINT}");
+        // The cwd must leave sys.path before the import too, or the entry it
+        // guards against is still live for that one import.
+        assert!(strip < import, "{WINDOWS_CLI_ENTRYPOINT}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_commands_leave_the_python_environment_alone() {
+        use std::ffi::OsStr;
+
+        // Harmless under -I, which discarded them anyway; without it, a change
+        // the console script does not make.
+        let (dir, _python, bin) = managed_venv("managed-cli-env");
+        let cmd = build_managed_cli_command(&bin, &["-h"]).unwrap();
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(
+                !cmd.get_envs().any(|(key, _)| key == OsStr::new(name)),
+                "{name} must be inherited, not overridden"
+            );
+        }
+        // The async flavour must not drift from the blocking one.
+        let tokio_cmd = build_managed_cli_command_tokio(&bin, &["-h"]).unwrap();
+        let std_cmd = tokio_cmd.as_std();
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(
+                !std_cmd.get_envs().any(|(key, _)| key == OsStr::new(name)),
+                "{name} must be inherited, not overridden"
+            );
+        }
+        assert_eq!(std_cmd.get_program(), cmd.get_program());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_invocation_fails_closed_without_the_interpreter() {
+        // Falling back to the stub is exactly what a policy-blocked machine
+        // cannot run, so a missing interpreter is an error, not a downgrade.
+        let bin = temp_studio_dir("managed-cli-no-python").join("unsloth.exe");
+        let error = resolve_managed_cli_invocation(&bin, &["-h"]).unwrap_err();
+        assert!(error.contains("python.exe"), "{error}");
+    }
+
+    // Parity guard: the change is Windows-only. macOS and Linux keep execing
+    // the console script with the caller's arguments and nothing else.
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_managed_invocation_still_execs_the_console_script() {
+        use std::ffi::OsString;
+
+        let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
+        let invocation = resolve_managed_cli_invocation(bin, &["studio", "--api-only"]).unwrap();
+
+        assert_eq!(invocation.program, bin);
+        assert_eq!(
+            invocation.args,
+            vec![OsString::from("studio"), OsString::from("--api-only")]
+        );
+
+        let cmd = build_managed_cli_command(bin, &["studio", "--api-only"]).unwrap();
+        assert_eq!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![OsString::from("studio"), OsString::from("--api-only")]
+        );
+        assert!(cmd.get_envs().next().is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_managed_invocation_needs_no_interpreter_beside_the_script() {
+        // The Windows arm fails closed on a missing python.exe; the POSIX arm
+        // must not acquire that failure mode for a path that never had it.
+        let bin = std::path::Path::new("/definitely/not/here/bin/unsloth");
+        assert!(resolve_managed_cli_invocation(bin, &["-h"]).is_ok());
+    }
+
     fn listening_non_studio_port() -> (u16, mpsc::Sender<()>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -2247,7 +2904,38 @@ pub fn start_backend(
     };
 
     let args = backend_args(port);
-    let start_line = format!("Starting backend: {:?} {}", bin, args.join(" "));
+    // Built before ownership is claimed: a missing managed interpreter must not
+    // leave a pending owner behind for a backend that was never spawned.
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let invocation = match resolve_managed_cli_invocation(&bin, &arg_refs) {
+        Ok(invocation) => invocation,
+        Err(msg) => {
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                None,
+                "build_backend_command",
+                &msg,
+            );
+            return Err(msg);
+        }
+    };
+    // The program actually spawned, not the console script it resolved from. This
+    // line is what a user attaches to an issue, and naming the stub would point
+    // every Application Control report at a binary we never start.
+    // Same shape as before, so a support log reads the same on every platform; only
+    // the program differs, and only where the interpreter is what actually starts.
+    let start_line = format!(
+        "Starting backend: {:?} {}",
+        invocation.program,
+        invocation
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let mut cmd = invocation.to_command();
     let pending_owner = match crate::desktop_backend_owner::new_pending_owner() {
         Ok(pending_owner) => pending_owner,
         Err(error) => {
@@ -2262,10 +2950,7 @@ pub fn start_backend(
             return Err(msg);
         }
     };
-    let mut cmd = Command::new(&bin);
-    cmd.args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     if let Err(error) = apply_managed_cli_context_at(&mut cmd, &work_dir) {
         // The drive holding an override can go between the preflight check and
@@ -2304,6 +2989,8 @@ pub fn start_backend(
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
+    // The backend gets UTF-8 from -X utf8 in its argv; these reach it too now
+    // that -I is gone, and carry on down to whatever it spawns.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");

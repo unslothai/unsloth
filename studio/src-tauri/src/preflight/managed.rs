@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 // 3: the cached capability gained studio_install_ok / studio_install_reason.
 const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 3;
@@ -202,8 +201,35 @@ fn marker_candidates_for_bin(bin: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The file whose size and mtime stand for "this CLI", which is the launcher when there
+/// is one.
+///
+/// On Windows there may not be. Antivirus quarantine deletes the generated unsloth.exe
+/// and leaves a venv that still runs through its interpreter, and since that is now a
+/// supported layout, find_unsloth_binary_in_studio_dir hands back a launcher path that
+/// does not exist. Keying the fingerprint on it would fail fs::metadata, so the
+/// capability cache could be neither read nor written, and every preflight would pay
+/// both the -h and the desktop-capabilities subprocess with their own 10s ceilings.
+/// python.exe is the right stand-in: it is what actually starts the CLI there, and an
+/// update replaces the whole venv, so it moves when the launcher would have.
+fn fingerprint_identity_file(bin: &Path) -> Option<PathBuf> {
+    if bin.exists() {
+        return Some(bin.to_path_buf());
+    }
+    #[cfg(windows)]
+    {
+        let interpreter = bin.parent()?.join("python.exe");
+        if interpreter.exists() {
+            return Some(interpreter);
+        }
+    }
+    None
+}
+
 fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
-    let bin_metadata = fs::metadata(bin).ok()?;
+    // Metadata from whatever identifies this CLI, but the cache key below stays the
+    // launcher path, so the two layouts of one install cannot collide.
+    let bin_metadata = fs::metadata(fingerprint_identity_file(bin)?).ok()?;
     let bin_path = bin
         .canonicalize()
         .unwrap_or_else(|_| bin.to_path_buf())
@@ -344,8 +370,17 @@ fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &Des
 
 async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
     let started = Instant::now();
-    let mut cmd = Command::new(bin);
-    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut cmd) = crate::process::build_managed_cli_command_tokio(bin, args) else {
+        info!(
+            "Managed preflight probe {:?} has no managed interpreter to run",
+            args
+        );
+        // Ok, not Err: main's Err arm means "the probe could not be set up and the
+        // install is untested". A venv with no interpreter beside the launcher IS a
+        // result, and the same one this arm always gave.
+        return Ok(false);
+    };
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
     // Reported, not folded into `false`: the CLI never ran, so calling it broken
     // would start a repair needing the same context. Re-checking afterwards is not
@@ -402,10 +437,15 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
 
 async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, String> {
     let started = Instant::now();
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "desktop-capabilities", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let Ok(mut cmd) = crate::process::build_managed_cli_command_tokio(
+        bin,
+        &["studio", "desktop-capabilities", "--json"],
+    ) else {
+        info!("Managed desktop-capabilities probe has no managed interpreter to run");
+        // As above: a missing interpreter is a verdict, not a failure to ask.
+        return Ok(None);
+    };
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
 
     // As above: a context that cannot be built is not a probe result.
     if let Err(error) = crate::process::apply_managed_cli_context_tokio(&mut cmd) {
@@ -780,6 +820,42 @@ mod tests {
             marker_mtime_ms: None,
         };
         assert!(!cache_matches(&cache, &fingerprint));
+    }
+
+    // Quarantine deletes the generated unsloth.exe, so the supported stubless layout
+    // hands back a launcher path that is not on disk. Without a stand-in the
+    // fingerprint is None, the capability cache can be neither read nor written, and
+    // every preflight pays both probe subprocesses again.
+    #[cfg(windows)]
+    #[test]
+    fn a_quarantined_launcher_is_fingerprinted_through_its_interpreter() {
+        let venv = std::env::temp_dir().join(format!(
+            "unsloth-fingerprint-quarantined-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let scripts = venv.join("Scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        let bin = scripts.join("unsloth.exe");
+        let interpreter = scripts.join("python.exe");
+        fs::write(&interpreter, "python").unwrap();
+        assert!(!bin.exists(), "this case is about the launcher being gone");
+
+        let fingerprint = managed_bin_fingerprint(&bin)
+            .expect("a stubless venv must still fingerprint, through python.exe");
+        // The identity stays the launcher path, so the two layouts of one install
+        // cannot share a cache entry.
+        assert!(fingerprint.bin_path.ends_with("unsloth.exe"));
+        // And it tracks the interpreter, so a venv replaced by an update invalidates.
+        fs::write(&interpreter, "python-after-an-update").unwrap();
+        let after = managed_bin_fingerprint(&bin).unwrap();
+        assert_ne!(fingerprint.bin_size, after.bin_size);
+
+        // With no interpreter either there is nothing to stand in, and None is right.
+        fs::remove_file(&interpreter).unwrap();
+        assert!(managed_bin_fingerprint(&bin).is_none());
+
+        let _ = fs::remove_dir_all(&venv);
     }
 
     #[test]
