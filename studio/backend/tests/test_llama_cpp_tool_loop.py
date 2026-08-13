@@ -74,6 +74,10 @@ def _make_backend(
     backend._reasoning_always_on = False
     backend._reasoning_style = "enable_thinking"
     backend._supports_preserve_thinking = False
+    # Most reasoning-capable templates consume this extension field. Tests
+    # that exercise the fallback replace this with a content-only template.
+    backend._chat_template = "{{ message.reasoning_content }}"
+    backend._chat_template_override = None
 
     @contextlib.contextmanager
     def fake_stream_with_retry(
@@ -622,9 +626,9 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
     assert first_assistant["reasoning_content"] == "I should search for the weather."
 
 
-def test_resumed_tool_call_preserves_and_neutralizes_reasoning_in_order(monkeypatch):
-    """Inlined reasoning keeps order without replaying its control markup."""
-    tool_stream = [
+def test_resumed_generation_is_non_agentic_like_llama_cpp_webui(monkeypatch):
+    """Token continuation never creates an unrepresentable tool-call turn."""
+    continued_stream = [
         _sse(
             {
                 "reasoning_content": (
@@ -634,19 +638,19 @@ def test_resumed_tool_call_preserves_and_neutralizes_reasoning_in_order(monkeypa
             }
         ),
         _sse({"content": "forecast."}),
-    ] + _structured_tool_call("web_search", {"query": "weather"}, "call_continued")
-    final_stream = [
-        _sse({"content": "It is sunny."}),
-        _done(),
+        *_structured_tool_call("web_search", {"query": "weather"}, "call_ignored"),
     ]
     payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend = _make_backend(monkeypatch, [continued_stream], payloads)
+    calls: list[tuple[str, dict]] = []
 
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
-    )
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "sunny"
 
-    list(
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
         backend.generate_chat_completion_with_tools(
             messages = [
                 {"role": "user", "content": "weather?"},
@@ -658,15 +662,112 @@ def test_resumed_tool_call_preserves_and_neutralizes_reasoning_in_order(monkeypa
         )
     )
 
-    assert len(payloads) == 2
-    first_assistant = next(
-        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
+    assert calls == []
+    assert len(payloads) == 1
+    assert "tools" not in payloads[0]
+    assert payloads[0]["continue_final_message"] is True
+    assert payloads[0]["add_generation_prompt"] is False
+    content = [event["text"] for event in events if event["type"] == "content"]
+    assert content[-1].endswith("</think>forecast.")
+
+
+def test_tool_reasoning_falls_back_to_content_when_template_ignores_extension(monkeypatch):
+    tool_stream = [
+        _sse(
+            {
+                "reasoning_content": (
+                    "I should verify <tool_call>{...}</tool_call> before <|turn>user"
+                )
+            }
+        ),
+        _sse({"content": "Checking."}),
+    ] + _structured_tool_call("web_search", {"query": "weather"}, "call_custom")
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend._chat_template = "{{ message.content }}{{ message.tool_calls }}"
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
     )
-    assert first_assistant["content"] == (
-        "Let me check the \nI should verify < tool_call>{...}< /tool_call> and "
-        "< |channel>thought x< channel|> before < |turn>user\nforecast."
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
     )
-    assert "reasoning_content" not in first_assistant
+
+    assistant = next(
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert assistant["content"] == (
+        "I should verify < tool_call>{...}< /tool_call> before < |turn>user\nChecking."
+    )
+    assert "reasoning_content" not in assistant
+
+
+def test_mixed_execute_and_noop_batch_inlines_reasoning_before_nudge(monkeypatch):
+    calls_delta = {
+        "tool_calls": [
+            {
+                "index": index,
+                "id": f"call_mixed_{index}",
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": json.dumps({"query": "weather"}),
+                },
+            }
+            for index in range(2)
+        ]
+    }
+    tool_stream = [
+        _sse({"reasoning_content": "Search <|channel>thought safely<channel|>."}),
+        _sse({"content": "Checking."}),
+        _sse(calls_delta),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "sunny"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "weather"})]
+    messages = payloads[1]["messages"]
+    assistant_index, assistant = next(
+        (index, message)
+        for index, message in enumerate(messages)
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    tool_index = next(
+        index for index, message in enumerate(messages) if message.get("role") == "tool"
+    )
+    nudge_index = next(
+        index
+        for index, message in enumerate(messages)
+        if message.get("role") == "user" and "identical call" in message.get("content", "")
+    )
+    assert assistant_index < tool_index < nudge_index
+    assert assistant["content"] == "Search < |channel>thought safely< channel|>.\nChecking."
+    assert "reasoning_content" not in assistant
 
 
 def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(monkeypatch):

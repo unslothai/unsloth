@@ -284,6 +284,15 @@ def test_preserve_thinking_on_keeps_prior_reasoning():
     assert "SECRET_THOUGHT" in _render(_convo_with_prior_tool_reasoning(), preserve_thinking = True)
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_inlined_mixed_noop_reasoning_survives_newest_user_nudge(tpl):
+    messages = _convo_with_prior_tool_reasoning()
+    assert "SECRET_THOUGHT" not in _render_with(tpl, messages)
+
+    messages[1]["content"] = messages[1].pop("reasoning_content")
+    assert "SECRET_THOUGHT" in _render_with(tpl, messages)
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
