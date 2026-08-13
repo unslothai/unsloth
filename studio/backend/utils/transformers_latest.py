@@ -92,9 +92,7 @@ _fetch_done.set()
 # exists to stop. Derived, not a literal, so tuning a timeout or a retry cannot silently
 # reopen that gap.
 _REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
-_INFLIGHT_WAIT_SECONDS = (
-    _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_TIMEOUT_SECONDS + 5.0
-)
+_INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_TIMEOUT_SECONDS + 5.0
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
