@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -116,15 +117,37 @@ def _run_block(
     timeout_log = tmp_path / "timeout_args.log"
     real_timeout = shutil.which("timeout")
     if with_timeout:
-        assert real_timeout, "this test host has no timeout(1) to delegate to"
         # Records the bound setup.sh ASKED for, then enforces a short one, so the hang case is
-        # observable without waiting out the real 90 seconds.
+        # observable without waiting out the real 90 seconds. macOS ships no timeout(1) (it is
+        # GNU coreutils), so the whole file failed there on the assert this replaces; the shim
+        # below carries the same contract -- inherited stdout, child killed at the bound, 124 on
+        # expiry -- so both hosts exercise the same arm of the block.
+        if real_timeout:
+            enforcer = f'exec "{real_timeout}" {timeout_bound} "$@"'
+        else:
+            shim = tmp_path / "timeout_shim.py"
+            # Own process group, killed as a group: timeout(1) does exactly that, and without it
+            # the hang case leaves the `sleep` grandchild holding the captured stdout open, so
+            # the command substitution in setup.sh waits out the full sleep and the bound proves
+            # nothing.
+            shim.write_text(
+                "import os, signal, subprocess, sys\n"
+                "child = subprocess.Popen(sys.argv[2:], start_new_session = True)\n"
+                "try:\n"
+                "    sys.exit(child.wait(timeout = float(sys.argv[1])))\n"
+                "except subprocess.TimeoutExpired:\n"
+                "    try:\n"
+                "        os.killpg(os.getpgid(child.pid), signal.SIGKILL)\n"
+                "    except (ProcessLookupError, PermissionError):\n"
+                "        child.kill()\n"
+                "    child.wait()\n"
+                "    sys.exit(124)\n",
+                encoding = "utf-8",
+            )
+            enforcer = f'exec "{sys.executable}" "{shim}" {timeout_bound} "$@"'
         _write_exec(
             stub_bin / "timeout",
-            "#!/bin/sh\n"
-            f'printf "%s\\n" "$*" >> "{timeout_log}"\n'
-            "shift\n"
-            f'exec "{real_timeout}" {timeout_bound} "$@"\n',
+            "#!/bin/sh\n" f'printf "%s\\n" "$*" >> "{timeout_log}"\n' "shift\n" f"{enforcer}\n",
         )
     else:
         # No `timeout` on PATH: the fallback arm must still run, with only the block's own
