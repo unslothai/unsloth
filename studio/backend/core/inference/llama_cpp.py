@@ -3185,7 +3185,7 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
 
 
-def _resolve_llama_binary(binary: str) -> Path:
+def _resolve_llama_binary(binary: str, *, template_only: bool = False) -> Path:
     """Resolve a managed symlink or shell entrypoint to the real server.
 
     Follows a chain rather than one hop. A wrapper whose target is another
@@ -3195,6 +3195,14 @@ def _resolve_llama_binary(binary: str) -> Path:
     point at the wrapper's folder instead of the one holding the dylibs.
     Bounded, and stops on a repeat, so a wrapper pair pointing at each other
     cannot spin.
+
+    ``template_only`` stops at the first link that is not the installer's own
+    template. Two callers, two different questions. Finding the dylibs wants
+    the end of the chain whatever it is made of, because that is where they
+    sit. Choosing what to LAUNCH must not step over somebody's own script:
+    checking only the outer entrypoint meant an installer-shaped symlink whose
+    target was a hand-written wrapper had that wrapper's exports skipped, even
+    though running the symlink directly would have executed them.
     """
     resolved = Path(binary).resolve()
     seen = {resolved}
@@ -3208,6 +3216,8 @@ def _resolve_llama_binary(binary: str) -> Path:
             break
         _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
         if not _m:
+            break
+        if template_only and not _is_installer_entrypoint(str(resolved)):
             break
         nxt = (resolved.parent / _m.group(1)).resolve()
         if nxt in seen:
@@ -9852,7 +9862,9 @@ class LlamaCppBackend:
             return binary
         if not _is_installer_entrypoint(binary):
             return binary
-        return str(_resolve_llama_binary(binary))
+        # template_only: the outer entrypoint being ours says nothing about
+        # what it points at. Resolve only through links that are also ours.
+        return str(_resolve_llama_binary(binary, template_only = True))
 
     @staticmethod
     def _runtime_remedy(binary: Optional[str]) -> str:
@@ -10088,6 +10100,36 @@ class LlamaCppBackend:
 
     @staticmethod
     def _classify_llama_start_failure(
+        output: str,
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+        returncode: Optional[int] = None,
+        binary: Optional[str] = None,
+        log_path: "Optional[Path | str]" = None,
+        secrets: Sequence[Optional[str]] = (),
+    ) -> str:
+        """Classify, then redact, whatever the classification quoted.
+
+        Redaction used to live only in the startup-diagnostics tail, so it
+        covered the fallback and nothing else. Every other branch also quotes
+        untrusted text -- a dyld message names the library it could not load,
+        and that name comes from the child -- so a credential appearing there
+        went out in the API error while the same credential in the tail was
+        starred out. One boundary for every branch, rather than one per
+        interpolation, which is the arrangement that let this through.
+
+        Scrubbing twice is harmless: a redacted value no longer matches, so
+        running the pass over an already-decorated message is a no-op.
+        """
+        return LlamaCppBackend._scrub_secret_values(
+            LlamaCppBackend._classify_start_failure_text(
+                output, gguf_path, model_identifier, returncode, binary, log_path, secrets,
+            ),
+            secrets,
+        )
+
+    @staticmethod
+    def _classify_start_failure_text(
         output: str,
         gguf_path: Optional[str],
         model_identifier: Optional[str],
@@ -10381,14 +10423,18 @@ class LlamaCppBackend:
     )
 
     # NAME = value / "NAME": "value", in the three shapes an environment dump
-    # takes: shell-ish, JSON, and bare. The quoted arm consumes escapes so a
-    # backslash-escaped quote inside the value does not end it early. Both arms
-    # are unambiguous alternations of single characters, so matching is linear;
-    # there is no nested quantifier for a crafted line to exploit.
+    # takes: shell-ish, JSON, and bare. The quoted arm ends on the delimiter it
+    # opened with, not on either quote character: a JSON value may legitimately
+    # contain an apostrophe, and rejecting both meant "DB_PASSWORD": "a' b"
+    # fell through to the bare arm, which stops at whitespace and left " b"
+    # standing in the API error. Escapes are consumed so a backslash-escaped
+    # delimiter does not end the value early. Both arms are unambiguous
+    # alternations of single characters, so matching stays linear; there is no
+    # nested quantifier for a crafted line to exploit.
     _SECRET_ASSIGNMENT_RE = re.compile(
         r"""(?P<q>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_]{0,63})(?P=q)
             (?P<sep>[ \t]*[=:][ \t]*)
-            (?:(?P<vq>["'])(?P<qval>(?:\\.|[^"'\\])*)(?P=vq)
+            (?:(?P<vq>["'])(?P<qval>(?:\\.|(?!(?P=vq))[^\\])*)(?P=vq)
              |  (?P<val>[^\s,;]+))""",
         re.VERBOSE,
     )

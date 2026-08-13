@@ -560,3 +560,51 @@ class TestPinningTheInstallersOwnEntrypoint:
         monkeypatch.setenv("LLAMA_SERVER_PATH", str(entry))
         monkeypatch.setattr(sys, "platform", "darwin")
         assert LlamaCppBackend._exec_path_for_launch(str(entry)) == str(entry)
+
+
+class TestLaunchStopsAtSomebodyElsesWrapper:
+    """The outer entrypoint being ours says nothing about what it points at.
+
+    An installer-shaped entrypoint whose target is a hand-written wrapper had
+    that wrapper stepped over on macOS, so its exports never ran, even though
+    launching the entrypoint directly would have executed them. Resolving for
+    the LIBRARY DIRECTORY still follows the whole chain: that is where the
+    dylibs are, whoever wrote the links.
+    """
+
+    @staticmethod
+    def _tree(tmp_path, inner_body):
+        import json
+        root = tmp_path / ".unsloth" / "llama.cpp"
+        (root / "build" / "bin").mkdir(parents = True)
+        (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"tag": "b9415"}))
+        real = root / "build" / "bin" / "llama-server-real"
+        real.write_bytes(b"\x00\x00\x00\x00")
+        real.chmod(0o755)
+        inner = root / "build" / "bin" / "llama-server"
+        inner.write_text(inner_body)
+        inner.chmod(0o755)
+        outer = root / "llama-server"
+        outer.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+        outer.chmod(0o755)
+        return outer, inner, real
+
+    _CUSTOM = ('#!/bin/sh\nexport GGML_METAL_PATH_RESOURCES=/custom\n'
+               'exec "$(dirname "$0")/llama-server-real" "$@"\n')
+    _TEMPLATE = '#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n'
+
+    def test_a_custom_inner_wrapper_is_launched_not_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        outer, inner, real = self._tree(tmp_path, self._CUSTOM)
+        assert LlamaCppBackend._exec_path_for_launch(str(outer)) == str(inner)
+
+    def test_an_all_template_chain_still_resolves_to_the_end(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        outer, inner, real = self._tree(tmp_path, self._TEMPLATE)
+        assert LlamaCppBackend._exec_path_for_launch(str(outer)) == str(real)
+
+    def test_the_library_directory_still_follows_the_whole_chain(self, tmp_path, monkeypatch):
+        """Stopping early for launch must not move the dylib search path."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        outer, inner, real = self._tree(tmp_path, self._CUSTOM)
+        assert llama_module._llama_lib_dir(str(outer)) == real.parent

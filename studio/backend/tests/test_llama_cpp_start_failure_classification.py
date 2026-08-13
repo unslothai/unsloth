@@ -1355,3 +1355,58 @@ class TestTheLibraryNameIsBounded:
         msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
         assert "libllama.dylib" in msg
         assert "..." not in msg
+
+
+class TestEveryClassifiedBranchIsRedacted:
+    """Redaction covered the tail only, so the other branches leaked.
+
+    A dyld message names the library it could not load, and that name comes
+    from the child. A credential appearing there went out in the API error
+    while the same credential in the startup-output tail was starred out.
+    """
+
+    def test_a_secret_in_a_dyld_library_name_is_redacted(self, monkeypatch):
+        token = "sk-supersecret-abcdefghijk"
+        monkeypatch.setenv("MY_API_TOKEN", token)
+        out = (f"dyld[1]: Library not loaded: @rpath/{token}.dylib\n"
+               f"  Reason: tried: '/a/{token}.dylib' (no such file)\n")
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server",
+                        log_path = "/l.log", secrets = (token,))
+        assert token not in msg
+        assert "***" in msg
+
+    def test_a_per_launch_secret_is_redacted_in_a_classified_branch(self):
+        minted = "unsloth-launch-key-abcdefghij"
+        out = f"dyld[1]: Library not loaded: @rpath/{minted}.dylib\n"
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server",
+                        secrets = (minted,))
+        assert minted not in msg
+
+    def test_an_ordinary_diagnosis_is_unchanged_by_the_extra_pass(self):
+        out = ("dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
+               "  Reason: tried: '/a/libllama.dylib' (no such file)\n")
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
+        assert "libllama.dylib" in msg
+        assert "***" not in msg
+
+
+class TestAQuotedValueEndsOnItsOwnDelimiter:
+    """A JSON value may contain an apostrophe, and a shell one a quote.
+
+    Rejecting both quote characters inside the value made the quoted arm fail,
+    so the bare arm took over and stopped at the first whitespace, leaving the
+    rest of the credential standing in the API error.
+    """
+
+    @pytest.mark.parametrize(
+        "dump,leak",
+        [
+            ('{"DB_PASSWORD": "prefix\' supersecret"}', "supersecret"),
+            ("{'DB_PASSWORD': 'has \" quote inside'}", "quote inside"),
+            ('{"DB_PASSWORD": "trailing \'"}', "trailing"),
+        ],
+    )
+    def test_the_whole_quoted_value_is_replaced(self, dump, leak):
+        cleaned = LlamaCppBackend._scrub_secret_values(dump, ())
+        assert leak not in cleaned, cleaned
+        assert "***" in cleaned
