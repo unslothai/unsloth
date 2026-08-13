@@ -392,6 +392,9 @@ def test_an_explicit_cpu_pin_is_a_request_not_a_fault(block, tmp_path, env):
         {"UNSLOTH_TORCH_INDEX_FAMILY": "\tCPU\n"},
         {"UNSLOTH_TORCH_INDEX_URL": " https://download.pytorch.org/whl/cpu "},
         {"UNSLOTH_TORCH_INDEX_URL": " https://mirror.internal/whl/cpu?token=abc "},
+        # Pins the ORDER: trimming after the trailing-slash loop leaves the slash on (the value
+        # ends in a space, so the loop never fires) and the leaf comes out empty, not "cpu".
+        {"UNSLOTH_TORCH_INDEX_URL": " https://download.pytorch.org/whl/cpu/ "},
     ],
 )
 def test_a_padded_cpu_pin_is_still_a_request_not_a_fault(block, tmp_path, env):
