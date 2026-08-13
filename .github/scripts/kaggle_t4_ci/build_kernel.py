@@ -7,46 +7,36 @@ Two layers, because a Kaggle GPU session is 2xT4 and each payload is written
 for one card:
 
 **Payload notebook** -- one per GPU, one per *leg* (see ``legs.py``).
-Materialises its sources from inlined copies, installs that leg's library
-set, probes that the imports it needs are there, runs the leg's entry
-script, prints a machine-readable result line.
+Materialises its sources from inlined copies, installs that leg's library set,
+probes its imports, runs the leg's entry script, prints a machine-readable
+result line.
 
 **Driver notebook** -- one per kernel. Carries its payloads inline (gzip +
-base64) so the kernel needs no dataset attachment and no network fetch of
-our sources, gives each payload its own virtualenv and its own GPU, and runs
-them concurrently under papermill.
+base64) so the kernel needs no dataset attachment and no network fetch of our
+sources, gives each payload its own virtualenv and GPU, and runs them
+concurrently under papermill. Nothing is checked out on the Kaggle side.
 
-Everything the kernel needs travels inside the notebook. There is no
-checkout on the Kaggle side.
+Cell order is load-bearing: **materialise, install, verify, run**. The control
+leg installs from a pin file carried inside the notebook, so materialising last
+(as an earlier version did) wrote that file after the install needing it.
 
-Cell order is load-bearing: **materialise, install, verify, run**. The
-control leg installs from a pin file that is carried inside the notebook, so
-the files have to exist on disk before the first pip call. Materialising
-last, as an earlier version did, meant the pin file was written after the
-install that needed it.
+Four details that are NOT safe to simplify away:
 
-Four hard-won details are load-bearing and are NOT safe to simplify away:
-
-1. **Per-child virtualenv.** Every payload pip-installs a torch/transformers
-   stack, and the legs deliberately install DIFFERENT ones. Sharing one
-   site-packages does not merely risk corruption here, it destroys the
-   experiment: the control leg's pins and the canary leg's upgrades would
-   land in the same tree and the last writer would win.
-2. **``uv venv --seed``.** Without it the venv has no pip, so a notebook's
-   ``!pip install`` falls through PATH to the system pip while the kernel
-   runs the venv interpreter: installs and imports then target different
-   site-packages.
+1. **Per-child virtualenv.** The legs deliberately pip-install DIFFERENT
+   torch/transformers stacks. One shared site-packages destroys the
+   experiment: control's pins and canary's upgrades land in the same tree and
+   the last writer wins.
+2. **``uv venv --seed``.** Without it the venv has no pip, so ``!pip install``
+   falls through PATH to the system pip while the kernel runs the venv
+   interpreter: installs and imports target different site-packages.
 3. **``UV_SYSTEM_PYTHON=0``.** The Kaggle image ships ``UV_SYSTEM_PYTHON=1``,
-   and it BEATS ``VIRTUAL_ENV``. Left alone, ``uv pip install`` writes to
-   the base image while ``--system-site-packages`` lets the kernel import
-   from there anyway, so both children silently share one tree and the
-   isolation the venv exists to provide is undone by an environment
-   variable.
-4. **Runtime paths are built in Python, from ROOT.** Anything spliced into a
-   generated cell as a shell-shaped fragment is a SyntaxError waiting for a
-   Kaggle session; ``@ROOT/`` arguments are expanded into ``str(ROOT / ...)``
-   expressions instead. ``test_generated_cells_compile`` is the cheap
-   version of finding that out.
+   which BEATS ``VIRTUAL_ENV``: ``uv pip install`` writes to the base image
+   while ``--system-site-packages`` lets the kernel import from there anyway,
+   so both children silently share one tree.
+4. **Runtime paths are built in Python, from ROOT.** A shell-shaped fragment
+   spliced into a generated cell is a SyntaxError waiting for a Kaggle session,
+   so ``@ROOT/`` arguments expand into ``str(ROOT / ...)`` expressions.
+   ``test_generated_cells_compile`` is the cheap way to find that out.
 
 Usage:
     python build_kernel.py --payload-dir tests/kaggle/t4_smoke \\
@@ -72,10 +62,10 @@ DRIVER_SENTINEL = "KAGGLE_T4_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_T4_CI_PAYLOAD"
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 
-# Where the payload sources land on the Kaggle side. One directory PER LEG:
-# the payloads of a kernel run concurrently and carry byte-identical copies of
-# the same files, and `write_bytes` truncates before it writes, so a single
-# shared directory lets one payload empty a file the other is importing.
+# Where the payload sources land on the Kaggle side, one directory PER LEG: a
+# kernel's payloads run concurrently with byte-identical copies of the same
+# files, and `write_bytes` truncates first, so one shared directory lets a
+# payload empty a file the other is importing.
 KERNEL_ROOT = "/kaggle/working/t4_smoke_src"
 
 
@@ -101,12 +91,11 @@ def _code_cell(source: str) -> dict:
 def _shared_args_for(leg: Leg, extra_args: tuple[str, ...]) -> list[str]:
     """``--smoke-args``, minus any option the leg already sets for itself.
 
-    The shared arguments exist so the control and canary legs differ in
-    nothing but versions, and they are appended AFTER each leg's own. For a
-    leg that names the same option that is an override, because argparse
-    takes the last value: the gpt-oss leg asks for 3 steps -- a measured fit
-    for a 16GB card -- and the workflow's ``--max-steps 10`` silently
-    retrained the 20B model for ten.
+    Shared arguments keep the control and canary legs differing in nothing but
+    versions, and are appended AFTER each leg's own, so for a leg naming the
+    same option they override it (argparse takes the last value): the gpt-oss
+    leg asks for 3 steps, a measured fit for a 16GB card, and the workflow's
+    ``--max-steps 10`` silently retrained the 20B model for ten.
     """
     own = {a.split("=", 1)[0] for a in leg.args if a.startswith("--")}
     kept: list[str] = []
@@ -129,11 +118,10 @@ def _shared_args_for(leg: Leg, extra_args: tuple[str, ...]) -> list[str]:
 def _arg_expression(value: str) -> str:
     """One entry of the child's argv, as a Python expression.
 
-    ``@ROOT/x/y`` becomes ``str(ROOT / "x" / "y")`` so the path is assembled
-    on the kernel from the kernel's own ROOT. Everything else is a plain
-    string literal. The alternative -- interpolating the path into the
-    generated source -- is what produced a cell that read
-    ``"--label", "gpu0" --reference "{ROOT}/..."`` and died with a
+    ``@ROOT/x/y`` becomes ``str(ROOT / "x" / "y")`` so the path is assembled on
+    the kernel from its own ROOT; everything else is a string literal.
+    Interpolating the path into the generated source instead produced a cell
+    reading ``"--label", "gpu0" --reference "{ROOT}/..."`` that died with a
     SyntaxError before a single training step ran.
     """
     if value.startswith("@ROOT/"):
@@ -158,9 +146,8 @@ def build_payload_notebook(
     if leg.entry not in wanted:
         wanted.append(leg.entry)
 
-    # `reference=None` means "whatever the leg asks for"; an explicit ""
-    # means the caller is turning the band check off for this run, which is
-    # how a reference recapture is dispatched.
+    # `reference=None` means "whatever the leg asks for"; an explicit "" turns
+    # the band check off, which is how a reference recapture is dispatched.
     ref_name = leg.reference if reference is None else reference
     if ref_name:
         wanted.append(f"references/{ref_name}")
@@ -447,10 +434,9 @@ def build_driver(
 ) -> dict:
     """Kernel notebook that fans the payloads out one per GPU.
 
-    ``isolation`` maps a payload to whether its virtualenv may see the
-    Kaggle image's site-packages. It is per payload rather than per kernel
-    because the legs that share a kernel do not share an answer: see
-    ``Leg.system_site_packages``.
+    ``isolation`` maps a payload to whether its virtualenv may see the Kaggle
+    image's site-packages. Per payload, not per kernel, because legs sharing a
+    kernel do not share an answer: see ``Leg.system_site_packages``.
     """
     encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
@@ -751,8 +737,8 @@ def main() -> int:
             f"{len(names)} leg(s): {', '.join(names)}"
         )
     # The launcher needs one --notebook per kernel and the expected payload
-    # count; both are consequences of the plan, so they are emitted here
-    # rather than restated in the workflow.
+    # count; both follow from the plan, so they are emitted here rather than
+    # restated in the workflow.
     _github_output("notebooks", " ".join(f"--notebook {o}" for o in outputs))
     _github_output("payloads", str(sum(len(n) for n in plan)))
     return 0

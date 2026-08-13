@@ -3,67 +3,57 @@
 
 """Deterministic Unsloth training smoke test, sized for a single Tesla T4.
 
-Runs the whole notebook shape end to end -- 4-bit load, LoRA attach, a
-handful of training steps, adapter save, reload-free inference -- against a
-tiny model on ONE GPU, and asserts on what came out.
+Runs the whole notebook shape end to end -- 4-bit load, LoRA attach, a handful
+of training steps, adapter save, reload-free inference -- against a tiny model
+on ONE GPU, and asserts on what came out.
 
-Why it exists
--------------
-Every other GPU test in this repo runs on hardware nobody's Colab session
-has. T4 is the card the notebooks are actually written for: no bf16, no
-flash-attention 2, 16GB, sm_75. A regression that only shows up there is
-invisible to the rest of CI. Driven from
-``.github/workflows/kaggle-t4-notebook-ci.yml`` on real Kaggle T4s.
+Every other GPU test in this repo runs on hardware nobody's Colab session has.
+T4 is the card the notebooks are written for: no bf16, no flash-attention 2,
+16GB, sm_75, so a regression that only shows up there is invisible to the rest
+of CI. Driven from ``.github/workflows/kaggle-t4-notebook-ci.yml`` on real
+Kaggle T4s.
 
-What it asserts, in descending order of confidence
---------------------------------------------------
-1. **Run-to-run bitwise equality** (``--repeat 2``). Two full runs in the
-   same session must produce identical per-step loss and grad_norm, to the
-   last bit. This is the strong assertion, and the only one that is exact.
-   It catches uninitialised memory, unseeded RNG, iteration over a set, a
-   nondeterministic kernel newly introduced into the backward pass.
+What it asserts, in descending order of confidence:
+
+1. **Run-to-run bitwise equality** (``--repeat 2``). Two full runs in one
+   session must produce identical per-step loss and grad_norm to the last bit.
+   The only exact assertion, and it catches uninitialised memory, unseeded RNG,
+   iteration over a set, a nondeterministic kernel new to the backward pass.
 2. **The canary string.** The training data maps a question to the literal
-   target ``__UNSLOTH__!!!``. After overfitting on it, greedy decoding of a
-   training prompt must emit that string and nothing else -- an exact match
-   after stripping surrounding whitespace, not a substring, because the
-   completion trained on is ``CANARY + eos_token`` and
-   ``'__UNSLOTH__!!!<more text>'`` is a stopping regression rather than a
-   pass. The adapter that was written is also read back off disk and
-   checked for tensors that are present, finite and not all zero, since
-   inference runs on the in-memory model and would not notice. This is a
-   binary,
-   tolerance-free check that the forward pass, the backward pass, the
-   optimizer step, the adapter save and the inference path are all wired
-   together correctly -- it fails loudly if LoRA weights silently never
-   reach the generate call, which no loss-value assertion would catch.
-3. **Loss and grad_norm inside a band around a committed reference.** A
-   tolerance, never an equality. See ``references/README.md``: the
-   reference was captured on a specific T4 with a specific library set, and
-   a different driver or a transformers bump moves the low bits. The band
-   is wide enough not to fire on that and narrow enough to catch a real
-   change in the optimisation.
+   target ``__UNSLOTH__!!!``, and after overfitting, greedy decoding of a
+   training prompt must emit that and nothing else. An exact match modulo
+   surrounding whitespace, not a substring: the completion trained on is
+   ``CANARY + eos_token``, so ``'__UNSLOTH__!!!<more text>'`` is a stopping
+   regression rather than a pass. The written adapter is also read back off disk
+   and checked for tensors present, finite and not all zero, since inference
+   runs on the in-memory model and would not notice. This is a binary,
+   tolerance-free check that forward, backward, optimizer step, adapter save and
+   inference are wired together, and it fails loudly if LoRA weights never reach
+   the generate call, which no loss-value assertion would catch.
+3. **Loss and grad_norm inside a band around a committed reference**, a
+   tolerance and never an equality. See ``references/README.md``: the reference
+   was captured on a specific T4 with a specific library set, and a different
+   driver or a transformers bump moves the low bits, so the band is wide enough
+   not to fire on that and narrow enough to catch a real change in the
+   optimisation.
 
    A reference is only comparable to a run of the SAME EXPERIMENT. The step
-   count is part of what the trace encodes -- step 4 of a 10-step run and
-   step 4 of a 3-step run are the same iterate only by coincidence, and the
-   fp16 scaler's skip pattern lives at the front of the run where a short
-   run spends all of its steps -- and so are the learning rate, the
-   optimizer, the LoRA shape, the model and which commit of the model
-   repository was read. The reference records all of them, and comparing
-   against a reference captured with any of them different is a hard
-   failure, never a quiet pass. See ``check_reference`` and
+   count is part of what the trace encodes -- step 4 of a 10-step run and of a
+   3-step run are the same iterate only by coincidence, and the fp16 scaler's
+   skip pattern lives at the front where a short run spends all its steps -- and
+   so are the learning rate, the optimizer, the LoRA shape, the model and the
+   commit of the model repository read. The reference records all of them, and
+   comparing against one captured with any of them different is a hard failure,
+   never a quiet pass. See ``check_reference`` and
    ``REFERENCE_DEFINING_SETTINGS``.
 
-Determinism caveats, stated rather than assumed
------------------------------------------------
-``torch.use_deterministic_algorithms(True, warn_only=True)``: warn_only
-because parts of the bitsandbytes 4-bit path have no deterministic kernel
-registered, and raising there would abort the test having proved nothing.
-Assertion 1 is what actually verifies the outcome.
-
-Bitwise equality is asserted WITHIN one session only. Across GPU
-architectures it is not achievable and is not claimed -- fp16 reduction
-order alone moves the result.
+Determinism caveats, stated rather than assumed:
+``torch.use_deterministic_algorithms(True, warn_only=True)`` is warn_only
+because parts of the bitsandbytes 4-bit path register no deterministic kernel,
+and raising would abort the test having proved nothing; assertion 1 is what
+verifies the outcome. Bitwise equality is asserted WITHIN one session only, and
+is not achievable or claimed across GPU architectures, fp16 reduction order
+alone moving the result.
 
 Usage:
     python run_t4_smoke.py --outdir /kaggle/working/smoke0
@@ -110,9 +100,8 @@ CANARY = "__UNSLOTH__!!!"
 PROMPT_TEMPLATE = "### Question:\n{question}\n### Answer:\n"
 SEED = 3407
 
-# The default is deliberately the smallest instruct model that still exercises
-# the real loader path. It must fit on ONE T4 alongside a second copy of this
-# same test running on the other T4 of the same session.
+# The smallest instruct model that still exercises the real loader path. It must
+# fit on ONE T4 alongside a second copy of this test on the session's other T4.
 DEFAULT_MODEL = "unsloth/Qwen2.5-0.5B-Instruct"
 
 
@@ -135,12 +124,11 @@ def load_canary_rows(path: Path) -> list[dict]:
 def build_dataset(rows: list[dict], eos_token: str):
     """Prompt / completion columns, so the loss lands only on the answer.
 
-    A single ``text`` column would spread the loss across the question
-    tokens too, and the question is the part the model already predicts
-    well. With the prompt masked out, every one of the few steps this test
-    can afford is spent on the canary itself, which is what makes an exact
-    string assertion reachable at all in a run this short. TRL applies the
-    masking itself when it sees these two columns
+    A single ``text`` column would spread the loss across the question tokens,
+    which the model already predicts well. With the prompt masked out, every one
+    of the few steps this test can afford goes on the canary itself, which is
+    what makes an exact string assertion reachable in a run this short. TRL
+    applies the masking when it sees these two columns
     (``completion_only_loss``).
     """
     from datasets import Dataset
@@ -155,8 +143,8 @@ def build_dataset(rows: list[dict], eos_token: str):
 def _make_trainer_class(sft_trainer_cls, sampler):
     """SFTTrainer with the sampling order pinned.
 
-    The sampler argument to ``_get_train_sampler`` moved between TRL
-    versions (it gained a dataset parameter), so absorb whatever is passed.
+    ``_get_train_sampler``'s signature moved between TRL versions (it gained a
+    dataset parameter), so absorb whatever is passed.
     """
 
     class _FixedOrderSFTTrainer(sft_trainer_cls):  # type: ignore[misc,valid-type]
@@ -169,26 +157,22 @@ def _make_trainer_class(sft_trainer_cls, sampler):
 def pin_initial_loss_scale(trainer, value: float) -> dict:
     """Lower the fp16 gradient scaler's starting scale before training.
 
-    Why this exists, in one measurement. The T4 has no bf16, so the run is
-    fp16 with a dynamic ``GradScaler``. That scaler starts at 65536, halves
-    on every overflow, and SKIPS the optimizer step it overflowed on. On
-    this model the first three steps overflow every time: the committed
-    reference has ``grad_norm: NaN`` at steps 1, 2 and 3 and a finite one
-    from step 4, which is 65536 -> 8192 in three halvings. A run of three
-    steps therefore applies ZERO optimizer updates and asserts nothing about
-    training at all.
+    Why, in one measurement: the T4 has no bf16, so the run is fp16 with a
+    dynamic ``GradScaler`` that starts at 65536, halves on every overflow and
+    SKIPS the step it overflowed on. On this model the first three steps
+    overflow every time -- the committed reference has ``grad_norm: NaN`` at
+    steps 1, 2 and 3 and a finite one from step 4, which is 65536 -> 8192 in
+    three halvings -- so a three-step run applies ZERO optimizer updates.
 
-    Starting the scaler low enough not to overflow is what buys a short run
-    its updates back. It changes the numeric path (a different scale is a
-    different rounding of the same gradients), so any reference captured
-    before this was introduced does not apply -- which the step-count guard
-    in ``check_reference`` already refuses to ignore.
+    Starting the scaler low enough not to overflow buys a short run its updates
+    back. It changes the numeric path (a different scale is a different rounding
+    of the same gradients), so a reference captured before this does not apply,
+    which the step-count guard in ``check_reference`` already refuses to ignore.
 
-    Never fatal. ``trainer.accelerator.scaler`` is the one place transformers
-    keeps it, but it is not a public API, so a version that moved it must
-    degrade to "the run is as it was" rather than losing the session. What
-    happened is recorded in the report either way, so a reference is never
-    captured without it being visible whether the pin took.
+    Never fatal. ``trainer.accelerator.scaler`` is where transformers keeps it
+    but is not public API, so a version that moved it degrades to "the run is as
+    it was" rather than losing the session. What happened is recorded either
+    way, so whether the pin took is visible when a reference is captured.
     """
     state: dict = {"requested": value}
     if not value:
@@ -209,11 +193,11 @@ def pin_initial_loss_scale(trainer, value: float) -> dict:
         state["reason"] = f"{type(scaler).__name__} has no _init_scale"
         return state
     state["before"] = float(scaler.get_scale())
-    # _init_scale rather than a fresh GradScaler: the object may be a
-    # subclass (ShardedGradScaler and friends) and replacing it would drop
-    # that. Safe here because training has not started, so the lazy _scale
-    # tensor does not exist yet and get_scale() still reads _init_scale --
-    # which is also how the assertion below can confirm the pin took.
+    # _init_scale rather than a fresh GradScaler: the object may be a subclass
+    # (ShardedGradScaler and friends) that replacing would drop. Safe because
+    # training has not started, so the lazy _scale tensor does not exist and
+    # get_scale() still reads _init_scale, which is how the check below can
+    # confirm the pin took.
     scaler._init_scale = float(value)
     state["after"] = float(scaler.get_scale())
     state["applied"] = state["after"] == float(value)
@@ -228,18 +212,16 @@ def train_once(args, run_index: int) -> dict:
     from unsloth import FastLanguageModel
 
     if args.force_sdpa:
-        # LOCAL REPRODUCTION ONLY, and never on the target hardware.
-        #
-        # Unsloth prefers flash-attention, then xformers, then SDPA. On a T4
-        # that resolves to xformers, which is the path this test exists to
-        # cover, so this flag is off by default and the Kaggle run does not
-        # use it. It exists because xformers ships no backward kernel for
-        # some newer architectures (Blackwell raises
+        # LOCAL REPRODUCTION ONLY, never on the target hardware. Unsloth prefers
+        # flash-attention, then xformers, then SDPA, and on a T4 that resolves
+        # to xformers, the path this test exists to cover, so the flag is off by
+        # default and Kaggle does not use it. It exists because xformers ships
+        # no backward kernel for some newer architectures (Blackwell raises
         # NotImplementedError: No operator found for
         # memory_efficient_attention_backward), which makes the payload
-        # impossible to reproduce locally on such a box without it. Forcing
-        # SDPA changes the numeric path, so a local run under this flag is
-        # evidence about the HARNESS, not about T4 numerics.
+        # impossible to reproduce on such a box. Forcing SDPA changes the
+        # numeric path, so a local run under it is evidence about the HARNESS,
+        # not about T4 numerics.
         from unsloth.utils import attention_dispatch
         attention_dispatch.HAS_XFORMERS = False
         _log("force-sdpa: HAS_XFORMERS pinned False (local repro only)")
@@ -250,9 +232,9 @@ def train_once(args, run_index: int) -> dict:
     rows = load_canary_rows(Path(args.dataset))
 
     t0 = time.time()
-    # float16 unconditionally: T4 is sm_75 and has no bf16. Pinning it here
-    # rather than letting the loader pick means the local reproduction and the
-    # Kaggle run take the same numeric path on the parts that can share one.
+    # float16 unconditionally: T4 is sm_75 and has no bf16. Pinned rather than
+    # left to the loader so the local reproduction and the Kaggle run take the
+    # same numeric path wherever they can share one.
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
         max_seq_length = args.max_seq_length,
@@ -260,13 +242,12 @@ def train_once(args, run_index: int) -> dict:
         dtype = torch.float16,
     )
     load_seconds = time.time() - t0
-    # Which repository and which commit of it. `load_in_4bit=True` makes
-    # Unsloth redirect the request through FLOAT_TO_INT_MAPPER, so the name
-    # in the config is not the name that was asked for, and `revision=` is
-    # explicitly DROPPED by the loader once a remap happened
-    # (unsloth/models/loader.py::_revision_for_resolved_repo). Pinning the
-    # load is therefore not available here; recording what was loaded is,
-    # and it is what makes a silent in-place re-upload attributable.
+    # Which repository, and which commit of it. `load_in_4bit=True` redirects
+    # through Unsloth's FLOAT_TO_INT_MAPPER, so the config name is not the name
+    # asked for, and the loader explicitly DROPS `revision=` once a remap
+    # happened (unsloth/models/loader.py::_revision_for_resolved_repo). Pinning
+    # the load is therefore unavailable; recording what was loaded is what makes
+    # a silent in-place re-upload attributable.
     _config = getattr(model, "config", None)
     resolved_checkpoint = getattr(_config, "_name_or_path", None)
     resolved_revision = getattr(_config, "_commit_hash", None)
@@ -312,10 +293,10 @@ def train_once(args, run_index: int) -> dict:
         gradient_accumulation_steps = args.grad_accum,
         max_steps = args.max_steps,
         learning_rate = args.learning_rate,
-        # Constant schedule with no warmup: over 3 steps a warmup would spend
-        # the whole run at a fraction of the target LR, and a linear decay
-        # would make step 3's update depend on max_steps. Constant keeps the
-        # reference meaningful and the overfit strong enough for the canary.
+        # Constant schedule, no warmup: over 3 steps a warmup would spend the
+        # whole run at a fraction of the target LR, and a linear decay would
+        # make step 3's update depend on max_steps. Constant keeps the reference
+        # meaningful and the overfit strong enough for the canary.
         lr_scheduler_type = "constant",
         warmup_steps = 0,
         logging_steps = 1,  # StatisticsCallback only fires on logs
@@ -353,13 +334,12 @@ def train_once(args, run_index: int) -> dict:
             f"expected {args.max_steps} logged steps, got {len(stats.logs)}: " f"{stats.logs}"
         )
 
-    # Adapter save, then read the serialized weights back off disk. A
-    # filename is not evidence: save_pretrained can leave an empty, truncated
-    # or all-zero adapter_model.safetensors and every later assertion here
-    # still passes, because inference runs on the in-memory model. The
-    # verification is deliberately a file read rather than a second
-    # FastLanguageModel load -- it answers "can these weights be consumed"
-    # without a second 4-bit load on a card that is already hosting one.
+    # Adapter save, then read the serialized weights back off disk. A filename
+    # is not evidence: save_pretrained can leave an empty, truncated or all-zero
+    # adapter_model.safetensors and every later assertion still passes, since
+    # inference runs on the in-memory model. A file read rather than a second
+    # FastLanguageModel load answers "can these weights be consumed" without a
+    # second 4-bit load on a card already hosting one.
     adapter_dir = Path(args.outdir) / f"lora_run{run_index}"
     t0 = time.time()
     model.save_pretrained(str(adapter_dir))
@@ -372,7 +352,7 @@ def train_once(args, run_index: int) -> dict:
     saved_adapter = verify_saved_adapter(adapter_dir)
     _log(f"saved adapter: {json.dumps(saved_adapter)}")
 
-    # Inference on the trained, in-memory model. Greedy, so the output is a
+    # Inference on the trained, in-memory model, greedy so the output is a
     # function of the weights alone.
     FastLanguageModel.for_inference(model)
     prompt = PROMPT_TEMPLATE.format(question = rows[0]["question"])
@@ -398,20 +378,20 @@ def train_once(args, run_index: int) -> dict:
         "run_index": run_index,
         "metrics": stats.logs,
         "generated": generated,
-        # Both, because they answer different questions when this goes red.
-        # `canary_found` says the training reached the weights at all;
-        # `canary_exact` is the assertion, and the gap between them is the
-        # signature of a stopping/EOS regression rather than a training one.
+        # Both, because they answer different questions when this goes red:
+        # `canary_found` says training reached the weights at all, `canary_exact`
+        # is the assertion, and the gap between them is the signature of a
+        # stopping/EOS regression rather than a training one.
         "canary_found": CANARY in generated,
         "canary_exact": generated.strip() == CANARY,
         "prompt": prompt,
         "adapter_files": saved_files,
         "saved_adapter": saved_adapter,
-        # The repository the loader actually read, and its commit. The
-        # requested name is not the name that gets loaded -- load_in_4bit
-        # sends this through Unsloth's FLOAT_TO_INT_MAPPER -- and a mirror
-        # repo re-uploaded in place moves the trajectory with no change in
-        # this repository at all. Recorded so the band check can say so.
+        # The repository the loader actually read, and its commit. The requested
+        # name is not the loaded name (load_in_4bit goes through Unsloth's
+        # FLOAT_TO_INT_MAPPER), and a mirror repo re-uploaded in place moves the
+        # trajectory with no change in this repository. Recorded so the band
+        # check can say so.
         "resolved_checkpoint": resolved_checkpoint,
         "resolved_revision": resolved_revision,
         "determinism": det_state,
@@ -437,21 +417,18 @@ def train_once(args, run_index: int) -> dict:
 def verify_saved_adapter(adapter_dir) -> dict:
     """Read the serialized adapter back and say what is in it.
 
-    Everything downstream of the save runs on the in-memory model, so the
-    only thing that ever looked at the file was a filename test. This opens
-    it. Kept to a tensor read rather than a PEFT reload because it has to run
-    on a card that is already holding a 4-bit model, and because the failure
-    modes worth naming -- unreadable, empty, non-finite, all zero -- are all
-    visible in the tensors themselves.
+    Everything downstream of the save runs on the in-memory model, so the only
+    thing that ever looked at the file was a filename test. A tensor read rather
+    than a PEFT reload, because it runs on a card already holding a 4-bit model
+    and the failure modes worth naming (unreadable, empty, non-finite, all zero)
+    are visible in the tensors themselves.
 
-    ``nonzero_b_tensors`` is the load-bearing one, and it is counted over the
-    B matrices SPECIFICALLY. ``lora_B`` is zero at initialisation and only
-    becomes non-zero once an optimizer update has been applied and saved,
-    which is what makes it evidence; ``lora_A`` is randomly initialised and
-    is already nonzero before a single step. Counting every tensor therefore
-    passed an adapter whose B matrices were all zero or dropped entirely --
-    an adapter whose output is still zero through B, so reloading it restores
-    the base model exactly.
+    ``nonzero_b_tensors`` is the load-bearing one, counted over the B matrices
+    SPECIFICALLY: ``lora_B`` is zero at initialisation and only becomes non-zero
+    once an update has been applied and saved, while ``lora_A`` is randomly
+    initialised and nonzero before a single step. Counting every tensor
+    therefore passed an adapter whose B matrices were all zero or dropped, whose
+    output is still zero through B, so reloading it restores the base model.
 
     Returns a dict; never raises. ``saved_adapter_failures`` turns it into a
     verdict, so the pass/fail rule stays testable without a GPU.
@@ -540,11 +517,10 @@ def saved_adapter_failures(state: dict) -> list[str]:
         failures.append(
             f"the saved adapter holds non-finite weights: {state['non_finite_tensors']}"
         )
-    # The B matrices, not the tensor count. lora_A is randomly initialised and
-    # is nonzero before training starts, so a file whose B matrices were all
-    # zero or were dropped on the way out still had nonzero tensors in it and
-    # was accepted -- while producing exactly nothing, since the adapter's
-    # contribution goes through B.
+    # The B matrices, not the tensor count: lora_A is randomly initialised and
+    # nonzero before training starts, so a file whose B matrices were all zero
+    # or dropped still had nonzero tensors and was accepted, while producing
+    # nothing, the adapter's contribution going through B.
     b_tensors = state.get("b_tensors")
     if not b_tensors:
         failures.append(
@@ -568,15 +544,15 @@ def saved_adapter_failures(state: dict) -> list[str]:
 def canary_failures(run: dict, *, require: bool) -> list[str]:
     """The canary assertion, as an EXACT match rather than a substring.
 
-    The completion this run trains on is ``CANARY + eos_token`` and decoding
-    strips the special tokens, so a healthy greedy decode returns the canary
-    and nothing else. ``CANARY in generated`` also accepts
-    ``'__UNSLOTH__!!!<anything>'``, which is precisely what a stopping or EOS
-    regression produces -- the model learned the target and no longer knows
-    where to stop -- and that is a broken inference path reporting green.
+    The completion trained on is ``CANARY + eos_token`` and decoding strips the
+    special tokens, so a healthy greedy decode returns the canary and nothing
+    else. ``CANARY in generated`` also accepts ``'__UNSLOTH__!!!<anything>'``,
+    which is what a stopping or EOS regression produces -- the model learned the
+    target and no longer knows where to stop -- reporting green on a broken
+    inference path.
 
-    Surrounding whitespace is the one normalisation allowed: it is a decoder
-    artefact, not a change in what the model emitted.
+    Surrounding whitespace is the one normalisation allowed, being a decoder
+    artefact rather than a change in what the model emitted.
     """
     generated = run.get("generated") or ""
     if generated.strip() == CANARY:
@@ -621,12 +597,11 @@ def environment_fingerprint() -> dict:
         info["unsloth"] = getattr(unsloth, "__version__", "unknown")
     except Exception:  # noqa: BLE001
         pass
-    # Every package this CI watches, read from the installed distributions.
-    # This is the line that makes a canary-leg failure attributable: the
-    # control leg and the canary leg run the same payload, so the diff of
-    # these two blocks is the entire difference between a green run and a
-    # red one. The keys above are kept as they were, because the committed
-    # reference carries them and the summary renderer reads them.
+    # Every package this CI watches, read from the installed distributions, and
+    # what makes a canary-leg failure attributable: control and canary run the
+    # same payload, so the diff of these two blocks is the entire difference
+    # between green and red. The keys above are kept as they were, the committed
+    # reference carrying them and the summary renderer reading them.
     info["resolved"] = flatten_versions(resolved_versions(GOAL_PACKAGES))
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
@@ -641,9 +616,9 @@ def environment_fingerprint() -> dict:
 def reference_step_count(ref: dict):
     """The ``max_steps`` a reference file says it was captured at.
 
-    ``None`` means the file does not say. That is not the same as "it
-    matches": a trace with no declared length cannot be shown to describe
-    the same run as the one in hand, and the caller treats it as such.
+    ``None`` means the file does not say, which is not "it matches": a trace
+    with no declared length cannot be shown to describe the run in hand, and the
+    caller treats it as such.
     """
     config = ref.get("config")
     if not isinstance(config, dict):
@@ -656,14 +631,13 @@ def reference_step_count(ref: dict):
 
 
 # Every setting that defines which experiment a trace is a trace OF. A run
-# that differs in any of these is not comparable to the reference, whatever
-# the numbers happen to do -- references/README.md says so and says widening
-# the band is never the answer.
+# differing in any of them is not comparable to the reference whatever the
+# numbers do, and references/README.md says widening the band is never the
+# answer.
 #
-# `repeat` is deliberately absent: each cycle is a fresh process running the
-# identical configuration, so how many of them were run does not change any
-# one of them, and refusing on it would reject a --repeat 3 run against a
-# --repeat 2 reference for no reason.
+# `repeat` is deliberately absent: each cycle is a fresh process on identical
+# configuration, so how many ran changes none of them, and refusing on it would
+# reject a --repeat 3 run against a --repeat 2 reference for no reason.
 REFERENCE_DEFINING_SETTINGS = (
     "max_steps",
     "init_loss_scale",
@@ -692,28 +666,25 @@ def check_reference(
 ) -> dict:
     """Compare against a committed reference. Never an equality check.
 
-    ``max_steps`` is the step count of the run being judged, and it is
-    mandatory. A reference is a trace of one specific run, and a run of a
-    different length is a different run: the fp16 scaler burns its first
-    few steps on overflows, the learning-rate schedule is constant only
-    because the run is short, and step N of a 3-step run is simply not the
-    step N the 10-step trace recorded. Comparing across counts would be
-    arithmetic that succeeds and means nothing, so the mismatch is reported
-    as its own status and the numbers are never touched. ``reference_failures``
+    ``max_steps``, the step count of the run being judged, is mandatory. A
+    reference is a trace of one specific run, and a run of a different length is
+    a different run: the fp16 scaler burns its first few steps on overflows, the
+    learning-rate schedule is constant only because the run is short, and step N
+    of a 3-step run is not the step N the 10-step trace recorded. Comparing
+    across counts is arithmetic that succeeds and means nothing, so the mismatch
+    gets its own status and the numbers are never touched. ``reference_failures``
     turns it into a failure; nothing here can turn it into a pass.
 
-    ``max_steps`` was the only one of those settings that was checked, and it
-    is not the only one that has that property. The reference records the
-    whole ``config`` block, and README calls out the learning rate, the
-    optimizer and the model by name as things that invalidate the file. So
-    ``config``, ``model`` and the resolved checkpoint are compared on the same
-    terms, under the same refuse-before-comparing rule.
+    ``max_steps`` used to be the only setting checked and is not the only one
+    with that property: the reference records the whole ``config`` block, and
+    README names the learning rate, the optimizer and the model as things that
+    invalidate the file, so ``config``, ``model`` and the resolved checkpoint
+    are compared under the same refuse-before-comparing rule.
 
-    All four are optional and default to not-compared, so an older caller and
-    an older reference file both keep working: a key the reference does not
-    carry is listed in ``config_unchecked`` rather than treated as a
-    mismatch. "It does not say" is not "it differs", just as it is not "it
-    matches".
+    All four are optional and default to not-compared, so an older caller and an
+    older reference both keep working: a key the reference does not carry is
+    listed in ``config_unchecked`` rather than treated as a mismatch. "It does
+    not say" is neither "it differs" nor "it matches".
     """
     if not reference_path.exists():
         return {"status": "absent", "path": str(reference_path)}
@@ -732,9 +703,8 @@ def check_reference(
         "step_differences": [],
     }
 
-    # The step-count gate comes FIRST and returns, so no partially
-    # reassuring "worst relative deviation" is ever computed from two runs
-    # that are not the same run.
+    # The step-count gate comes FIRST and returns, so no partially reassuring
+    # "worst relative deviation" is computed from two different runs.
     if verdict["reference_max_steps"] is None:
         verdict["status"] = "reference_step_count_unknown"
         verdict["note"] = (
@@ -756,9 +726,9 @@ def check_reference(
         )
         return verdict
 
-    # The rest of the configuration, on the same terms as the step count:
-    # refuse before comparing a single number, because these settings define
-    # a different experiment rather than a drift within one.
+    # The rest of the configuration on the same terms as the step count: refuse
+    # before comparing a single number, since these settings define a different
+    # experiment rather than a drift within one.
     ref_config = ref.get("config") if isinstance(ref.get("config"), dict) else {}
     observed_pairs: list[tuple[str, Any, Any]] = []
     if config:
@@ -774,13 +744,12 @@ def check_reference(
         ("resolved_checkpoint", resolved_checkpoint),
         ("resolved_revision", resolved_revision),
     ):
-        # Neither side records it: nothing was claimed, so there is nothing to
-        # report. Present on ONE side is a pin that did not run, and it is
-        # recorded rather than skipped silently. "It does not say" is not "it
-        # differs", so it is still not a refusal; but a skip nobody can see
-        # reads as a comparison that passed, and this is exactly where a
-        # checkpoint pin sits unenforced for months. report.py puts
-        # config_unchecked on the summary.
+        # Neither side records it: nothing claimed, nothing to report. Present
+        # on ONE side is a pin that did not run, recorded rather than skipped
+        # silently. Still not a refusal, since "it does not say" is not "it
+        # differs", but an invisible skip reads as a comparison that passed, and
+        # this is exactly where a checkpoint pin sits unenforced for months.
+        # report.py puts config_unchecked on the summary.
         if observed is None and ref.get(key) is None:
             continue
         if observed is None or ref.get(key) is None:
@@ -807,14 +776,13 @@ def check_reference(
         verdict["status"] = "length_mismatch"
         return verdict
 
-    # The step coordinates, before any value is compared. The two lists are
-    # zipped positionally, so a shifted, duplicated or reordered `step` pairs
-    # values that describe different iterates and the band check then reports
-    # on arithmetic it invented. Safe to be strict here because the leg that
-    # carries a reference is the control, whose library set is pinned to the
-    # one the trace was captured with and whose pin failure is itself fatal --
-    # so the trainer cannot renumber its steps underneath this check without
-    # the pins going red first.
+    # The step coordinates, before any value is compared: the lists are zipped
+    # positionally, so a shifted, duplicated or reordered `step` pairs values
+    # describing different iterates and the band check reports on arithmetic it
+    # invented. Safe to be strict because the leg carrying a reference is the
+    # control, whose library set is pinned to the one the trace was captured
+    # with and whose pin failure is itself fatal, so the trainer cannot renumber
+    # its steps without the pins going red first.
     for index, (cur, old) in enumerate(zip(metrics, ref_metrics)):
         if cur.get("step") != old.get("step"):
             verdict["step_differences"].append(
@@ -837,9 +805,9 @@ def check_reference(
             if not has_cur and not has_old:
                 continue
             if has_cur != has_old:
-                # Present on one side and not the other is a change in the
-                # SHAPE of what the trainer logged, not a numeric drift, and
-                # no tolerance covers it.
+                # Present on one side only is a change in the SHAPE of what the
+                # trainer logged, not a numeric drift, and no tolerance covers
+                # it.
                 verdict["deviations"].append(
                     {
                         "step": (cur if has_cur else old).get("step"),
@@ -852,14 +820,13 @@ def check_reference(
                 )
                 continue
             new, ref_val = float(cur[field]), float(old[field])
-            # NaN, explicitly, and this is the whole reason the arithmetic is
-            # not left to take care of itself. Under fp16 the gradient scaler
-            # logs a NaN grad_norm on every step it skips, so the committed
-            # reference genuinely contains NaNs. Left to the subtraction,
-            # abs(x - NaN) is NaN, NaN > rel_tol is False, and the step
-            # passes whatever it holds -- including the case that matters
-            # most, a step that used to overflow and no longer does. Compare
-            # NaN to NaN as equal, and NaN against a number as a deviation.
+            # NaN, explicitly, which is why the arithmetic is not left to itself.
+            # Under fp16 the gradient scaler logs a NaN grad_norm on every
+            # skipped step, so the committed reference genuinely contains NaNs,
+            # and left to the subtraction abs(x - NaN) is NaN, NaN > rel_tol is
+            # False, and the step passes whatever it holds -- including the case
+            # that matters most, a step that used to overflow and no longer
+            # does. NaN equals NaN here; NaN against a number is a deviation.
             cur_nan, ref_nan = new != new, ref_val != ref_val
             if cur_nan or ref_nan:
                 if cur_nan != ref_nan:
@@ -874,16 +841,15 @@ def check_reference(
                         }
                     )
                 continue
-            # Infinities, for the same reason and one step further along. An
-            # fp16 overflow logs infinity as readily as NaN, so the committed
-            # reference genuinely holds them, and every pairing an infinity
-            # can take part in divides to NaN: abs(inf - inf) / inf, and
-            # abs(inf - 1.0) / inf alike. NaN > rel_tol is False and
-            # max(worst, NaN) returns worst, so the entry was accepted AND
-            # left no trace in worst_rel -- including the pairing that matters
-            # most, a step that used to be finite and now overflows. Equal
-            # signed infinities are the unchanged case; everything else is a
-            # deviation, decided before the division.
+            # Infinities, for the same reason one step further along. An fp16
+            # overflow logs infinity as readily as NaN, so the reference holds
+            # them, and every pairing an infinity takes part in divides to NaN:
+            # abs(inf - inf) / inf and abs(inf - 1.0) / inf alike. NaN > rel_tol
+            # is False and max(worst, NaN) returns worst, so the entry was
+            # accepted AND left no trace in worst_rel, including a step that
+            # used to be finite and now overflows. Equal signed infinities are
+            # the unchanged case; everything else is a deviation, decided before
+            # the division.
             cur_inf = new in (float("inf"), float("-inf"))
             ref_inf = ref_val in (float("inf"), float("-inf"))
             if cur_inf or ref_inf:
@@ -919,17 +885,17 @@ def check_reference(
 
 
 def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
-    """Turn a reference verdict into failure strings. Separate so the path
-    from "out of band" to "the job goes red" can be tested without a GPU:
-    a band check that has never been observed to fail is not yet a check.
+    """Turn a reference verdict into failure strings. Separate so the path from
+    "out of band" to "the job goes red" is testable without a GPU: a band check
+    never observed to fail is not yet a check.
     """
     if verdict["status"] == "out_of_band":
         return [f"metrics outside +/-{rel_tol:.0%} of the reference: " f"{verdict['deviations']}"]
     if verdict["status"] == "length_mismatch":
         return ["reference has a different number of logged steps: nothing was compared"]
-    # Refusals. Loud, and a failure: a reference that cannot be compared is
-    # worth strictly less than no reference at all, because it looks like
-    # cover and is not. Never demote either of these to a warning.
+    # Refusals, loud and fatal: a reference that cannot be compared is worth
+    # less than no reference, because it looks like cover and is not. Never
+    # demote these to a warning.
     if verdict["status"] in (
         "step_count_mismatch",
         "reference_step_count_unknown",
@@ -955,14 +921,12 @@ def _is_finite(value) -> bool:
 def optimisation_failures(metrics: list[dict]) -> list[str]:
     """Did this run optimise anything at all? Cheap checks, loud answers.
 
-    The last of the three is the one a short run needs. Under fp16 the
-    gradient scaler logs ``grad_norm: NaN`` on a step it skipped, and a run
-    whose every step was skipped applied no optimizer update whatsoever: the
-    weights at the end are the weights at the start. Everything downstream
-    still "works" -- the loss is finite, the adapter saves, generation
-    produces text -- so without naming it, that run reports as a training
-    test having done no training. It is the exact failure mode a step count
-    trimmed too far produces, so it is checked rather than assumed.
+    The last of the three is the one a short run needs. Under fp16 the gradient
+    scaler logs ``grad_norm: NaN`` on a skipped step, and a run whose every step
+    was skipped applied no optimizer update at all: the weights at the end are
+    the weights at the start, while the loss is finite, the adapter saves and
+    generation produces text, so the run reports as a training test having done
+    no training. That is exactly what a step count trimmed too far produces.
     """
     failures: list[str] = []
     losses = [m["loss"] for m in metrics]
@@ -970,17 +934,16 @@ def optimisation_failures(metrics: list[dict]) -> list[str]:
         failures.append(f"non-finite loss: {losses}")
     if len(losses) > 1 and not losses[-1] < losses[0]:
         failures.append(f"loss did not decrease over the run: {losses}")
-    # Only decidable where grad_norm was logged at all. A trainer version
-    # that stops logging it says nothing about whether steps were applied,
-    # and inferring "all skipped" from its silence would be a failure
-    # invented by this check rather than found by it.
+    # Only decidable where grad_norm was logged at all: a trainer version that
+    # stops logging it says nothing about whether steps were applied, and
+    # inferring "all skipped" from that silence would be a failure invented
+    # rather than found.
     #
     # Finite, not merely non-NaN. An fp16 overflow reports the norm as inf at
-    # least as readily as NaN -- clip_grad_norm_ over a gradient holding an
-    # inf returns inf -- and `inf == inf` is True, so a NaN-only test counted
-    # every skipped step as an applied one and a run that applied nothing
-    # reported green. The loss check three lines above already treats inf as
-    # non-finite; this one did not.
+    # least as readily as NaN (clip_grad_norm_ over an inf gradient returns inf)
+    # and `inf == inf` is True, so a NaN-only test counted every skipped step as
+    # applied and a run that applied nothing reported green. The loss check
+    # above already treats inf as non-finite; this one did not.
     reported = [m["grad_norm"] for m in metrics if m.get("grad_norm") is not None]
     applied = [g for g in reported if _is_finite(g)]
     if reported and not applied:
@@ -1000,33 +963,31 @@ def main() -> int:
     ap.add_argument("--outdir", required = True)
     # 3 steps, and the whole reason --init-loss-scale exists.
     #
-    # Measured, twice. Under fp16 the dynamic gradient scaler starts at
-    # 65536, halves on every overflow and skips the step it overflowed on.
-    # On this model the first three steps overflow every time: the committed
-    # 10-step reference has grad_norm NaN at steps 1, 2 and 3. So a 3-step
-    # run of the ORIGINAL configuration applies zero optimizer updates, the
-    # loss does not move, and the canary never forms -- an early 3-step
-    # attempt emitted '#1\ndef my_function():...'.
+    # Measured twice. Under fp16 the dynamic gradient scaler starts at 65536,
+    # halves on every overflow and skips the step it overflowed on, and on this
+    # model the first three steps overflow every time (the committed 10-step
+    # reference has grad_norm NaN at steps 1, 2 and 3). So a 3-step run of the
+    # ORIGINAL configuration applies zero optimizer updates, the loss does not
+    # move and the canary never forms: an early 3-step attempt emitted
+    # '#1\ndef my_function():...'.
     #
     # Pinning the scaler's starting scale below the overflow point (see
-    # pin_initial_loss_scale) gives those three steps back as real updates.
-    # That is what makes 3 steps a training run rather than three forward
-    # passes, and optimisation_failures() asserts it happened rather than
-    # trusting it. The 10-step trajectory is still the honest yardstick for
-    # what 3 updates can buy: it reached loss 1.75 after three applied
-    # updates and 0.18 after four, so the canary has less margin at 3 steps
-    # than it had at 10. If a T4 run reports the canary missing while the
-    # scaler shows updates being applied, that is the signal to raise this
-    # back up rather than to relax the canary.
+    # pin_initial_loss_scale) gives those three steps back as real updates, and
+    # optimisation_failures() asserts that happened. The 10-step trajectory is
+    # the honest yardstick for what 3 updates buy: loss 1.75 after three applied
+    # updates and 0.18 after four, so the canary has less margin at 3 steps than
+    # at 10. A T4 run reporting the canary missing while the scaler shows
+    # updates applied is the signal to raise this back up, not to relax the
+    # canary.
     ap.add_argument("--max-steps", type = int, default = 10)
-    # Off by default. The pin exists for short runs: the scaler overflows the
-    # first three steps, so anything under about five applies no optimizer
-    # updates at all. At the default of 10 the run reaches step 4 on its own
-    # and learns the canary, and leaving the scaler alone is what keeps the
-    # committed reference applicable, since a different starting scale is a
-    # different rounding of the same gradients. Set it (e.g. 2048, below the
-    # 8192 the reference reaches after three halvings) only alongside a
-    # shorter --max-steps and a reference recaptured with both.
+    # Off by default. The pin is for short runs: the scaler overflows the first
+    # three steps, so anything under about five applies no updates at all. At
+    # the default of 10 the run reaches step 4 on its own and learns the canary,
+    # and leaving the scaler alone keeps the committed reference applicable,
+    # since a different starting scale is a different rounding of the same
+    # gradients. Set it (e.g. 2048, below the 8192 the reference reaches after
+    # three halvings) only with a shorter --max-steps and a reference recaptured
+    # with both.
     ap.add_argument(
         "--init-loss-scale",
         type = float,
@@ -1038,8 +999,8 @@ def main() -> int:
     ap.add_argument("--batch-size", type = int, default = 2)
     ap.add_argument("--grad-accum", type = int, default = 1)
     ap.add_argument("--max-seq-length", type = int, default = 512)
-    # 1e-3 with the prompt masked out. Higher rates overflow fp16 far more
-    # often, and each overflow is a skipped step this short run cannot spare.
+    # 1e-3 with the prompt masked out. Higher rates overflow fp16 far more often,
+    # and each overflow is a skipped step this short run cannot spare.
     ap.add_argument("--learning-rate", type = float, default = 1e-3)
     ap.add_argument("--lora-r", type = int, default = 16)
     ap.add_argument("--lora-alpha", type = int, default = 32)
@@ -1105,20 +1066,17 @@ def main() -> int:
         (outdir / "cycle_report.json").write_text(json.dumps(run, indent = 2), encoding = "utf-8")
         return 0
 
-    # Parent mode: each cycle in a FRESH process.
+    # Parent mode: each cycle in a FRESH process, measured rather than assumed.
+    # Two in-process cycles disagreed from the first logged step (6.4375 vs
+    # 6.2367) while two separate processes agreed bitwise on every step.
+    # Something in the first cycle's model load, patching or allocator state
+    # leaks into the second, so an in-process repeat tests the leak rather than
+    # the code and would report a false regression on a reproducible run. A
+    # fresh process is also what a user re-running a notebook gets.
     #
-    # Not a loop in one process, and this is measured rather than assumed.
-    # Two in-process cycles disagreed from the very first logged step
-    # (6.4375 vs 6.2367) while two separate processes agreed bitwise on
-    # every step. Something in the first cycle's model load, patching or
-    # allocator state leaks into the second, so an in-process repeat tests
-    # the leak rather than the code, and would report a false regression on
-    # a perfectly reproducible run. A fresh process is also the honest unit:
-    # it is what a user re-running a notebook actually gets.
-    # Read BEFORE the cycles rather than after them, so a run that dies in a
-    # cycle still says which library set it died with. That is the case where
-    # the version block matters most: control red / canary green is a bisect
-    # only if the red leg reported its versions.
+    # The config and environment are read BEFORE the cycles, so a run that dies
+    # in one still says which library set it died with: control red / canary
+    # green is a bisect only if the red leg reported its versions.
     config = {
         k: getattr(args, k)
         for k in (
@@ -1199,14 +1157,14 @@ def main() -> int:
     report: dict = {
         "label": args.label,
         "model": args.model,
-        # The repo and commit the loader actually read, travelling into any
-        # reference captured from this report so the band check can refuse
-        # against a mirror that was re-uploaded in place.
+        # The repo and commit the loader read, travelling into any reference
+        # captured from this report so the band check can refuse against a
+        # mirror re-uploaded in place.
         "resolved_checkpoint": runs[0].get("resolved_checkpoint"),
         "resolved_revision": runs[0].get("resolved_revision"),
-        # max_steps leads, and the whole block travels into any reference
-        # captured from this report: check_reference refuses to compare a run
-        # against a trace captured with a different configuration.
+        # The whole block travels into any reference captured from this report:
+        # check_reference refuses to compare a run against a trace captured with
+        # a different configuration.
         "config": config,
         "environment": env,
         "runs": runs,
@@ -1224,14 +1182,13 @@ def main() -> int:
         report["pins"] = {"file": args.pins, "requested": pins, "failures": broken}
         failures += broken
 
-    # 1. bitwise run-to-run. EVERY extra cycle against the baseline, not just
-    # the second: --repeat 3 asks for three fresh processes, and a third that
-    # disagreed used to be collected, stored and never looked at.
+    # 1. bitwise run-to-run, EVERY extra cycle against the baseline rather than
+    # just the second: --repeat 3 asks for three fresh processes, and a third
+    # that disagreed used to be collected, stored and never looked at.
     #
-    # The top-level keys stay exactly as they were -- report.py renders
-    # `identical`, `first_diff_step` and `max_abs_diff` off this dict -- and
-    # now summarise every comparison rather than one. The per-cycle detail
-    # goes under `cycles`.
+    # The top-level keys stay as they were, report.py rendering `identical`,
+    # `first_diff_step` and `max_abs_diff` off this dict, but now summarise
+    # every comparison; the per-cycle detail goes under `cycles`.
     if len(runs) > 1:
         cycles: dict = {}
         for other in runs[1:]:

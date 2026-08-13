@@ -3,44 +3,37 @@
 
 """Decide whether this invocation is allowed to spend Kaggle GPU quota.
 
-The account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator budget,
-shared with every other use of that account. A workflow that launched a
-kernel on every push would drain a week of it in a day and lock out every
-other consumer, so the default answer here is "no" and the job has to earn
-a "yes" through four independent checks, in this order:
+The account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator budget shared
+with every other use of that account, and a kernel on every push would drain a
+week of it in a day. So the default answer is "no" and a job earns "yes" through
+four checks, in this order:
 
-0. **Was this event a request at all?** A run started by APPLYING a label is
-   only a request when the label applied is the opt-in one. Every other
-   ``labeled`` event stands down before any of the checks below, since the
-   trigger fires on all labels and the budget counts none of them.
+0. **Was this event a request at all?** A run started by APPLYING a label is a
+   request only when that label is the opt-in one. The trigger fires on all
+   labels and the budget counts none of them, so every other ``labeled`` event
+   stands down first.
 1. **Override.** ``workflow_dispatch`` with ``force=true``, or a pull request
-   carrying the opt-in label. A human asked for it; skip the dice.
-2. **Sampling.** Roughly one invocation in ten. Derived from the run id, so
-   re-running the same workflow run gives the same answer (a re-run must not
-   be a fresh roll of the dice, or anyone could reroll until it fires) while
-   different runs are independent.
-3. **Remaining quota.** Refuses to start when what is left would not cover
-   the worst case this invocation could cost, plus a reserve so the account
-   is never drained to zero by CI.
-4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, and that
-   cap is per ACCOUNT, not per workflow. The survey therefore separates
-   kernels this workflow pushed from everything else, because the two call
-   for opposite answers: a FOREIGN kernel means a human is using the shared
-   account and this invocation stands down entirely, while this workflow's
-   own two kernels are what it is here to launch. Both still occupy slots,
-   so the gate also refuses when fewer than KERNELS_PER_INVOCATION of them
-   are free. The search for an in-flight kernel is bounded by how long a
-   session is allowed to last rather than by a kernel count, which is what
-   makes it exhaustive; see LOOKBACK_HOURS.
+   carrying the opt-in label. A human asked; skip the dice.
+2. **Sampling.** Roughly one invocation in ten, derived from the run id so a
+   re-run of the same run gives the same answer (otherwise anyone could reroll
+   until it fires) while different runs stay independent.
+3. **Remaining quota.** Refuses when what is left would not cover this
+   invocation's worst case plus a reserve, so CI never drains the account.
+4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, per ACCOUNT
+   rather than per workflow. The survey splits kernels this workflow pushed
+   from the rest because they call for opposite answers: a FOREIGN kernel means
+   a human is on the shared account and this invocation stands down entirely,
+   while our own two are what it is here to launch. Both occupy slots, so the
+   gate also refuses when fewer than KERNELS_PER_INVOCATION are free. The search
+   is bounded by how long a session may last rather than by a kernel count,
+   which is what makes it exhaustive; see LOOKBACK_HOURS.
 
-Every negative answer is a SKIP, and a skip exits 0. Not spending quota is
-the designed behaviour, not a fault, and must never colour a pull request
-red. The only nonzero exit here is a real error in the gate itself, and even
-that is converted to a skip by ``--soft-fail``.
+Every negative answer is a SKIP, and a skip exits 0: not spending quota is
+designed behaviour and must never colour a pull request red. The only nonzero
+exit is a real error in the gate itself, and ``--soft-fail`` converts even that.
 
-No credential is ever printed. The token is read from the environment,
-handed to the Kaggle client, and never echoed, logged, or written to an
-output file.
+No credential is ever printed: the token is read from the environment, handed to
+the Kaggle client, and never echoed, logged or written to an output file.
 """
 
 from __future__ import annotations
@@ -57,73 +50,62 @@ from datetime import datetime, timedelta, timezone
 # "Maximum batch GPU session count of 2 reached."
 MAX_CONCURRENT_GPU_KERNELS = 2
 
-# How many FOREIGN kernels of this account may already be in flight and this
-# job still launch. ZERO IS DELIBERATE, and it is a policy choice rather than
-# a technical limit, so it is named here instead of being implied by the code.
+# How many FOREIGN kernels may be in flight and this job still launch. ZERO IS
+# DELIBERATE: a policy choice rather than a technical limit, so it is named
+# rather than implied.
 #
-# The cap is per ACCOUNT and the account is shared with human use. A person
-# who starts a notebook and finds the push rejected has no way to tell that
-# CI took the slot, and CI has no way to give it back. The cost of standing
-# down is a few minutes until the next commit draws again -- the sampling
-# gate means this job has no deadline of its own -- and the cost of being
-# wrong is somebody else's session. Yielding is cheap here and expensive
-# there, so a single foreign kernel stands this job down entirely, whatever
-# the arithmetic below would otherwise allow.
+# The cap is per ACCOUNT and the account is shared with human use. Someone whose
+# push is rejected cannot tell that CI took the slot, and CI cannot give it
+# back. Standing down costs a few minutes until the next commit draws again (the
+# sampling gate leaves this job no deadline of its own); being wrong costs
+# somebody else's session. So a single foreign kernel stands this job down,
+# whatever the arithmetic below would allow.
 ALLOWED_IN_FLIGHT_FOREIGN_KERNELS = 0
 
-# How many kernels one invocation of this workflow pushes. Both of Kaggle's
-# concurrency slots, which is a change from the single kernel this workflow
-# used to run, and the reasoning for taking the second one is narrow:
+# How many kernels one invocation pushes: both of Kaggle's slots, up from the
+# single kernel this workflow used to run. The second slot is not spare capacity
+# to be grabbed, it is capacity taken only when the account is otherwise IDLE,
+# which the survey establishes immediately beforehand. Willingness to compete
+# with a human is still zero; what changed is the payload, since four legs are
+# worth running and two kernels x two T4s is the only shape that fits them. Legs
+# split across two sessions would be compared across two images and two hours,
+# and for control/canary that comparison is the entire instrument.
 #
-# The second slot is not "spare capacity to be grabbed", it is capacity this
-# job takes only when the account is otherwise IDLE, which the survey
-# establishes immediately beforehand. What changed is not the willingness to
-# compete with a human -- that is still zero -- but the payload: four legs
-# are now worth running and two kernels x two T4s is the only shape that
-# fits them. Legs that were split across two sessions would be compared
-# across two images and two hours, and for the control/canary pair that
-# comparison is the entire instrument.
-#
-# The residual risk is a foreign kernel that starts BETWEEN the survey and
-# the push. That is not new and it is already handled where it lands: the
-# launcher recognises Kaggle's capacity rejection (CAPACITY_MARKERS) and
-# reports it as infra, exiting 0. A human's push is never the one rejected,
-# because ours is the one that arrives second.
+# The residual risk, a foreign kernel starting BETWEEN the survey and the push,
+# is not new and is handled where it lands: the launcher recognises Kaggle's
+# capacity rejection (CAPACITY_MARKERS) and reports it as infra, exiting 0.
+# Ours is the push that arrives second, so a human's is never the one rejected.
 KERNELS_PER_INVOCATION = 2
 
 # Kernel states that mean a session is occupying one of those slots.
 BUSY_STATES = {"QUEUED", "RUNNING"}
 
-# How this job recognises its own kernels. `launch.py` pushes every kernel as
-# `<user>/<OWN_KERNEL_PREFIX><8 hex>`, a fresh slug per attempt, and nothing
-# else on the account uses that prefix.
-#
-# The distinction matters because "the account is busy" and "this workflow is
-# busy" call for opposite answers. A foreign kernel means a human is using
-# the account and this job must yield. One of our own means a previous run of
-# this workflow is still in flight, which the job-level concurrency group is
-# supposed to prevent; it is reported separately rather than being counted as
-# a human, and it still occupies a slot, so it still blocks.
+# How this job recognises its own kernels: `launch.py` pushes every kernel as
+# `<user>/<OWN_KERNEL_PREFIX><8 hex>`, a fresh slug per attempt, and nothing else
+# on the account uses that prefix. "The account is busy" and "this workflow is
+# busy" call for opposite answers -- a foreign kernel means a human is using the
+# account and this job must yield, while one of our own means a previous run is
+# still in flight, which the concurrency group is supposed to prevent. Ours is
+# reported separately rather than counted as a human, and still blocks, since it
+# still occupies a slot.
 OWN_KERNEL_PREFIX = "unsloth-t4-ci-"
 
-# How far back the in-flight survey has to look, and why that bound is
-# COMPLETE rather than merely convenient.
+# How far back the in-flight survey looks, and why that bound is COMPLETE
+# rather than merely convenient.
 #
-# Kaggle exposes no "list my running sessions" call, so the only way to find
-# an in-flight kernel is to list kernels and status-check them. The listing
-# is sorted by last run time, descending, and for a kernel that has not
-# finished, that timestamp is when the run STARTED (measured: a kernel
-# pushed at 10:05:19Z listed as last_run_time 10:05:19.297).
+# Kaggle exposes no "list my running sessions" call, so finding an in-flight
+# kernel means listing kernels and status-checking them. The listing is sorted
+# by last run time descending, and for an unfinished kernel that timestamp is
+# when the run STARTED (measured: a kernel pushed at 10:05:19Z listed as
+# last_run_time 10:05:19.297).
 #
-# Kaggle kills a notebook session at 12 hours (CPU/GPU; 9 for TPU). So a
-# kernel that is still QUEUED or RUNNING cannot have started more than 12
-# hours ago, and once the walk reaches an entry older than that, every
-# remaining entry is older still and none of them can be in flight. Stopping
-# there is therefore exhaustive, not a sample -- which the previous fixed
-# bound of "the 12 most recent kernels" was not: a kernel that started three
-# hours ago and is still running would be missed the moment twelve newer
-# ones had since run, and the push would then fail at the capacity cap and
-# be reported as infra.
+# Kaggle kills a notebook session at 12 hours (CPU/GPU; 9 for TPU), so a kernel
+# still QUEUED or RUNNING cannot have started more than 12 hours ago, and once
+# the walk reaches an older entry every remaining one is older still. Stopping
+# there is exhaustive rather than a sample, which the previous fixed bound of
+# "the 12 most recent kernels" was not: a kernel running for three hours would
+# be missed once twelve newer ones had run, and the push would then fail at the
+# capacity cap and be reported as infra.
 MAX_SESSION_HOURS = 12.0
 
 # Slack on top, for clock skew between Kaggle's timestamps and this runner,
@@ -131,25 +113,21 @@ MAX_SESSION_HOURS = 12.0
 CLOCK_SKEW_HOURS = 1.0
 LOOKBACK_HOURS = MAX_SESSION_HOURS + CLOCK_SKEW_HOURS
 
-# Paging for that walk. The cap on pages exists so a pathological account
-# cannot make the gate walk forever; reaching it means the survey did NOT
-# cover the whole window, which is reported as an incomplete survey and
-# treated as "unknown", never as "idle".
+# Paging for that walk. The page cap stops a pathological account making the
+# gate walk forever; reaching it means the survey did NOT cover the whole
+# window, reported as incomplete and treated as "unknown", never as "idle".
 KERNELS_PAGE_SIZE = 100
 MAX_KERNEL_PAGES = 5
 
-# The two ways a status lookup can fail, and why only one of them is benign.
-#
-# A kernel this account deleted still shows up in the listing for a while and
-# then answers its status call with a 404. That is not an unknown state: it is
-# a kernel that is definitively not running, and blocking on it would wedge the
-# gate shut, since the launcher deletes every kernel it pushes.
-#
-# Anything else -- a 5xx, a socket timeout, a client bug -- says nothing at all
-# about the kernel. It may be a human's session that is RUNNING right now, and
-# proceeding on it can take the last slot from the person the zero-foreign
-# policy exists to protect. So a 404 is counted as "gone" and everything else
-# as "unreadable", and only the second one stands the job down.
+# The two ways a status lookup can fail, only one of them benign. A deleted
+# kernel stays in the listing for a while and answers its status call with a
+# 404, which is not an unknown state but a kernel definitively not running;
+# blocking on it would wedge the gate shut, since the launcher deletes every
+# kernel it pushes. Anything else (a 5xx, a socket timeout, a client bug) says
+# nothing about the kernel, which may be a human's RUNNING session, and
+# proceeding could take the last slot from the person the zero-foreign policy
+# protects. So 404 counts as "gone", everything else as "unreadable", and only
+# the second stands the job down.
 GONE_MARKERS = ("404", "not found", "notfound", "does not exist")
 
 
@@ -234,31 +212,30 @@ def survey_kernels(
 ) -> dict:
     """Status-check every kernel that could still be in flight.
 
-    Walks the account's kernels most-recently-run first and stops at the
-    first one that started longer ago than any session is allowed to last.
-    See LOOKBACK_HOURS for why that makes the walk exhaustive.
+    Walks the account's kernels most-recently-run first and stops at the first
+    that started longer ago than any session may last; see LOOKBACK_HOURS for
+    why that is exhaustive.
 
-    Returns the busy refs, split by ownership, plus enough bookkeeping for
-    the caller to tell "nothing is running" from "the question could not be
-    answered":
+    Returns the busy refs split by ownership, plus enough bookkeeping to tell
+    "nothing is running" from "the question could not be answered":
 
     ``busy`` / ``own`` / ``foreign``
-        every in-flight kernel, and the two disjoint halves of that list.
-        A kernel is ours when its slug carries OWN_KERNEL_PREFIX, which is
-        what ``launch.py`` pushes under and nothing else uses.
+        every in-flight kernel, and the two disjoint halves of it. A kernel is
+        ours when its slug carries OWN_KERNEL_PREFIX, which ``launch.py`` pushes
+        under and nothing else uses.
     ``complete``
-        the walk either ran off the end of the listing or reached an entry
-        outside the window. False means the page cap was hit first and some
-        candidate kernels were never looked at.
+        the walk ran off the end of the listing or reached an entry outside the
+        window. False means the page cap was hit first and some candidates were
+        never looked at.
     ``surveyed`` / ``unreadable`` / ``gone``
-        how many in-window kernels were status-checked; how many answered
-        with an error that leaves their state genuinely unknown; and how many
-        answered 404, which is a deleted kernel rather than an unknown one.
-        A single unreadable status is not evidence of an idle account, so it
-        is counted separately from the benign kind. See GONE_MARKERS.
+        how many in-window kernels were status-checked; how many left their
+        state genuinely unknown; and how many answered 404, a deleted kernel
+        rather than an unknown one. One unreadable status is not evidence of an
+        idle account, so it is counted apart from the benign kind. See
+        GONE_MARKERS.
     """
-    # Naive UTC, to match what Kaggle returns. utcnow() would do the same
-    # thing and is deprecated from 3.12.
+    # Naive UTC, matching what Kaggle returns. utcnow() is the same and is
+    # deprecated from 3.12.
     now = now or datetime.now(timezone.utc).replace(tzinfo = None)
     cutoff = now - timedelta(hours = lookback_hours)
     busy: list[str] = []
@@ -278,8 +255,8 @@ def survey_kernels(
             if not ref:
                 continue
             last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
-            # A missing timestamp cannot end the walk (it says nothing about
-            # age) but it can still be checked, so check it.
+            # A missing timestamp says nothing about age, so it cannot end the
+            # walk, but it can still be checked.
             if last_run is not None and last_run < cutoff:
                 complete = True
                 break
@@ -287,9 +264,9 @@ def survey_kernels(
             try:
                 status = str(getattr(api.kernels_status(ref), "status", ""))
             except Exception as exc:  # noqa: BLE001
-                # A 404 is a deleted kernel and says the slot is free. Any
-                # other error leaves the state unknown, and an unknown state
-                # is not evidence of an idle account. See GONE_MARKERS.
+                # A 404 is a deleted kernel, so the slot is free. Any other
+                # error leaves the state unknown, which is not evidence of an
+                # idle account. See GONE_MARKERS.
                 if _looks_gone(exc):
                     gone += 1
                     print(f"[gate] status 404 for {ref}: already deleted", flush = True)
@@ -301,16 +278,16 @@ def survey_kernels(
             if state in BUSY_STATES:
                 entry = f"{ref} ({state})"
                 busy.append(entry)
-                # Ownership is read off the SLUG, which is the part after the
-                # username: a foreign kernel on this account belongs to the
-                # same user, so the user half says nothing.
+                # Ownership is read off the SLUG, the part after the username:
+                # a foreign kernel belongs to the same user, so the user half
+                # says nothing.
                 slug = ref.rsplit("/", 1)[-1]
                 (own if slug.startswith(OWN_KERNEL_PREFIX) else foreign).append(entry)
         if complete:
             break
         if len(kernels) < page_size:
-            # Ran off the end of the account's kernels; nothing is left to
-            # miss, so the survey covered everything it needed to.
+            # Ran off the end of the account's kernels, so nothing is left to
+            # miss.
             complete = True
             break
 
@@ -333,25 +310,20 @@ def concurrency_verdict(
 ) -> tuple[bool, str]:
     """Is the account idle enough? Returns (clear_to_launch, why not).
 
-    Two separate questions, in this order, because they have different
-    answers and conflating them is how a workflow ends up either competing
-    with a human or refusing to use capacity nobody wants.
+    Two questions, in this order, because conflating them is how a workflow
+    ends up either competing with a human or refusing capacity nobody wants.
 
-    1. **Is anyone else using the account?** Any foreign kernel at all and
-       this job stands down, whatever the slot arithmetic says. That is
-       stricter than Kaggle's cap requires and it is the policy; see
-       ALLOWED_IN_FLIGHT_FOREIGN_KERNELS.
-    2. **Are there enough free slots for the kernels this job pushes?** It
-       pushes ``kernels_needed`` of them and the account cap is
-       MAX_CONCURRENT_GPU_KERNELS, so its own leftovers count against it
-       exactly as a stranger's would. A run that launched half its kernels
-       would report half its legs and the control/canary comparison, which
-       is the whole point of the pairing, would have nothing to compare.
+    1. **Is anyone else using the account?** Any foreign kernel stands this job
+       down, whatever the slot arithmetic says. Stricter than Kaggle's cap
+       requires, and deliberate; see ALLOWED_IN_FLIGHT_FOREIGN_KERNELS.
+    2. **Are there enough free slots?** It pushes ``kernels_needed`` against a
+       cap of MAX_CONCURRENT_GPU_KERNELS, so its own leftovers count against it
+       exactly as a stranger's would. A half launch would report half its legs,
+       and the control/canary pair would have nothing to compare.
 
-    "No busy kernel was found" is only worth acting on if the search could
-    actually have found one. An unanswerable question is a skip here, never
-    a go-ahead: the cost of standing down is a few minutes until the next
-    commit draws again, and the cost of guessing wrong is a push rejected at
+    "No busy kernel was found" is worth acting on only if the search could have
+    found one, so an unanswerable question is a skip: standing down costs a few
+    minutes until the next commit draws, guessing wrong costs a push rejected at
     the capacity cap.
     """
     foreign = survey.get("foreign", survey["busy"])
@@ -381,12 +353,11 @@ def concurrency_verdict(
             "pages, so an older kernel of this account could still be "
             "running unseen"
         )
-    # ANY unreadable candidate, not just all of them. One in-window kernel
-    # whose status could not be read may be the human session this job is
-    # supposed to yield to, and "the ones we could read were idle" is not an
-    # answer about the one we could not. Deleted kernels answer 404 and are
-    # counted as `gone` rather than unreadable, so the routine case does not
-    # wedge the gate shut; see GONE_MARKERS.
+    # ANY unreadable candidate, not just all of them: the one in-window kernel
+    # that could not be read may be the human session this job yields to, and
+    # "the ones we could read were idle" is no answer about it. Deleted kernels
+    # answer 404 and count as `gone`, so the routine case does not wedge the
+    # gate shut; see GONE_MARKERS.
     if survey.get("unreadable"):
         return False, (
             f"{survey['unreadable']} of {survey['surveyed']} in-window kernel "
@@ -456,24 +427,20 @@ def main() -> int:
 
     label_name = args.label_name.strip().lower()
 
-    # A LABEL EVENT IS A REQUEST ONLY IF IT IS THE OPT-IN LABEL, and this is
-    # checked before anything else because it is what keeps the budget
-    # arithmetic true.
+    # A LABEL EVENT IS A REQUEST ONLY IF IT IS THE OPT-IN LABEL, checked first
+    # because it is what keeps the budget arithmetic true.
     #
-    # The workflow subscribes to `labeled` so the opt-in label can start a run
-    # of its own, but GitHub fires that action for EVERY label. Without this,
-    # each unrelated label -- triage, size, whatever a bot applies -- starts a
-    # fresh run and therefore a fresh sampling draw, and the estimate at the
-    # top of the workflow counts pull request opens and pushes only. Worse,
-    # once the opt-in label is on the pull request it stays in the label list
-    # below, so every LATER label of any kind arrives as an override and
-    # FORCES a session. Two bot labels on an opted-in pull request would spend
-    # two more.
+    # The workflow subscribes to `labeled` so the opt-in label can start a run,
+    # but GitHub fires that action for EVERY label. Without this, each unrelated
+    # label (triage, size, whatever a bot applies) is a fresh run and a fresh
+    # sampling draw, while the estimate at the top of the workflow counts only
+    # pull request opens and pushes. Worse, once the opt-in label is present it
+    # stays in the label list below, so every LATER label of any kind arrives as
+    # an override and FORCES a session: two bot labels would spend two more.
     #
-    # So a `labeled` run stands down unless the label that started it is the
-    # one that means "run this". Every other action -- opened, synchronize,
-    # reopened, a push, a dispatch -- is unaffected, and an opted-in pull
-    # request still forces on each of them.
+    # So a `labeled` run stands down unless the label that started it means "run
+    # this". Every other action (opened, synchronize, reopened, a push, a
+    # dispatch) is unaffected, and an opted-in pull request still forces on each.
     action = args.event_action.strip().lower()
     if action == "labeled":
         applied = args.event_label.strip().lower()
@@ -494,9 +461,8 @@ def main() -> int:
         override = True
         print(f"[gate] override: label {args.label_name!r} present", flush = True)
 
-    # The draw is reported even when overridden, so the log always shows what
-    # the unforced answer would have been.
-    # Re-runs of the same run must not reroll, so run_attempt is excluded.
+    # Reported even when overridden, so the log shows what the unforced answer
+    # would have been. run_attempt is excluded so a re-run cannot reroll.
     picked, draw = sampled_in(str(args.run_id), args.percent)
     print(
         f"[gate] sampling draw={draw} threshold={args.percent} "

@@ -3,33 +3,23 @@
 
 """What was actually installed, recorded so a regression can be attributed.
 
-The version canary leg of this CI installs the LATEST release of every
-library Unsloth sits on top of and runs the same payload as the pinned
-control leg. When the canary goes red and the control stays green, the
-difference between them is a version bump and nothing else -- but only if
-the report says which versions those were. A red check that cannot name the
-package that moved is a bug report nobody can act on.
+The canary leg installs the LATEST release of every library Unsloth sits on,
+and runs the pinned control leg's payload; canary red plus control green means
+a version bump, but only if the report names which versions moved.
 
-Two rules this file exists to enforce.
-
-**Read the metadata, not the module.** ``torch.__version__`` and friends are
-attributes a package chooses to expose; ``importlib.metadata.version`` reads
-the installed distribution. They disagree in exactly the cases that matter --
-a package installed but not importable on this GPU (``vllm`` on a card its
-wheel has no kernels for) has a metadata version and raises on import. Both
-answers are recorded, separately, because "installed 0.11.2, would not
-import" is a different finding from "not installed".
-
-**Never let recording a version fail the run.** Every probe here is wrapped.
-A payload that died collecting diagnostics would report nothing about the
-code under test, which is the one outcome worse than a plain failure.
+Two rules. **Read the metadata, not the module**: ``importlib.metadata.version``
+reads the installed distribution, ``torch.__version__`` is whatever a package
+chose to expose. They disagree where it matters -- ``vllm`` on a card its wheel
+has no kernels for has a metadata version and raises on import -- so both are
+recorded, "installed 0.11.2, would not import" being a different finding from
+"not installed". **Never let recording a version fail the run**: every probe is
+wrapped, since dying while collecting diagnostics reports nothing at all.
 """
 
 from __future__ import annotations
 
-# The libraries whose version bumps this CI exists to detect. Order is the
-# order they appear in a report, so keep the runtime stack first and the
-# Unsloth packages last.
+# Libraries whose version bumps this CI exists to detect. Order is report
+# order: runtime stack first, Unsloth packages last.
 GOAL_PACKAGES = (
     "torch",
     "transformers",
@@ -45,8 +35,8 @@ GOAL_PACKAGES = (
     "unsloth_zoo",
 )
 
-# Distribution names differ from import names for exactly one of the above,
-# and getting it wrong records "not installed" for a package that is.
+# Exactly one of the above has a distribution name differing from its import
+# name; getting it wrong records "not installed" for a package that is.
 _DISTRIBUTION = {"unsloth_zoo": "unsloth-zoo"}
 
 
@@ -65,9 +55,8 @@ def distribution_version(module: str):
 def import_version(module: str):
     """``__version__`` after a real import, or an error string.
 
-    Importing is the point. ``vllm`` on a compute capability its wheel was
-    not built for installs cleanly and raises on import, and that is the
-    finding, not an accident to be swallowed.
+    Importing is the point: ``vllm`` on a compute capability its wheel was not
+    built for installs cleanly and raises on import, and that is the finding.
     """
     import importlib
     try:
@@ -79,10 +68,10 @@ def import_version(module: str):
 def resolved_versions(packages = GOAL_PACKAGES, *, import_check = ()) -> dict:
     """``{package: {"installed": ..., "imported": ...}}`` for the goal list.
 
-    ``import_check`` names the subset worth paying an import for. Importing
-    everything would pull ``vllm`` into a payload that has no use for it and
-    add a minute to a run for a number the metadata already answered, so the
-    default is metadata only and the caller opts in per package.
+    ``import_check`` names the subset worth paying an import for: importing
+    everything would pull ``vllm`` into payloads with no use for it and add a
+    minute for a number the metadata already gave, so callers opt in per
+    package.
     """
     out: dict = {}
     for name in packages:
@@ -97,9 +86,9 @@ def resolved_versions(packages = GOAL_PACKAGES, *, import_check = ()) -> dict:
 def flatten_versions(resolved: dict) -> dict:
     """``{package: version-or-None}``, for a one-line summary.
 
-    The installed version leads: it is the number a bisect over releases
-    acts on. An import failure is surfaced instead of the number, because a
-    package that is present and unusable must not read as present and fine.
+    The installed version leads: it is what a bisect over releases acts on. An
+    import failure is surfaced alongside it, so a package that is present and
+    unusable does not read as present and fine.
     """
     flat = {}
     for name, entry in resolved.items():
@@ -131,11 +120,10 @@ def load_pins(path) -> dict:
 def pin_failures(pins: dict, resolved: dict) -> list[str]:
     """Pins that did not hold.
 
-    A control leg whose pins were silently overridden by a transitive
-    dependency is not a control, and every conclusion drawn by comparing the
-    canary against it would be wrong in a way nothing else here would show.
-    A pin naming a package that is not installed at all is the same defect
-    seen from the other side, so it is reported too.
+    A control leg whose pins a transitive dependency silently overrode is not a
+    control, and every canary-vs-control conclusion drawn from it would be
+    wrong. A pin naming a package that is not installed is the same defect from
+    the other side, so it is reported too.
     """
     failures = []
     for name, wanted in sorted(pins.items()):

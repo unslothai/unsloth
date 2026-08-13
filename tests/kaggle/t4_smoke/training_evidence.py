@@ -3,46 +3,32 @@
 
 """Did the optimizer actually change the adapter? Shared by the payloads.
 
-Every leg here can produce a completely healthy-looking report from a run
-that applied no update at all. The loss is finite because a forward pass
-computes one, `torch.compile` engages because compilation happens on the
-forward, and generation returns text because the BASE model generates text
-perfectly well without any adapter. So each payload asserts that at least one
-logged ``grad_norm`` was finite and non-zero.
+A run that applied no update at all still reports healthily: the loss is finite
+because a forward pass computes one, `torch.compile` engages on the forward,
+and the BASE model generates text without any adapter. So each payload asserts
+some logged ``grad_norm`` was finite and non-zero -- which is only decidable
+where ``grad_norm`` was logged. A Trainer change that stops emitting the field
+leaves an EMPTY list, and the obvious `if norms and not applied` spelling
+collapses "no usable norm" and "no norm logged" into a pass.
 
-That assertion has a hole, and this module exists to close it: it is only
-decidable where ``grad_norm`` was logged. A Trainer or integration change
-that stops emitting the field leaves an EMPTY list, and "no logged norm was
-usable" and "no norm was logged" are opposite situations that the obvious
-`if norms and not applied` spelling collapses into a pass.
+Failing on that silence would be a failure invented rather than found, so this
+stops depending on trainer telemetry: LoRA's B matrices are exactly zero until
+an optimizer step lands on them, so fingerprints taken before and after
+training answer the question directly.
 
-Inferring "nothing was applied" from that silence would be a failure the
-check invented rather than found, so the answer is not to fail on silence but
-to stop depending on the trainer's telemetry. The adapter itself is the
-ground truth: LoRA's B matrices are initialised to exactly zero and stay
-exactly zero until an optimizer step lands on them, so a fingerprint taken
-before training and after answers the question directly, whatever the trainer
-chose to log.
+The tiny SFT payload (``run_t4_smoke.py``) instead reads its saved adapter back
+off disk and fails on an all-zero one (``verify_saved_adapter``); gptoss and
+grpo save no adapter, which is why the silence there was covered by nothing.
 
-The tiny SFT payload (``run_t4_smoke.py``) does not use this. It reads its
-saved adapter back off disk and fails on an all-zero one
-(``verify_saved_adapter``), which is the same question answered by a
-different, already-committed instrument. gptoss and grpo save no adapter,
-which is why the silence there was covered by nothing.
-
-Nothing in here raises. A diagnostic that can kill the payload it is
-diagnosing is worse than the gap it closes -- the leg would then report
-nothing at all, which is the outcome every report in this directory exists to
-prevent.
+Nothing here raises: a diagnostic that kills the payload it diagnoses leaves
+the leg reporting nothing at all.
 """
 
 from __future__ import annotations
 
-# Substring that marks a LoRA parameter, and the narrower one for the B
-# matrices. peft names them `...lora_A.default.weight` / `lora_B...`; the
-# match is lowercased so a future capitalisation does not silently empty the
-# set (a fingerprint over zero tensors reports itself as unusable rather than
-# as "nothing changed", see below).
+# Substrings marking a LoRA parameter and, narrower, the B matrices. peft names
+# them `...lora_A.default.weight` / `lora_B...`; matched lowercased so a future
+# capitalisation cannot silently empty the set.
 LORA_MARKER = "lora_"
 LORA_B_MARKER = "lora_b"
 
@@ -58,21 +44,16 @@ def _is_finite(value) -> bool:
 def adapter_fingerprint(model) -> dict:
     """Sum ``|w|`` over every LoRA parameter of ``model``.
 
-    Cheap by construction: a rank-8 adapter is a few hundred small matrices,
-    so this is microseconds beside the training step it brackets, and it
-    allocates nothing that outlives the call.
+    Cheap: a rank-8 adapter is a few hundred small matrices, microseconds beside
+    the training step it brackets. Returns ``{"ok": False, "error": ...}``
+    rather than raising; ``ok`` false means the question could not be answered,
+    not that the answer was no.
 
-    Returns ``{"ok": False, "error": ...}`` rather than raising, on anything
-    at all. ``ok`` false means the question could not be answered here, not
-    that the answer was no.
-
-    A non-finite sum is the one refusal that is NOT "could not answer". A
-    LoRA weight that has gone NaN or infinite is a broken run, and left as a
-    number it is the strongest possible pass: ``NaN != finite`` and
-    ``inf != finite`` both read as "the adapter changed", so the corrupted
-    run reports an applied update on exactly the no-telemetry path this
-    module was written to decide. It is flagged with ``non_finite`` so
-    ``update_verdict`` can call it what it is instead of comparing it.
+    A non-finite sum is the one refusal that IS an answer. NaN or infinite LoRA
+    weights are a broken run, and left as a number they are the strongest
+    possible pass (``NaN != finite`` reads as "the adapter changed"), so they
+    are flagged ``non_finite`` for ``update_verdict`` to name rather than
+    compare.
     """
     try:
         total = 0.0
@@ -110,16 +91,14 @@ def adapter_fingerprint(model) -> dict:
 def adapter_update(before, after) -> dict:
     """Compare two fingerprints. ``changed`` is the whole answer.
 
-    Two sums are compared, not one, and the second is what makes an exact
-    float comparison safe to turn red on. ``abs_sum`` moving is the general
-    signal; ``b_abs_sum`` is the specific one, and it starts at exactly 0.0
-    because peft zero-initialises every B matrix. For BOTH to be bitwise
-    unchanged after a real update, an optimizer would have to land a set of
-    deltas that cancels to the last bit in two different summations at once.
+    Two sums, not one, is what makes an exact float comparison safe to turn red
+    on. ``abs_sum`` moving is the general signal; ``b_abs_sum`` starts at
+    exactly 0.0 because peft zero-initialises every B matrix. For BOTH to be
+    bitwise unchanged after a real update, the optimizer would have to land
+    deltas cancelling to the last bit in two different summations at once.
 
-    A tensor count that differs between the two readings is reported as
-    unusable rather than as a change: whatever that is, it is not evidence
-    about the optimizer.
+    A differing tensor count between readings is unusable rather than a change:
+    whatever it is, it is not evidence about the optimizer.
     """
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
@@ -131,9 +110,8 @@ def adapter_update(before, after) -> dict:
             or after.get("error")
             or "the adapter was not fingerprinted",
         }
-    # Checked again on this side, not only where the sums were taken: an
-    # exact `!=` on a NaN is the most confident "it changed" this file can
-    # produce, so the comparison refuses to run on one whatever produced it.
+    # Rechecked here, not only where the sums were taken: an exact `!=` on a NaN
+    # is the most confident "it changed" this file can produce.
     unusable = [
         f"{side}.{key}={reading[key]}"
         for side, reading in (("before", before), ("after", after))
@@ -171,25 +149,20 @@ def update_verdict(metrics, adapter = None) -> dict:
     """Was an optimizer update applied? ``applied`` / ``not_applied`` /
     ``non_finite`` / ``unverifiable``.
 
-    The adapter reading wins where it exists, because it is the thing the
-    grad norms are a proxy FOR: gradients that flowed into weights nobody
-    updated is still a run that trained nothing.
+    The adapter reading wins where it exists, being the thing grad norms are a
+    proxy FOR: gradients flowing into weights nobody updated is still a run that
+    trained nothing.
 
-    ``unverifiable`` is the state this module was written for -- no usable
-    grad_norm was logged AND the adapter could not be read -- and it is a
-    failure at the call sites. Not because nothing was applied, which is
-    unknown, but because the leg's whole claim is that it exercised the
-    training path and it can no longer show that it did.
+    ``unverifiable`` -- no usable grad_norm logged AND no adapter reading -- is
+    a failure at the call sites: not because nothing was applied, which is
+    unknown, but because the leg can no longer show it exercised the training
+    path.
 
-    ``non_finite`` is decided FIRST and beats a healthy grad_norm, because it
-    is the one adapter reading that is an answer rather than a refusal. A
-    finite norm logged at step 1 says nothing about weights that went NaN at
-    step 3, and the trained adapter is the artifact the leg exists to
-    produce.
+    ``non_finite`` is decided FIRST and beats a healthy grad_norm: a finite norm
+    at step 1 says nothing about weights that went NaN at step 3.
 
-    Every call site treats anything other than ``applied`` as a failure, so a
-    verdict added here cannot be silently dropped by one that has not been
-    taught about it yet.
+    Every call site treats anything but ``applied`` as a failure, so a verdict
+    added here cannot be silently dropped.
     """
     rows = metrics or []
     norms = [row.get("grad_norm") for row in rows if row.get("grad_norm") is not None]

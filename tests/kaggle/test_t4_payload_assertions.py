@@ -4,12 +4,12 @@
 """CPU-only tests for what the T4 payloads actually ASSERT.
 
 `test_t4_smoke_harness.py` covers the launcher, the gate and the shape of the
-generated notebook. This file covers the other half: given a result dict, does
-the payload call it a pass or a failure? Every one of these is a case where a
-run that measured nothing, or measured the wrong thing, used to report green.
+generated notebook; this covers the other half: given a result dict, does the
+payload call it a pass or a failure? Every case here is one where a run that
+measured nothing, or the wrong thing, used to report green.
 
-Nothing here needs a GPU, which is the whole point -- the pass/fail rule for a
-leg that costs a Kaggle session has to be checkable without one.
+Nothing here needs a GPU, which is the point: the pass/fail rule for a leg that
+costs a Kaggle session has to be checkable without one.
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ INF = float("inf")
 def test_a_field_logged_by_only_one_run_is_a_difference():
     """grad_norm in cycle 0 and not in cycle 1 is nondeterminism, not a skip.
 
-    ``check_reference`` already calls one-sided presence "a change in the
-    SHAPE of what the trainer logged"; the exact comparator has to agree, or
-    the strong assertion is weaker than the tolerance band beside it.
+    ``check_reference`` already calls one-sided presence "a change in the SHAPE
+    of what the trainer logged", and the exact comparator has to agree or the
+    strong assertion is weaker than the tolerance band beside it.
     """
     from determinism import compare_metrics
 
@@ -84,7 +84,7 @@ def test_two_runs_that_both_overflowed_on_the_same_step_agree():
     """An fp16 overflow logs infinity as readily as NaN, and abs(inf-inf) is NaN.
 
     NaN != 0.0, so the subtraction reported two identical traces as
-    nondeterministic -- with a max_abs_diff of 0.0 to show for it.
+    nondeterministic, with a max_abs_diff of 0.0 to show for it.
     """
     from determinism import compare_metrics
 
@@ -142,8 +142,8 @@ def test_the_canary_can_be_downgraded_to_a_warning():
 def test_an_infinite_gradient_norm_is_not_an_applied_update():
     """fp16 overflow reports the norm as inf as readily as NaN.
 
-    ``inf == inf``, so the NaN-only test counted every skipped step as an
-    applied one and a run that trained nothing reported green.
+    ``inf == inf``, so the NaN-only test counted every skipped step as applied
+    and a run that trained nothing reported green.
     """
     from run_t4_smoke import optimisation_failures
 
@@ -218,9 +218,9 @@ def test_an_all_zero_adapter_is_a_failure():
 def test_an_adapter_whose_b_matrices_are_all_zero_is_a_failure():
     """The A matrices alone keep `nonzero_tensors` up, and prove nothing.
 
-    peft initialises lora_A randomly, so it is nonzero before a single step.
-    Counting every tensor therefore accepted an adapter whose B matrices were
-    all zero, which contributes exactly nothing: the update goes through B.
+    peft initialises lora_A randomly, so it is nonzero before a single step, and
+    counting every tensor therefore accepted an adapter whose B matrices were
+    all zero, contributing nothing since the update goes through B.
     """
     from run_t4_smoke import saved_adapter_failures
 
@@ -249,9 +249,9 @@ def test_a_missing_adapter_config_is_a_failure():
 def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     """End to end through the real writer, no GPU and no model.
 
-    The first file here is the exact artifact the old count accepted: a
-    random lora_A beside a lora_B that never left zero. One nonzero tensor
-    out of two, and an adapter that reloads to the base model.
+    The first file is the exact artifact the old count accepted: a random
+    lora_A beside a lora_B that never left zero, one nonzero tensor of two, and
+    an adapter that reloads to the base model.
     """
     pytest.importorskip("safetensors")
     import torch
@@ -276,9 +276,8 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     failures = saved_adapter_failures(state)
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
-    # The same file with a B matrix an optimizer moved, which is the only
-    # difference between an adapter that carries training and one that does
-    # not.
+    # The same file with a B matrix an optimizer moved, the only difference
+    # between an adapter that carries training and one that does not.
     save_file(
         {
             "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
@@ -395,9 +394,9 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
-    # `model` too: the helper's reference names one and this call observed
-    # none, and a pin present on one side only did not run, so it is recorded
-    # rather than skipped in silence.
+    # `model` too: the helper's reference names one and this call observed none,
+    # and a pin present on one side only did not run, so it is recorded rather
+    # than skipped in silence.
     assert verdict["config_unchecked"] == ["gradient_checkpointing", "model"]
 
 
@@ -521,9 +520,8 @@ def test_what_the_band_did_not_compare_reaches_the_summary():
 def test_the_committed_reference_pins_the_model_it_was_captured_on():
     """The one identity key that is knowable without another T4 session.
 
-    The control leg passes no --model, so the reference belongs to
-    DEFAULT_MODEL and the gate can be live now rather than from the next
-    recapture.
+    The control leg passes no --model, so the reference belongs to DEFAULT_MODEL
+    and the gate can be live now rather than from the next recapture.
     """
     from run_t4_smoke import DEFAULT_MODEL
 
@@ -719,10 +717,10 @@ def test_gptoss_requires_the_forcing_to_be_on_rather_than_merely_recorded(value)
     """`"0"` is what the loader writes on its ordinary branch.
 
     models/loader.py sets UNSLOTH_FORCE_FLOAT32 to "0" BEFORE deciding whether
-    to force and only overwrites it with "1" when the forcing fires, and every
-    production consumer reads it as `== "1"`. A truthiness check therefore
-    accepts the one regression this leg uniquely covers: forcing switched off,
-    fp16 and bf16 both still false, and the leg green.
+    to force and overwrites it with "1" only when the forcing fires, and every
+    production consumer reads `== "1"`. A truthiness check therefore accepts the
+    one regression this leg uniquely covers: forcing off, fp16 and bf16 still
+    false, leg green.
     """
     from run_gptoss_t4 import failures_for
 
@@ -785,10 +783,9 @@ def _moved(**over) -> dict:
 def test_gptoss_does_not_infer_a_verdict_from_an_unlogged_grad_norm():
     """A trainer that stops logging grad_norm still says nothing either way.
 
-    That position has not changed. What changed is that the leg no longer
-    depends on the field: the adapter it trained is fingerprinted before and
-    after, so silence from the trainer is answered from the weights rather
-    than guessed at.
+    That has not changed; what changed is that the leg no longer depends on the
+    field, the trained adapter being fingerprinted before and after, so silence
+    from the trainer is answered from the weights rather than guessed at.
     """
     from run_gptoss_t4 import failures_for
 
@@ -802,10 +799,10 @@ def test_gptoss_does_not_infer_a_verdict_from_an_unlogged_grad_norm():
 def test_gptoss_fails_when_nothing_at_all_can_say_the_adapter_moved():
     """No grad_norm logged AND no adapter reading is not a pass.
 
-    Every other number in this report -- finite losses, captured graphs,
-    non-empty generation -- is produced by the base model and the loader on
-    their own. With both instruments gone the leg has nothing left to show
-    for the LoRA training it exists to cover, so it must not report green.
+    Every other number in the report (finite losses, captured graphs, non-empty
+    generation) is produced by the base model and the loader on their own, so
+    with both instruments gone the leg has nothing left to show for the LoRA
+    training it covers.
     """
     from run_gptoss_t4 import failures_for
 
@@ -820,8 +817,8 @@ def test_gptoss_fails_when_nothing_at_all_can_say_the_adapter_moved():
 def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
     """The grad norms can look healthy and the weights still not move.
 
-    Gradients that flowed into weights nobody updated is a run that trained
-    nothing, so the adapter reading decides it rather than the telemetry.
+    Gradients flowing into weights nobody updated is a run that trained nothing,
+    so the adapter reading decides it rather than the telemetry.
     """
     from run_gptoss_t4 import failures_for
 
@@ -835,8 +832,8 @@ def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
 def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():
     """The same hole, and the same reason it is a hole on this leg too.
 
-    Reward, reward_std and the completions are all produced by generating and
-    scoring, which the base model does without a single optimizer step.
+    Reward, reward_std and the completions all come from generating and scoring,
+    which the base model does without a single optimizer step.
     """
     from run_grpo_t4 import failures_for
 
@@ -962,10 +959,9 @@ def test_the_zero_initialised_b_matrices_are_what_make_the_comparison_safe():
 def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
     """The strongest possible pass, produced by the worst possible run.
 
-    `NaN != finite` and `inf != finite` both read as "the adapter changed",
-    so a run whose optimizer corrupted the weights reported `applied` on
-    exactly the no-telemetry path this module exists to decide, while
-    generation still returned text.
+    `NaN != finite` and `inf != finite` both read as "the adapter changed", so a
+    run whose optimizer corrupted the weights reported `applied` on exactly the
+    no-telemetry path this module decides, while generation still returned text.
     """
     from training_evidence import adapter_fingerprint, adapter_update, update_verdict
 
@@ -992,7 +988,7 @@ def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
     assert update["non_finite"] is True
 
     # And it beats a healthy grad_norm, which says nothing about weights that
-    # went non-finite two steps after it was logged.
+    # went non-finite two steps later.
     healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
     assert update_verdict(healthy, update)["verdict"] == "non_finite"
     assert update_verdict([], update)["verdict"] == "non_finite"
@@ -1030,8 +1026,8 @@ def test_a_non_finite_adapter_turns_both_legs_red():
 def test_a_verdict_neither_leg_has_been_taught_about_is_still_a_failure():
     """`elif != "applied"`, not `elif == "unverifiable"`.
 
-    A verdict added to training_evidence.py and not wired here would
-    otherwise be a silent pass, which is the disease the module treats.
+    A verdict added to training_evidence.py and not wired here would otherwise
+    be a silent pass.
     """
     import run_gptoss_t4
     import run_grpo_t4
@@ -1180,10 +1176,10 @@ def _recapture_recipe() -> str:
 def test_the_recapture_recipe_records_the_kernel_it_came_from(tmp_path, monkeypatch):
     """The recipe is EXECUTED here, against a two-kernel evidence tree.
 
-    `source_kernel` is the only field pointing at the hardware run the band
-    was measured on, and it is what makes a recapture auditable while the
-    evidence artifact is still around. Writing the leg label into it names
-    something every reference has and no run in particular.
+    `source_kernel` is the only field pointing at the hardware run the band was
+    measured on, and is what makes a recapture auditable while the evidence
+    artifact is still around. Writing the leg label into it names something
+    every reference has and no run in particular.
     """
     evidence = tmp_path / "kaggle_evidence"
     kernels = [
@@ -1272,15 +1268,14 @@ def test_reports_are_not_ordered_control_first(tmp_path):
 def test_gptoss_fails_when_the_cards_bf16_support_is_unreadable(environment):
     """`is False` alone made the float32 assertion optional.
 
-    main() records `environment = {"error": ...}` for the whole probe when
-    it raises -- a torch build that changed or failed `is_bf16_supported()`
-    is enough -- and the block below it was then skipped entirely. Training,
-    finite losses, an updated adapter, compilation and generation all still
-    pass, so the leg went green without ever establishing the float32 path
-    it uniquely claims to cover.
+    main() records `environment = {"error": ...}` for the whole probe when it
+    raises (a torch build that changed or failed `is_bf16_supported()` is
+    enough), and the block below was then skipped entirely while training,
+    finite losses, an updated adapter, compilation and generation all passed --
+    green without ever establishing the float32 path this leg uniquely covers.
 
-    Not just the `error` shape: anything that is not a literal True or False
-    is unverifiable, including a plausible-looking string or 0.
+    Not just the `error` shape: anything that is not a literal True or False is
+    unverifiable, including a plausible-looking string or 0.
     """
     from run_gptoss_t4 import failures_for
 

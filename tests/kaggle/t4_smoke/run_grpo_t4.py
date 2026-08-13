@@ -3,71 +3,60 @@
 
 """Qwen3-4B GRPO with vLLM on a single T4: does the engine fit and generate?
 
-The payload behind the `grpo` leg of the Kaggle T4 notebook CI, written
-first as a FEASIBILITY PROBE. Two things are genuinely in doubt on this
-hardware and this file is built to answer both with evidence.
+The payload behind the `grpo` leg, written first as a FEASIBILITY PROBE. Two
+things are genuinely in doubt on this hardware.
 
 **Does vLLM run on sm_75 at all, at the version installed?** vLLM selects an
-attention backend by compute capability, and Turing has neither
-FlashAttention nor FlashInfer. It used to depend on the xformers backend;
-that backend was deleted in 0.12.0, and at the version this leg installs the
-ladder in `vllm/platforms/cuda.py` falls through the two unavailable ones to
-TRITON_ATTN. The leg names TRITON_ATTN in `VLLM_ATTENTION_BACKEND` rather
-than trusting that order to hold, so a release that reorders or drops it
-shows up here as a red rather than as a silent substitution.
-
-None of that fails at install time or at import time: it fails when the
-engine is constructed, deep inside platform selection. So the resolved vLLM
-version, the backends the build actually offers, the backend that got
-selected and the engine-construction outcome are all recorded separately.
+attention backend by compute capability, and Turing has neither FlashAttention
+nor FlashInfer. It used to depend on the xformers backend, deleted in 0.12.0,
+and at the version this leg installs the ladder in `vllm/platforms/cuda.py`
+falls through the two unavailable ones to TRITON_ATTN. The leg names TRITON_ATTN
+in `VLLM_ATTENTION_BACKEND` rather than trusting that order, so a release that
+reorders or drops it goes red instead of silently substituting. None of this
+fails at install or import time; it fails when the engine is constructed, deep
+inside platform selection, so the resolved vLLM version, the backends the build
+offers, the backend selected and the construction outcome are recorded
+separately.
 
 **Does it fit?** The notebook this leg comes from sets `load_in_4bit=False`,
-which is roughly 8GB of 16-bit weights, and then asks a vLLM engine with
-`gpu_memory_utilization=0.9` and a LoRA training loop to share the same 16GB
-card. `--load-in-4bit` is therefore a first-class switch here rather than a
-constant, and the probe's job is to say which setting the card actually
-tolerates. Peak reserved and allocated memory are reported for whichever was
-used.
+roughly 8GB of 16-bit weights, and then asks a vLLM engine at
+`gpu_memory_utilization=0.9` and a LoRA training loop to share one 16GB card.
+`--load-in-4bit` is therefore a first-class switch, and peak reserved and
+allocated memory are reported for whichever setting ran.
 
-What it asserts, and what it deliberately does not
---------------------------------------------------
-**Not the loss.** With `num_iterations=1` and `beta=0.0` the TRL GRPO
-objective is zero by construction on a healthy run: the policy that
-generated the completions is the policy being updated, so the importance
-ratio is exactly 1, and with no KL term the whole loss cancels. A check on
-loss here would either always pass or fire on arithmetic noise. It is
-recorded and never asserted, and that is not an oversight.
+What it asserts, and what it deliberately does not:
+
+**Not the loss.** With `num_iterations=1` and `beta=0.0` the TRL GRPO objective
+is zero by construction on a healthy run -- the policy that generated the
+completions is the one being updated, so the importance ratio is exactly 1, and
+with no KL term the loss cancels. A check on it would always pass or fire on
+arithmetic noise, so it is recorded and never asserted.
 
 **Reward, reward_std and the completions instead.**
 
 * `reward` must be logged and finite on every step. Absent means the reward
-  functions never ran, which means generation produced nothing.
-* `reward_std` must be non-zero on at least one step. Zero across a whole
-  group is the real bug signal on this path: it means every completion in
-  the group was scored identically, which in practice means every completion
-  was IDENTICAL -- a sampler that ignored its temperature, a seed applied
-  per-completion instead of per-group, or an engine returning the same
-  cached text N times. The gradient is exactly zero in that state, so
-  training "succeeds" while learning nothing, and no other number here moves.
-* At least one completion must be non-empty, and the completions actually
-  seen are captured and reported. An engine that returns N empty strings
-  scores them all the same, so the reward checks alone would call that a
-  clean run.
-* The optimizer must have applied something. Under fp16 on this card every
-  step can overflow and be skipped while loss, reward and reward_std are all
-  still logged, so without this the leg passes on a run that generated,
-  scored and updated nothing. Decided on the LoRA weights, fingerprinted
-  before and after training, with `grad_norm` as the fallback: a TRL version
-  that stops logging that field must not be able to take the assertion with
-  it. See training_evidence.py.
-* The final `fast_generate` runs with the TRAINED adapter, transferred into
-  the engine with `save_lora` + `load_lora`. Generating with
-  `lora_request=None` reads the base weights and passes whether or not the
-  adapter can reach vLLM at all, which is the second of the two questions
-  above.
+  functions never ran, so generation produced nothing.
+* `reward_std` must be non-zero on at least one step. Zero across a group means
+  every completion scored identically, which in practice means they were
+  IDENTICAL: a sampler ignoring its temperature, a seed applied per-completion
+  instead of per-group, or an engine returning the same cached text N times. The
+  gradient is exactly zero then, so training "succeeds" while learning nothing
+  and no other number moves.
+* At least one completion must be non-empty, and the completions seen are
+  captured and reported: an engine returning N empty strings scores them all the
+  same, so the reward checks alone would call that clean.
+* The optimizer must have applied something. Under fp16 here every step can
+  overflow and be skipped while loss, reward and reward_std are still logged.
+  Decided on the LoRA weights, fingerprinted before and after training, with
+  `grad_norm` as fallback so a TRL version that stops logging it cannot take the
+  assertion with it. See training_evidence.py.
+* The final `fast_generate` runs with the TRAINED adapter, transferred in with
+  `save_lora` + `load_lora`. `lora_request=None` reads the base weights and
+  passes whether or not the adapter can reach vLLM, which is the second of the
+  two questions above.
 
-`--probe` records everything and asserts nothing, for the deliberate one-off
-feasibility runs.
+`--probe` records everything and asserts nothing, for the one-off feasibility
+runs.
 """
 
 from __future__ import annotations
@@ -102,9 +91,9 @@ DEFAULT_MODEL = "unsloth/Qwen3-4B-Base"
 SYSTEM_PROMPT = "You are given a question. Answer it as briefly as you can."
 
 # Every completion the reward functions were shown, in order. A module global
-# rather than a closure because TRL calls the reward functions itself and
-# hands back nothing but the scores; without capturing here, the only record
-# of what the engine produced would be the scores it happened to earn.
+# rather than a closure because TRL calls those functions itself and hands back
+# only the scores, which would otherwise be the sole record of what was
+# produced.
 SEEN_COMPLETIONS: list[list[str]] = []
 
 
@@ -128,9 +117,9 @@ def _texts(completions) -> list[str]:
 def reward_length(completions, **kwargs) -> list[float]:
     """Longer completions score higher, saturating at 200 characters.
 
-    Chosen because it is deterministic given the text and yet SENSITIVE to
-    the diversity of a group. A constant reward would make `reward_std` zero
-    on a perfectly healthy run and destroy the only instrument this leg has.
+    Deterministic given the text, yet SENSITIVE to a group's diversity: a
+    constant reward would zero `reward_std` on a healthy run and destroy the
+    only instrument this leg has.
     """
     texts = _texts(completions)
     SEEN_COMPLETIONS.append(texts)
@@ -140,9 +129,8 @@ def reward_length(completions, **kwargs) -> list[float]:
 def reward_digit(completions, **kwargs) -> list[float]:
     """A second, differently shaped signal, so `reward` is not one function.
 
-    A single reward function that happened to be broken would look exactly
-    like a broken generation path. Two disagreeing sources make that
-    distinguishable in the report.
+    One broken reward function looks exactly like a broken generation path; two
+    disagreeing sources make that distinguishable in the report.
     """
     return [1.0 if any(c.isdigit() for c in t) else 0.0 for t in _texts(completions)]
 
@@ -163,11 +151,10 @@ def memory() -> dict:
 def vllm_facts() -> dict:
     """Which vLLM, and which attention backend it would choose here.
 
-    Recorded BEFORE the engine is built, so a payload that dies constructing
-    the engine still says what it was trying to construct. The backend is
-    read from vLLM's own selector where that is reachable and from the
-    environment override otherwise; both are reported, because an override
-    silently deciding the answer is itself worth seeing.
+    Recorded BEFORE the engine is built, so a payload that dies constructing it
+    still says what it was trying to construct. The backend comes from vLLM's
+    own selector where reachable and from the environment override otherwise;
+    both are reported, since an override silently deciding it is worth seeing.
     """
     facts: dict = {"env_override": os.environ.get("VLLM_ATTENTION_BACKEND")}
     try:
@@ -183,12 +170,11 @@ def vllm_facts() -> dict:
         facts["capability"] = str(current_platform.get_device_capability())
     except Exception as exc:  # noqa: BLE001
         facts["platform_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
-    # The backend enum has moved between releases and its absence is a
-    # finding, not a crash. Both names below are recorded rather than
-    # asserted: at the version this leg installs, xformers is EXPECTED to be
-    # missing and TRITON_ATTN is what the ladder is expected to land on, and
-    # the point of writing both down is that "which of those two worlds are
-    # we in" is answerable from the report alone.
+    # The backend enum has moved between releases, and its absence is a finding
+    # rather than a crash. Both names are recorded, not asserted: at the version
+    # this leg installs, xformers is EXPECTED missing and TRITON_ATTN is where
+    # the ladder should land, so which world we are in is answerable from the
+    # report alone.
     for path in (
         "vllm.attention.backends.registry",
         "vllm.attention.selector",
@@ -229,13 +215,12 @@ def build_dataset(rows: list[dict]):
 def train(args, report: dict | None = None) -> dict:
     """One GRPO cycle. Writes progress into ``report`` as it goes.
 
-    The second argument is what makes the feasibility verdict survive a
-    crash. Everything used to be returned at the end, so an exception
-    anywhere after the engine was built threw away the fact that it HAD been
-    built, and the report then said `engine_built: false` -- the opposite of
-    what happened, and the exact distinction this probe exists to draw
-    between "vLLM cannot start on sm_75" and "vLLM started and GRPO failed
-    later". Facts are published as soon as they are known instead.
+    The second argument makes the feasibility verdict survive a crash.
+    Everything used to be returned at the end, so an exception after the engine
+    was built threw away the fact that it HAD been, and the report said
+    `engine_built: false` -- the opposite of what happened, and the exact
+    distinction this probe draws between "vLLM cannot start on sm_75" and "vLLM
+    started and GRPO failed later". Facts are published as soon as known.
     """
     import torch
     from unsloth import FastLanguageModel
@@ -266,17 +251,15 @@ def train(args, report: dict | None = None) -> dict:
     #   ValueError: Cannot use chat template functions because
     #   tokenizer.chat_template is not set
     #
-    # Measured on kernel unsloth-t4-ci-27b0dc2e, which is the first probe that
-    # got far enough to hit it -- the vLLM engine had already built and the
-    # trainer was inside `_run_epoch`. The notebook this leg comes from does
-    # the same thing a different way: it runs an SFT priming stage that
-    # installs a template before GRPO starts. This leg has no priming stage,
-    # so it sets a minimal ChatML template directly.
+    # Measured on kernel unsloth-t4-ci-27b0dc2e, the first probe to get that far
+    # (the vLLM engine had built and the trainer was inside `_run_epoch`). The
+    # notebook solves this with an SFT priming stage that installs a template
+    # before GRPO; this leg has no priming stage, so it sets a minimal ChatML
+    # template directly.
     #
-    # A base model is the RIGHT choice here and is not what to change. GRPO on
-    # an instruct model would be measuring the instruct tuning as much as the
-    # run, and the payload's rewards are format-and-digit rewards that a base
-    # model can learn inside three steps.
+    # The base model is the RIGHT choice and is not what to change: GRPO on an
+    # instruct model would measure the instruct tuning as much as the run, and
+    # these format-and-digit rewards are learnable inside three steps.
     if not getattr(tokenizer, "chat_template", None):
         tokenizer.chat_template = (
             "{% for message in messages %}"
@@ -348,10 +331,10 @@ def train(args, report: dict | None = None) -> dict:
     )
 
     # The adapter before a single step, so whether the optimizer applied
-    # anything is a subtraction rather than a reading of what TRL chose to
-    # log. Under fp16 on this card every step can overflow and be skipped
-    # while loss, reward and reward_std are all still logged, and grad_norm
-    # is the only field that used to say so. See training_evidence.py.
+    # anything is a subtraction rather than a reading of what TRL chose to log.
+    # Under fp16 here every step can overflow and be skipped while loss, reward
+    # and reward_std are still logged, and grad_norm was the only field that
+    # used to say so. See training_evidence.py.
     adapter_before = adapter_fingerprint(model)
     _log(f"adapter before training: {json.dumps(adapter_before)}")
 
@@ -378,7 +361,7 @@ def train(args, report: dict | None = None) -> dict:
         }
         for entry in trainer.state.log_history
     ]
-    # The shape the launcher and the summary renderer already understand.
+    # The shape the launcher and summary renderer already understand.
     result["metrics"] = [
         {"step": entry.get("step"), "loss": entry.get("loss"), "grad_norm": entry.get("grad_norm")}
         for entry in trainer.state.log_history
@@ -388,17 +371,16 @@ def train(args, report: dict | None = None) -> dict:
     result["memory_peak"] = memory()
     _log(f"trained in {result['train_seconds']}s; log {json.dumps(result['log_history'])[:1500]}")
 
-    # Generation through the vLLM path after training. `fast_generate` is
-    # what the notebook uses and it is a different code path from the
-    # trainer's own rollouts, so a failure here is not covered above.
+    # Generation through the vLLM path after training. `fast_generate` is what
+    # the notebook uses and is a different code path from the trainer's own
+    # rollouts, so a failure here is not covered above.
     #
-    # WITH the trained adapter. `fast_generate` is the vLLM engine's own
-    # generate, and the trained LoRA reaches it only through a lora_request
-    # built by `save_lora` + `load_lora`; passing None generates from the base
-    # weights, which passes whether or not the adapter can be transferred into
-    # the engine at all. Getting the adapter across is the second of the two
-    # questions this leg exists to answer, so the request is built, what
-    # happened is recorded, and `failures_for` asserts on it.
+    # WITH the trained adapter: `fast_generate` is the engine's own generate,
+    # and the trained LoRA reaches it only through a lora_request built by
+    # `save_lora` + `load_lora`. Passing None generates from the base weights
+    # and passes whether or not the adapter can be transferred at all, which is
+    # the second question this leg answers, so the request is built, recorded,
+    # and asserted on in `failures_for`.
     lora_state: dict = {"requested": True, "applied": False}
     lora_request = None
     try:
@@ -437,8 +419,8 @@ def failures_for(result: dict, args) -> list[str]:
     """The GRPO assertions. See this file's docstring for why not the loss."""
     failures: list[str] = []
     history = result.get("log_history") or []
-    # The training steps, not every row: `train()` appends a summary entry
-    # carrying the run totals and no loss, and it is not a step.
+    # The training steps, not every row: `train()` appends a summary entry with
+    # the run totals and no loss, which is not a step.
     steps = [e for e in history if "loss" in e]
     rewards = [e["reward"] for e in history if e.get("reward") is not None]
     if not rewards:
@@ -449,9 +431,9 @@ def failures_for(result: dict, args) -> list[str]:
     elif any(r != r or r in (float("inf"), float("-inf")) for r in rewards):
         failures.append(f"non-finite reward: {rewards}")
     else:
-        # ON EVERY STEP, which is what this file's docstring claims. Any
-        # nonempty subset used to satisfy it, so a step whose reward functions
-        # never ran was filtered out and the remaining ones covered for it.
+        # ON EVERY STEP, as this file's docstring claims. Any nonempty subset
+        # used to satisfy it, so a step whose reward functions never ran was
+        # filtered out and the rest covered for it.
         missing = [e.get("step") for e in steps if e.get("reward") is None]
         if missing:
             failures.append(
@@ -485,16 +467,15 @@ def failures_for(result: dict, args) -> list[str]:
     if len(metrics) != args.max_steps:
         failures.append(f"expected {args.max_steps} logged steps, got {len(metrics)}")
 
-    # Under fp16 on this card every step can overflow and be skipped while
-    # loss, reward and reward_std are all still logged, and base-model
-    # generation still returns text -- so the length check above is satisfied
-    # by a run that applied no optimizer update at all.
+    # Under fp16 here every step can overflow and be skipped while loss, reward
+    # and reward_std are still logged and base-model generation still returns
+    # text, so the length check above is satisfied by a run that applied no
+    # optimizer update at all.
     #
-    # Decided on the adapter itself, with grad_norm as the fallback. The
-    # earlier spelling was `if norms and not applied`, which passes on an
-    # EMPTY list: a TRL version that stops logging grad_norm removes the only
-    # instrument this leg had, and this leg saves no adapter to read back
-    # either. See training_evidence.py.
+    # Decided on the adapter itself, with grad_norm as fallback. The earlier
+    # spelling `if norms and not applied` passes on an EMPTY list: a TRL version
+    # that stops logging grad_norm removes the only instrument this leg had, and
+    # it saves no adapter to read back either. See training_evidence.py.
     update = update_verdict(metrics, result.get("adapter_update"))
     if update["verdict"] == "not_applied":
         failures.append(
@@ -510,9 +491,8 @@ def failures_for(result: dict, args) -> list[str]:
             f"text either way."
         )
     elif update["verdict"] != "applied":
-        # Not `== "unverifiable"`. Anything this file has not been taught
-        # about is a failure here rather than a silent pass, which is the
-        # whole disease training_evidence.py exists to treat.
+        # Not `== "unverifiable"`: any verdict this file has not been taught
+        # about is a failure rather than a silent pass.
         failures.append(
             f"whether the optimizer applied anything could not be established: "
             f"{update['detail']}. Every other number this leg reports is produced "
@@ -539,44 +519,43 @@ def make_libcuda_linkable() -> dict:
     """Let the linker find `-lcuda`, so flashinfer's JIT can link what it built.
 
     Measured twice on real T4 sessions (kernels unsloth-t4-ci-e2d9ce9b and
-    -916d5986). flashinfer 0.6.6 JIT-compiles its sampling ops on first use.
-    On Kaggle all three .cu files COMPILE cleanly for
-    `-gencode=arch=compute_75,code=sm_75` -- nothing here is a Turing problem
-    -- and then the link dies:
+    -916d5986). flashinfer 0.6.6 JIT-compiles its sampling ops on first use, and
+    on Kaggle all three .cu files COMPILE cleanly for
+    `-gencode=arch=compute_75,code=sm_75` -- nothing here is a Turing problem --
+    and then the link dies:
 
         /usr/bin/ld: cannot find -lcuda
 
-    `-L/usr/local/cuda/lib64/stubs` is already on that command line. The image
-    simply ships no `libcuda.so`: only the runtime `libcuda.so.1`, which is a
-    versioned soname the linker will not resolve `-lcuda` against. Normally
-    the CUDA toolkit's driver STUB fills that gap at build time; this image has
-    the directory and not the file.
+    `-L/usr/local/cuda/lib64/stubs` is already on that command line; the image
+    simply ships no `libcuda.so`, only the runtime `libcuda.so.1`, a versioned
+    soname the linker will not resolve `-lcuda` against. Normally the CUDA
+    toolkit's driver STUB fills that gap; this image has the directory and not
+    the file.
 
     `VLLM_USE_FLASHINFER_SAMPLER=0` was tried first and did not help, which is
     the useful part: the JIT is not reached only through the sampler, so
-    switching off one consumer is whack-a-mole. Making `-lcuda` resolvable
+    switching off one consumer is whack-a-mole, while making `-lcuda` resolvable
     fixes every flashinfer op at once.
 
     `LIBRARY_PATH` rather than a symlink into /usr/local: gcc and ld search it
-    for `-l`, it needs no root, and it cannot damage the image for anything
-    else in the session. Linking against the real driver rather than a stub is
-    correct here -- the driver is present, which is the whole reason a stub
-    would have been a substitute for it.
+    for `-l`, it needs no root, and it cannot damage the image for anything else
+    in the session. Linking against the real driver rather than a stub is
+    correct, the driver being present is the whole reason a stub would have
+    substituted for it.
 
-    Returns what it did, so the report can say so rather than the next reader
-    having to infer it from an absence of failure.
+    Returns what it did, so the report says so rather than the next reader
+    inferring it from an absence of failure.
     """
     facts: dict = {"needed": False, "applied": False}
     try:
         import ctypes.util
         import subprocess
 
-        # ONLY the directories flashinfer actually passes with -L. Measured on
-        # kernel unsloth-t4-ci-d0d480b6: an earlier version of this check also
-        # accepted /usr/local/cuda/compat, found libcuda.so there, concluded
-        # "already linkable" and did nothing -- and the link failed anyway,
-        # because compat is not on the link command line. A library the linker
-        # will not search for is not a library the linker can find.
+        # ONLY the directories flashinfer passes with -L. Measured on kernel
+        # unsloth-t4-ci-d0d480b6: an earlier version also accepted
+        # /usr/local/cuda/compat, found libcuda.so there, concluded "already
+        # linkable" and did nothing, and the link failed anyway because compat
+        # is not on the link command line.
         link_dirs = ["/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"]
         for d in link_dirs:
             if os.path.exists(os.path.join(d, "libcuda.so")):
@@ -585,8 +564,8 @@ def make_libcuda_linkable() -> dict:
         facts["needed"] = True
         facts["searched"] = link_dirs
 
-        # Where the real driver lives. ldconfig is authoritative; the ctypes
-        # lookup is the fallback for an image with no ldconfig cache.
+        # Where the real driver lives. ldconfig is authoritative; ctypes is the
+        # fallback for an image with no ldconfig cache.
         real = None
         try:
             out = subprocess.run(
@@ -602,9 +581,8 @@ def make_libcuda_linkable() -> dict:
             found = ctypes.util.find_library("cuda")
             real = found if found and os.path.exists(found) else None
         if real is None:
-            # The compat tree is the usual place on Kaggle. It is useless as a
-            # -L target because nothing passes it, but it is a perfectly good
-            # symlink TARGET.
+            # The compat tree is the usual place on Kaggle: useless as a -L
+            # target since nothing passes it, fine as a symlink TARGET.
             for candidate in (
                 "/usr/local/cuda/compat/libcuda.so",
                 "/usr/local/cuda/compat/libcuda.so.1",
@@ -641,22 +619,22 @@ def main() -> int:
     ap.add_argument("--num-generations", type = int, default = 4)
     ap.add_argument("--lora-rank", type = int, default = 32)
     ap.add_argument("--gpu-memory-utilization", type = float, default = 0.9)
-    # The switch the probe exists to decide. The notebook says False, which
-    # is ~8GB of 16-bit weights plus an engine plus a trainer on a 16GB card.
+    # The switch the probe exists to decide. The notebook says False: ~8GB of
+    # 16-bit weights plus an engine plus a trainer on a 16GB card.
     ap.add_argument("--load-in-4bit", dest = "load_in_4bit", action = "store_true", default = False)
     ap.add_argument("--no-load-in-4bit", dest = "load_in_4bit", action = "store_false")
     ap.add_argument("--probe", action = "store_true", help = "record everything, assert nothing")
-    # An illegal memory access is reported at whatever CUDA call happens to
-    # synchronise next, which on the first T4 GRPO run was `empty_cache()`
-    # inside vLLM standby -- nowhere near the kernel that faulted. This makes
-    # the traceback name the real launch site. It serialises every kernel, so
-    # it is a diagnostic switch, never a default.
+    # An illegal memory access surfaces at whatever CUDA call synchronises next,
+    # which on the first T4 GRPO run was `empty_cache()` inside vLLM standby,
+    # nowhere near the faulting kernel. This makes the traceback name the real
+    # launch site. It serialises every kernel, so it is diagnostic, never a
+    # default.
     ap.add_argument("--cuda-launch-blocking", action = "store_true")
     args = ap.parse_args()
 
     if args.cuda_launch_blocking:
-        # Must precede any CUDA context creation, so before the first `import
-        # torch` in this process rather than merely before `train()`.
+        # Must precede any CUDA context creation, so before this process's first
+        # `import torch` rather than merely before `train()`.
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
@@ -683,8 +661,8 @@ def main() -> int:
                 "lora_rank",
                 "gpu_memory_utilization",
                 "load_in_4bit",
-                # In the report because it changes what a timing or a
-                # traceback means, so a reader must not have to guess.
+                # Reported because it changes what a timing or a traceback
+                # means.
                 "cuda_launch_blocking",
             )
         },
@@ -724,9 +702,8 @@ def main() -> int:
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, KeyboardInterrupt):
             raise
-        # Head AND tail. The last probe's 6000-char tail was entirely ninja's
-        # own output, so the Python frames that named the caller were the part
-        # that got dropped -- the opposite of what a tail is for.
+        # Head AND tail: the last probe's 6000-char tail was entirely ninja's
+        # output, dropping the Python frames that named the caller.
         _tb = traceback.format_exc()
         report["traceback"] = (
             _tb if len(_tb) <= 12000 else _tb[:6000] + "\n...[middle elided]...\n" + _tb[-6000:]

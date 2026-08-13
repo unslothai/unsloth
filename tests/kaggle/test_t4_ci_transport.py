@@ -3,13 +3,11 @@
 
 """What the kernel builder generates and what the launcher can read back.
 
-These cover the transport, not the payloads: the generated driver and payload
-cells are EXECUTED here with Kaggle replaced by a stub, so a control-flow
-mistake in a cell that only ever runs on a Kaggle T4 is caught on a runner.
-
-No network call, no credential and no GPU: `subprocess` is swapped out
-wholesale for the driver cells, and the payload cells that are executed stop
-before they reach torch.
+The transport, not the payloads: the generated driver and payload cells are
+EXECUTED here with Kaggle replaced by a stub, so a control-flow mistake in a
+cell that only runs on a Kaggle T4 is caught on a runner. No network call, no
+credential and no GPU -- `subprocess` is swapped out wholesale for the driver
+cells, and the payload cells executed stop before they reach torch.
 """
 
 from __future__ import annotations
@@ -42,9 +40,9 @@ from legs import LEGS  # noqa: E402
 class _Stub:
     """Stands in for `subprocess` while the generated driver cells run.
 
-    Answers the four commands the driver issues -- the GPU probe, `which uv`,
-    the venv build, and papermill -- and records what papermill was handed,
-    which is where the per-payload isolation is either present or not.
+    Answers the four commands the driver issues (GPU probe, `which uv`, venv
+    build, papermill) and records what papermill was handed, which is where the
+    per-payload isolation is either present or not.
     """
 
     def __init__(
@@ -96,7 +94,7 @@ def _drive(
     """Run the generated driver's setup and runner cells against the stub.
 
     The only edit to the generated source is the `/kaggle/working` literal,
-    rewritten to a temp directory so the cells can run off a Kaggle box.
+    rewritten to a temp directory so the cells run off a Kaggle box.
     """
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
@@ -134,8 +132,8 @@ def test_a_gpu_shortfall_stands_the_kernel_down(tmp_path):
     """A missing GPU is infrastructure, not a result.
 
     `max(1, len(GPUS))` put both payloads on device 0, where each child still
-    sees exactly one card and passes its own visibility assertion, so a
-    contended OOM came back looking like a code failure.
+    sees one card and passes its own visibility assertion, so a contended OOM
+    came back looking like a code failure.
     """
     driven = _drive(tmp_path, ["control", "canary"], gpus = -1)
     assert driven["stood_down"] is not None, "a 1-GPU allocation ran both payloads anyway"
@@ -152,8 +150,8 @@ def test_a_payload_whose_venv_failed_is_not_run_in_the_system_kernel(tmp_path):
     """Falling back to `python3` puts both legs' installs in one tree.
 
     The legs deliberately install different library sets, so a shared
-    site-packages does not merely risk corruption, it destroys the
-    comparison -- and the resulting import error reads as a code regression.
+    site-packages destroys the comparison rather than merely risking
+    corruption, and the resulting import error reads as a code regression.
     """
     driven = _drive(tmp_path, ["control", "canary"], gpus = 2, venv_ok = False)
     assert [
@@ -167,7 +165,7 @@ def test_a_payload_whose_venv_failed_is_not_run_in_the_system_kernel(tmp_path):
 def test_each_payload_compiles_into_its_own_cache(tmp_path):
     """Concurrent legs must not share `unsloth_compiled_cache`.
 
-    It is a relative path resolved against the working directory, which both
+    It is a relative path resolved against the working directory that both
     papermill children inherit, and the legs compile the same modules against
     deliberately different transformers/TRL versions.
     """
@@ -180,8 +178,8 @@ def test_each_payload_compiles_into_its_own_cache(tmp_path):
 def test_the_prune_still_reaches_the_per_payload_directories():
     """Whatever the per-payload names are, the tail cell must still drop them.
 
-    `kernels output` ships the whole of /kaggle/working back over the wire; a
-    sweep that missed the venvs once shipped 371MB.
+    `kernels output` ships the whole of /kaggle/working back over the wire, and
+    a sweep that missed the venvs once shipped 371MB.
     """
     driver = build_kernel.build_driver({"t4_control.ipynb": {"cells": []}}, 60)
     tail = "".join(driver["cells"][2]["source"])
@@ -202,9 +200,9 @@ def _payload_cells(leg, **kw) -> list[str]:
 def test_each_payload_materialises_into_its_own_directory():
     """Two payloads writing one directory can truncate a file the other reads.
 
-    `write_bytes` truncates first, and the two legs carry byte-identical
-    copies of the same sources, so the loser of that race imports a partial
-    file and dies for a reason that has nothing to do with the commit.
+    `write_bytes` truncates first and the legs carry byte-identical copies of
+    the same sources, so the loser of that race imports a partial file and dies
+    for a reason unrelated to the commit.
     """
     roots = set()
     for name in ("control", "canary"):
@@ -216,9 +214,9 @@ def test_each_payload_materialises_into_its_own_directory():
 def test_a_shared_argument_does_not_override_a_legs_own_option():
     """`--smoke-args` is shared so control and canary stay comparable.
 
-    It must not reach a leg that already sets that option: the gpt-oss leg's
-    3 steps are a measured fit for a 16GB card, and argparse takes the LAST
-    value, so appending the SFT legs' 10 silently retrained the 20B leg.
+    It must not reach a leg that already sets that option: the gpt-oss leg's 3
+    steps are a measured fit for a 16GB card, and argparse takes the LAST value,
+    so appending the SFT legs' 10 silently retrained the 20B leg.
     """
     run_cell = _payload_cells(LEGS["gptoss"], extra_args = ("--max-steps", "10"))[3]
     argv = run_cell.split("cmd += [")[1].split("]")[0]
@@ -233,9 +231,9 @@ def test_a_shared_argument_does_not_override_a_legs_own_option():
 def test_a_probe_failure_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
     """A commit that breaks `import unsloth` must not exit green.
 
-    The probe raises before the run cell can write a report, so without a
-    report of its own the launcher extracts nothing, calls the run `infra`
-    and the workflow passes on a deterministic import regression.
+    The probe raises before the run cell can write a report, so without one of
+    its own the launcher extracts nothing, calls the run `infra` and passes on a
+    deterministic import regression.
     """
     monkeypatch.setattr(build_kernel, "KERNEL_ROOT", str(tmp_path / "src"))
     leg = LEGS["control"]
@@ -279,10 +277,9 @@ def test_a_probe_failure_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
         "unsloth_module_the_broken_commit_cannot_import" in f for f in reports[0]["failures"]
     )
 
-    # The resolved versions were computed and printed one line above the
-    # failure, and report.version_table reads them off the REPORT rather than
-    # off the log -- so without them the summary cannot say which release the
-    # red leg had that the green one did not.
+    # The resolved versions are printed one line above the failure, and
+    # report.version_table reads them off the REPORT rather than the log, so
+    # without them the summary cannot say which release the red leg had.
     import report as report_module
 
     assert report_module.resolved_versions(reports[0]), reports[0].keys()
@@ -295,9 +292,9 @@ def test_a_probe_failure_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
 def test_an_install_that_cannot_be_resolved_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
     """Three exhausted pip attempts used to raise without reporting anything.
 
-    The launcher then sees a leg that produced no report, calls the run
-    `partial` or `infra` and exits GREEN, so the job added to catch a broken
-    distribution could not fail on one.
+    The launcher then sees a leg with no report, calls the run `partial` or
+    `infra` and exits GREEN, so the job added to catch a broken distribution
+    could not fail on one.
     """
     monkeypatch.setattr(build_kernel, "KERNEL_ROOT", str(tmp_path / "src"))
     install = _payload_cells(LEGS["control"])[1]
@@ -328,8 +325,8 @@ def test_an_install_that_cannot_be_resolved_is_reported_as_a_failed_payload(tmp_
 def test_the_install_backs_off_between_attempts():
     """Three immediate retries all land inside the same upstream blip.
 
-    The third failure is what the failed-payload report above is built on, so
-    it has to mean "this cannot be resolved" rather than "one bad minute".
+    The third failure is what the failed-payload report above rests on, so it
+    has to mean "this cannot be resolved" rather than "one bad minute".
     """
     install = _payload_cells(LEGS["control"])[1]
     assert "time.sleep(15 * attempt)" in install
@@ -342,9 +339,9 @@ def test_the_install_backs_off_between_attempts():
 def test_a_report_reaches_the_launcher_through_kaggles_structured_log(tmp_path, plain):
     """The log fallback exists for the run whose notebook never came back.
 
-    Kaggle hands the log over as a JSON array of stream records, so scanning
-    the file as text finds no line that starts with the report prefix and a
-    real failure is filed as `infra`.
+    Kaggle hands the log over as a JSON array of stream records, so scanning it
+    as text finds no line starting with the report prefix and files a real
+    failure as `infra`.
     """
     payload = {
         "label": "control",
@@ -394,12 +391,11 @@ def test_a_log_record_that_splits_the_report_is_still_read(tmp_path):
 def test_every_push_attempt_gets_its_own_slug(monkeypatch):
     """Retrying onto one slug pushes a SECOND session and hides the first.
 
-    A push to an id that already exists creates a new VERSION and starts
-    another batch session; it does not supersede the running one. And
-    `kernels/output` and `kernels status` never pass a version label, so they
-    answer for the latest session only. A retry after a lost response
-    therefore reads the wrong execution's evidence while the first keeps
-    billing unseen.
+    A push to an existing id creates a new VERSION and starts another batch
+    session rather than superseding the running one, and `kernels/output` and
+    `kernels status` never pass a version label, so they answer for the latest
+    session only. A retry after a lost response therefore reads the wrong
+    execution's evidence while the first keeps billing unseen.
     """
     attempts: list[list[str]] = []
     deleted: list[str] = []
@@ -424,8 +420,8 @@ def test_every_push_attempt_gets_its_own_slug(monkeypatch):
     assert len(slugs) == 3, slugs
     assert len(set(slugs)) == 3, f"every retry reused one slug: {slugs}"
     assert pushed["ok"] and pushed["slug"] == slugs[-1]
-    # Each earlier attempt may have landed despite the error it reported, so
-    # it is deleted before the next one adds a second concurrent session.
+    # Each earlier attempt may have landed despite its error, so it is deleted
+    # before the next adds a second concurrent session.
     assert deleted == [s for s in slugs[:-1]]
     assert pushed["attempts"] == slugs
 
@@ -441,8 +437,8 @@ def _drive_main(
     """Run `launch.main()` end to end with Kaggle replaced by stubs.
 
     Returns the per-kernel wait budgets, the slugs deleted on the way out and
-    the launch result. The clock is fake so a push can be made to burn an
-    arbitrary amount of wall time without the test taking any.
+    the launch result. The clock is fake, so a push can burn arbitrary wall
+    time without the test taking any.
     """
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(launch.time, "time", lambda: clock["t"])
@@ -512,9 +508,9 @@ def test_the_deletion_deadline_covers_the_time_spent_pushing(monkeypatch, tmp_pa
     """A kernel bills from the moment Kaggle accepts it, not from the last push.
 
     Started after the push loop, the deadline gave the first kernel --max-wait
-    on top of however long the SECOND push took to get through its retries:
-    45 minutes of throttling turned a 90 minute ceiling into 135 minutes of
-    billing, on the far side of the budget the gate reserved for the run.
+    on top of the SECOND push's retries: 45 minutes of throttling turned a 90
+    minute ceiling into 135 minutes of billing, past the budget the gate
+    reserved for the run.
     """
     waits, _, _ = _drive_main(
         monkeypatch,
@@ -540,11 +536,11 @@ def test_the_deletion_deadline_covers_the_time_spent_pushing(monkeypatch, tmp_pa
 def test_every_slug_a_push_filed_is_deleted_on_the_way_out(monkeypatch, tmp_path):
     """An attempt whose response was lost may be running, and is untracked.
 
-    `push()` records every slug it filed precisely because Kaggle answers an
-    accepted push with a 5xx or a reset connection often enough to be a known
-    issue. Cleanup read only the ACCEPTED slug, so a failed final attempt
-    (which has none) and any earlier attempt whose best-effort discard was
-    refused kept a session slot and billed quota unseen.
+    `push()` records every slug it filed because Kaggle answers an accepted push
+    with a 5xx or a reset connection often enough to be a known issue. Cleanup
+    read only the ACCEPTED slug, so a failed final attempt (which has none) and
+    any earlier attempt whose discard was refused kept a session slot and billed
+    quota unseen.
     """
     _, deleted, result = _drive_main(
         monkeypatch,
@@ -561,8 +557,8 @@ def test_every_slug_a_push_filed_is_deleted_on_the_way_out(monkeypatch, tmp_path
                     "someuser/unsloth-t4-ci-cccc",
                 ],
             },
-            # Never accepted, so no `slug` at all -- and the last attempt is
-            # exactly the ambiguous one.
+            # Never accepted, so no `slug`, and the last attempt is the
+            # ambiguous one.
             {
                 "ok": False,
                 "reason": "push_failed",
@@ -593,10 +589,9 @@ def test_a_push_that_runs_out_of_wall_clock_is_a_recorded_failure(monkeypatch):
     """`subprocess.run(timeout=...)` RAISES; it does not return a bad result.
 
     That exception used to leave `push()` entirely, taking the slugs it had
-    filed with it. Those are the most ambiguous slugs there are -- the client
-    was killed mid-call, so whether Kaggle accepted the kernel is unknowable
-    from here -- and losing them means nothing can ever delete the session
-    one of them may have started.
+    filed. Those are the most ambiguous slugs there are, the client having been
+    killed mid-call so that whether Kaggle accepted the kernel is unknowable,
+    and losing them means nothing can delete the session one may have started.
     """
     deleted: list[str] = []
 
@@ -612,8 +607,8 @@ def test_a_push_that_runs_out_of_wall_clock_is_a_recorded_failure(monkeypatch):
 
     pushed = launch.push(Path(__file__), "someuser", 3600)
     assert pushed["ok"] is False
-    # A timeout is Kaggle under load, so it retries like any other throttle,
-    # and every slug it filed comes back for the caller to reconcile.
+    # A timeout is Kaggle under load, so it retries like any throttle, and every
+    # slug filed comes back for the caller to reconcile.
     assert len(pushed["attempts"]) == launch.PUSH_ATTEMPTS
     assert len(set(pushed["attempts"])) == launch.PUSH_ATTEMPTS
     assert "timed out" in pushed["detail"]
@@ -625,10 +620,10 @@ def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monk
     """The case that costs quota: kernel 1 is up when kernel 2's push hangs.
 
     Nothing caught that exception, so `main()` exited without `release()` and
-    without writing launch_result.json, and the workflow has no cleanup step
-    after this script. The accepted kernel then billed to its own ceiling
-    with nobody reading its result -- and Kaggle's push-time timeout has been
-    measured not to stop a wedged one.
+    without writing launch_result.json, and the workflow has no cleanup step of
+    its own. The accepted kernel then billed to its ceiling with nobody reading
+    its result, and Kaggle's push-time timeout has been measured not to stop a
+    wedged one.
     """
     deleted: list[str] = []
     pushes = {"n": 0}
@@ -682,8 +677,8 @@ def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monk
     result = json.loads((tmp_path / "ev" / "launch_result.json").read_text(encoding = "utf-8"))
     accepted = result["kernels"][0]["slug"]
     assert accepted and accepted in deleted
-    # Including every slug the timed-out push filed, since any of them may be
-    # the session Kaggle accepted and never told us about.
+    # Including every slug the timed-out push filed, any of which may be the
+    # session Kaggle accepted and never reported.
     for slug in result["kernels"][1]["attempted"]:
         assert slug in deleted, slug
     assert all(k["released"] for k in result["kernels"])
@@ -692,10 +687,10 @@ def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monk
 def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypatch, tmp_path):
     """The outer guard, not the timeout specifically.
 
-    Every line after the first push can leave a kernel running if it raises,
-    and the runner is the only thing that would ever delete it. An abort is
-    also `infra` by this file's contract -- nothing was learned about the code
-    under test -- so it exits 0 rather than colouring a pull request red.
+    Every line after the first push can leave a kernel running if it raises, and
+    the runner is the only thing that would delete it. An abort is `infra` by
+    this file's contract, nothing having been learned about the code under test,
+    so it exits 0 rather than colouring a pull request red.
     """
 
     def boom(outdir):
@@ -755,8 +750,8 @@ def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypa
 def _drive_one_kernel(monkeypatch, tmp_path, fake_run):
     """`main()` over one kernel that pushes, completes and reports.
 
-    Everything except the delete calls is stubbed, so what comes back is a
-    reading of the release path and nothing else.
+    Everything but the delete calls is stubbed, so what comes back reads the
+    release path and nothing else.
     """
     monkeypatch.setattr(launch, "_api", lambda: object())
     monkeypatch.setattr(
@@ -823,11 +818,11 @@ def test_a_delete_kaggle_refused_does_not_count_as_released(monkeypatch, tmp_pat
     """`subprocess.run` does not raise on a nonzero exit.
 
     So the release loop used to record every slug as released whatever came
-    back, and cleanup is the budget control here rather than a tidy-up. The
-    exact refusal below is the one that was live: the client the workflow
-    pinned had no `kernels delete` subcommand at all, so argparse answered
-    every delete with exit 2 and the run still reported the kernel released
-    while it billed on to its own ceiling.
+    back, while cleanup is the budget control rather than a tidy-up. The refusal
+    below is the one that was live: the client the workflow pinned had no
+    `kernels delete` subcommand at all, so argparse answered every delete with
+    exit 2 and the run still reported the kernel released while it billed on to
+    its own ceiling.
     """
     fake_run, calls = _refusing_run(
         2, "kaggle kernels: error: argument command: invalid choice: 'delete'"
@@ -887,11 +882,10 @@ def test_a_delete_that_never_ran_is_not_a_deletion(monkeypatch, tmp_path):
 def test_a_payload_that_cannot_see_its_gpu_reports_instead_of_vanishing(tmp_path, monkeypatch):
     """A CPU-only torch wheel must not exit this job green.
 
-    `device_count() == 0` used to abort the verify cell with a bare assert.
-    The run cell is the only other thing that emits a report and it is never
-    reached from there, so the launcher extracted nothing for this leg and
-    called the run `infra` -- which exits 0. A dependency regression that
-    makes CUDA unusable was invisible.
+    `device_count() == 0` used to abort the verify cell with a bare assert. The
+    run cell is the only other thing that emits a report and is never reached
+    from there, so the launcher extracted nothing and called the run `infra`,
+    which exits 0, making a dependency regression that breaks CUDA invisible.
     """
     monkeypatch.setattr(build_kernel, "KERNEL_ROOT", str(tmp_path / "src"))
     leg = LEGS["control"]
