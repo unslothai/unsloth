@@ -2083,18 +2083,15 @@ class TestInstallShStructure:
 
     _PIN_ARM = 'if [ "$_torch_index_pinned" = true ]'
 
-    # `fi` as a command of its own: at the start of the line, or after a `;`.
-    # install.sh closes chains inline too (`; fi`, `else :; fi`), and a closure
-    # written that way is invisible to a startswith("fi") test -- `else :; fi`
-    # reads as an ordinary `else` arm, leaving a chain that has already closed
-    # looking open across the message.
+    # `fi` as a command of its own: at the start of the line, or after a `;`. install.sh
+    # closes chains inline too (`else :; fi`), and such a closure is invisible to a
+    # startswith("fi") test, leaving a closed chain looking open across the message.
     _CLOSER = re.compile(r"(?:^|;)\s*fi\b")
 
-    # install.sh indents in 4-space steps, so a closure less than one step deeper
-    # than the arm closes the arm's own chain (or an enclosing one, which closes it
-    # too) rather than something nested inside it. Comparing against the step
-    # instead of the exact indent is what keeps a `fi` re-indented by a space or
-    # two counting as the closure it is.
+    # install.sh indents in 4-space steps, so a closure less than one step deeper than the
+    # arm closes the arm's own chain (or an enclosing one) rather than something nested in
+    # it. Comparing against the step, not the exact indent, keeps a `fi` re-indented by a
+    # space or two counting as the closure it is.
     _INDENT_STEP = 4
 
     @staticmethod
@@ -2766,11 +2763,10 @@ class TestInstallShStructure:
         assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
-            # /opt/rocm/.info/version directly (no tool to shim), which resolves
-            # a tag on a real ROCm box and skips the no-version endpoint under
-            # test. Same path-substitution technique as the KFD topology tests.
-            # The read moved into _rocm_tag_from_version_file, so the rewrite has to
-            # land on the helper text; applying it to fn alone is a no-op.
+            # /opt/rocm/.info/version directly (no tool to shim), which resolves a tag on
+            # a real ROCm box and skips the no-version endpoint under test. The read lives
+            # in _rocm_tag_from_version_file, so the rewrite has to land on the helper
+            # text; applying it to fn alone is a no-op.
             version_fns = [
                 body.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
                 for body in version_fns

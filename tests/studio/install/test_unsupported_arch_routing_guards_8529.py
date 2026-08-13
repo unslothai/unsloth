@@ -217,12 +217,11 @@ class TestInstallShIndexFamilyRuns:
 # ── install.sh's whole index selector, executed under sh ─────────────────────
 
 
-# What get_torch_index_url calls that is not in the two functions extracted below.
-# Each stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable
-# ROCm userspace, which is the arrangement that carries a user-pinned arch all the
-# way to the routing decision. The probe stub reproduces the override arm of the
-# real _probe_amd_gfx_arch (lowercase, verbatim otherwise) so a case-shifted pin
-# arrives at the selector exactly as it would on a real host.
+# What get_torch_index_url calls that is not in the two functions extracted below. Each
+# stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable ROCm
+# userspace, the arrangement that carries a user-pinned arch all the way to the routing
+# decision. The probe stub reproduces the override arm of the real _probe_amd_gfx_arch
+# so a case-shifted pin arrives at the selector as it would on a real host.
 _INDEX_URL_STUBS = """
 uname() { case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac; }
 _has_usable_nvidia_gpu() { return 1; }
@@ -316,11 +315,10 @@ class TestInstallShIndexSelectorRuns:
 # ── studio/setup.sh: the unsupported lookup is report-only ───────────────────
 
 
-# setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the
-# whisper installer, and picks the market name it keys the supported table on out of
-# $_setup_mkt. The unsupported lookup exists to print a line, so its result must not
-# flow into either variable: `_setup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt")`
-# passes every arch assertion in this file and still ships --rocm-gfx gfx803.
+# setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper
+# installer, and keys the supported table on $_setup_mkt. The unsupported lookup exists to
+# print a line, so its result must not flow into either: assigning it to _setup_gfx passes
+# every arch assertion in this file and still ships --rocm-gfx gfx803.
 _SETUP_SH_UNSUPPORTED_HELPERS = ("_setup_unsupported_gfx_any", "_setup_unsupported_gfx_from_name")
 
 
@@ -554,11 +552,9 @@ class TestPowerShellMapEvaluated:
 # ── The second, independent arch to repo.amd.com gate ────────────────────────
 
 
-# The Strix reroute picks a per-arch index without consulting either family map, so
-# it is a routing site the assertions above cannot see. Reachability is narrow (the
-# enclosing case needs a rocm leaf, which an uncovered arch only gets from a user
-# pin), but "narrow" is not the property this file is defending, and the literal is
-# a single line in each source, so banning the four arches from it costs one test.
+# The Strix reroute picks a per-arch index without consulting either family map, so it is
+# a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
+# not the property this file defends, and the literal is one line per source.
 _STRIX_SITES = [
     (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_strix_gfx="),
     (_STACK_PY, r"^\s*_strix_gfx\s*=\s*\{([^}]*)\}"),

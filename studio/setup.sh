@@ -1870,21 +1870,16 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
-    # GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1 and
-    # Polaris 10/20/30, names from LLVM's AMDGPU tables (unslothai#8529). Kept apart
-    # from the inference table above on purpose: it only words the report below, never
-    # selects a wheel index or prebuilt, and must never make an arch installable.
-    # Order is load-bearing: `case` has no negative lookahead, so the RDNA 1 arms must
-    # precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
-    # Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
-    # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
-    # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
-    # No name here is guessed.
-    # The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
-    # TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
-    # here, and never for gfx803.
-    # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi,
-    # lspci) spells these names as pci.ids does.
+    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+    # and Polaris 10/20/30 (unslothai#8529). Kept apart from the inference table above on
+    # purpose: it only words the report below, never selects a wheel index or prebuilt.
+    # AMD's TheRock ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here,
+    # and never gfx803. Order is load-bearing: `case` has no negative lookahead, so the
+    # RDNA 1 arms must precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
+    # Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
+    # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 is left out.
+    # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi, lspci)
+    # spells these names as pci.ids does.
     _setup_unsupported_gfx_from_name() {
         case "$1" in
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
@@ -1894,13 +1889,12 @@ elif [ "$_setup_amd_detected" = true ]; then
             *) return 1 ;;
         esac
     }
-    # The KFD sysfs fallback above detects the GPU with neither rocminfo nor amd-smi, so
-    # it leaves _setup_mkt empty and the lookup would be handed "" -- and a runtime-less
-    # host is precisely the one this report exists for. lspci still names the card there,
-    # the same source install.sh's _infer_linux_unsupported_amd_gfx_arch already reads.
-    # Deliberately NOT written back into _setup_mkt: the supported table above keys on
-    # that variable and would start inferring an arch on the KFD path, which feeds
-    # --rocm-gfx into the prebuilt and whisper commands. This one is messaging only.
+    # The KFD sysfs fallback above detects the GPU with neither rocminfo nor amd-smi, so it
+    # leaves _setup_mkt empty -- and a runtime-less host is precisely the one this report
+    # exists for. lspci still names the card there, the source install.sh already reads.
+    # Deliberately NOT written back into _setup_mkt: the supported table keys on that
+    # variable and would start feeding --rocm-gfx to the prebuilt and whisper commands
+    # on the KFD path. This one is messaging only.
     _setup_unsupported_gfx_any() {
         if [ -n "$1" ]; then
             _setup_unsupported_gfx_from_name "$1"
@@ -1924,8 +1918,7 @@ EOF
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
-        # NotImplementedError at import (unsloth/device_type.py). Same wording the XPU
-        # and no-GPU arms below already use.
+        # NotImplementedError at import (unsloth/device_type.py), as the arms below say.
         substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
         substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"

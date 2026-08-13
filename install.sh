@@ -2882,24 +2882,16 @@ _infer_amd_gfx_arch_from_gpu_name() {
     esac
 }
 
-# GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1 and
-# Polaris 10/20/30, names from LLVM's AMDGPU tables (unslothai#8529). SEPARATE from
-# _infer_amd_gfx_arch_from_gpu_name on purpose: messaging only, nothing here may
-# route to a wheel index and these cards must keep falling back to CPU. ROCm torch
-# wheels exist for gfx90X/94X/103X/110X/120X; none for gfx101X or gfx80X.
+# GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+# and Polaris 10/20/30 (unslothai#8529). SEPARATE from _infer_amd_gfx_arch_from_gpu_name
+# on purpose: messaging only, nothing here may route to a wheel index. AMD's TheRock
+# ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
 # ORDER IS LOAD-BEARING: `case` has no negative lookahead, so a *"RX 570"* arm would
 # swallow an "RX 5700 XT" -- RDNA 1 arms come FIRST and Polaris last.
-# Polaris 11/12 (RX 460/550/560) is excluded on purpose: a different die, and this
-# table is only worth having while it never guesses an arch.
-# Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
-# cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
-# omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
-# No name here is guessed.
-# The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
-# TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
-# here, and never for gfx803.
-# Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi,
-# lspci) spells these names as pci.ids does.
+# Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
+# professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX 460/550/560,
+# a different die) is left out. Case-sensitive, unlike the regex copies: every source
+# here (WMI, amd-smi, lspci) spells these names as pci.ids does.
 _infer_unsupported_amd_gfx_arch_from_gpu_name() {
     case "$1" in
         *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
@@ -3376,17 +3368,16 @@ get_torch_index_url() {
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
                 echo "$_base/cpu"; return
             fi
-            # Repairing rocminfo cannot help a generation ROCm never covered: the arch
-            # would read fine and still have no wheels (unslothai#8529). Advice only,
-            # same CPU index either way.
+            # Repairing rocminfo cannot help here: the arch would read fine and still
+            # have no wheels (unslothai#8529). Advice only, same CPU index either way.
             if _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                 # Scoped to the card named, never to the host: a second AMD GPU here
                 # may well have wheels, and nothing has looked at it yet.
                 echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
-                # Torch ends here, llama.cpp does not. Saying WHEN is the whole point:
-                # the variable picks the llama.cpp bundle at install time, so exporting
-                # it afterwards changes nothing (the unslothai#8458 mistake).
+                # Torch ends here, llama.cpp does not. `export`, and saying WHEN, are both
+                # load-bearing: the variable picks the bundle at install time, and a bare
+                # assignment never reaches the re-run (the unslothai#8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
                 echo "$_base/cpu"; return
             fi

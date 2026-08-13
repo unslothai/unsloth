@@ -45,12 +45,11 @@ _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 # The setter each source has to teach, in the syntax of the shell that reads it.
-# PowerShell cannot parse a bare VAR=value: it resolves it as a command name (verified
-# with pwsh), so a Windows user who pastes it sets nothing, re-runs the installer and
-# gets the same CPU bundle -- the #8458 failure mode, reintroduced by the fix for it.
-# Two needles, not one. The bare assignment is what a PowerShell source must never
-# print, so the ban below has to keep naming it; folding the two together let a .ps1
-# emit the bare form and still pass (a mutant that added one survived the whole file).
+# PowerShell cannot parse a bare VAR=value: it resolves it as a command name, so a
+# Windows user who pastes it sets nothing and gets the same CPU bundle -- the #8458
+# failure mode, reintroduced by the fix for it. Two needles, not one: the bare form is
+# what a PowerShell source must never print, and folding them together let a .ps1 emit
+# it and still pass (an added-bare-setter mutant survived the whole file).
 _POSIX_ASSIGNMENT = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
 # `export`, not a bare assignment: a POSIX assignment without it is a shell variable,
 # invisible to the installer the next line tells the user to run, so they get the CPU
@@ -92,10 +91,9 @@ _RDNA1_NAMES = [
     ("AMD Radeon RX 5500 XT", "gfx1012"),
     ("Navi 14 [Radeon RX 5500/5500M / Pro 5500M]", "gfx1012"),
     # The professional boards LLVM's table omits. Die confirmed from libdrm
-    # data/amdgpu.ids ("7312, 00, AMD Radeon Pro W5700", "7341, 00, AMD Radeon Pro
-    # W5500", "7340, CF, AMD Radeon RX 5300") read against pci.ids, which names 7312
-    # and 7310 Navi 10 and 7340/7341/7347/734f Navi 14, and the kernel's amdgpu PCI
-    # table, which files those ids under CHIP_NAVI10 / CHIP_NAVI14.
+    # data/amdgpu.ids read against pci.ids, which names 7312/7310 Navi 10 and
+    # 7340/7341/7347/734f Navi 14, and the kernel's amdgpu table, which files those
+    # ids under CHIP_NAVI10 / CHIP_NAVI14.
     ("AMD Radeon Pro W5700", "gfx1010"),
     ("Navi 10 [Radeon Pro W5700X]", "gfx1010"),
     ("AMD Radeon Pro W5500", "gfx1012"),
@@ -470,13 +468,12 @@ class TestAdviceIsNotEmittedForRdna1:
             f"unsupported arm"
         )
 
-    # The claim the arms must NOT make, and the one they must. With neither CUDA nor
-    # XPU visible unsloth raises NotImplementedError at import (unsloth/device_type.py),
-    # so "training runs on CPU" sends the user at an ImportError; studio/setup.sh
-    # already says "training and GPU inference are unavailable" and these arms agree.
-    # Scoped per ARM, not per file: install.ps1's pre-existing $ROCmGfxArch CPU-hint arm
-    # makes the same claim for a different card, so a file-wide ban would fail on
-    # untouched code and would end up deleted, taking the real assertion with it.
+    # The claim the arms must NOT make, and the one they must. With neither CUDA nor XPU
+    # visible unsloth raises NotImplementedError at import (unsloth/device_type.py), so
+    # "training runs on CPU" sends the user at an ImportError; these arms say what
+    # studio/setup.sh already says. Scoped per ARM, not per file: install.ps1's
+    # pre-existing $ROCmGfxArch hint makes the same claim for a different card, so a
+    # file-wide ban would fail on untouched code and end up deleted.
     _TRAINING_ARMS = [
         (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch"),
         (
@@ -746,12 +743,11 @@ def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
 # ── Scope: these sentences speak for one card, not for the host ───────────
 
 
-# A host is not one GPU. An RX 580 beside an RX 7900 XTX or an MI210 is a host where
-# masking to the other card and pinning its arch DOES install wheels, so a host-wide
-# "nothing can enable ROCm here" is false there. Deciding it at runtime was tried and
-# dropped: "any adapter we cannot name" misfires on the Vega-class iGPU (Raven through
-# Cezanne, Mendocino) present on most Ryzen desktops, and "any covered peer" misses the
-# Instinct and V620 parts no name table carries. These sentences speak for one card.
+# A host is not one GPU. An RX 580 beside an RX 7900 XTX is a host where masking to the
+# other card and pinning its arch DOES install wheels, so a host-wide "nothing can enable
+# ROCm here" is false there. Deciding it at runtime was tried and dropped: "any adapter we
+# cannot name" misfires on the Vega-class iGPU on most Ryzen desktops, and "any covered
+# peer" misses the Instinct and V620 parts no name table carries.
 _ALL_SOURCES = [_INSTALL_SH, _SETUP_SH, _INSTALL_PS1, _SETUP_PS1, _STACK_PY]
 
 _HOST_WIDE_CLAIMS = [
@@ -907,9 +903,8 @@ class TestVulkanAdvice:
 
     # Everything the advice has to carry, asserted against EMITTED text only: every
     # phrase here also appears in the comments explaining the branch, so a whole-file
-    # search stays green after the message is gutted (three such mutants survived).
-    # The setter is not listed because its spelling is per-file (see _SETTER); it gets
-    # its own per-path tests below.
+    # search stays green after the message is gutted (three such mutants survived). The
+    # setter is per-file (see _SETTER) and gets its own tests below.
     _REQUIRED = [
         # The offer must survive, not just the variable name: "no GPU acceleration is
         # available" followed by a GPU backend's name is worse than either half alone.
@@ -961,13 +956,12 @@ class TestVulkanAdvice:
             not offenders
         ), f"{path.name}: prints a POSIX assignment PowerShell cannot parse: {offenders}"
 
-    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with the
-    # expected occurrence count. The count is the point: the tests either side of this
-    # one are file-scoped, so a site deleted outright leaves both green (observed on
-    # either install.sh site). Anchors are each arm's announcement line, so a deleted
-    # arm fails the count and a gutted one fails the window below. install.ps1's second
-    # anchor names $ROCmUnsupportedGfxArch deliberately: the same sentence four lines
-    # earlier is for $ROCmGfxArch, a supported card that must NOT be sent to Vulkan.
+    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with the expected
+    # occurrence count. The count is the point: the tests either side of this one are
+    # file-scoped, so a site deleted outright leaves both green. Anchors are each arm's
+    # announcement line, so a deleted arm fails the count and a gutted one fails the window
+    # below. install.ps1's second anchor names $ROCmUnsupportedGfxArch deliberately: the
+    # same sentence four lines earlier is for a supported card.
     _ADVICE_SITES = [
         (_INSTALL_SH, "Unsloth has no ROCm PyTorch wheels for that arch", 2),
         (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
@@ -1016,11 +1010,11 @@ class TestVulkanAdvice:
             window = "\n".join(
                 line for line in lines[i : i + 8] if not line.lstrip().startswith(("#", "//"))
             )
-            # The offer, not one phrasing of it: these arms are hard-wrapped to
-            # different widths. Both halves are required -- a backend without what it
-            # buys, or GGUF chat without the backend, is half an answer. "Vulkan" is
-            # matched case-sensitively in PROSE, so the lowercase spelling inside the
-            # setter (asserted below) cannot stand in for the sentence explaining it.
+            # The offer, not one phrasing of it: these arms are hard-wrapped to different
+            # widths. Both halves are required -- a backend without what it buys, or GGUF
+            # chat without the backend, is half an answer. "Vulkan" is matched
+            # case-sensitively in PROSE, so the setter's lowercase spelling cannot stand
+            # in for the sentence explaining it.
             assert "GGUF chat" in window and "Vulkan" in window, (
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"

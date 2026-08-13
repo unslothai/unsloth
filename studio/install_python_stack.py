@@ -974,11 +974,10 @@ def _detect_windows_gfx_arch() -> str | None:
                         f"no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
                     )
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
-                    # (#8458 ran an RX 580 through it). Say WHEN -- the variable picks
-                    # the llama.cpp bundle at install time, so exporting it afterwards
-                    # changes nothing and the advice reads as wrong (the #8458 mistake).
-                    # PowerShell syntax because this branch is Windows-only: a pasted
-                    # VAR=value parses there as a command name and sets nothing.
+                    # (#8458 ran an RX 580 through it). Saying WHEN matters -- the
+                    # variable picks the bundle at install time. PowerShell syntax
+                    # because this branch is Windows-only: a pasted VAR=value parses
+                    # there as a command name and sets nothing.
                     _safe_print(
                         "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
                         '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
@@ -1034,27 +1033,16 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
     return None
 
 
-# GPU name → gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1 and
-# Polaris 10/20/30, names from LLVM's AMDGPU tables (unslothai#8529, #8458).
-# Deliberately SEPARATE from _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route
-# to a wheel index and these cards must keep falling back to CPU. It exists so the
-# installer can name the arch and say ROCm does not reach it, instead of advising a
-# HIP SDK install or an UNSLOTH_ROCM_GFX_ARCH override that cannot work. AMD's
-# Windows torch indexes are gfx103X/110X/1150/1151/120X (_GFX_TO_AMD_INDEX_ARCH
-# above is the authority); there is no gfx101X or gfx80X index.
-# The Polaris row covers only Polaris 10/20/30 (RX 470/480/570/580/590), the silicon
-# #8458's RX 580 reported itself as; Polaris 11/12 (RX 460/550/560) is excluded on
-# purpose, a different die, and this table's whole value is that it never guesses.
-# Every pattern that could prefix an RDNA 1 name carries a (?!0) guard, so "RX 570"
-# cannot swallow "RX 5700" nor "RX 550" "RX 5500". First match wins and the RDNA 1
-# rows are first, but each row is written to be correct on its own regardless.
-# Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
-# cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
-# omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
-# No name here is guessed.
-# The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
-# TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
-# here, and never for gfx803.
+# GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+# and Polaris 10/20/30 (unslothai#8529, #8458). Deliberately SEPARATE from
+# _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route to a wheel index. It exists so
+# the installer can name the arch instead of advising a HIP SDK install or an
+# UNSLOTH_ROCM_GFX_ARCH override that cannot work. AMD's TheRock ships RDNA 1 wheels,
+# but not on the repo.amd.com indexes routed here, and never gfx803.
+# Every (?!0) guard stops "RX 570" swallowing "RX 5700", so each row is correct on its
+# own regardless of order. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids
+# for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
+# (RX 460/550/560, a different die) is left out.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
     (

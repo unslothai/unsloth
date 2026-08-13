@@ -2,16 +2,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Behavioural test for the RDNA 1 "detected but not covered by ROCm" wording in
-# install.ps1 and studio/setup.ps1 (issue #8529).
+# install.ps1 and studio/setup.ps1 (issue #8529). The reporter's card is an RX 5700 XT
+# (Navi 10, gfx1010). AMD's Windows torch indexes are gfx103X/110X/1150/1151/120X only,
+# so CPU torch is correct and stays; the bug was telling them to install the HIP SDK or
+# set UNSLOTH_ROCM_GFX_ARCH, neither of which can succeed on gfx1010.
 #
-# The reporter's card is an RX 5700 XT (Navi 10, gfx1010, RDNA 1). AMD's Windows
-# torch indexes are gfx103X/110X/1150/1151/120X only, so CPU torch is the correct
-# outcome and stays; the bug was telling them to install the HIP SDK or set
-# UNSLOTH_ROCM_GFX_ARCH, neither of which can succeed on gfx1010.
-#
-# The Python suite evaluates the table with Python's `re`; this runs it under the
-# .NET engine that ships it, the only place -match semantics are real. Fixtures are
-# raw WMI adapter names, which is what the table is matched against.
+# The Python suite evaluates the table with Python's `re`; this runs it under the .NET
+# engine that ships it, the only place -match semantics are real. Fixtures are raw WMI
+# adapter names, which is what the table is matched against.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_rdna1_unsupported_message_8529.ps1
 
@@ -61,10 +59,9 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "Radeon Pro V520 -> gfx1011"     ((Resolve-Unsupported "AMD Radeon Pro V520") -eq 'gfx1011')
     Check "Radeon Pro 5600M -> gfx1011"    ((Resolve-Unsupported "AMD Radeon Pro 5600M") -eq 'gfx1011')
     Check "RX 5500 XT -> gfx1012"          ((Resolve-Unsupported "AMD Radeon RX 5500 XT") -eq 'gfx1012')
-    # The professional boards LLVM's table omits, mapped from libdrm data/amdgpu.ids
-    # ("7312 AMD Radeon Pro W5700", "7341 AMD Radeon Pro W5500", "7340,CF AMD Radeon
-    # RX 5300") read against pci.ids, which files 7312/7310 under Navi 10 and
-    # 7340/7341/7347/734f under Navi 14.
+    # The professional boards LLVM's table omits, mapped from libdrm data/amdgpu.ids read
+    # against pci.ids, which files 7312/7310 under Navi 10 and 7340/7341/7347/734f under
+    # Navi 14.
     Check "Radeon Pro W5700 -> gfx1010"    ((Resolve-Unsupported "AMD Radeon Pro W5700") -eq 'gfx1010')
     Check "Radeon Pro W5700X -> gfx1010"   ((Resolve-Unsupported "AMD Radeon Pro W5700X") -eq 'gfx1010')
     Check "Radeon Pro W5500 -> gfx1012"    ((Resolve-Unsupported "AMD Radeon Pro W5500") -eq 'gfx1012')
@@ -82,8 +79,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "PRO W6400 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W6400"))
 
     # --- Polaris, the second card in the cluster (#8458) ----------------------
-    # #8458 is an RX 580: Polaris 20, gfx803, also pre-RDNA 2 and also with no
-    # ROCm PyTorch wheels. It reaches this table for the message only.
+    # #8458 is an RX 580: Polaris 20, gfx803, also with no ROCm PyTorch wheels.
     Check "RX 580 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 580") -eq 'gfx803')
     Check "RX 580 Series -> gfx803"        ((Resolve-Unsupported "AMD Radeon RX 580 Series") -eq 'gfx803')
     Check "RX 570 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 570") -eq 'gfx803')
@@ -101,9 +97,9 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "RX 550 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 550"))
     Check "RX 460 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 460"))
 
-    # "RX 570" is a prefix of "RX 5700" and "RX 550" of "RX 5500". Matched ALONE:
-    # table order already keeps RDNA 1 names away from the Polaris pattern, so a
-    # dropped (?!0) guard changes nothing observable until someone reorders.
+    # "RX 570" is a prefix of "RX 5700" and "RX 550" of "RX 5500". Matched ALONE: table
+    # order already keeps RDNA 1 names away from Polaris, so a dropped (?!0) guard
+    # changes nothing observable until someone reorders.
     $polarisPattern = @($unsupportedNameArchTable | Where-Object { $_.A -eq 'gfx803' })[0].P
     foreach ($rdna1 in @("AMD Radeon RX 5700 XT", "AMD Radeon RX 5700", "AMD Radeon RX 5500 XT")) {
         Check "Polaris pattern alone does not claim '$rdna1'" (-not ($rdna1 -match $polarisPattern))
@@ -164,11 +160,10 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
          $src.IndexOf($unsupArm) -lt $src.IndexOf($sdkAdvice))
 
     # --- the Vulkan pointer (#8458) -------------------------------------------
-    # Torch ends on these cards; llama.cpp does not. Asserted against PRINTING lines
-    # only: every phrase below also appears in the comments explaining the branch, so
-    # a file-wide search stays green after the message is gutted. Single quotes count
-    # too -- the setter is emitted as a literal so PowerShell prints $env:... rather
-    # than expanding it, and a double-quote-only filter would drop the line under test.
+    # Torch ends on these cards; llama.cpp does not. Asserted against PRINTING lines only:
+    # every phrase below also appears in the comments explaining the branch, so a file-wide
+    # search stays green after the message is gutted. Single quotes count too -- the setter
+    # is a literal so PowerShell prints $env:... instead of expanding it.
     $emitted = @(($src -split "`n") | Where-Object {
         $_ -match 'substep\s+["'']' -and $_.TrimStart() -notmatch '^#'
     })
@@ -258,15 +253,14 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "the resolver feeds the variable the arms read" ($src -match 'ROCmUnsupportedGfxArch\s*=\s*(\$row\.A|Get-GfxArchFromGpuName)')
 }
 
-# studio/setup.ps1 reads $script:ROCmUnsupportedGfxArch in the unconditional ROCm
-# summary, so it must be initialised OUTSIDE the `-not $HasNvidiaSmi` AMD-detection
-# block. Left inside, an NVIDIA host never defines it and a caller's Set-StrictMode
-# turns the summary into an aborting undefined-variable error (unslothai#8529).
+# studio/setup.ps1 reads $script:ROCmUnsupportedGfxArch in the unconditional ROCm summary,
+# so it must be initialised OUTSIDE the `-not $HasNvidiaSmi` block. Left inside, an NVIDIA
+# host never defines it and a caller's Set-StrictMode turns the summary into an aborting
+# undefined-variable error (unslothai#8529).
 $setupSrc = (Get-Content -Raw (Join-Path $root "studio/setup.ps1")) -replace "`r`n", "`n"
 # Ask the parser, not the text: the file has three `-not $HasNvidiaSmi` blocks, so a
-# line-order check picks the wrong one, and brace counting trips over braces in strings
-# and comments. The invariant is simply that one assignment is NOT nested in any
-# conditional, i.e. it runs on every host including NVIDIA ones.
+# line-order check picks the wrong one and brace counting trips over braces in strings.
+# The invariant is that one assignment is NOT nested in any conditional.
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $root "studio/setup.ps1"), [ref]$null, [ref]$null)
 $assignments = $setupAst.FindAll({
@@ -286,11 +280,10 @@ $unconditional = @($assignments | Where-Object {
 })
 Check "the unsupported-arch state is initialised outside every conditional" ($unconditional.Count -gt 0)
 
-# install.ps1's WMI fallback takes adapter [0] and has no runtime-selection logic, so on a
-# host pairing an RX 5700 with an RX 7900 the label is the 5700. Saying "nothing can enable
-# ROCm here" would then be false -- masking to the 7900 and setting gfx1100 installs the
-# bundled-runtime wheels. Such a host must keep the arch-unknown arm. Run the REAL block:
-# pulled out by AST rather than retyped, so gutting the guard in install.ps1 fails this.
+# install.ps1's WMI fallback takes adapter [0], so on a host pairing an RX 5700 with an
+# RX 7900 the label is the 5700 and "nothing can enable ROCm here" would be false: masking
+# to the 7900 and setting gfx1100 installs. Such a host must keep the arch-unknown arm.
+# Run the REAL block, pulled out by AST rather than retyped.
 Write-Host ""
 Write-Host "=== install.ps1 mixed-adapter guard ==="
 $installPath = Join-Path $root "install.ps1"
