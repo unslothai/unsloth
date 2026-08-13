@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -1121,6 +1122,36 @@ def test_an_escaped_module_name_still_names_the_builtins_module():
     assert high == [], f"a raw literal must not decode to builtins: {high}"
     assert sp._string_body(r"'buil\x74ins'") == "builtins"
     assert sp._string_body(r"r'buil\x74ins'") == r"buil\x74ins"
+
+
+def test_an_identifier_is_matched_the_way_python_resolves_it():
+    # PEP 3131 normalizes every identifier to NFKC before it is looked up, while
+    # `tokenize` hands back the source spelling. So a call on a mathematical
+    # double-struck b IS a call on `b`, and comparing raw tokens missed it - the
+    # previous attribute regex still caught the ASCII `.exec(` suffix, so losing
+    # it is a regression. It runs the other way too: an alias rebound in a
+    # decorated spelling has to cancel the ASCII name, or the rule hands back the
+    # `model.eval()` false positive it exists to remove.
+    fancy = "\U0001d553"
+    assert unicodedata.normalize("NFKC", fancy) == "b"
+
+    for src in (
+        f"import builtins as b\nimport marshal\nmod = __import__('os')\n"
+        f"{fancy}.exec(marshal.loads(BLOB))\n",
+        f"import builtins as {fancy}\nimport marshal\nmod = __import__('os')\n"
+        f"b.exec(marshal.loads(BLOB))\n",
+    ):
+        compile(src.replace("marshal.loads(BLOB)", "'1'"), "<payload>", "exec")
+        findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a normalized identifier must reach the builtin:\n{src}"
+
+    rebound = (
+        f"import builtins as b\nmod = __import__('os')\n{fancy} = load_model()\nb.eval()\n"
+    )
+    findings = sp.check_py_file(rebound, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a normalized rebinding must cancel the alias: {high}"
 
 
 def test_proc_self_status_read_flags_anti_analysis():

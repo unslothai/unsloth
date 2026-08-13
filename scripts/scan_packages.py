@@ -70,6 +70,7 @@ import sys
 import tarfile
 import tempfile
 import tokenize
+import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
@@ -239,6 +240,20 @@ class _Offsets:
 _RE_WORD = re.compile(r"\w+")
 
 
+def _ident(name: str) -> str:
+    """`name` as the interpreter resolves it.
+
+    PEP 3131 normalizes every identifier to NFKC before it is looked up, while
+    `tokenize` hands back the source spelling. So `import builtins as b` followed
+    by a call on `\U0001d553` is a call on `b`, and comparing the raw tokens
+    misses it - as does the reverse, an alias declared in a decorated spelling
+    and rebound in ASCII, which would leave the alias live and hand back the
+    `model.eval()` false positive. ASCII cannot change under NFKC, and the test
+    for that is a flag on the string object, so ordinary source pays nothing.
+    """
+    return name if name.isascii() else unicodedata.normalize("NFKC", name)
+
+
 def _mentions_name(text: str, names) -> bool:
     """Whether any name in `names` occurs in `text` as a whole identifier.
 
@@ -250,7 +265,7 @@ def _mentions_name(text: str, names) -> bool:
     if not names:
         return False
     for m in _RE_WORD.finditer(text):
-        if m.group() in names:
+        if _ident(m.group()) in names:
             return True
     return False
 
@@ -263,6 +278,12 @@ def _statements(text: str, failed: list):
     regex fallback so a truncated parse can only add detections, never remove
     them. Statements are yielded and dropped one at a time, so peak memory is
     the largest statement rather than the whole token list.
+
+    Identifiers arrive NFKC-normalized, the spelling the interpreter resolves.
+    Doing it here rather than at each comparison keeps the binding side and the
+    call side in one alphabet, which is what makes an alias declared in one
+    spelling and used in another the same name to every pass below. Positions
+    are untouched, so evidence still points at the source as written.
     """
     stmt: list = []
     try:
@@ -270,6 +291,8 @@ def _statements(text: str, failed: list):
             ttype = tok.type
             if ttype in _TOK_IGNORED:
                 continue
+            if ttype == tokenize.NAME and not tok.string.isascii():
+                tok = tok._replace(string = unicodedata.normalize("NFKC", tok.string))
             if ttype == tokenize.NEWLINE or ttype == tokenize.ENDMARKER:
                 if stmt:
                     yield stmt
@@ -1131,12 +1154,12 @@ def _regex_bindings(text: str) -> "tuple[set, set]":
     funcs: set = set()
     for m in RE_IMPORT_LIST.finditer(text):
         for item in RE_MODULE_ALIAS_ITEM.finditer(m.group(1)):
-            modules.add(item.group(1))
+            modules.add(_ident(item.group(1)))
     for m in RE_BUILTINS_FUNC_ALIAS.finditer(text):
         for item in RE_FUNC_ALIAS_ITEM.finditer(m.group(1)):
-            funcs.add(item.group(1) or item.group(0))
+            funcs.add(_ident(item.group(1) or item.group(0)))
     for m in RE_ASSIGN_BUILTINS.finditer(text):
-        modules.add(m.group(1))
+        modules.add(_ident(m.group(1)))
     return modules, funcs
 
 
@@ -1149,7 +1172,7 @@ def _regex_rebindings(text: str) -> set:
     """
     aliased = {m.start() for m in RE_ASSIGN_BUILTINS.finditer(text)}
     return {
-        g
+        _ident(g)
         for m in RE_ASSIGNED_NAME.finditer(text)
         if m.start() not in aliased
         for g in m.groups()
@@ -1171,7 +1194,8 @@ def _regex_spans(
     """
     out = []
     for m in RE_FALLBACK_QUALIFIED.finditer(text):
-        if m.group(1) in receivers and (live is None or live(m.group(1), m.start())):
+        name = _ident(m.group(1))
+        if name in receivers and (live is None or live(name, m.start())):
             out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_STR_RECEIVER.finditer(text):
         out.append(_Span(m.start(), m.end()))
@@ -1184,10 +1208,11 @@ def _regex_spans(
         # Only reachable through `from builtins import exec as ...`, so the one
         # scan over every call site in the file is confined to those files.
         for m in RE_FALLBACK_CALL.finditer(text):
+            name = _ident(m.group(1))
             if (
-                m.group(1) in funcs
+                name in funcs
                 and not _preceded_by_dot(text, m.start())
-                and (live is None or live(m.group(1), m.start()))
+                and (live is None or live(name, m.start()))
             ):
                 out.append(_Span(m.start(), m.end()))
     out.sort(key = lambda s: s.start())
