@@ -2915,6 +2915,27 @@ def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     return list(tokens)
 
 
+def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
+    """Where ``run`` sits in ``tokens``, given it was appended at ``hint``.
+
+    A stored index goes stale the moment anything narrows the argv ahead of it,
+    and the arch gate does exactly that (dropping ``--split-mode`` /
+    ``--tensor-split``), so the block can only ever move LEFT. Search back from
+    the hint, then forward, so a future narrowing site cannot silently shift the
+    slice and take neighbouring tokens with it.
+    """
+    span = len(tokens) - len(run)
+    if not run or span < 0:
+        return max(0, min(hint, len(tokens)))
+    for i in range(min(hint, span), -1, -1):
+        if tokens[i : i + len(run)] == run:
+            return i
+    for i in range(min(hint, span) + 1, span + 1):
+        if tokens[i : i + len(run)] == run:
+            return i
+    return max(0, min(hint, len(tokens)))
+
+
 _CPU_DEVICE_VALUES = frozenset({"cpu", "none"})
 
 
@@ -14783,7 +14804,11 @@ class LlamaCppBackend:
                         _retry_reason,
                     )
                     self._kill_process()
-                    _fb_tail = cmd[_spec_start + len(spec_flags) :]
+                    # Re-locate rather than trust _spec_start: the arch gate may have
+                    # narrowed cmd since, which slides the block left and would
+                    # otherwise slice --api-key and friends out of the tail.
+                    _spec_at = _subsequence_index(cmd, spec_flags, _spec_start)
+                    _fb_tail = cmd[_spec_at + len(spec_flags) :]
                     _fb_stripped_extras: Optional[List[str]] = None
                     # Appending --spec-default cannot clear MTP the extras or the env
                     # carry: types accumulate, so it would retry the mode that just
@@ -14813,7 +14838,7 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
-                    fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
+                    fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
