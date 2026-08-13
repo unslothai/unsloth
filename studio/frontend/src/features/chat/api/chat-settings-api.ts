@@ -3,7 +3,14 @@
 
 import { authFetch } from "@/features/auth";
 import type { ChatPresetSource } from "../presets/preset-policy";
-import type { ReasoningEffort } from "../stores/chat-runtime-store";
+import type {
+  PermissionMode,
+  RagAutoInject,
+  RagMode,
+  RagSource,
+  ReasoningEffort,
+} from "../stores/chat-runtime-store";
+import type { ResearchWebsitePolicy } from "../types/research";
 import type { InferenceParams } from "../types/runtime";
 
 export type PersistedInferenceParams = Partial<
@@ -30,6 +37,31 @@ export interface PersistedChatSettings {
   nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
+  reasoningEnabled?: boolean;
+  toolsEnabled?: boolean;
+  codeToolsEnabled?: boolean;
+  imageToolsEnabled?: boolean;
+  webFetchToolsEnabled?: boolean;
+  deepResearchEnabled?: boolean;
+  researchWebsitePolicy?: ResearchWebsitePolicy;
+  artifactsEnabled?: boolean;
+  showCanvasMenuItem?: boolean;
+  mcpEnabledForChat?: boolean;
+  confirmToolCalls?: boolean;
+  /** "full" (Full access) is session-only and never leaves the browser. */
+  permissionMode?: Exclude<PermissionMode, "full">;
+  ragSource?: RagSource;
+  ragMode?: RagMode;
+  ragTopK?: number;
+  ragAutoInject?: RagAutoInject;
+  ragAutoInjectMinScore?: number;
+  ragOcrScanned?: boolean;
+  ragCaptionFigures?: boolean;
+  speculativeType?: "auto" | "ngram" | "off";
+  gpuMemoryMode?: "auto" | "manual";
+  expandQuantizations?: boolean;
+  showAllQuantizations?: boolean;
+  fitOnDeviceOnly?: boolean;
 }
 
 interface ChatSettingsResponse {

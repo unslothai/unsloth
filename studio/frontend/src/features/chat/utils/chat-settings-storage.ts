@@ -19,6 +19,10 @@ import {
   type Preset,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
+import {
+  assignSanitizedMirroredSettings,
+  hasNoMirroredSettings,
+} from "./mirrored-chat-settings";
 
 const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
@@ -263,6 +267,7 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
+  assignSanitizedMirroredSettings(value, settings);
 
   return settings;
 }
@@ -321,7 +326,8 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
-    settings.toolCallTimeout === undefined
+    settings.toolCallTimeout === undefined &&
+    hasNoMirroredSettings(settings)
   );
 }
 

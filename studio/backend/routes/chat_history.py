@@ -10,7 +10,7 @@ mixed handlers explicitly send their database transaction through Starlette's th
 
 import asyncio
 import sqlite3
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -229,6 +229,31 @@ class ChatPreset(BaseModel):
     loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
+class ChatRagThreadSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["thread"]
+
+
+class ChatRagKnowledgeBaseSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["kb"]
+    kbId: str = Field(min_length = 1, max_length = 256)
+
+
+class ChatResearchWebsitePolicy(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    # 253 is the maximum length of a DNS name.
+    allowedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+    blockedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+
+
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -247,6 +272,42 @@ class ChatSettingsPayload(BaseModel):
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
+
+    # Composer and RAG toggles. They describe the installation, not the browser
+    # that set them, so a second browser or a remote session reads them back here
+    # instead of falling back to defaults.
+    reasoningEnabled: Optional[bool] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    artifactsEnabled: Optional[bool] = None
+    showCanvasMenuItem: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    confirmToolCalls: Optional[bool] = None
+    # "full" (Full access) is session-only by design and never persisted.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    ragOcrScanned: Optional[bool] = None
+    ragCaptionFigures: Optional[bool] = None
+    # Standing load preferences the model-load path reads outside the store.
+    speculativeType: Optional[Literal["auto", "ngram", "off"]] = None
+    gpuMemoryMode: Optional[Literal["auto", "manual"]] = None
+    expandQuantizations: Optional[bool] = None
+    showAllQuantizations: Optional[bool] = None
+    fitOnDeviceOnly: Optional[bool] = None
 
 
 class ChatSettingsResponse(BaseModel):

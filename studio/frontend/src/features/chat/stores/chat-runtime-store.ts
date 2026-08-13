@@ -145,15 +145,7 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
 }
 
 function saveResearchWebsitePolicy(policy: ResearchWebsitePolicy): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
-      JSON.stringify(policy),
-    );
-  } catch {
-    // Keep the in-memory setting when storage is unavailable.
-  }
+  persistSetting(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, JSON.stringify(policy));
 }
 
 function loadRagSource(): RagSource {
@@ -173,12 +165,7 @@ function loadRagSource(): RagSource {
 }
 
 function saveRagSource(value: RagSource): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
-  } catch {
-    // Ignore storage failures; the default RAG source still works for this session.
-  }
+  persistSetting(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
 }
 
 function loadRagMode(): RagMode {
@@ -381,20 +368,192 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+function readStorageValue(key: string): string | null {
+  if (!canUseStorage()) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorageValue(key: string, raw: string): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(key, raw);
+  } catch {
+    // Keep the in-memory setting when storage is unavailable.
+  }
+}
+
+type MirroredSettingCodec = {
+  encode: (value: unknown) => string;
+  decode: (raw: string) => unknown;
+};
+
+const BOOLEAN_SETTING: MirroredSettingCodec = {
+  encode: (value) => (value ? "true" : "false"),
+  decode: (raw) => (raw === "true" ? true : raw === "false" ? false : undefined),
+};
+
+const STRING_SETTING: MirroredSettingCodec = {
+  encode: (value) => String(value),
+  decode: (raw) => raw,
+};
+
+const NUMBER_SETTING: MirroredSettingCodec = {
+  encode: (value) => String(value),
+  decode: (raw) => {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  },
+};
+
+const JSON_SETTING: MirroredSettingCodec = {
+  encode: (value) => JSON.stringify(value),
+  decode: (raw) => {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/**
+ * Settings that describe the installation rather than the browser holding them.
+ * Each entry pairs a localStorage slot with the /api/chat/settings field that
+ * carries it to another browser or a remote session.
+ */
+const MIRRORED_SETTINGS = {
+  reasoningEnabled: {
+    storageKey: CHAT_REASONING_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  toolsEnabled: { storageKey: CHAT_TOOLS_ENABLED_KEY, ...BOOLEAN_SETTING },
+  codeToolsEnabled: {
+    storageKey: CHAT_CODE_TOOLS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  imageToolsEnabled: {
+    storageKey: CHAT_IMAGE_TOOLS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  webFetchToolsEnabled: {
+    storageKey: CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  deepResearchEnabled: {
+    storageKey: CHAT_DEEP_RESEARCH_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  researchWebsitePolicy: {
+    storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
+    ...JSON_SETTING,
+  },
+  artifactsEnabled: {
+    storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  showCanvasMenuItem: {
+    storageKey: CHAT_SHOW_CANVAS_MENU_ITEM_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  collapseHtmlArtifacts: {
+    storageKey: CHAT_COLLAPSE_HTML_ARTIFACTS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  allowArtifactNetworkAccess: {
+    storageKey: CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
+  confirmToolCalls: {
+    storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  permissionMode: { storageKey: CHAT_PERMISSION_MODE_KEY, ...STRING_SETTING },
+  ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
+  ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
+  ragTopK: { storageKey: CHAT_RAG_TOP_K_KEY, ...NUMBER_SETTING },
+  ragAutoInject: { storageKey: CHAT_RAG_AUTOINJECT_KEY, ...STRING_SETTING },
+  ragAutoInjectMinScore: {
+    storageKey: CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    ...NUMBER_SETTING,
+  },
+  ragOcrScanned: { storageKey: CHAT_RAG_OCR_KEY, ...BOOLEAN_SETTING },
+  ragCaptionFigures: { storageKey: CHAT_RAG_CAPTION_KEY, ...BOOLEAN_SETTING },
+  speculativeType: { storageKey: CHAT_SPECULATIVE_TYPE_KEY, ...STRING_SETTING },
+  gpuMemoryMode: { storageKey: CHAT_GPU_MEMORY_MODE_KEY, ...STRING_SETTING },
+  expandQuantizations: {
+    storageKey: CHAT_EXPAND_QUANTIZATIONS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  showAllQuantizations: {
+    storageKey: CHAT_SHOW_ALL_QUANTIZATIONS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  fitOnDeviceOnly: {
+    storageKey: MODELS_FIT_ON_DEVICE_ONLY_KEY,
+    ...BOOLEAN_SETTING,
+  },
+} satisfies Partial<
+  Record<
+    ScalarSettingKey | StorageOnlySettingKey,
+    { storageKey: string } & MirroredSettingCodec
+  >
+>;
+
+type MirroredSettingKey = keyof typeof MIRRORED_SETTINGS;
+
+const MIRRORED_SETTING_BY_STORAGE_KEY: ReadonlyMap<
+  string,
+  { field: MirroredSettingKey } & MirroredSettingCodec
+> = new Map(
+  Object.entries(MIRRORED_SETTINGS).map(([field, setting]) => [
+    setting.storageKey,
+    { field: field as MirroredSettingKey, ...setting },
+  ]),
+);
+
+/**
+ * Send a changed mirrored setting to the backend. Writes are held back until
+ * hydration has run: before the installation's values are known, the local
+ * cache is empty on a fresh browser and the model-load path would otherwise
+ * push its defaults over what another browser already saved. Anything only
+ * localStorage holds at that point is backfilled by `backfillMirroredSettings`.
+ */
+let mirroredSettingsHydrated = false;
+
+function mirrorSettingToBackend(key: string, raw: string): void {
+  if (!mirroredSettingsHydrated) return;
+  const setting = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
+  if (!setting) return;
+  const value = setting.decode(raw);
+  if (value === undefined) return;
+  bumpMirroredSettingVersion(setting.field);
+  saveSettingsPatch({ [setting.field]: value } as SettingsPatch);
+}
+
+/**
+ * Write a setting to its localStorage slot and, for the settings mirrored to
+ * /api/chat/settings, to the backend as well. Storage is the synchronous boot
+ * cache; the backend copy is what a second browser or a remote session reads.
+ */
+function persistSetting(key: string, raw: string): void {
+  if (readStorageValue(key) !== raw) mirrorSettingToBackend(key, raw);
+  writeStorageValue(key, raw);
+}
+
 function loadBool(key: string, fallback: boolean): boolean {
   const raw = loadOptionalBool(key);
   return raw ?? fallback;
 }
 
 export function loadOptionalBool(key: string): boolean | null {
-  if (!canUseStorage()) return null;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return null;
-    return raw === "true";
-  } catch {
-    return null;
-  }
+  const raw = readStorageValue(key);
+  if (raw === null) return null;
+  return raw === "true";
 }
 
 /**
@@ -417,12 +576,7 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 }
 
 function saveBool(key: string, value: boolean): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, value ? "true" : "false");
-  } catch {
-    // ignore
-  }
+  persistSetting(key, value ? "true" : "false");
 }
 
 // The visibility flag shipped after the menu pins, so when it is absent,
@@ -451,45 +605,26 @@ function loadShowCanvasMenuItem(): boolean {
  * off -> "off", i.e. no prompts); fresh installs default to "auto".
  */
 function loadPermissionMode(): PermissionMode {
-  if (!canUseStorage()) return "auto";
-  try {
-    const raw = localStorage.getItem(CHAT_PERMISSION_MODE_KEY);
-    if (raw === "ask" || raw === "auto" || raw === "off") return raw;
-  } catch {
-    // ignore
-  }
+  const raw = readStorageValue(CHAT_PERMISSION_MODE_KEY);
+  if (raw === "ask" || raw === "auto" || raw === "off") return raw;
   const legacyConfirm = loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY);
   if (legacyConfirm === null) return "auto";
   return legacyConfirm ? "ask" : "off";
 }
 
 function savePermissionMode(mode: PermissionMode): void {
-  if (!canUseStorage() || mode === "full") return;
-  try {
-    localStorage.setItem(CHAT_PERMISSION_MODE_KEY, mode);
-  } catch {
-    // ignore
-  }
+  if (mode === "full") return;
+  persistSetting(CHAT_PERMISSION_MODE_KEY, mode);
 }
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
 function loadString(key: string, fallback: string): string {
-  if (!canUseStorage()) return fallback;
-  try {
-    return localStorage.getItem(key) ?? fallback;
-  } catch {
-    return fallback;
-  }
+  return readStorageValue(key) ?? fallback;
 }
 
 function saveString(key: string, value: string): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // ignore
-  }
+  persistSetting(key, value);
 }
 
 // Canonicalises any backend value onto the Speculative Decoding dropdown's
@@ -1360,7 +1495,33 @@ type ScalarSettingKey =
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
-  | "toolCallTimeout";
+  | "toolCallTimeout"
+  | "reasoningEnabled"
+  | "toolsEnabled"
+  | "codeToolsEnabled"
+  | "imageToolsEnabled"
+  | "webFetchToolsEnabled"
+  | "deepResearchEnabled"
+  | "researchWebsitePolicy"
+  | "artifactsEnabled"
+  | "showCanvasMenuItem"
+  | "mcpEnabledForChat"
+  | "confirmToolCalls"
+  | "permissionMode"
+  | "ragSource"
+  | "ragMode"
+  | "ragTopK"
+  | "ragAutoInject"
+  | "ragAutoInjectMinScore"
+  | "ragOcrScanned"
+  | "ragCaptionFigures"
+  | "expandQuantizations"
+  | "showAllQuantizations"
+  | "fitOnDeviceOnly";
+
+// Standing preferences the model-load path reads straight from storage instead
+// of the store, so hydration refreshes their cache rather than any store field.
+type StorageOnlySettingKey = "speculativeType" | "gpuMemoryMode";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -1371,6 +1532,7 @@ type PresetHydrationVersions = {
 type SettingsHydrationVersions = {
   inferenceParams: Record<PersistedInferenceParamKey, number>;
   scalarSettings: Record<ScalarSettingKey, number>;
+  storageOnlySettings: Record<StorageOnlySettingKey, number>;
   presets: PresetHydrationVersions;
 };
 
@@ -1399,7 +1561,34 @@ const SCALAR_SETTING_KEYS = [
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "reasoningEnabled",
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "imageToolsEnabled",
+  "webFetchToolsEnabled",
+  "deepResearchEnabled",
+  "researchWebsitePolicy",
+  "artifactsEnabled",
+  "showCanvasMenuItem",
+  "mcpEnabledForChat",
+  "confirmToolCalls",
+  "permissionMode",
+  "ragSource",
+  "ragMode",
+  "ragTopK",
+  "ragAutoInject",
+  "ragAutoInjectMinScore",
+  "ragOcrScanned",
+  "ragCaptionFigures",
+  "expandQuantizations",
+  "showAllQuantizations",
+  "fitOnDeviceOnly",
 ] as const satisfies readonly ScalarSettingKey[];
+
+const STORAGE_ONLY_SETTING_KEYS = [
+  "speculativeType",
+  "gpuMemoryMode",
+] as const satisfies readonly StorageOnlySettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
@@ -1407,6 +1596,17 @@ const inferenceParamMutationVersions = Object.fromEntries(
 const scalarSettingMutationVersions = Object.fromEntries(
   SCALAR_SETTING_KEYS.map((key) => [key, 0]),
 ) as Record<ScalarSettingKey, number>;
+const storageOnlySettingMutationVersions = Object.fromEntries(
+  STORAGE_ONLY_SETTING_KEYS.map((key) => [key, 0]),
+) as Record<StorageOnlySettingKey, number>;
+
+function bumpMirroredSettingVersion(field: MirroredSettingKey): void {
+  if (field in scalarSettingMutationVersions) {
+    scalarSettingMutationVersions[field as ScalarSettingKey] += 1;
+    return;
+  }
+  storageOnlySettingMutationVersions[field as StorageOnlySettingKey] += 1;
+}
 
 function hasKeys(value: object): boolean {
   return Object.keys(value).length > 0;
@@ -1416,12 +1616,66 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
   return {
     inferenceParams: { ...inferenceParamMutationVersions },
     scalarSettings: { ...scalarSettingMutationVersions },
+    storageOnlySettings: { ...storageOnlySettingMutationVersions },
     presets: {
       customPresets: customPresetsMutationVersion,
       activePreset: activePresetMutationVersion,
       activePresetSource: activePresetSourceMutationVersion,
     },
   };
+}
+
+function mirroredSettingVersion(field: MirroredSettingKey): number {
+  return field in scalarSettingMutationVersions
+    ? scalarSettingMutationVersions[field as ScalarSettingKey]
+    : storageOnlySettingMutationVersions[field as StorageOnlySettingKey];
+}
+
+function snapshotMirroredSettingVersion(
+  field: MirroredSettingKey,
+  versions: SettingsHydrationVersions,
+): number {
+  return field in versions.scalarSettings
+    ? versions.scalarSettings[field as ScalarSettingKey]
+    : versions.storageOnlySettings[field as StorageOnlySettingKey];
+}
+
+/** Refresh the localStorage cache from the values hydration just applied. */
+function cacheHydratedSettings(
+  settings: PersistedChatSettings,
+  versions: SettingsHydrationVersions,
+): void {
+  for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
+    const field = name as MirroredSettingKey;
+    const value = settings[field];
+    if (value === undefined) continue;
+    if (
+      mirroredSettingVersion(field) !==
+      snapshotMirroredSettingVersion(field, versions)
+    ) {
+      continue;
+    }
+    writeStorageValue(setting.storageKey, setting.encode(value));
+  }
+}
+
+/**
+ * Seed the backend from this browser for mirrored settings it has never stored.
+ * Without it an existing install would keep its preferences local until each
+ * one is next changed.
+ */
+function backfillMirroredSettings(settings: PersistedChatSettings): void {
+  const patch: SettingsPatch = {};
+  for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
+    const field = name as MirroredSettingKey;
+    if (settings[field] !== undefined) continue;
+    const raw = readStorageValue(setting.storageKey);
+    if (raw === null) continue;
+    const value = setting.decode(raw);
+    if (value === undefined) continue;
+    (patch as Record<string, unknown>)[field] = value;
+  }
+  if (hasKeys(patch)) saveSettingsPatch(patch);
 }
 
 function setInferenceParam(
@@ -1518,6 +1772,15 @@ function getHydratedSettingsState(
   nextState.params = params;
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
+    // Full access is session-only, so a stored level must not silently drop the
+    // sandbox bypass the user accepted a warning for, and Full access never
+    // confirms a tool call whatever the saved toggle says.
+    if (
+      state.permissionMode === "full" &&
+      (key === "permissionMode" || key === "confirmToolCalls")
+    ) {
+      continue;
+    }
     if (
       value !== undefined &&
       scalarSettingMutationVersions[key] === versions.scalarSettings[key]
@@ -1710,10 +1973,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const hydrationVersions = getSettingsHydrationVersions();
       try {
         const settings = await loadChatSettingsWithLegacyImport();
+        let applied = false;
         set((state) => {
           if (state.settingsHydrated) {
             return state;
           }
+          applied = true;
           const nextState: Partial<ChatRuntimeStore> = {
             settingsHydrated: true,
             ...getHydratedPresetState(
@@ -1725,10 +1990,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           };
           return nextState;
         });
+        if (applied) {
+          cacheHydratedSettings(settings, hydrationVersions);
+          mirroredSettingsHydrated = true;
+          backfillMirroredSettings(settings);
+        }
       } catch {
         // Hydrate failed: treat as hydrated-with-defaults so future setParams
         // calls reach saveSettingsPatch (which toasts on real network failure).
         warnSettingsPersistenceFailure();
+        mirroredSettingsHydrated = true;
         set({ settingsHydrated: true });
       } finally {
         settingsHydrationPromise = null;
