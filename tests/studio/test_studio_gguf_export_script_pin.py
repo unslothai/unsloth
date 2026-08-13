@@ -38,6 +38,32 @@ def _find_pin_try(tree: ast.AST):
     return None
 
 
+# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises
+# RuntimeError or AttributeError too. Anything that still catches an ImportError
+# counts, so widening the handler again does not break this test.
+_CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:  # bare except
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
+
+
+# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which
+# ImportError alone does not cover.
+_CATCHES_EVERYTHING = ("Exception", "BaseException")
+
+
+def _covers_half_built_zoo(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:  # bare except
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    caught = {n.id for n in names if isinstance(n, ast.Name)}
+    return bool(caught & set(_CATCHES_EVERYTHING)) or {"RuntimeError", "AttributeError"} <= caught
+
+
 def test_warning_flag_defined_at_module_scope():
     flags = {
         name: value
@@ -85,24 +111,13 @@ def test_setdefault_inside_try_block():
 def test_warning_handler_gated_on_module_flag():
     try_node = _find_pin_try(TREE)
     assert try_node is not None
-    # #8603 widened this from ImportError deliberately: a half-built unsloth_zoo raises
-    # RuntimeError or AttributeError, and the pin is an optimisation that must not fail an
-    # export. Reverting to ImportError alone would abort those exports again, so the handler has
-    # to catch Exception, or name all three: dropping ImportError from an explicit tuple loses
-    # the missing-module case this pin started out handling.
-    def _caught_names(handler) -> set[str]:
-        if isinstance(handler.type, ast.Name):
-            return {handler.type.id}
-        if isinstance(handler.type, ast.Tuple):
-            return {e.id for e in handler.type.elts if isinstance(e, ast.Name)}
-        return set()
-
-    covering = [
-        h
-        for h in try_node.handlers
-        if "Exception" in _caught_names(h)
-        or {"ImportError", "RuntimeError", "AttributeError"} <= _caught_names(h)
-    ]
+    handlers = [h for h in try_node.handlers if _catches_import_error(h)]
+    assert handlers
+    # And it has to keep covering the half-built cases, not just the missing-module one. That is
+    # what #8603 widened the handler for: an unsloth_zoo that imports but raises RuntimeError or
+    # AttributeError aborts the export otherwise, and a revert to ImportError alone still
+    # satisfies _catches_import_error above.
+    covering = [h for h in handlers if _covers_half_built_zoo(h)]
     assert covering, (
         "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
     )
