@@ -138,11 +138,7 @@ MAX_EXTRA_ARGS_BYTES_WINDOWS = 24 * 1024
 
 def max_extra_args_bytes() -> int:
     """The size cap for this platform."""
-    return (
-        MAX_EXTRA_ARGS_BYTES_WINDOWS
-        if sys.platform == "win32"
-        else MAX_EXTRA_ARGS_BYTES
-    )
+    return MAX_EXTRA_ARGS_BYTES_WINDOWS if sys.platform == "win32" else MAX_EXTRA_ARGS_BYTES
 
 
 def _flag_name(token: str) -> Optional[str]:
@@ -213,9 +209,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
         total_bytes += len(encoded)
         limit = max_extra_args_bytes()
         if total_bytes > limit:
-            raise ValueError(
-                f"extra llama-server args are too large (limit {limit} bytes)"
-            )
+            raise ValueError(f"extra llama-server args are too large (limit {limit} bytes)")
         # execve rejects a NUL outright; the rest would reach the child's parser as
         # invisible characters and be blamed on the flag they are attached to.
         if _has_control_characters(token):
