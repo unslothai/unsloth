@@ -2024,6 +2024,17 @@ _setup_gpucheck_pin_leaf="${_setup_gpucheck_pin##*/}"
 case "$_setup_gpucheck_pin_leaf" in
     [Cc][Pp][Uu]) _setup_gpucheck_pin_leaf=cpu ;;
 esac
+# Case-folded because that is how the value's other reader takes it: install_python_stack.py:3432
+# is `os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()`, and setup.ps1's `-ne "cpu"` is
+# case-insensitive by default. install.sh only ever exports it lowercase, but
+# install_python_stack.py:2400 tells users to set it by hand, so a typed "CPU" got CPU torch from
+# the Python side and an accusation from here. Folded, not trimmed, to match `.lower()` exactly:
+# " cpu " is not cpu to install_python_stack either, and silently disagreeing in the other
+# direction would be the same bug mirrored.
+_setup_gpucheck_backend="${UNSLOTH_TORCH_BACKEND:-}"
+case "$_setup_gpucheck_backend" in
+    [Cc][Pp][Uu]) _setup_gpucheck_backend=cpu ;;
+esac
 # install.sh exports UNSLOTH_TORCH_BACKEND from the index it RESOLVED, so a host it deliberately
 # sent to CPU arrives as "cpu" with _setup_amd_detected still true. Only the exact "cpu": unset is
 # the normal standalone `studio update` state and must still be checked.
@@ -2088,6 +2099,26 @@ case "$_setup_amd_wheel_arch" in
     gfx1036|gfx1035|gfx1034|gfx1033|gfx1032|gfx1031|gfx1030)                 _setup_amd_has_gpu_wheels=true ;;
     gfx950|gfx942|gfx90[aA]|gfx908|gfx906|gfx900)                            _setup_amd_has_gpu_wheels=true ;;
 esac
+# The arch table above answers "does this GPU have wheels", not "does this HOST get them".
+# PyTorch publishes ROCm wheels for linux-x86_64 only, so install.sh:3345 returns the cpu index
+# for every other machine BEFORE it ever looks at the gfx arch. Without the same gate an aarch64
+# host with, say, a gfx942 reads as wheeled here and is accused on every `unsloth studio update`
+# of a fault that is the documented routing -- the identical failure the arch table exists to
+# prevent for RDNA 1 and Polaris. Scoped to the AMD term, exactly as install.sh scopes it: that
+# gate sits inside the `_nvidia_detected -eq 0` branch, so aarch64 NVIDIA (Jetson, GH200) keeps
+# its CUDA wheels and must still be reconciled. A pin is unaffected too -- install.sh honours an
+# explicit index verbatim, returning before this gate, so $_setup_gpucheck_pin_is_gpu stands.
+# Demoted only on a POSITIVE non-x86_64 answer, where install.sh takes the bare `*` arm. `uname`
+# is coreutils, the one thing the minimal images this probe is bounded for are missing, and an
+# empty answer is no evidence about the host -- silencing the whole report on it would be the
+# failure the mask and arch comments above both refuse. `|| true` on the substitution because
+# this runs under `set -e`.
+if [ "$_setup_amd_has_gpu_wheels" = true ]; then
+    case "$(uname -m 2>/dev/null || true)" in
+        ""|x86_64|amd64) : ;;
+        *) _setup_amd_has_gpu_wheels=false ;;
+    esac
+fi
 # An explicit GPU index pin still reconciles on an arch with no wheels of its own: the user asked
 # for that index. Mirrors $_amdPinIsGpu (setup.ps1:2664); "cpu" is excluded by the condition below.
 _setup_gpucheck_pin_is_gpu=false
@@ -2098,11 +2129,21 @@ if { [ "$_setup_nvidia_usable" = true ] \
      || { [ "$_setup_amd_detected" = true ] \
           && { [ "$_setup_amd_has_gpu_wheels" = true ] || [ "$_setup_gpucheck_pin_is_gpu" = true ]; }; }; } \
     && [ "$_setup_gpucheck_pin_leaf" != "cpu" ] \
-    && [ "${UNSLOTH_TORCH_BACKEND:-}" != "cpu" ] \
+    && [ "$_setup_gpucheck_backend" != "cpu" ] \
     && [ "$_setup_gpucheck_masked" = false ] \
     && [ "$_setup_gpucheck_no_torch" = false ]; then
-    case "${UNSLOTH_SKIP_TORCH_GPU_CHECK:-}" in
-        1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
+    # Trimmed and case-folded to match setup.ps1:5314's `-match '^\s*(?i:true|1|yes|on)\s*$'`
+    # exactly. This variable is documented in one place and read in two, so a user told to set it
+    # must get the same answer on both: the literal list this replaced honoured TRUE but not True,
+    # and " 1 " nowhere, while Windows honoured all three. Not folded the same way as
+    # UNSLOTH_NO_TORCH just above, which is deliberately left alone: that one is install.sh:103's
+    # spelling, and reading it more loosely here than the installer does would skip the check on a
+    # host the installer gave torch to.
+    _setup_gpucheck_skip_raw="${UNSLOTH_SKIP_TORCH_GPU_CHECK:-}"
+    _setup_gpucheck_skip_raw="${_setup_gpucheck_skip_raw#"${_setup_gpucheck_skip_raw%%[![:space:]]*}"}"
+    _setup_gpucheck_skip_raw="${_setup_gpucheck_skip_raw%"${_setup_gpucheck_skip_raw##*[![:space:]]}"}"
+    case "$_setup_gpucheck_skip_raw" in
+        1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) _setup_skip_torch_check=true ;;
         *) _setup_skip_torch_check=false ;;
     esac
     # Colab installs into the SYSTEM python and sets _COLAB_NO_VENV, so requiring the venv
@@ -2135,11 +2176,17 @@ if { [ "$_setup_nvidia_usable" = true ] \
         if [ -n "$_setup_torch_line" ]; then
             _setup_torch_probe_answered=true
             _setup_torch_fields="${_setup_torch_line#UNSLOTHTORCHGPU=}"
-            [ "$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f1)" = "1" ] && _setup_torch_sees_gpu=true
-            _setup_torch_devices=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f2)
-            _setup_torch_ver=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f3)
-            _setup_torch_hip=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f4)
-            [ "$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f5)" = "1" ] && _setup_torch_sees_xpu=true
+            # `read`, not four `cut` calls: `cut` is coreutils, which the mask and arch trims
+            # above both refuse to depend on, and an unguarded `x=$(cut ...)` does not degrade
+            # like a failed `tr` pipe -- it exits 127 and `set -e` takes the installer down at
+            # the last step of an otherwise successful run. `|| true` because `read` also
+            # returns non-zero on a short final field, and hip is empty on a CUDA wheel.
+            IFS='|' read -r _setup_torch_f_cuda _setup_torch_devices _setup_torch_ver \
+                _setup_torch_hip _setup_torch_f_xpu <<EOF || true
+$_setup_torch_fields
+EOF
+            [ "$_setup_torch_f_cuda" = "1" ] && _setup_torch_sees_gpu=true
+            [ "$_setup_torch_f_xpu" = "1" ] && _setup_torch_sees_xpu=true
         fi
     fi
     # A hybrid Intel/NVIDIA host on the XPU wheel answers False for CUDA and still runs on the GPU
