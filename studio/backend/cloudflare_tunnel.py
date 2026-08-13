@@ -1902,16 +1902,19 @@ def _abandon(binary: Optional[str], names) -> None:
         _write(_ABANDONED, list(dict.fromkeys(_string_list(_ABANDONED) + stranded)))
 
 
-def _reap_login_child(record: dict) -> None:
+def _reap_login_child(record: dict) -> bool:
+    """End a recorded login child. False when one is still running."""
     pid = record.get("login_pid")
     if not _same_process(record.get("login_token"), pid):
-        return
+        return True
     try:
         import psutil
+
         os.kill(pid, signal.SIGTERM)
         psutil.Process(pid).wait(timeout = 5.0)
+        return True
     except Exception:
-        pass
+        return not _pid_alive(pid)
 
 
 def _delete_our_certificate(record: dict, *, required: bool = False) -> None:
@@ -1945,7 +1948,12 @@ def _settle(
         if (_state_dir() / _RECORD).exists():
             logger.warning("Cloudflare setup record is unreadable; leaving it in place.")
         return False
-    _reap_login_child(record)
+    if not _reap_login_child(record):
+        # This record is the only thing naming that child. Clearing it now would
+        # leave a login able to write the certificate with nothing able to
+        # identify what wrote it, which is the state setup cannot recover from.
+        logger.warning("Cloudflare login is still running; leaving its setup record in place.")
+        return False
     identity = read_identity()
     teardown = record.get("operation") == "teardown"
     if teardown:

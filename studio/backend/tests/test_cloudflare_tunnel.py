@@ -1837,7 +1837,7 @@ def _provision(hostname = _HOST, **kwargs):
 
 def _settle(binary = "cloudflared"):
     with ct.certificate_state_claim("cleanup"):
-        ct._settle(binary)
+        return ct._settle(binary)
 
 
 def _cert(cf):
@@ -2157,6 +2157,24 @@ def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
     seen = cf.child.records[0]
     assert seen["login_pid"] == 999_000 and seen["login_token"]
     assert seen["login_token"] == cf.spawned_with
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_login_child_that_will_not_die_keeps_the_record_that_names_it(cf, monkeypatch):
+    # The record holds the pid and token, so discarding it while that login can
+    # still write cert.pem leaves a certificate nothing can be shown to own --
+    # which the deletion rule fails closed on, permanently.
+    ct._write(ct._RECORD, {"hostname": _HOST, "login_pid": 999_000, "login_token": "t"})
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: True)
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(ct.os, "kill", lambda *_a: None)
+
+    assert _settle() is False
+    assert ct._read(ct._RECORD) == {"hostname": _HOST, "login_pid": 999_000, "login_token": "t"}
+
+    # Once it is gone the same record settles normally.
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: False)
+    _settle()
     assert ct._read(ct._RECORD) is None
 
 
