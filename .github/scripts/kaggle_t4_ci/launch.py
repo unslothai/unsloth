@@ -137,6 +137,30 @@ DELETE_ATTEMPTS = 3
 DELETE_BACKOFF_SEC = 5
 DELETE_SUBPROCESS_TIMEOUT_SEC = 180
 
+# Pages of `kernels/output` one listing walks before it stops asking, and the
+# ceiling on the WHOLE evidence phase: every kernel's listing pages and every
+# notebook download, together.
+#
+# ONE budget for all of it, started before the first collection, because that
+# is the only shape the job deadline can be derived from. Per call, the bound
+# was the product of things nobody multiplied out: OUTPUT_PAGE_LIMIT pages at
+# the 120s socket ceiling is 2400s for ONE kernel's listing alone, and each
+# executed notebook is another 300s with no cap on how many Kaggle lists. The
+# workflow header budgeted 600s for two kernels and the harness suite asserted
+# the same 600s as a literal, so the term in the job deadline restated the
+# intention rather than measuring the code: a paginating or slow endpoint spent
+# the job's remaining wall clock HERE, and the runner was then killed before
+# finish() -> release() ran, leaving billable kernels up. That is the exact
+# outcome the deadline exists to prevent.
+#
+# Enforcement is "start no new work past the deadline", and each call's own
+# timeout is clamped to what remains, so neither a page nor a download can run
+# past it. Evidence is best effort by design -- whatever arrived is reported
+# and the collection is marked truncated -- because the alternative is spending
+# the deletion window on it.
+EVIDENCE_BUDGET_SEC = 600
+OUTPUT_PAGE_LIMIT = 20
+
 
 def _log(msg: str) -> None:
     print(f"[launch] {msg}", flush = True)
@@ -419,12 +443,51 @@ def _bearer() -> str:
     return token
 
 
-def list_outputs(slug: str, timeout: int = 120) -> dict:
+def _evidence_deadline(deadline: float | None) -> float:
+    """The shared budget if the caller has one, otherwise a fresh one.
+
+    Never unbounded. ``deadline=None`` used to mean "no ceiling", which is the
+    state this constant exists to end, so the default is a budget of its own:
+    a caller can only make the bound TIGHTER by sharing one, never absent.
+    """
+    return time.time() + EVIDENCE_BUDGET_SEC if deadline is None else deadline
+
+
+def _time_left(deadline: float, timeout: int) -> int | None:
+    """Seconds this call may take, or None when the deadline has passed.
+
+    The single place the evidence budget is applied, so no caller can start a
+    request the phase has no time for and none can outlast it: the timeout
+    handed to urllib is the SMALLER of the call's own ceiling and what is left.
+    """
+    remaining = int(deadline - time.time())
+    if remaining <= 0:
+        return None
+    return min(timeout, remaining)
+
+
+def list_outputs(
+    slug: str,
+    timeout: int = 120,
+    deadline: float | None = None,
+) -> dict:
+    """List a kernel's outputs, one page at a time, inside the budget.
+
+    ``truncated`` says the listing is INCOMPLETE -- the page limit or the
+    evidence deadline stopped it -- so a caller can tell "Kaggle listed these
+    files" from "these are the files we got to before the clock ran out".
+    """
+    deadline = _evidence_deadline(deadline)
     user, _, name = slug.partition("/")
     params = {"userName": user, "kernelSlug": name}
     files: list[dict] = []
     log = ""
-    for _ in range(20):
+    truncated = True
+    for _ in range(OUTPUT_PAGE_LIMIT):
+        call_timeout = _time_left(deadline, timeout)
+        if call_timeout is None:
+            _log(f"evidence budget spent while listing {slug}")
+            break
         url = f"{API_ROOT}/kernels/output?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(
             url,
@@ -433,15 +496,16 @@ def list_outputs(slug: str, timeout: int = 120) -> dict:
                 "User-Agent": "unsloth-kaggle-t4-ci/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with urllib.request.urlopen(req, timeout = call_timeout) as resp:
             data = json.loads(resp.read())
         files.extend(f for f in data.get("files") or [] if f.get("fileName"))
         log = log or (data.get("log") or "")
         token = data.get("nextPageToken") or ""
         if not (data.get("hasNextPageToken") and token):
+            truncated = False
             break
         params = dict(params, pageToken = token)
-    return {"files": files, "log": log}
+    return {"files": files, "log": log, "truncated": truncated}
 
 
 def _dest_name(file_name: str) -> str:
@@ -460,6 +524,7 @@ def fetch_evidence(
     slug: str,
     outdir: Path,
     timeout: int = 300,
+    deadline: float | None = None,
 ) -> dict:
     """Pull the executed notebooks and the kernel log by direct URL.
 
@@ -467,10 +532,17 @@ def fetch_evidence(
     of /kaggle/working as one stream, and a previous incident lost two PASSING
     notebooks because a multi-GB saved model sorted alphabetically ahead of them
     and the stream broke partway through.
+
+    ``deadline`` is the shared evidence budget (EVIDENCE_BUDGET_SEC), an
+    absolute ``time.time()`` value covering every kernel of the run. Nothing
+    starts after it and every call is clamped to what is left of it, so this
+    phase cannot eat the wall clock release() needs to delete the kernels.
     """
+    deadline = _evidence_deadline(deadline)
     outdir.mkdir(parents = True, exist_ok = True)
-    listing = list_outputs(slug, timeout = min(timeout, 120))
+    listing = list_outputs(slug, timeout = min(timeout, 120), deadline = deadline)
     fetched = []
+    truncated = bool(listing.get("truncated"))
     for entry in listing["files"]:
         name = _dest_name(entry["fileName"])
         if not name.endswith(OUTPUT_SUFFIX):
@@ -478,11 +550,16 @@ def fetch_evidence(
         url = entry.get("url") or entry.get("urlNullable")
         if not url:
             continue
+        call_timeout = _time_left(deadline, timeout)
+        if call_timeout is None:
+            _log(f"evidence budget spent; {name} and anything after it were not downloaded")
+            truncated = True
+            break
         dest = outdir / name
         part = dest.with_suffix(dest.suffix + ".part")
         try:
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
-            with urllib.request.urlopen(req, timeout = timeout) as resp:
+            with urllib.request.urlopen(req, timeout = call_timeout) as resp:
                 part.write_bytes(resp.read())
             # Only publish once it parses: a download killed mid-write leaves a
             # file of plausible size, which is evidence that looks present and
@@ -496,7 +573,11 @@ def fetch_evidence(
     log_path = outdir / "kernel.log"
     if listing.get("log"):
         log_path.write_text(listing["log"], encoding = "utf-8")
-    return {"notebooks": fetched, "log": log_path.name if log_path.exists() else None}
+    return {
+        "notebooks": fetched,
+        "log": log_path.name if log_path.exists() else None,
+        "truncated": truncated,
+    }
 
 
 def _flatten_log(raw: str) -> str:
@@ -753,13 +834,21 @@ def main() -> int:
             _log(f"{entry['slug']} terminal state: {entry['state']}")
         result["kernel_state"] = ",".join(k["state"] or "?" for k in live)
 
+        # ONE budget for the whole phase, shared by every kernel and started
+        # here, for the same reason the polling deadline is shared: the kernels
+        # are still billing and release() has not run yet. Per kernel it would
+        # scale with the kernel count, which is what the job deadline could not
+        # then be derived from. See EVIDENCE_BUDGET_SEC.
+        evidence_deadline = time.time() + EVIDENCE_BUDGET_SEC
         for entry in live:
             # One directory per kernel: Kaggle names the executed notebooks
             # after the payloads, so two kernels of a run would otherwise
             # overwrite each other's kernel.log.
             try:
                 entry["evidence"] = fetch_evidence(
-                    entry["slug"], outdir / entry["slug"].rsplit("/", 1)[-1]
+                    entry["slug"],
+                    outdir / entry["slug"].rsplit("/", 1)[-1],
+                    deadline = evidence_deadline,
                 )
                 _log(f"collected {entry['slug']}: {entry['evidence']}")
             except Exception as exc:  # noqa: BLE001

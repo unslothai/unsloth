@@ -350,7 +350,15 @@ jobs:
     #   so it does not stack on top of them          <=5400s  (--max-wait
     #                                                  below, minus the
     #                                                  pushes)
-    #   evidence download, two kernels                ~600s
+    #   evidence collection, ALL kernels together, which is why it does not
+    #   scale with the kernel count: launch.py starts ONE budget before the
+    #   first collection and clamps every listing page and download to what is
+    #   left of it                    EVIDENCE_BUDGET_SEC = 600s
+    #                        (this term used to be "300s per kernel", a number
+    #                         no code enforced: the listing alone could walk
+    #                         OUTPUT_PAGE_LIMIT pages at the 120s socket
+    #                         ceiling, 2400s for one kernel, and the runner was
+    #                         then killed before release() deleted anything)
     #   release(): every slug each push FILED, so up to PUSH_ATTEMPTS
     #   deletes per kernel at 555s                   <=4440s
     #   ----------------------------------------------------------------
@@ -429,11 +437,14 @@ jobs:
       #
       # torch from the CPU index and transformers WITHOUT it: the payload modules
       # the suites import need both to import at all, and the CPU wheel is a
-      # minute against a session that costs quota. Measured in a bare venv with
-      # exactly these three: 302 passed.
+      # minute against a session that costs quota. peft is here for the saved
+      # adapter checks, which ask PEFT itself whether the written
+      # adapter_config.json can be rebuilt into an adapter -- without it those
+      # tests importorskip, and a skipped check is one that cannot fail.
+      # Measured in a bare venv with exactly these four: 315 passed.
       - name: Test the harness
         run: |
-          python -m pip install --quiet pytest transformers
+          python -m pip install --quiet pytest transformers peft
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
           python -m pytest tests/kaggle -q
 

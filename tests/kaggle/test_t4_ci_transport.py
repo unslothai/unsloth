@@ -478,7 +478,7 @@ def _drive_main(
     monkeypatch.setattr(launch, "push", fake_push)
     monkeypatch.setattr(launch, "wait", fake_wait)
     monkeypatch.setattr(
-        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+        launch, "fetch_evidence", lambda slug, outdir, **kw: {"notebooks": [], "log": None}
     )
     monkeypatch.setattr(
         launch,
@@ -650,7 +650,7 @@ def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monk
     monkeypatch.setattr(launch, "_api", lambda: object())
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
-        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+        launch, "fetch_evidence", lambda slug, outdir, **kw: {"notebooks": [], "log": None}
     )
     monkeypatch.setattr(
         launch,
@@ -816,7 +816,7 @@ def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypa
     monkeypatch.setattr(launch, "push", _accepting_push("someuser/unsloth-t4-ci-abcd"))
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
-        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+        launch, "fetch_evidence", lambda slug, outdir, **kw: {"notebooks": [], "log": None}
     )
     monkeypatch.setattr(launch, "extract_reports", boom)
     monkeypatch.setattr(launch.subprocess, "run", fake_run)
@@ -857,7 +857,7 @@ def _drive_one_kernel(monkeypatch, tmp_path, fake_run):
     monkeypatch.setattr(launch, "push", _accepting_push("someuser/unsloth-t4-ci-abcd"))
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
-        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+        launch, "fetch_evidence", lambda slug, outdir, **kw: {"notebooks": [], "log": None}
     )
     monkeypatch.setattr(
         launch,
@@ -1036,3 +1036,211 @@ def test_a_payload_that_cannot_see_its_gpu_reports_instead_of_vanishing(tmp_path
     assert reports, "an unusable GPU produced no report at all"
     assert reports[0]["passed"] is False
     assert any("could not use its GPU" in f for f in reports[0]["failures"])
+
+
+# ------------------------------------------------------- evidence budget
+#
+# The phase between the last poll and release(). The kernels are still billing
+# here and nothing else deletes them, so a collection that outlasts the job
+# deadline is how a runner gets killed with kernels up. What follows is that
+# bound, exercised rather than restated.
+
+
+class _SlowPages:
+    """A `kernels/output` endpoint that paginates forever and answers slowly.
+
+    Both halves of the worst case in one stub: `hasNextPageToken` never clears,
+    so the listing walks its whole page limit, and every call sits until its
+    OWN timeout expires, which is what a socket at Kaggle's ceiling does.
+    """
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.calls: list[int] = []
+
+    def __call__(
+        self,
+        req,
+        timeout = None,
+    ):
+        self.calls.append(timeout)
+        self.clock.advance(timeout)
+        body = json.dumps(
+            {"files": [], "log": "", "hasNextPageToken": True, "nextPageToken": "more"}
+        ).encode()
+        return _Response(body)
+
+
+class _Response:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _Clock:
+    """A monotonic stand-in for time.time() that only moves when told."""
+
+    def __init__(self, start: float = 1000.0):
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_a_paginating_output_endpoint_cannot_outlast_the_evidence_budget(monkeypatch, tmp_path):
+    """The P1 this constant exists for.
+
+    Unbounded, one kernel's listing is OUTPUT_PAGE_LIMIT pages at the socket
+    ceiling -- 2400s -- and two kernels are 4800s against the 600s the job
+    deadline budgets for the whole phase. The runner is then killed here,
+    taking finish() -> release() with it, and the kernels it pushed keep
+    billing: the single outcome that deadline exists to prevent.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(launch.time, "time", clock)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    slow = _SlowPages(clock)
+    monkeypatch.setattr(launch.urllib.request, "urlopen", slow)
+
+    started = clock()
+    deadline = started + launch.EVIDENCE_BUDGET_SEC
+    listing = launch.list_outputs("someuser/k", timeout = 120, deadline = deadline)
+
+    spent = clock() - started
+    assert (
+        spent <= launch.EVIDENCE_BUDGET_SEC
+    ), f"the listing spent {spent}s against a {launch.EVIDENCE_BUDGET_SEC}s budget"
+    # Unbounded this is OUTPUT_PAGE_LIMIT x 120s; the budget is what stopped it.
+    assert len(slow.calls) < launch.OUTPUT_PAGE_LIMIT
+    assert all(t <= 120 for t in slow.calls)
+    assert listing["truncated"] is True, "an incomplete listing must say so"
+
+
+def test_the_evidence_budget_is_shared_by_every_kernel(monkeypatch, tmp_path):
+    """One budget for the phase, not one per kernel.
+
+    Per kernel the term scales with the kernel count, and the job deadline is
+    derived from a single number; the second kernel of a run whose first
+    kernel spent the budget collects nothing rather than doubling the bound.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(launch.time, "time", clock)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    monkeypatch.setattr(launch.urllib.request, "urlopen", _SlowPages(clock))
+
+    started = clock()
+    deadline = started + launch.EVIDENCE_BUDGET_SEC
+    for slug in ("someuser/a", "someuser/b"):
+        launch.fetch_evidence(slug, tmp_path / slug.split("/")[-1], deadline = deadline)
+    assert clock() - started <= launch.EVIDENCE_BUDGET_SEC
+
+
+def test_a_slow_notebook_download_cannot_outlast_the_evidence_budget(monkeypatch, tmp_path):
+    """Downloads are the other half: Kaggle caps neither their size nor count.
+
+    Each executed notebook is a 300s call and the listing decides how many
+    there are, so an endpoint offering twenty of them is 6000s of downloads
+    with nothing to stop them.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(launch.time, "time", clock)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+
+    files = [
+        {"fileName": f"nb{i}{launch.OUTPUT_SUFFIX}", "url": f"https://example.invalid/{i}"}
+        for i in range(20)
+    ]
+
+    def urlopen(req, timeout = None):
+        url = getattr(req, "full_url", "")
+        clock.advance(timeout)
+        if "kernels/output" in url:
+            return _Response(json.dumps({"files": files, "log": "x"}).encode())
+        return _Response(b"{}")
+
+    monkeypatch.setattr(launch.urllib.request, "urlopen", urlopen)
+    started = clock()
+    evidence = launch.fetch_evidence(
+        "someuser/k", tmp_path / "k", deadline = started + launch.EVIDENCE_BUDGET_SEC
+    )
+    spent = clock() - started
+    assert spent <= launch.EVIDENCE_BUDGET_SEC, f"downloads spent {spent}s"
+    assert len(evidence["notebooks"]) < len(files)
+    assert evidence["truncated"] is True
+
+
+def test_main_bounds_the_whole_evidence_phase_it_is_budgeted_for(monkeypatch, tmp_path):
+    """main() must actually hand the budget down, on the real call path.
+
+    A deadline the collection loop does not pass through is the bug with a
+    constant added to it, and release() runs AFTER this loop: every second
+    overspent here is a second the kernels keep billing with the job deadline
+    approaching.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(launch.time, "time", clock)
+    seen: list[float | None] = []
+
+    def fake_fetch(
+        slug,
+        outdir,
+        timeout = 300,
+        deadline = None,
+    ):
+        seen.append(deadline)
+        # Spend the whole budget on the first kernel.
+        clock.advance(launch.EVIDENCE_BUDGET_SEC)
+        return {"notebooks": [], "log": None, "truncated": True}
+
+    monkeypatch.setattr(
+        launch,
+        "push",
+        lambda nb, user, t, accelerator = "NvidiaTeslaT4", attempted = None: (
+            attempted.append(f"{user}/s{len(attempted)}"),
+            {"ok": True, "slug": attempted[-1], "attempts": list(attempted)},
+        )[1],
+    )
+    monkeypatch.setattr(launch, "wait", lambda api, slug, every, remaining: "COMPLETE")
+    monkeypatch.setattr(launch, "fetch_evidence", fake_fetch)
+    monkeypatch.setattr(
+        launch,
+        "extract_reports",
+        lambda outdir: [{"label": "control", "model": "m", "passed": True}],
+    )
+    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch.py",
+            "--notebook",
+            "k0.ipynb",
+            "--notebook",
+            "k1.ipynb",
+            "--user",
+            "someuser",
+            "--outdir",
+            str(tmp_path),
+            "--expect",
+            "1",
+        ],
+    )
+    started = clock()
+    assert launch.main() == 0
+    assert len(seen) == 2, "both kernels were collected"
+    assert seen[0] is not None, "main() never handed the collection a deadline"
+    assert seen[0] == seen[1], "the two kernels must share ONE budget, not get one each"
+    assert seen[0] - started <= launch.EVIDENCE_BUDGET_SEC

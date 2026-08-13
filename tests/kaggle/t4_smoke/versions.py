@@ -31,6 +31,22 @@ GOAL_PACKAGES = (
     "triton",
     "xformers",
     "datasets",
+    # The transitive runtime packages the canary and frontier resolutions are
+    # allowed to move, which are not optional extras here: the frontier leg
+    # installs transformers and trl WITH their dependencies precisely so pip
+    # repairs them, and legs.py records the resolution doing it -- "Would
+    # install datasets-5.0.1 huggingface_hub-1.27.0 transformers-5.15.0
+    # trl-1.9.2", and before that the two errors that forced the change,
+    # "tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1"
+    # and "safetensors>=0.8.0 is required, but found safetensors==0.7.0".
+    #
+    # Left out, a red canary attributable to one of them produced a comparison
+    # table with nothing in it that differed: the table showed the packages the
+    # leg names and the failure was in a package it moved. Attribution is the
+    # only reason to run the canary at all.
+    "tokenizers",
+    "safetensors",
+    "huggingface_hub",
     "unsloth",
     "unsloth_zoo",
 )
@@ -124,13 +140,45 @@ def pin_failures(pins: dict, resolved: dict) -> list[str]:
     control, and every canary-vs-control conclusion drawn from it would be
     wrong. A pin naming a package that is not installed is the same defect from
     the other side, so it is reported too.
+
+    "Not probed" is a THIRD outcome and is kept apart from "not installed".
+    ``resolved`` is whatever the caller asked ``resolved_versions`` about, so a
+    pin outside that list has no entry at all, and folding it in with "it is not
+    installed" is a failure invented about a package that may be installed and
+    correct. Callers derive the probe list from the pin file (see
+    ``versions_for_pins``) so this cannot normally happen; it is reported rather
+    than assumed away because the invented failure is indistinguishable from a
+    real one in a report.
     """
     failures = []
     for name, wanted in sorted(pins.items()):
-        entry = resolved.get(name)
-        got = entry.get("installed") if entry else None
+        if name not in resolved:
+            failures.append(
+                f"pinned {name}=={wanted} but no version of it was recorded, so "
+                f"whether the pin held is unknown"
+            )
+            continue
+        got = (resolved.get(name) or {}).get("installed")
         if got is None:
             failures.append(f"pinned {name}=={wanted} but it is not installed")
         elif got != wanted:
             failures.append(f"pinned {name}=={wanted} but {got} was resolved")
     return failures
+
+
+def versions_for_pins(
+    pins: dict,
+    packages = GOAL_PACKAGES,
+    *,
+    import_check = (),
+) -> dict:
+    """``resolved_versions`` over the goal list AND everything ``pins`` names.
+
+    The probe list is derived from the pin file rather than assumed to cover
+    it. Pinning a package the goal list does not carry used to make
+    ``pin_failures`` report it as not installed, since the lookup answered from
+    a table that was never asked about it: a control leg failing on a pin that
+    held perfectly.
+    """
+    ordered = list(packages) + [name for name in pins if name not in packages]
+    return resolved_versions(tuple(ordered), import_check = import_check)

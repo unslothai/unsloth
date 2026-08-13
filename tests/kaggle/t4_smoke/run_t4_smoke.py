@@ -90,6 +90,7 @@ from versions import (  # noqa: E402
     load_pins,
     pin_failures,
     resolved_versions,
+    versions_for_pins,
 )
 
 # MUST run before torch is imported anywhere: CUBLAS_WORKSPACE_CONFIG is read
@@ -253,21 +254,24 @@ def train_once(args, run_index: int) -> dict:
     resolved_revision = getattr(_config, "_commit_hash", None)
     _log(f"loaded {resolved_checkpoint} @ {resolved_revision}")
 
+    # Bound to a name so the saved config is checked against the adapter that
+    # was actually requested, rather than against a list repeated further down.
+    target_modules = [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.lora_r,
         lora_alpha = args.lora_alpha,
         lora_dropout = 0.0,  # nonzero dropout is one more RNG consumer
         bias = "none",
-        target_modules = [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
+        target_modules = target_modules,
         use_gradient_checkpointing = args.gradient_checkpointing,
         random_state = SEED,
     )
@@ -349,7 +353,14 @@ def train_once(args, run_index: int) -> dict:
     adapter_weights = [f for f in saved_files if f.startswith("adapter_model.")]
     if not adapter_weights:
         raise RuntimeError(f"no adapter weights in {adapter_dir}: {saved_files}")
-    saved_adapter = verify_saved_adapter(adapter_dir)
+    saved_adapter = verify_saved_adapter(
+        adapter_dir,
+        expected = {
+            "r": args.lora_r,
+            "lora_alpha": args.lora_alpha,
+            "target_modules": target_modules,
+        },
+    )
     _log(f"saved adapter: {json.dumps(saved_adapter)}")
 
     # Inference on the trained, in-memory model, greedy so the output is a
@@ -414,7 +425,70 @@ def train_once(args, run_index: int) -> dict:
     return result
 
 
-def verify_saved_adapter(adapter_dir) -> dict:
+def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
+    """Ask PEFT to rebuild the saved config, and check it describes THIS run.
+
+    ``json.loads`` succeeding is not the question anyone has about this file.
+    ``{}`` is valid JSON, so a save that wrote no LoRA fields at all read as
+    "config_readable" and the leg passed on an adapter nothing can load -- the
+    same shape as the tensor count that a randomly initialised ``lora_A``
+    satisfied. What is actually being asserted is "PEFT can reconstruct the
+    adapter", so it is asked of PEFT, on the path a reload takes.
+
+    That path is the mapping dispatch, not the base class:
+    ``PeftModel.from_pretrained`` does
+    ``PEFT_TYPE_TO_CONFIG_MAPPING[peft_type].from_pretrained(...)``, while
+    ``PeftConfig.from_pretrained`` alone returns a bare ``PeftConfig`` with
+    ``peft_type=None`` for ``{}`` and reports nothing wrong. Checked against
+    peft 0.20.0: only the dispatch raises, which is why it is what runs here.
+
+    ``expected`` is DERIVED, not restated: the caller passes the very arguments
+    it handed ``get_peft_model``, so a save that writes a well-formed config for
+    a DIFFERENT adapter than the one trained (a dropped ``target_modules``, a
+    rank that did not survive the round trip) is a difference rather than a
+    field list this function had to guess at.
+
+    Never raises; every outcome is a recorded key that ``saved_adapter_failures``
+    turns into a verdict.
+    """
+    out: dict = {}
+    try:
+        from peft import PEFT_TYPE_TO_CONFIG_MAPPING, PeftConfig
+
+        peft_type = PeftConfig.from_pretrained(str(adapter_dir)).peft_type
+        if peft_type is None:
+            raise ValueError(
+                "adapter_config.json names no peft_type, so PEFT cannot tell "
+                "which kind of adapter this is"
+            )
+        config = PEFT_TYPE_TO_CONFIG_MAPPING[peft_type].from_pretrained(str(adapter_dir))
+    except Exception as exc:  # noqa: BLE001
+        out["config_loadable"] = False
+        out["config_load_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        return out
+    out["config_loadable"] = True
+    out["config_peft_type"] = str(getattr(config, "peft_type", None))
+    differences: list[str] = []
+    unchecked: list[str] = []
+    for key, wanted in sorted((expected or {}).items()):
+        if not hasattr(config, key):
+            # "It does not say" is not "it differs": a PEFT version that
+            # renamed a field is recorded rather than turned into a failure.
+            unchecked.append(key)
+            continue
+        got = getattr(config, key)
+        if isinstance(wanted, (list, tuple, set)) or isinstance(got, (list, tuple, set)):
+            same = sorted(got or []) == sorted(wanted or [])
+        else:
+            same = got == wanted
+        if not same:
+            differences.append(f"{key}: trained with {wanted!r}, saved {got!r}")
+    out["config_differences"] = differences
+    out["config_unchecked"] = unchecked
+    return out
+
+
+def verify_saved_adapter(adapter_dir, expected: dict | None = None) -> dict:
     """Read the serialized adapter back and say what is in it.
 
     Everything downstream of the save runs on the in-memory model, so the only
@@ -447,6 +521,8 @@ def verify_saved_adapter(adapter_dir) -> dict:
     except Exception as exc:  # noqa: BLE001
         state["config_readable"] = False
         state["config_error"] = f"{type(exc).__name__}: {exc}"[:200]
+    if state["config_readable"]:
+        state.update(_reconstruct_adapter_config(adapter_dir, expected))
 
     safetensors_file = adapter_dir / "adapter_model.safetensors"
     bin_file = adapter_dir / "adapter_model.bin"
@@ -503,6 +579,19 @@ def saved_adapter_failures(state: dict) -> list[str]:
         failures.append(
             f"the saved adapter's adapter_config.json could not be read, so "
             f"nothing can load it: {state.get('config_error')}"
+        )
+    # Syntactically valid JSON is not a loadable adapter: `{}` parses, and used
+    # to pass here, leaving the leg green on a file PEFT cannot reconstruct.
+    if state.get("config_loadable") is False:
+        failures.append(
+            f"the saved adapter's adapter_config.json parses but PEFT cannot "
+            f"rebuild an adapter from it, so reloading this directory fails: "
+            f"{state.get('config_load_error')}"
+        )
+    if state.get("config_differences"):
+        failures.append(
+            f"the saved adapter_config.json describes a different adapter than "
+            f"the one that was trained: {state['config_differences']}"
         )
     if state.get("tensors") is None:
         failures.append(
@@ -663,6 +752,7 @@ def check_reference(
     model: str | None = None,
     resolved_checkpoint: str | None = None,
     resolved_revision: str | None = None,
+    environment: dict | None = None,
 ) -> dict:
     """Compare against a committed reference. Never an equality check.
 
@@ -681,8 +771,19 @@ def check_reference(
     invalidate the file, so ``config``, ``model`` and the resolved checkpoint
     are compared under the same refuse-before-comparing rule.
 
-    All four are optional and default to not-compared, so an older caller and an
-    older reference both keep working: a key the reference does not carry is
+    ``environment`` is the same rule applied to the HARDWARE, which is the one
+    thing the reference records about itself that nothing compared. The file
+    carries ``environment.gpu_name`` and ``gpu_capability`` -- "Tesla T4",
+    "sm_75" -- because a loss trace belongs to the card it was captured on: the
+    T4 has no bf16 and resolves attention to xformers, so the same code on
+    another card produces a different curve, and band-checking across them
+    reports a hardware difference as a code regression. The requirement is
+    DERIVED from the reference's own environment block rather than restated as
+    "must be a T4", so a reference recaptured on other hardware moves the gate
+    with it.
+
+    All of them are optional and default to not-compared, so an older caller and
+    an older reference both keep working: a key the reference does not carry is
     listed in ``config_unchecked`` rather than treated as a mismatch. "It does
     not say" is neither "it differs" nor "it matches".
     """
@@ -723,6 +824,43 @@ def check_reference(
             "per-step traces are not comparable. Regenerate the reference "
             "at the new step count (references/README.md) rather than "
             "widening the band."
+        )
+        return verdict
+
+    # The hardware, before any number is compared and on the same terms as the
+    # step count. A trace is of one card: the T4 has no bf16 and resolves
+    # attention to xformers, so another GPU moves the curve for reasons that
+    # have nothing to do with the code under test, and the deviations would be
+    # reported as a regression. Only the count of GPUs was ever checked, on the
+    # kernel, which cannot see this file at all.
+    ref_env = ref.get("environment") if isinstance(ref.get("environment"), dict) else {}
+    hardware_pairs: list[tuple[str, Any, Any]] = []
+    for key in ("gpu_name", "gpu_capability"):
+        expected = ref_env.get(key)
+        observed = (environment or {}).get(key)
+        if expected is None and observed is None:
+            continue
+        if expected is None or observed is None:
+            verdict["config_unchecked"].append(key)
+            continue
+        hardware_pairs.append((key, expected, observed))
+    hardware_differences = [
+        f"{key}: reference {expected!r}, this run {observed!r}"
+        for key, expected, observed in hardware_pairs
+        if expected != observed
+    ]
+    if hardware_differences:
+        verdict["status"] = "hardware_mismatch"
+        verdict["config_differences"] = hardware_differences
+        verdict["note"] = (
+            f"{reference_path.name} was captured on "
+            f"{ref_env.get('gpu_name')} ({ref_env.get('gpu_capability')}) and "
+            f"this run is on {(environment or {}).get('gpu_name')} "
+            f"({(environment or {}).get('gpu_capability')}). The trace is of "
+            "that card -- fp16 without bf16, xformers attention -- so the "
+            "numbers are not comparable and any deviation here would be the "
+            "hardware, not the code. Run this leg on the reference's card, or "
+            "recapture the reference (references/README.md)."
         )
         return verdict
 
@@ -901,6 +1039,10 @@ def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
         "reference_step_count_unknown",
         "config_mismatch",
         "step_mismatch",
+        # The card the trace was captured on. Same rule as the settings: a
+        # band checked across hardware succeeds arithmetically and means
+        # nothing, and its deviations read as a code regression.
+        "hardware_mismatch",
     ):
         return [
             "refusing to band-check against a reference that is not for "
@@ -1176,8 +1318,11 @@ def main() -> int:
 
     # 0. the pins, if this leg claims to be a control
     if args.pins:
-        resolved = resolved_versions(GOAL_PACKAGES)
         pins = load_pins(args.pins)
+        # The probe list is derived from the pin file: a pin outside
+        # GOAL_PACKAGES was looked up in a table nobody had asked about it and
+        # came back "not installed".
+        resolved = versions_for_pins(pins)
         broken = pin_failures(pins, resolved)
         report["pins"] = {"file": args.pins, "requested": pins, "failures": broken}
         failures += broken
@@ -1243,6 +1388,7 @@ def main() -> int:
             model = args.model,
             resolved_checkpoint = runs[0].get("resolved_checkpoint"),
             resolved_revision = runs[0].get("resolved_revision"),
+            environment = env,
         )
         report["reference_check"] = ref
         failures += reference_failures(ref, args.rel_tol)

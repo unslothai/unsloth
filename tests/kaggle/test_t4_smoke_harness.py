@@ -2216,7 +2216,12 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
     source = WORKFLOW.read_text(encoding = "utf-8")
     max_wait = int(re.search(r"--max-wait (\d+)", source).group(1))
     kernels = int(re.search(r"--kernels (\d+)", source).group(1))
-    evidence = kernels * 300
+    # ONE budget for every kernel's evidence, read from the constant launch.py
+    # enforces rather than restated here. "300s per kernel" was a term nobody
+    # multiplied out: OUTPUT_PAGE_LIMIT listing pages at the 120s socket
+    # ceiling is 2400s for a single kernel, so the phase could outlast the job
+    # and the runner would be killed before release() deleted anything.
+    evidence = _launcher_constant("EVIDENCE_BUDGET_SEC")
     # release() reconciles every slug filed: one per push attempt, per kernel.
     deletions = kernels * push_attempts * one_delete
 
@@ -2636,6 +2641,73 @@ def test_the_goal_packages_are_the_ones_this_ci_exists_to_watch():
     from versions import GOAL_PACKAGES
     for package in ("trl", "transformers", "accelerate", "peft", "bitsandbytes", "torch", "vllm"):
         assert package in GOAL_PACKAGES, package
+
+
+def test_the_packages_the_upgrade_groups_move_are_recorded(tmp_path):
+    """Attribution is the only reason the canary exists.
+
+    The frontier leg installs transformers and trl WITH dependencies, and
+    legs.py records what that resolution moved: datasets, huggingface_hub, and
+    the tokenizers/safetensors ceilings that forced the change. A red leg
+    caused by one of them produced a comparison table in which nothing
+    differed, because the table only listed the packages the leg NAMES.
+    """
+    from versions import GOAL_PACKAGES
+    for package in ("tokenizers", "safetensors", "huggingface_hub", "datasets"):
+        assert package in GOAL_PACKAGES, package
+
+
+def test_the_transitive_packages_are_the_ones_the_legs_document_moving():
+    """Derived from legs.py rather than a list someone kept in step by hand."""
+    legs_source = (CI_DIR / "legs.py").read_text(encoding = "utf-8")
+    from versions import GOAL_PACKAGES
+
+    for package in ("tokenizers", "safetensors", "huggingface_hub"):
+        assert package in legs_source, (
+            f"{package} is in GOAL_PACKAGES but legs.py no longer records a "
+            f"resolution moving it"
+        )
+        assert package in GOAL_PACKAGES
+
+
+def test_a_pin_outside_the_goal_list_is_not_reported_as_missing(tmp_path):
+    """The lookup is derived from the pin file, not from a fixed table.
+
+    `pin_failures` reads whatever `resolved_versions` was asked about, so a pin
+    naming a package the goal list does not carry came back "not installed" for
+    a package that is installed and correct: an invented failure on a control
+    leg, indistinguishable in the report from a pin that really broke.
+    """
+    from versions import load_pins, pin_failures, versions_for_pins
+
+    pin_file = tmp_path / "pins.txt"
+    # A package certain to be installed wherever this suite runs, and certain
+    # not to be in GOAL_PACKAGES.
+    import pytest as _pytest
+
+    pin_file.write_text(f"pytest=={_pytest.__version__}\n", encoding = "utf-8")
+    pins = load_pins(pin_file)
+
+    from versions import GOAL_PACKAGES, resolved_versions
+
+    assert "pytest" not in GOAL_PACKAGES
+    stale = pin_failures(pins, resolved_versions(GOAL_PACKAGES))
+    assert (
+        stale and "unknown" in stale[0]
+    ), "a pin nobody probed must not be reported as a version that differs"
+
+    assert pin_failures(pins, versions_for_pins(pins)) == []
+
+
+def test_a_pin_that_really_broke_is_still_a_failure(tmp_path):
+    """The widening must not make the check unfailable."""
+    from versions import load_pins, pin_failures, versions_for_pins
+
+    pin_file = tmp_path / "pins.txt"
+    pin_file.write_text("pytest==0.0.1\n", encoding = "utf-8")
+    pins = load_pins(pin_file)
+    failures = pin_failures(pins, versions_for_pins(pins))
+    assert failures and "was resolved" in failures[0], failures
 
 
 def test_a_distribution_whose_name_is_not_its_import_name_is_still_found():

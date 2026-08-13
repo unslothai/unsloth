@@ -294,6 +294,79 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
 
+def test_a_syntactically_valid_but_empty_adapter_config_is_not_a_pass(tmp_path):
+    """`{}` is valid JSON and PEFT cannot rebuild an adapter from it.
+
+    The check used to be `json.loads` succeeding, which `{}` and `[]` both do,
+    so a save that wrote no LoRA fields at all read as "config_readable" and
+    the leg passed on a directory nothing can load. PEFT resolves the config
+    class from `peft_type` and raises when it is absent, so the question is
+    asked of PEFT rather than of a field list this file guessed at.
+    """
+    pytest.importorskip("peft")
+    pytest.importorskip("safetensors")
+    import torch
+    from safetensors.torch import save_file
+
+    from run_t4_smoke import saved_adapter_failures, verify_saved_adapter
+
+    save_file(
+        {"q_proj.lora_B.weight": torch.ones(8, 16) * 0.01},
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    for body in ("{}", "[]"):
+        (tmp_path / "adapter_config.json").write_text(body)
+        state = verify_saved_adapter(tmp_path)
+        assert state["config_readable"] is True, "it IS readable JSON; that was never the question"
+        assert state["config_loadable"] is False, body
+        failures = saved_adapter_failures(state)
+        assert failures and "PEFT cannot rebuild an adapter from it" in failures[0], body
+
+
+def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tmp_path):
+    """A well-formed config that does not describe THIS run.
+
+    Loadable is not enough on its own: a save that dropped `target_modules` or
+    wrote a rank the run never used produces a file PEFT rebuilds happily into
+    the wrong adapter. The expectation is the argument list the payload handed
+    `get_peft_model`, so this compares the save against the request rather than
+    against a copy of it.
+    """
+    pytest.importorskip("peft")
+    pytest.importorskip("safetensors")
+    import torch
+    from safetensors.torch import save_file
+
+    from run_t4_smoke import saved_adapter_failures, verify_saved_adapter
+
+    save_file(
+        {"q_proj.lora_B.weight": torch.ones(8, 16) * 0.01},
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    requested = {"r": 16, "lora_alpha": 16, "target_modules": ["q_proj", "v_proj"]}
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "peft_type": "LORA",
+                "r": 8,
+                "lora_alpha": 16,
+                "target_modules": ["q_proj", "v_proj"],
+            }
+        )
+    )
+    state = verify_saved_adapter(tmp_path, expected = requested)
+    assert state["config_loadable"] is True
+    assert state["config_differences"], state
+    failures = saved_adapter_failures(state)
+    assert failures and "different adapter than the one that was trained" in failures[0]
+
+    # The same file, saved as requested: no difference and no failure.
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", **requested}))
+    good = verify_saved_adapter(tmp_path, expected = requested)
+    assert good["config_differences"] == []
+    assert saved_adapter_failures(good) == []
+
+
 # ------------------------------------------ run_t4_smoke.py: the reference
 
 
@@ -314,6 +387,102 @@ def _write_reference(
         ),
         encoding = "utf-8",
     )
+
+
+def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path):
+    """The committed reference records the card it was captured on.
+
+    references/t4_qwen2.5-0.5b.json carries gpu_name "Tesla T4" and
+    gpu_capability "sm_75" because a loss trace belongs to its hardware: no
+    bf16 and xformers attention on sm_75. Nothing compared it, so a run on
+    another GPU was band-checked against a T4 trace and its deviations came
+    back as a code regression. The only hardware check anywhere was the GPU
+    COUNT, on the kernel, which never reads this file.
+    """
+    from run_t4_smoke import check_reference, reference_failures
+
+    ref = tmp_path / "ref.json"
+    ref.write_text(
+        json.dumps(
+            {
+                "config": REFERENCE_CONFIG,
+                "model": "unsloth/Qwen2.5-0.5B-Instruct",
+                "environment": {"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
+                "metrics": [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
+    verdict = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        config = REFERENCE_CONFIG,
+        model = "unsloth/Qwen2.5-0.5B-Instruct",
+        environment = {"gpu_name": "Tesla P100-PCIE-16GB", "gpu_capability": "sm_60"},
+    )
+    assert verdict["status"] == "hardware_mismatch", verdict
+    # Refused BEFORE any number is compared: the metrics here are identical to
+    # the reference, so a pass would look like a healthy run on the wrong card.
+    assert verdict["deviations"] == []
+    failures = reference_failures(verdict, 0.10)
+    assert failures and "not for this run" in failures[0]
+    assert "Tesla P100-PCIE-16GB" in failures[0]
+
+    # Same reference, the card it was captured on: compared normally.
+    same = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        config = REFERENCE_CONFIG,
+        model = "unsloth/Qwen2.5-0.5B-Instruct",
+        environment = {"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
+    )
+    assert same["status"] == "ok", same
+    assert reference_failures(same, 0.10) == []
+
+
+def test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch(tmp_path):
+    """ "It does not say" is not "it differs", the rule the settings follow.
+
+    An older reference captured before the environment block carried a GPU
+    name must keep working rather than fail every run; the skip is recorded so
+    it cannot read as a comparison that passed.
+    """
+    from run_t4_smoke import check_reference, reference_failures
+
+    ref = tmp_path / "ref.json"
+    _write_reference(ref, config = REFERENCE_CONFIG)
+    observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
+    verdict = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        config = REFERENCE_CONFIG,
+        environment = {"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
+    )
+    assert verdict["status"] == "ok", verdict
+    assert "gpu_name" in verdict["config_unchecked"]
+    assert reference_failures(verdict, 0.10) == []
+
+
+def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
+    """The gate is derived from the file, so the file has to carry it.
+
+    A reference recaptured without gpu_name silently turns the check above
+    into a skip, which is the shape of every defect this suite keeps finding.
+    """
+    reference = SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json"
+    environment = json.loads(reference.read_text(encoding = "utf-8"))["environment"]
+    assert environment["gpu_name"] == "Tesla T4"
+    assert environment["gpu_capability"] == "sm_75"
 
 
 REFERENCE_CONFIG = {
