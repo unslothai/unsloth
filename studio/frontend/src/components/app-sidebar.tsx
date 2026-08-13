@@ -337,6 +337,12 @@ function preloadSilently(request: Promise<unknown>): void {
  * tooltip under a dropdown is blocked while the menu owns the screen, so the
  * row stays enabled, refuses the select itself, and drives a controlled tooltip
  * off a pointer-events-none anchor (as the MCP rows do).
+ *
+ * The reason is carried twice over. The tooltip hangs off an aria-hidden
+ * anchor, so it is decoration a screen reader never reaches, and it opens on
+ * hover, which a touch device does not have: `title` gives the row itself an
+ * accessible description, and selecting it (a tap, or Enter) opens the hint
+ * instead of doing nothing at all.
  */
 function OpenChatFolderUnavailableItem() {
   const [hintOpen, setHintOpen] = useState(false);
@@ -344,8 +350,12 @@ function OpenChatFolderUnavailableItem() {
   return (
     <DropdownMenuItem
       aria-disabled={true}
+      title="Opening the folder needs the desktop app. In a browser, save a file from the card that created it."
       className="relative opacity-50"
-      onSelect={(event) => event.preventDefault()}
+      onSelect={(event) => {
+        event.preventDefault();
+        setHintOpen(true);
+      }}
       onPointerEnter={() => setHintOpen(true)}
       onPointerLeave={() => setHintOpen(false)}
       onFocus={() => setHintOpen(true)}
@@ -1826,12 +1836,17 @@ export function AppSidebar() {
                         // Every pane is read: a compare row moved into a project can
                         // still hold one folder per pane, and there is no single
                         // folder to offer for it.
+                        // Deliberately not caught per pane: a read that failed
+                        // is not a chat that never ran a tool, and treating it
+                        // as one falls back to current membership -- the very
+                        // answer the recorded id exists to override. Let it
+                        // reach the report below instead.
                         const recorded = await Promise.all(
                           (threadIds.length > 0 ? threadIds : [item.id]).map(
                             (threadId) =>
-                              listStoredChatMessages(threadId)
-                                .then(recordedSandboxSessionId)
-                                .catch(() => undefined),
+                              listStoredChatMessages(threadId).then(
+                                recordedSandboxSessionId,
+                              ),
                           ),
                         );
                         const distinct = [...new Set(recorded.filter(Boolean))];

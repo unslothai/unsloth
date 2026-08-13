@@ -115,7 +115,12 @@ test("a result without a session id is skipped rather than read as one", () => {
       role: "assistant",
       createdAt: 2,
       content: [
-        { type: "tool-call", toolCallId: "c", toolName: "python", result: "plain text" },
+        {
+          type: "tool-call",
+          toolCallId: "c",
+          toolName: "python",
+          result: "plain text",
+        },
         {
           type: "tool-call",
           toolCallId: "d",
@@ -126,4 +131,81 @@ test("a result without a session id is skipped rather than read as one", () => {
     } as unknown as Message,
   ];
   assert.equal(recordedSandboxSessionId(messages), undefined);
+});
+
+test("content that is not an array is skipped rather than thrown on", () => {
+  // Legacy rows and imported chats carry a plain string here, and this runs
+  // from a menu handler: throwing would take the click, not just the answer.
+  const messages = [
+    { id: "m1", threadId: "t", role: "user", createdAt: 1, content: "hello" },
+    { id: "m2", threadId: "t", role: "assistant", createdAt: 2, content: null },
+    { id: "m3", threadId: "t", role: "assistant", createdAt: 3 },
+  ] as unknown as Message[];
+  assert.equal(recordedSandboxSessionId(messages), undefined);
+});
+
+test("a null part inside a real content array does not stop the scan", () => {
+  const messages = [
+    {
+      id: "m2",
+      threadId: "t",
+      role: "assistant",
+      createdAt: 2,
+      content: [
+        null,
+        {
+          type: "tool-call",
+          toolCallId: "c",
+          toolName: "terminal",
+          result: { text: "ok", images: [], sessionId: "thread-1", files: [] },
+        },
+        null,
+      ],
+    } as unknown as Message,
+  ];
+  assert.equal(recordedSandboxSessionId(messages), "thread-1");
+});
+
+test("a tool-result shaped part is not mistaken for a tool call", () => {
+  // Only "tool-call" parts carry the result this reads. A part typed
+  // "tool-result" is a different shape and must not be half-read.
+  const messages = [
+    {
+      id: "m2",
+      threadId: "t",
+      role: "assistant",
+      createdAt: 2,
+      content: [
+        {
+          type: "tool-result",
+          toolName: "python",
+          result: { text: "ok", images: [], sessionId: "thread-1", files: [] },
+        },
+      ],
+    } as unknown as Message,
+  ];
+  assert.equal(recordedSandboxSessionId(messages), undefined);
+});
+
+test("a long history answers from the newest message without walking it all", () => {
+  // The scan runs on a menu click, over a chat that can hold thousands of
+  // turns. It walks backwards, so the answer is the newest recorded session
+  // and the cost is one part when the latest message carries it.
+  const messages: Message[] = [];
+  for (let i = 0; i < 5000; i += 1) {
+    messages.push({
+      id: `m${i}`,
+      threadId: "t",
+      role: "user",
+      createdAt: i,
+      content: [{ type: "text", text: "x" }],
+    } as unknown as Message);
+  }
+  messages.push(toolMessage("newest-session"));
+  const started = performance.now();
+  assert.equal(recordedSandboxSessionId(messages), "newest-session");
+  assert.ok(
+    performance.now() - started < 50,
+    "the newest message must answer it",
+  );
 });
