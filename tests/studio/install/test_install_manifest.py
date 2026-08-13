@@ -298,8 +298,7 @@ def test_a_completed_manifest_outranks_a_stale_torch_pin_marker(install_root, re
         torch_index_url = "https://download.pytorch.org/whl/rocm7.2",
     )
     assert (
-        im.recorded_torch_index_url(root = install_root)
-        == "https://download.pytorch.org/whl/rocm7.2"
+        im.recorded_torch_index_url(root = install_root) == "https://download.pytorch.org/whl/rocm7.2"
     )
 
 
@@ -313,7 +312,9 @@ def test_set_torch_index_marker_clears_itself_and_never_raises(install_root):
     assert im.recorded_torch_index_url(root = install_root) is None
 
     # Absent directory: must degrade quietly, it runs mid-install.
-    im.set_torch_index_marker("https://download.pytorch.org/whl/cpu", root = install_root / "no" / "such")
+    im.set_torch_index_marker(
+        "https://download.pytorch.org/whl/cpu", root = install_root / "no" / "such"
+    )
     assert im.recorded_torch_index_url(root = install_root / "no" / "such") is None
 
 
