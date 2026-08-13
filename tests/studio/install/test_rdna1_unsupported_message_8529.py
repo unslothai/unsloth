@@ -1133,6 +1133,40 @@ class TestVulkanAdvice:
                 "UNSLOTH_LLAMA_CPP_BACKEND" in line
             ), f"README teaches the legacy spelling in a copy-paste block: {line!r}"
 
+    def test_readme_does_not_promise_vulkan_to_macos(self):
+        """The block sits under a combined "macOS, Linux, WSL" heading, but macOS has
+        no Vulkan llama.cpp bundle: install_llama_prebuilt.py logs that the variable is
+        ignored and installs the Metal build instead. An Intel Mac carrying one of these
+        very cards (the 16-inch MacBook Pro shipped Radeon Pro 5300M/5500M/5600M, all in
+        the table above) would follow the documented command and get nothing.
+        """
+        prebuilt = (PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py").read_text(
+            encoding = "utf-8"
+        )
+        assert "ignored on macOS" in prebuilt, (
+            "the macOS branch this test documents was renamed; re-read it before "
+            "trusting the README assertion below"
+        )
+        src = _normalised(PACKAGE_ROOT / "README.md")
+        paragraph = next(
+            (
+                para
+                for para in src.split("\n\n")
+                if "no ROCm PyTorch wheels for" in para and "Polaris" in para
+            ),
+            None,
+        )
+        assert paragraph, "README: the uncovered-AMD Vulkan paragraph was not found"
+        assert re.search(r"\bLinux\b.{0,12}\bWSL\b", paragraph), (
+            "README: the Vulkan-for-uncovered-AMD paragraph sits under a heading that "
+            "also covers macOS, so it has to name the platforms it is true for: "
+            f"{paragraph!r}"
+        )
+        after = src.split(paragraph, 1)[1]
+        assert re.search(r"macOS[^\n]*Metal", after), (
+            "README: nothing tells a macOS reader what happens there instead"
+        )
+
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────
 

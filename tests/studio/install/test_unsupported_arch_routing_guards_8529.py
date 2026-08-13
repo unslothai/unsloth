@@ -575,3 +575,104 @@ def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
         )
     # Positive control: the arm really does name the arches it is supposed to route.
     assert "gfx1151" in named, f"{source_path.name}: extraction matched nothing useful"
+
+
+# ── The CPU summary must blame the card the fallback is actually about ───────
+
+
+_SUMMARY_GUARD_ANCHOR = '_covered_disp_gfx=$(_infer_linux_amd_gfx_arch'
+
+
+def _summary_guard_snippet() -> str:
+    """The peer guard as install.sh ships it, from its anchor to the `fi` that closes
+    the else. Extracted rather than retyped: gutting it in install.sh fails here."""
+    src = _INSTALL_SH.read_text(encoding = "utf-8").replace("\r\n", "\n")
+    start = src.find(_SUMMARY_GUARD_ANCHOR)
+    assert start != -1, "install.sh: the CPU summary's peer guard was not found"
+    end = src.find('if [ -n "$_unsup_disp_gfx" ]; then', start)
+    assert end != -1, "install.sh: the guard no longer feeds the unsupported-card arm"
+    return src[start:end]
+
+
+def _run_summary_guard(tmp_path, lspci_lines: "list[str]") -> str:
+    """Which of the two CPU-summary arms wins on a host whose lspci says this."""
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    funcs = "\n".join(
+        _sh_function_body(source, name)
+        for name in (
+            "_infer_amd_gfx_arch_from_gpu_name",
+            "_infer_unsupported_amd_gfx_arch_from_gpu_name",
+            "_infer_linux_unsupported_amd_gfx_arch",
+            "_infer_linux_amd_gfx_arch",
+            "_amd_arch_index_family_for_gfx",
+            "_amd_gpu_present_via_pci",
+        )
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok = True)
+    fixture = tmp_path / "lspci.txt"
+    fixture.write_text("\n".join(lspci_lines) + "\n", encoding = "utf-8")
+    lspci = bin_dir / "lspci"
+    lspci.write_text(f'#!/bin/sh\ncat "{fixture}"\n', encoding = "utf-8")
+    lspci.chmod(0o755)
+    script = (
+        f"{funcs}\n{_summary_guard_snippet()}\n"
+        'if [ -n "$_unsup_disp_gfx" ]; then echo "UNCOVERED $_unsup_disp_gfx"; '
+        'else echo GENERIC; fi\n'
+    )
+    out = subprocess.run(
+        ["sh", "-c", script],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 60,
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    return out.stdout.strip()
+
+
+_RX_5700 = (
+    "01:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. "
+    "[AMD/ATI] Navi 10 [Radeon RX 5700/5700 XT] [1002:731f]"
+)
+_RX_580 = (
+    "01:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. "
+    "[AMD/ATI] Ellesmere [Radeon RX 580] [1002:67df]"
+)
+_RX_7900 = (
+    "02:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. "
+    "[AMD/ATI] Navi 31 [Radeon RX 7900 XT/7900 XTX] [1002:744c]"
+)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this host")
+class TestInstallShCpuSummaryBlamesTheRightCard:
+    """The end-of-run summary reaches its lspci lookup even when the arch read fine, so
+    unlike the arm in get_torch_index_url it is not covered by an empty-probe gate. A
+    host pairing an RX 5700 with an RX 7900 lands on CPU whenever the 7900's ROCm is too
+    old, and naming the 5700 there would replace the upgrade advice with advice that is
+    false for the card that caused the fallback."""
+
+    @pytest.mark.parametrize("lines", [[_RX_5700], [_RX_580]], ids = ["rx5700", "rx580"])
+    def test_a_lone_uncovered_card_is_still_named(self, tmp_path, lines):
+        """The positive control, and the case the whole PR exists for."""
+        verdict = _run_summary_guard(tmp_path, lines)
+        assert verdict.startswith("UNCOVERED"), (
+            f"install.sh's CPU summary no longer names the uncovered card: {verdict!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "lines",
+        [[_RX_5700, _RX_7900], [_RX_7900, _RX_5700], [_RX_580, _RX_7900]],
+        ids = ["5700-first", "7900-first", "580-plus-7900"],
+    )
+    def test_a_covered_peer_keeps_the_summary_quiet(self, tmp_path, lines):
+        verdict = _run_summary_guard(tmp_path, lines)
+        assert verdict == "GENERIC", (
+            "install.sh's CPU summary blamed an uncovered card on a host that also has "
+            f"a covered one, so the real reason for the CPU fallback is hidden: {verdict!r}"
+        )
+
+    def test_a_covered_card_alone_says_nothing_about_uncovered_arches(self, tmp_path):
+        assert _run_summary_guard(tmp_path, [_RX_7900]) == "GENERIC"
