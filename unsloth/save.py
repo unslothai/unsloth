@@ -3387,6 +3387,51 @@ def _gguf_output_directory(save_directory):
     return f"{save_directory}_gguf"
 
 
+def _filesystem_id(path):
+    """Device id of the filesystem `free_bytes(path)` would measure, or None.
+
+    Mirrors `free_bytes`: lexical `abspath`, so a symlinked directory keeps
+    its own name, then the nearest existing ancestor, because the GGUF
+    sibling does not exist yet. `os.stat` follows symlinks, so this is the
+    device `shutil.disk_usage` reports for the very same path. Windows fills
+    `st_dev` from the volume serial number; a zero is the platform declining
+    to answer and counts as unmeasurable.
+    """
+    try:
+        probe = os.path.abspath(os.path.expanduser(str(path)))
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        return os.stat(probe).st_dev or None
+    except Exception:
+        return None
+
+
+def _on_separate_filesystems(directory, sibling):
+    """True only when both paths are identified AND on different filesystems.
+
+    Unmeasurable is False rather than a guess, so a path nothing can identify
+    leaves the caller charging one filesystem for the whole export, which is
+    what it did before this existed. Device ids and not "the sibling reports
+    less free space": two `disk_usage` calls on ONE filesystem can disagree
+    when something else writes between them, and reading that as two
+    filesystems would charge a single-filesystem export the larger of the two
+    halves instead of their sum.
+
+    Separate from `_same_filesystem`, which answers a different question for
+    the torchao redirect: that one compares two paths that both exist and
+    raises otherwise, and its caller wants the raise. The GGUF sibling does
+    not exist yet.
+    """
+    left = _filesystem_id(directory)
+    right = _filesystem_id(sibling)
+    if left is None or right is None:
+        return False
+    return left != right
+
+
 def _preflight_gguf_disk(
     model,
     save_directory,
@@ -3505,47 +3550,76 @@ def _preflight_gguf_disk(
     # The quants and the intermediate GGUF are written to a SIBLING of
     # `save_directory`, so they live on the parent's filesystem. That is the
     # same disk `free` just measured unless `save_directory` is itself a mount
-    # point or a symlink onto another one, and then the aggregate above was
-    # measured against a filesystem the GGUF files never touch. Only a
-    # strictly tighter sibling can change the outcome, so on one filesystem
-    # this is inert, and an unmeasurable path leaves the decision exactly as
-    # it was.
+    # point or a symlink onto another one. When it is, each filesystem is
+    # charged only for what is written to it: the checkpoint here, the
+    # conversion and the quants there. Charging the aggregate to either one
+    # refuses a split export whose every artefact has room.
+    #
+    # One predicate, computed once, so the two halves cannot disagree about
+    # whether the storage is split, and an unmeasurable path leaves every
+    # decision below exactly as it was.
     gguf_directory = _gguf_output_directory(save_directory)
     gguf_free = free_bytes(gguf_directory)
-    if free is not None and gguf_free is not None and gguf_free < free and gguf_free < need_sibling:
-        raise RuntimeError(
-            f"Unsloth: Not enough disk space to convert to GGUF.\n"
-            f"The GGUF files are written to `{gguf_directory}`, which is on a different "
-            f"filesystem from `{save_directory}` and has {gguf_free / 1024**3:.1f}GB free; "
-            f"the intermediate `{first_conversion}` conversion and the quants need about "
-            f"{need_sibling / 1024**3:.1f}GB there.\n"
-            f"Options: free space on that filesystem, export fewer quantization methods, or "
-            f"point `save_directory` at a path whose parent directory has the room.\n"
-            f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
-        )
+    separate_storage = (
+        free is not None
+        and gguf_free is not None
+        and _on_separate_filesystems(save_directory, gguf_directory)
+    )
 
-    if free is None or free >= need_with_cache:
+    need_here = need
+    need_here_with_cache = need_with_cache
+    if separate_storage:
+        # `need_sibling` is the same estimate without the checkpoint, so the
+        # difference is the checkpoint and nothing else. An estimator that
+        # could not size the sibling leaves it 0, and then this is `need`:
+        # the previous behaviour, not a relaxed one.
+        need_here = max(0, need - need_sibling)
+        need_here_with_cache = max(0, need_with_cache - need_sibling)
+        # Not gated on the sibling being the TIGHTER of the two any more.
+        # Now that the checkpoint is charged only its own portion, a sibling
+        # with more free space than `save_directory` and still less than
+        # `need_sibling` has to be refused here, because the aggregate
+        # comparison that used to catch it no longer exists.
+        if gguf_free < need_sibling:
+            raise RuntimeError(
+                f"Unsloth: Not enough disk space to convert to GGUF.\n"
+                f"The GGUF files are written to `{gguf_directory}`, which is on a different "
+                f"filesystem from `{save_directory}` and has {gguf_free / 1024**3:.1f}GB free; "
+                f"the intermediate `{first_conversion}` conversion and the quants need about "
+                f"{need_sibling / 1024**3:.1f}GB there.\n"
+                f"Options: free space on that filesystem, export fewer quantization methods, or "
+                f"point `save_directory` at a path whose parent directory has the room.\n"
+                f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+            )
+
+    if free is None or free >= need_here_with_cache:
         return save_directory, True
 
-    if free >= need:
+    if free >= need_here:
         if prewarm_possible:
             print(
                 f"Unsloth: Skipping the Hugging Face cache pre-warm - "
                 f"{free / 1024**3:.1f}GB free is enough for this GGUF export "
-                f"(~{need / 1024**3:.1f}GB) but not for a cached copy of the base "
+                f"(~{need_here / 1024**3:.1f}GB) but not for a cached copy of the base "
                 f"model as well. The next export will download the base again."
             )
         return save_directory, False
 
     raise RuntimeError(
         f"Unsloth: Not enough disk space to convert to GGUF.\n"
-        f"The export needs about {need / 1024**3:.1f}GB on the filesystem holding "
+        f"The export needs about {need_here / 1024**3:.1f}GB on the filesystem holding "
         f"`{save_directory}`, which has {free / 1024**3:.1f}GB free.\n"
-        f"It writes a 16-bit merge, then a `{first_conversion}` GGUF, then "
-        f"{', '.join(_normalize_quantization_methods(quantization_method)) or 'no'} "
-        f"quants, and the merge and the intermediate are both still on disk while "
-        f"the quants are written.\n"
-        f"Options: free space, export fewer quantization methods, point "
+        + (
+            f"Only the 16-bit merge is charged here; the intermediate "
+            f"`{first_conversion}` conversion and the quants go to a sibling directory "
+            f"on another filesystem.\n"
+            if separate_storage
+            else f"It writes a 16-bit merge, then a `{first_conversion}` GGUF, then "
+            f"{', '.join(_normalize_quantization_methods(quantization_method)) or 'no'} "
+            f"quants, and the merge and the intermediate are both still on disk while "
+            f"the quants are written.\n"
+        )
+        + f"Options: free space, export fewer quantization methods, point "
         f"`save_directory` at a bigger filesystem, or push straight to Hugging Face "
         f"with `.push_to_hub_gguf(...)`.\n"
         f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."

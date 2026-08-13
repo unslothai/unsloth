@@ -1165,14 +1165,14 @@ class TestTheGgufSiblingIsMeasuredToo:
     onto another one. Measuring only `save_directory` then passes an export
     whose quants fill a filesystem nobody looked at.
 
-    Only a strictly tighter sibling changes anything, so a single filesystem
-    behaves exactly as before.
+    Only genuinely separate filesystems change anything, so a single
+    filesystem behaves exactly as before.
     """
 
     @pytest.fixture
     def split(self, monkeypatch):
         """Free space per path, and the estimate split into its two halves."""
-        state = {"free": 1000 * GB, "sibling_free": 1000 * GB}
+        state = {"free": 1000 * GB, "sibling_free": 1000 * GB, "separate": False}
 
         def fake_free(path):
             return state["sibling_free"] if str(path).endswith("_gguf") else state["free"]
@@ -1186,13 +1186,14 @@ class TestTheGgufSiblingIsMeasuredToo:
         monkeypatch.setattr(S, "free_bytes", fake_free)
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_on_separate_filesystems", lambda *a: state["separate"])
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         return state
 
     def test_a_tighter_sibling_filesystem_refuses(self, split):
         """`model` is a symlink onto a big disk; `model_gguf` is not."""
-        split.update(free = 1000 * GB, sibling_free = 10 * GB)
+        split.update(free = 1000 * GB, sibling_free = 10 * GB, separate = True)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
         assert "model_gguf" in str(error.value)
@@ -1207,7 +1208,8 @@ class TestTheGgufSiblingIsMeasuredToo:
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == expected
 
     def test_a_roomier_sibling_is_not_a_refusal(self, split):
-        split.update(free = 10 * GB, sibling_free = 1000 * GB)
+        """5GB holds neither half, so this is the checkpoint's own refusal."""
+        split.update(free = 5 * GB, sibling_free = 1000 * GB, separate = True)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
         # The ordinary refusal, about the checkpoint's own filesystem.
@@ -1215,16 +1217,18 @@ class TestTheGgufSiblingIsMeasuredToo:
 
     def test_the_sibling_is_sized_without_the_checkpoint(self, split):
         """20GB holds the quants but not the merge, and only the quants go there."""
-        split.update(free = 1000 * GB, sibling_free = 20 * GB)
+        split.update(free = 1000 * GB, sibling_free = 20 * GB, separate = True)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
 
     def test_an_unmeasurable_sibling_leaves_the_decision_alone(self, split, monkeypatch):
+        split["separate"] = True
         monkeypatch.setattr(
             S, "free_bytes", lambda path: None if str(path).endswith("_gguf") else 1000 * GB
         )
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
 
     def test_an_unmeasurable_save_directory_leaves_the_decision_alone(self, split, monkeypatch):
+        split["separate"] = True
         monkeypatch.setattr(
             S, "free_bytes", lambda path: 1 * GB if str(path).endswith("_gguf") else None
         )
@@ -1262,6 +1266,236 @@ class TestTheGgufSiblingIsMeasuredToo:
         source = inspect.getsource(S.unsloth_save_pretrained_gguf)
         assert "gguf_directory = _gguf_output_directory(save_directory)" in source
         assert 'f"{save_directory}_gguf"' not in inspect.getsource(S._preflight_gguf_disk)
+
+
+class TestEachFilesystemIsChargedForWhatItHolds:
+    """Two filesystems, and each one is charged only for what lands on it.
+
+    The other half of the sibling problem. Measuring the sibling caught the
+    case where it is too tight; the aggregate estimate was still charged in
+    full to the filesystem holding `save_directory`, which refuses a split
+    export whose checkpoint fits on one disk and whose quants fit on the
+    other. A guard that blocks an export that works is worse than no guard.
+
+    Numbers throughout: the export is 34GB (16GB checkpoint + 18GB of
+    conversion and quants), 48GB with a pre-warmed base cache.
+    """
+
+    CHECKPOINT = 16 * GB
+    SIBLING = 18 * GB
+    AGGREGATE = 34 * GB
+    AGGREGATE_WITH_CACHE = 48 * GB
+
+    @pytest.fixture
+    def split(self, monkeypatch):
+        state = {"free": 1000 * GB, "sibling_free": 1000 * GB, "separate": True}
+
+        def fake_estimate(**kwargs):
+            if not kwargs.get("needs_merge", True):
+                return self.SIBLING
+            if kwargs.get("base_cache_copy"):
+                return self.AGGREGATE_WITH_CACHE
+            return self.AGGREGATE
+
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: state["sibling_free"]
+            if str(path).endswith("_gguf")
+            else state["free"],
+        )
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_on_separate_filesystems", lambda *a: state["separate"])
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def test_a_split_export_that_fits_is_not_refused(self, split):
+        """20GB holds the 16GB checkpoint; the 18GB of quants go elsewhere."""
+        split.update(free = 20 * GB, sibling_free = 1000 * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+
+    @pytest.mark.parametrize("free_gb,fits", [(16, True), (15, False)])
+    def test_the_checkpoint_portion_is_the_boundary(self, split, free_gb, fits):
+        """`need - need_sibling`, not the aggregate, decides."""
+        split.update(free = free_gb * GB, sibling_free = 1000 * GB)
+        if fits:
+            assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+        else:
+            with pytest.raises(RuntimeError) as error:
+                S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+            assert "about 16.0GB" in str(error.value)
+
+    def test_the_cache_copy_is_charged_here_too(self, split):
+        """The pre-warm goes to the HF cache, not the sibling, so it stays here.
+
+        48GB with the cache minus the 18GB sibling half is 30GB: at 30GB the
+        cache is affordable, at 29GB it is dropped rather than refused.
+        """
+        split.update(free = 30 * GB, sibling_free = 1000 * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
+        split.update(free = 29 * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+
+    def test_a_short_sibling_roomier_than_the_checkpoint_disk_still_refuses(self, split):
+        """The hole the split would leave if the refusal still needed a TIGHTER sibling.
+
+        10GB on the sibling holds neither the 18GB of quants nor anything
+        else, and it is more than the 5GB here, so "tighter than `free`"
+        would miss it, and the aggregate comparison that used to catch it is
+        gone once the checkpoint is charged only its own portion.
+        """
+        split.update(free = 5 * GB, sibling_free = 10 * GB)
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert "model_gguf" in str(error.value)
+
+    @pytest.mark.parametrize(
+        "free_gb,expected",
+        [
+            (5, "raises"),
+            (16, "raises"),
+            (20, "raises"),
+            (34, ("model", False)),
+            (40, ("model", False)),
+            (48, ("model", True)),
+            (1000, ("model", True)),
+        ],
+    )
+    def test_one_filesystem_is_unchanged_across_the_range(self, split, free_gb, expected):
+        """Every outcome is the aggregate one, at every level of free space.
+
+        This is the whole of the previous behaviour: refuse below 34GB, drop
+        the pre-warm between 34GB and 48GB, proceed at 48GB. Nothing about
+        the split may move any of it.
+        """
+        split.update(free = free_gb * GB, sibling_free = free_gb * GB, separate = False)
+        if expected == "raises":
+            with pytest.raises(RuntimeError) as error:
+                S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+            assert "about 34.0GB" in str(error.value)
+            assert "model_gguf" not in str(error.value)
+        else:
+            assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == expected
+
+    def test_one_filesystem_that_moved_between_the_probes_is_still_one(self, split):
+        """Two `disk_usage` calls on ONE filesystem can disagree.
+
+        Something else writing a single block between them is not a second
+        filesystem, and reading it as one would charge this export the larger
+        half, 16GB, instead of the 34GB sum. The predicate is the device id,
+        so the difference in free space cannot decide it.
+        """
+        split.update(free = 20 * GB, sibling_free = 20 * GB - 4096, separate = False)
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert "about 34.0GB" in str(error.value)
+
+    def test_two_filesystems_with_the_same_free_space_are_still_two(self, split):
+        """And the converse: equal figures are not evidence of one filesystem."""
+        split.update(free = 20 * GB, sibling_free = 20 * GB, separate = True)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+
+    def test_an_unmeasurable_sibling_charges_the_aggregate(self, split, monkeypatch):
+        monkeypatch.setattr(
+            S, "free_bytes", lambda path: None if str(path).endswith("_gguf") else 20 * GB
+        )
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert "about 34.0GB" in str(error.value)
+
+    def test_a_sibling_the_estimator_cannot_size_charges_the_aggregate(self, split, monkeypatch):
+        """`need_sibling` falls back to 0, so `need - need_sibling` is `need`."""
+
+        def fake_estimate(**kwargs):
+            if not kwargs.get("needs_merge", True):
+                raise TypeError("older unsloth_zoo")
+            return self.AGGREGATE_WITH_CACHE if kwargs.get("base_cache_copy") else self.AGGREGATE
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
+        split.update(free = 20 * GB, sibling_free = 1000 * GB)
+        with pytest.raises(RuntimeError) as error:
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert "about 34.0GB" in str(error.value)
+
+    def _outcome_before(self, free, sibling_free):
+        """What the previous revision did: sibling refusal, then the aggregate."""
+        if sibling_free < free and sibling_free < self.SIBLING:
+            return "raises"
+        if free >= self.AGGREGATE_WITH_CACHE:
+            return ("model", True)
+        if free >= self.AGGREGATE:
+            return ("model", False)
+        return "raises"
+
+    def test_the_split_never_refuses_where_the_aggregate_allowed(self, split):
+        """A guard may cancel a redirect, never cause one, and may not add refusals.
+
+        Over a grid of both filesystems: every refusal the split produces was
+        already a refusal before it, so no working export is newly blocked.
+        """
+        for free_gb in (1, 5, 16, 17, 20, 34, 48, 100):
+            for sibling_gb in (1, 5, 17, 18, 19, 50, 1000):
+                split.update(free = free_gb * GB, sibling_free = sibling_gb * GB)
+                try:
+                    now = S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+                except RuntimeError:
+                    now = "raises"
+                before = self._outcome_before(free_gb * GB, sibling_gb * GB)
+                if now == "raises":
+                    assert before == "raises", (free_gb, sibling_gb)
+
+    def test_the_probe_matches_free_bytes_on_one_filesystem(self, tmp_path):
+        """The real helper, real paths, no monkeypatching.
+
+        A directory and its not-yet-created sibling under one tmp dir are one
+        filesystem, so the split is inert on every ordinary setup.
+        """
+        directory = tmp_path / "model"
+        directory.mkdir()
+        assert S._on_separate_filesystems(str(directory), f"{directory}_gguf") is False
+        assert S._filesystem_id(str(directory)) == S._filesystem_id(f"{directory}_gguf")
+
+    def test_the_probe_sees_a_real_second_filesystem(self, tmp_path):
+        """A symlinked save directory on another mount: the reachable case."""
+        other = "/dev/shm"
+        if not os.path.isdir(other) or os.stat(other).st_dev == os.stat(tmp_path).st_dev:
+            pytest.skip("no second filesystem available here")
+        directory = tmp_path / "model"
+        directory.symlink_to(other)
+        assert S._on_separate_filesystems(str(directory), f"{directory}_gguf") is True
+
+    def test_an_unidentifiable_path_is_not_split(self):
+        """Unmeasurable is never read as two filesystems."""
+
+        class _Unusable:
+            def __str__(self):
+                raise ValueError("not a path")
+
+        assert S._filesystem_id(_Unusable()) is None
+        assert S._on_separate_filesystems(_Unusable(), "model_gguf") is False
+
+    def test_a_zero_device_id_is_unmeasurable(self, tmp_path, monkeypatch):
+        """Windows fills `st_dev` from the volume serial; zero means it did not."""
+        directory = tmp_path / "model"
+        directory.mkdir()
+
+        class _Zero:
+            st_dev = 0
+
+        real_stat = os.stat
+        monkeypatch.setattr(
+            S.os,
+            "stat",
+            lambda path, *a, **k: _Zero()
+            if str(path) == str(directory)
+            else real_stat(path, *a, **k),
+        )
+        assert S._filesystem_id(str(directory)) is None
+        assert S._on_separate_filesystems(str(directory), f"{directory}_gguf") is False
 
 
 class TestDisabledImatrixIsNotSizedAsAnImatrix:
