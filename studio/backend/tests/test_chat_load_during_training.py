@@ -1168,7 +1168,19 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         cls.route = _load_inference_route()
 
     def _reserve(self, **kwargs):
-        return self.route._remote_gguf_compute_reserve_gb(max_seq_length = 4096, **kwargs)
+        # The effective micro-batch comes from _extra_args_n_ubatch, which reads LLAMA_ARG_BATCH /
+        # LLAMA_ARG_UBATCH off os.environ. A host that exports either would move it away from
+        # _DEFAULT_N_UBATCH and fail these assertions for a reason that has nothing to do with the
+        # slot count under test, so drop them for the call.
+        import os
+
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH")
+        }
+        with patch.dict(os.environ, env, clear = True):
+            return self.route._remote_gguf_compute_reserve_gb(max_seq_length = 4096, **kwargs)
 
     def test_a_single_slot_still_reserves_an_output_buffer(self):
         """llama-server allocates an output buffer for the one slot it runs, so a single-slot
