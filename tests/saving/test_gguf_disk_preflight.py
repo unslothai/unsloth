@@ -667,7 +667,9 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         )
         monkeypatch.chdir(working)
         target, message = zoo.kaggle_tmp_redirect(
-            "model", need_bytes = GB, what = "16-bit merge",
+            "model",
+            need_bytes = GB,
+            what = "16-bit merge",
         )
         assert message is not None, "the redirect never fired, so nothing was proven"
         assert os.path.isdir(target)
