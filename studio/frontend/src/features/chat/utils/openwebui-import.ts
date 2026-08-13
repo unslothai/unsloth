@@ -308,7 +308,10 @@ function filesToParts(files: unknown): { parts: unknown[]; attachments: unknown[
   return { parts, attachments };
 }
 
-function messageParts(message: Dict): { content: unknown[]; attachments: unknown[] } {
+function messageParts(
+  message: Dict,
+  role: MessageRecord["role"],
+): { content: unknown[]; attachments: unknown[] } {
   const parts: unknown[] = [];
 
   if (Array.isArray(message.output)) {
@@ -320,7 +323,10 @@ function messageParts(message: Dict): { content: unknown[]; attachments: unknown
   // `content` mirrors the final assistant text that `output` already carries, so
   // it is only used when the items produced none.
   if (content && !hasText) {
-    parts.push(...contentWithDetailsToParts(content));
+    // Open WebUI writes those details blocks into its own assistant output. The
+    // same markup in a prompt is text the user typed, not reasoning or a call.
+    if (role === "assistant") parts.push(...contentWithDetailsToParts(content));
+    else pushText(parts, content);
   }
 
   const { parts: fileParts, attachments } = filesToParts(message.files);
@@ -353,11 +359,14 @@ function collectNodes(chat: Dict): Node[] {
     // No DAG: the flat active branch is all that survived.
     const flat = Array.isArray(chat.messages) ? chat.messages : [];
     const nodes: Node[] = [];
+    const seen = new Set<string>();
     let previousId: string | null = null;
     for (const raw of flat) {
       if (!isDict(raw)) continue;
+      if (nodes.length >= MAX_MESSAGES_PER_CHAT) break;
       const id = str(raw.id) ?? crypto.randomUUID();
-      if (nodes.some((node) => node.id === id)) continue; // duplicate ids after a bad merge
+      if (seen.has(id)) continue; // duplicate ids after a bad merge
+      seen.add(id);
       nodes.push({ id, parentId: previousId, raw });
       previousId = id;
     }
@@ -392,14 +401,23 @@ function collectNodes(chat: Dict): Node[] {
 
   // Depth-first, active branch last: studio restores the head from the final
   // message, so the branch the user had open is the one that opens here too.
-  const walk = (node: Node): void => {
-    if (visited.has(node.id) || ordered.length >= MAX_MESSAGES_PER_CHAT) return;
-    visited.add(node.id);
-    ordered.push(node);
-    const kids = children.get(node.id) ?? [];
-    const rest = kids.filter((kid) => !path.has(kid.id));
-    const active = kids.filter((kid) => path.has(kid.id));
-    for (const kid of [...rest, ...active]) walk(kid);
+  // The traversal is iterative because a long chat is a chain thousands of
+  // messages deep, which overflows the call stack long before the cap above.
+  const walk = (root: Node): void => {
+    const stack: Node[] = [root];
+    while (stack.length > 0) {
+      const node = stack.pop() as Node;
+      if (visited.has(node.id)) continue;
+      if (ordered.length >= MAX_MESSAGES_PER_CHAT) return;
+      visited.add(node.id);
+      ordered.push(node);
+      const kids = children.get(node.id) ?? [];
+      const rest = kids.filter((kid) => !path.has(kid.id));
+      const active = kids.filter((kid) => path.has(kid.id));
+      // Pushed back to front, so they pop in that same order.
+      for (let index = active.length - 1; index >= 0; index--) stack.push(active[index]);
+      for (let index = rest.length - 1; index >= 0; index--) stack.push(rest[index]);
+    }
   };
 
   const rootRest = roots.filter((node) => !path.has(node.id));
@@ -444,8 +462,8 @@ export function openWebUIRecordToConversation(
   const keptIdByOriginal = new Map<string, string>();
 
   for (const node of collectNodes(chat)) {
-    const { content, attachments } = messageParts(node.raw);
     const role = roleOf(node.raw);
+    const { content, attachments } = messageParts(node.raw, role);
     // A message that renders to nothing (a failed turn holding only an error)
     // is dropped, and its children relink to the nearest ancestor that stayed.
     // A user turn that uploaded a file and typed nothing still renders, as

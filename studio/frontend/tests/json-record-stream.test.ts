@@ -291,3 +291,21 @@ test("the whole-file read is bounded by bytes, not by decoded string length", as
   assert.equal((await readAllText(source, 512, "CSV")).length, 128);
   await assert.rejects(readAllText(source, 300, "CSV"), /chats\.csv is too large to import as CSV/);
 });
+
+test("a pretty-printed record following a single-line one survives every chunk boundary", async () => {
+  // Recovery used to fire on the first newline of the pending record, so the
+  // same file imported differently depending on where the chunks fell.
+  const record = { id: 2, tags: ["a", "b"], nested: { rows: [1, 2] } };
+  const mixed = `{"id":1}\n${JSON.stringify(record, null, 2)}\n`;
+  for (const size of [1, 5, 12, 64, mixed.length]) {
+    const out: unknown[] = [];
+    const malformed: string[] = [];
+    for await (const parsed of streamJsonRecords(asChunks(mixed, size), {
+      onMalformed: (bad) => malformed.push(bad),
+    })) {
+      out.push(parsed);
+    }
+    assert.deepEqual(out, [{ id: 1 }, record], `chunk size ${size}`);
+    assert.deepEqual(malformed, [], `chunk size ${size}`);
+  }
+});

@@ -445,3 +445,57 @@ test("a user turn that uploaded a file without typing survives, and keeps its de
   );
   assert.equal(failed, null);
 });
+
+test("a chat thousands of messages deep converts instead of exhausting the call stack", () => {
+  // A long-running chat is one long parent chain, and a recursive walk of it
+  // throws RangeError, which would abort the whole export mid-stream.
+  const messages = Array.from({ length: 20_000 }, (_, index) => ({
+    id: `m${index}`,
+    parentId: index === 0 ? null : `m${index - 1}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `turn ${index}`,
+    timestamp: index + 1,
+  }));
+  const conversation = openWebUIRecordToConversation(
+    chatRecord({ history: historyOf(messages, "m19999") }),
+    "fallback",
+  );
+  assert.ok(conversation);
+  assert.equal(conversation.messages.length, 20_000);
+  assert.equal(text(conversation, 0), "turn 0");
+  assert.equal(text(conversation, 19_999), "turn 19999");
+});
+
+test("details markup a user typed stays text rather than becoming reasoning", () => {
+  const typed =
+    'Why does this render oddly?\n<details type="reasoning" done="true">\n<summary>Thought</summary>\n> a plan\n</details>';
+  const conversation = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf(
+        [
+          { id: "u", parentId: null, role: "user", content: typed, timestamp: 1 },
+          { id: "a", parentId: "u", role: "assistant", content: typed, timestamp: 2 },
+        ],
+        "a",
+      ),
+    }),
+    "fallback",
+  );
+  assert.ok(conversation);
+  assert.deepEqual(parts(conversation, 0), [{ type: "text", text: typed }]);
+  // The same markup written by Open WebUI's own assistant output still converts.
+  assert.equal(parts(conversation, 1).some((part) => part.type === "reasoning"), true);
+});
+
+test("a legacy flat chat drops repeated ids without rescanning what it already collected", () => {
+  const flat = Array.from({ length: 20_000 }, (_, index) => ({
+    id: `f${index % 19_000}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `turn ${index}`,
+    timestamp: index + 1,
+  }));
+  const conversation = openWebUIRecordToConversation(chatRecord({ messages: flat }), "fallback");
+  assert.ok(conversation);
+  assert.equal(conversation.messages.length, 19_000);
+  assert.equal(conversation.messages[1].parentId, conversation.messages[0].id);
+});

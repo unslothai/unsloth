@@ -205,10 +205,13 @@ export async function* streamJsonRecords(
         }
       }
 
-      // A multiline pending record is damaged once single-line framing is known.
+      // A pending record is damaged once a later line starts a record of its
+      // own at column 0. The indented continuation lines of a pretty-printed
+      // record never look like that, so where the chunk boundary fell does not
+      // decide whether it survives.
       if (lineFramed && !sawArrayStart && start >= 0) {
         const lastNewline = buffer.lastIndexOf("\n");
-        if (lastNewline > start) {
+        if (lastNewline > start && /\n[[{]/.test(buffer.slice(start, lastNewline))) {
           const salvaged = salvageLines(buffer.slice(start, lastNewline), true);
           for (const text of salvaged.damaged) options.onMalformed?.(text);
           yield* salvaged.records;
