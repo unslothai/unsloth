@@ -36,6 +36,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  attachmentsPastedText,
   isPastedTextFile,
   pasteClipboardFiles,
   pasteLongTextAsFile,
@@ -3706,9 +3707,20 @@ const Composer: FC<{
               }
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
-              queueDisabled={disableQueue || !canQueueCurrentPrompt}
+              queueDisabled={
+                disableQueue ||
+                !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
+              }
               onQueueClick={() => {
                 if (disableQueue) return;
+                // Same pasted-text path the Enter key takes, or the button
+                // would refuse what submitting the form accepts.
+                if (
+                  canQueuePastedTextPrompt &&
+                  queuePastedTextPrompt(true)
+                ) {
+                  return;
+                }
                 const queuedPrompt = composerText.trim();
                 if (queuedPrompt.length === 0) {
                   return;
@@ -6067,7 +6079,11 @@ const CopyButton: FC = () => {
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleCopy = async () => {
-    const text = aui.message().getCopyText();
+    // getCopyText reads content only, and a long paste sits in an attachment.
+    const pasted = attachmentsPastedText(aui.message().getState().attachments);
+    const text = [aui.message().getCopyText(), pasted]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
     if (await copyToClipboard(text)) {
       setCopied(true);
       if (resetTimeoutRef.current) {

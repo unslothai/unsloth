@@ -60,6 +60,7 @@ import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
@@ -254,7 +255,11 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
       if (!attachment?.content) continue;
-      const attText = contentBlocksToText(attachment.content);
+      // A paste carries a wrapper the same text never had when it fitted
+      // inline, so strip it rather than exporting the marker.
+      const attText = unwrapPastedTextContent(
+        contentBlocksToText(attachment.content),
+      );
       if (attText) parts.push(attText);
     }
   }
@@ -273,6 +278,10 @@ function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): st
         ...contentBlocksToMarkdownBlocks(
           attachment.content,
           normalizeToolResult,
+        ).map((block) =>
+          block.kind === "text"
+            ? { ...block, text: unwrapPastedTextContent(block.text) }
+            : block,
         ),
       );
     }
@@ -623,7 +632,8 @@ function messageToPlainText(msg: {
       }
       const block = b as Record<string, unknown>;
       if (block.type === "text" && typeof block.text === "string" && block.text) {
-        parts.push(block.text);
+        // No-op for message content, which never carries the paste wrapper.
+        parts.push(unwrapPastedTextContent(block.text));
       }
     }
   };

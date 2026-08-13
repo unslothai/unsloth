@@ -222,17 +222,25 @@ export function attachmentsSample(
   return "";
 }
 
-/** The whole body of a sent paste, unwrapped. Empty for any other content. */
-export function pastedTextContentBody(content: string): string {
-  if (!isPastedTextContent(content)) return "";
+/**
+ * A pasted body without its wrapper, for anything that shows the text as the
+ * user pasted it: copy, exports, fine-tuning rows. Other content is untouched.
+ */
+export function unwrapPastedTextContent(content: string): string {
+  if (!isPastedTextContent(content)) return content;
   const { start, end } = attachmentBodyRange(content);
   return content.slice(start, end);
 }
 
+/** The whole body of a sent paste, unwrapped. Empty for any other content. */
+export function pastedTextContentBody(content: string): string {
+  return isPastedTextContent(content) ? unwrapPastedTextContent(content) : "";
+}
+
 /**
- * Every pasted body on a message. Chat Search reads `content` only, so without
- * this a paste stops being findable the moment it moves into an attachment.
- * Other attachment types were never indexed and stay that way.
+ * Every pasted body on a message, for the paths that read `content` alone and
+ * would otherwise lose the paste: Chat Search and copying a message. Other
+ * attachment types are not included, since neither path ever had them.
  */
 export function attachmentsPastedText(
   attachments: readonly AttachmentLike[] | undefined,
@@ -245,7 +253,7 @@ export function attachmentsPastedText(
       if (body.length > 0) bodies.push(body);
     }
   }
-  return bodies.join(" ");
+  return bodies.join("\n\n");
 }
 
 function clipboardText(clipboardData: DataTransfer): string {

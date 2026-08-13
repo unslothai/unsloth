@@ -147,6 +147,7 @@ export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentText,
+  attachmentsPastedText,
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,

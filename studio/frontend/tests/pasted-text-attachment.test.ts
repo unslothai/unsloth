@@ -24,6 +24,7 @@ import {
   pastedTextOf,
   pastedTextPreview,
   shouldAttachPastedText,
+  unwrapPastedTextContent,
 } from "../src/features/chat/utils/pasted-text.ts";
 
 type ClipboardStub = {
@@ -296,8 +297,25 @@ test("chat search still finds what the paste moved out of the message", () => {
       { content: [{ type: "text", text: sent }] },
       { content: [{ type: "text", text: second }] },
     ]),
-    `${body} second body`,
+    `${body}\n\nsecond body`,
   );
+});
+
+test("copies and exports carry the paste, not its wrapper", () => {
+  const body = "Deploy log\nline two";
+  const sent = attachmentContentText("Deploy log.txt", body, true, 19);
+
+  // The marker is an implementation detail; the same text pasted below the
+  // threshold never had one.
+  assert.equal(unwrapPastedTextContent(sent), body);
+  assert.ok(!unwrapPastedTextContent(sent).includes("pasted_text"));
+
+  // Everything else is handed back untouched, including the wrapper a real
+  // attachment has always exported with.
+  const attached = attachmentContentText("notes.txt", body, false);
+  assert.equal(unwrapPastedTextContent(attached), attached);
+  assert.equal(unwrapPastedTextContent("bare text"), "bare text");
+  assert.equal(unwrapPastedTextContent(""), "");
 });
 
 test("a sample of unwrapped content is left as it is", () => {
