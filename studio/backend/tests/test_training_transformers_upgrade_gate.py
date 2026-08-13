@@ -252,9 +252,7 @@ def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_pat
         resolved_from.append(identifier)
         return None
 
-    monkeypatch.setattr(
-        "utils.models.model_config.get_base_model_from_lora_identifier", _base
-    )
+    monkeypatch.setattr("utils.models.model_config.get_base_model_from_lora_identifier", _base)
 
     _call(
         inf_mod,
