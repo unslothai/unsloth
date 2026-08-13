@@ -39,11 +39,18 @@ from utils.hardware import amd
 
 @pytest.fixture
 def rocm(monkeypatch):
-    """A ROCm host whose nvidia-smi probe finds nothing, with no APUs."""
+    """A ROCm host whose nvidia-smi probe finds nothing, with no APUs.
+
+    The mask is cleared from the environment as well as patched: the probe asks
+    whether a mask is SET before asking what it resolves to, so the shell's own
+    CUDA_VISIBLE_DEVICES would otherwise read as a mask that resolves to nothing
+    (#8662 for the same trap in the APU tests)."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     monkeypatch.setattr(
         LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
     )
+    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
     monkeypatch.setattr(
         LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
     )
@@ -63,6 +70,19 @@ def _payload(*gpus: tuple[int, int, int]):
     ]
 
 
+def _fake_amd_smi(metric, hip_by_gpu = None):
+    """Stub amd-smi: ``metric`` returns the VRAM rows, ``list -e`` the amd-smi gpu id
+    to HIP id mapping a host with more than one card needs before its ids can be
+    used as HIP ordinals (see test_amd_smi_hip_index_and_coverage.py)."""
+
+    def _run(*args, **kwargs):
+        if args and args[0] == "list":
+            return [{"gpu": gpu, "hip_id": hip} for gpu, hip in (hip_by_gpu or {}).items()]
+        return metric
+
+    return _run
+
+
 def test_amd_smi_supplies_free_and_total_without_torch(rocm, monkeypatch):
     monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: _payload((0, 4096, 24576)))
     assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
@@ -72,7 +92,9 @@ def test_the_visibility_mask_is_honoured(rocm, monkeypatch):
     """amd-smi enumerates every card; a masked-out GPU must not be offered."""
     monkeypatch.setattr(LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [1]))
     monkeypatch.setattr(
-        amd, "_run_amd_smi", lambda *a, **k: _payload((0, 0, 24576), (1, 8192, 16384))
+        amd,
+        "_run_amd_smi",
+        _fake_amd_smi(_payload((0, 0, 24576), (1, 8192, 16384)), {0: 0, 1: 1}),
     )
     assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(1, 8192, 16384)]
 
@@ -203,7 +225,9 @@ class TestTheArchGateAppliesToThisBranchToo:
             staticmethod(lambda: {0: "gfx1101", 1: "gfx1036"}),
         )
         monkeypatch.setattr(
-            amd, "_run_amd_smi", lambda *a, **k: _payload((0, 4096, 24576), (1, 1024, 16384))
+            amd,
+            "_run_amd_smi",
+            _fake_amd_smi(_payload((0, 4096, 24576), (1, 1024, 16384)), {0: 0, 1: 1}),
         )
         return str(tmp_path / "build" / "bin" / "llama-server")
 
@@ -243,7 +267,9 @@ class TestTheArchGateAppliesToThisBranchToo:
             staticmethod(lambda: {0: "gfx1101", 1: "gfx1036"}),
         )
         monkeypatch.setattr(
-            amd, "_run_amd_smi", lambda *a, **k: _payload((0, 4096, 24576), (1, 1024, 16384))
+            amd,
+            "_run_amd_smi",
+            _fake_amd_smi(_payload((0, 4096, 24576), (1, 1024, 16384)), {0: 0, 1: 1}),
         )
         binary = str(tmp_path / "build" / "bin" / "llama-server")
         assert len(LlamaCppBackend._get_gpu_memory_amd_smi(binary, for_llama_server = True)) == 2

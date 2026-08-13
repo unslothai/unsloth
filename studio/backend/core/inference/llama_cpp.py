@@ -6040,10 +6040,41 @@ class LlamaCppBackend:
         return _keep
 
     @staticmethod
+    def _amd_smi_hip_id_map(
+        enumerated: list[int], mask: Optional[list[int]]
+    ) -> Optional[dict[int, int]]:
+        """{amd-smi gpu id: HIP id} for every enumerated device, else None.
+
+        amd-smi numbers its devices in discovery order and HIP numbers them by KFD
+        node id, so the two agree on most hosts and not on all of them (MI350X in
+        SPX/NPS1 among others). Every id this probe returns is fed back as a HIP
+        ordinal -- matched against the visibility mask, then written into the child's
+        HIP_VISIBLE_DEVICES -- so an untranslated amd-smi id pins the wrong card.
+
+        None means "not provable", and the branch then defers to torch, which
+        enumerates in HIP's space by construction.
+        """
+        if len(enumerated) == 1 and mask in (None, [0]):
+            # One card on the host, so HIP can only be looking at that card and its
+            # id can only be 0. Keeps the single-GPU ROCm desktop, which is most of
+            # them, on amd-smi even where the CLI predates the mapping below.
+            return {enumerated[0]: 0}
+        from utils.hardware.amd import get_hip_id_by_gpu_index
+
+        mapping = get_hip_id_by_gpu_index()
+        if mapping is None or not all(_g in mapping for _g in enumerated):
+            logger.debug(
+                "amd-smi VRAM probe deferring to torch: no amd-smi to HIP id mapping "
+                "for this host (amd-smi list -e needs ROCm 6.4.0+)"
+            )
+            return None
+        return mapping
+
+    @staticmethod
     def _get_gpu_memory_amd_smi(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
-        """ROCm free/total VRAM per PHYSICAL gpu id via amd-smi, else ``[]``.
+        """ROCm free/total VRAM per PHYSICAL (HIP) gpu id via amd-smi, else ``[]``.
 
         Same index space and arch gate as the torch branch of ``_get_gpu_memory``,
         read from a child process instead. Reading VRAM through
@@ -6057,7 +6088,10 @@ class LlamaCppBackend:
         ``[]`` too, and torch then gates identically to the same empty list, so the
         one context this still costs is on the arm already headed for the CPU.
         A visible unified-memory APU answers ``[]`` as well: amd-smi sees only its
-        dedicated VRAM carve-out, not the GTT pool the torch branch measures.
+        dedicated VRAM carve-out, not the GTT pool the torch branch measures. So does
+        anything it can only half answer: a subset is a non-empty list the caller
+        takes as the whole host, which would drop a device from the count tensor
+        parallelism is decided on.
         """
         try:
             import torch
@@ -6066,16 +6100,39 @@ class LlamaCppBackend:
         except Exception:
             return []
         try:
-            from utils.hardware.amd import get_gpu_vram_mib
+            from utils.hardware.amd import get_gpu_vram_report
 
-            vram = get_gpu_vram_mib()
-            # amd-smi enumerates every card regardless of the mask, so drop the
-            # ones this process cannot see. None means no mask, i.e. all of them.
-            visible = LlamaCppBackend._resolve_visible_physical_ids()
-            if visible is not None:
-                allowed = set(visible)
-                vram = {idx: v for idx, v in vram.items() if idx in allowed}
-            if not vram:
+            if LlamaCppBackend._visibility_mask_is_unmappable():
+                # A mask IS set but names devices by UUID, so it cannot be applied
+                # here. amd-smi ignores the mask itself (it reads KFD directly), so
+                # answering would offer cards the parent deliberately hid. Torch sees
+                # only the masked set, so let it answer.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: the GPU visibility mask "
+                    "is not index based, so amd-smi's device list cannot be filtered"
+                )
+                return []
+            mask = LlamaCppBackend._resolve_visible_physical_ids()
+            if mask is not None and not mask:
+                return []  # every device hidden
+            vram, enumerated = get_gpu_vram_report()
+            if not enumerated:
+                return []
+            # amd-smi ids are not HIP ids; translate before anything compares them
+            # against the mask or hands them to the child.
+            hip_by_gpu = LlamaCppBackend._amd_smi_hip_id_map(enumerated, mask)
+            if hip_by_gpu is None:
+                return []
+            vram = {hip_by_gpu[_g]: _v for _g, _v in vram.items()}
+            # amd-smi enumerates every card regardless of the mask, so drop the ones
+            # this process cannot see. No mask means all of them.
+            visible = set(mask) if mask is not None else set(hip_by_gpu.values())
+            if not visible.issubset(vram):
+                # A device that is visible and unmeasured: all or nothing.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: no usable VRAM reading "
+                    f"for visible GPU(s) {sorted(visible - set(vram))}"
+                )
                 return []
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             if unified_ids:
@@ -6096,7 +6153,7 @@ class LlamaCppBackend:
                 return []
             arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
             gpus: list[tuple[int, int, int]] = []
-            for idx in sorted(vram):
+            for idx in sorted(visible):
                 if not arch_keeps(idx):
                     continue
                 free_mib, total_mib = vram[idx]

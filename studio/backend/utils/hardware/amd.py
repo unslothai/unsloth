@@ -103,8 +103,16 @@ def _amd_smi_allowed() -> bool:
     return _hip_sdk_present()
 
 
-def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
-    """Run amd-smi with the given args and return parsed JSON, or None."""
+def _run_amd_smi(
+    *args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT, count_failures: bool = True
+) -> Optional[Any]:
+    """Run amd-smi with the given args and return parsed JSON, or None.
+
+    ``count_failures = False`` keeps a failure out of the circuit breaker, for a
+    subcommand an older amd-smi rejects outright: that exit code says the CLI is old,
+    not that the tool is broken, and three of them must not disable VRAM and
+    utilization polling for the life of the process.
+    """
     global _amd_smi_consecutive_failures, _amd_smi_disabled
     if _amd_smi_disabled:
         return None
@@ -157,6 +165,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)
+        if not count_failures:
+            return None
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
             logger.info(
@@ -167,6 +177,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         return None
     if result.returncode != 0:
         logger.warning("amd-smi returned code %d", result.returncode)
+        if not count_failures:
+            return None
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
             logger.info(
@@ -418,8 +430,34 @@ def _gpu_entries(data: Any) -> list[tuple[int, dict]]:
     return entries
 
 
+def get_gpu_vram_report() -> tuple[dict[int, tuple[int, int]], list[int]]:
+    """(``get_gpu_vram_mib()``, every amd-smi gpu id the same call enumerated).
+
+    The ids are amd-smi's own, which are NOT HIP's (see
+    ``get_hip_id_by_gpu_index``). The second element is what tells a partial answer
+    from a complete one: a device whose VRAM does not parse (a shared pool reporting
+    total 0) is missing from the dict but present here, and a caller that ranks GPUs
+    has to see the whole set or none of it -- what is left of a dropped row is a
+    non-empty dict, indistinguishable from a host that really has one card.
+    """
+    data = _run_amd_smi("metric")
+    if data is None:
+        return {}, []
+    out: dict[int, tuple[int, int]] = {}
+    enumerated: list[int] = []
+    for idx, gpu_data in _gpu_entries(data):
+        enumerated.append(idx)
+        used_mb, total_mb = _vram_used_total_mb(gpu_data)
+        if used_mb is None or total_mb is None or total_mb <= 0:
+            continue
+        # Clamp: a used reading above total (seen when a card reports a stale
+        # figure mid-reset) must not become negative free.
+        out[idx] = (int(max(0.0, total_mb - used_mb)), int(total_mb))
+    return out, enumerated
+
+
 def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
-    """{physical gpu id: (free MiB, total MiB)} for every AMD GPU amd-smi sees.
+    """{amd-smi gpu id: (free MiB, total MiB)} for every AMD GPU amd-smi sees.
 
     The out-of-process answer to the question ``torch.cuda.mem_get_info`` answers
     in-process. That call creates a HIP primary context the process never gives
@@ -431,18 +469,38 @@ def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
     Empty when amd-smi is missing, disabled, or reports no usable VRAM, so callers
     keep whatever fallback they had.
     """
-    data = _run_amd_smi("metric")
+    return get_gpu_vram_report()[0]
+
+
+def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
+    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable.
+
+    Two index spaces, one number. amd-smi's gpu id is an enumeration index in
+    discovery order over its KFD/sysfs view; HIP's is what ``HIP_VISIBLE_DEVICES``
+    names and what torch reports as ``cuda:N``, and the library derives it from the
+    KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on
+    most hosts and not on all of them, so the number cannot be carried from one
+    space to the other without this call.
+
+    ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping
+    physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a
+    usable id -- an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A"
+    when the library cannot reach the device's KFD node -- so callers decline rather
+    than assume the identity mapping.
+    """
+    data = _run_amd_smi("list", "-e", count_failures = False)
     if data is None:
-        return {}
-    out: dict[int, tuple[int, int]] = {}
+        return None
+    mapping: dict[int, int] = {}
     for idx, gpu_data in _gpu_entries(data):
-        used_mb, total_mb = _vram_used_total_mb(gpu_data)
-        if used_mb is None or total_mb is None or total_mb <= 0:
-            continue
-        # Clamp: a used reading above total (seen when a card reports a stale
-        # figure mid-reset) must not become negative free.
-        out[idx] = (int(max(0.0, total_mb - used_mb)), int(total_mb))
-    return out
+        hip_id = _parse_numeric(gpu_data.get("hip_id"))
+        if hip_id is None or hip_id < 0 or hip_id != int(hip_id):
+            return None
+        mapping[idx] = int(hip_id)
+    # A collision means the ids describe something other than a 1:1 device mapping.
+    if not mapping or len(set(mapping.values())) != len(mapping):
+        return None
+    return mapping
 
 
 def _first_visible_amd_gpu_id() -> Optional[str]:
