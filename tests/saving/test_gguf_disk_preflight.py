@@ -1436,6 +1436,150 @@ class TestFullModelSavedAsLora:
         assert seen == [state_dict, state_dict]
 
 
+class TestASuppliedDictIsWhatASixteenBitSaveWrites:
+    """`unsloth_generic_save` writes the dictionary it was handed, cast.
+
+    It only reaches for `model.state_dict()` when it was given none, so a
+    caller-supplied one decides the size of the checkpoint: `{}` or a subset
+    writes less than the resident model, and a dictionary carrying more writes
+    more. Sizing the model either moves a nearly empty save off persistent
+    Kaggle storage for nothing, or leaves a bigger one to fill the 20GB
+    working directory it should have been redirected out of.
+
+    `unsloth_save_model` is the other writer and rebuilds the dictionary from
+    the merged layers, dropping whatever it was passed, so only the generic
+    call site says the dict is followed.
+    """
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        asked = []
+        # Deliberately not the size of the dict below: believing this figure
+        # for a save driven by the caller's dictionary is the bug.
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        return asked
+
+    @staticmethod
+    def _model():
+        import torch
+        return torch.nn.Linear(8, 8, dtype = torch.float16)
+
+    @staticmethod
+    def _dict(numel = 4096):
+        import torch
+        return {"model.embed_tokens.weight": torch.zeros(numel, dtype = torch.float32)}
+
+    def test_floats_are_charged_at_two_bytes_whatever_they_arrived_as(self):
+        """The writer casts every floating entry to bf16/fp16 before saving."""
+        assert S._cast_16bit_state_dict_bytes(self._dict(4096)) == 4096 * 2
+
+    def test_an_integer_entry_keeps_its_own_width(self):
+        import torch
+
+        state_dict = {"buffer": torch.zeros(16, dtype = torch.int64)}
+        assert S._cast_16bit_state_dict_bytes(state_dict) == 16 * 8
+
+    def test_the_dict_is_measured_and_not_the_model(self, sized):
+        state_dict = self._dict(8 * 1024**3 // 2)
+        expected = S._cast_16bit_state_dict_bytes(state_dict)
+        S._preflight_merge_disk(
+            self._model(),
+            "model",
+            "merged_16bit",
+            state_dict = state_dict,
+            forwards_state_dict = True,
+        )
+        assert expected == 8 * GB
+        assert sized == [_merge_preflight_ask(expected, expected)]
+
+    def test_an_empty_dict_writes_nothing(self, sized):
+        """`{}` reaches `save_pretrained` and no model tensor is written."""
+        assert S._preflight_merge_disk(
+            self._model(),
+            "model",
+            "merged_16bit",
+            state_dict = {},
+            forwards_state_dict = True,
+        ) == "model"
+        assert sized == [], "nothing is written, so nothing is asked for"
+
+    def test_no_dict_measures_the_model(self, sized):
+        """`None` is when the writer builds the dictionary itself."""
+        S._preflight_merge_disk(
+            self._model(),
+            "model",
+            "merged_16bit",
+            state_dict = None,
+            forwards_state_dict = True,
+        )
+        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+
+    def test_an_adapter_merge_ignores_the_dict(self, sized, monkeypatch):
+        """A PeftModel goes to `merge_and_overwrite_lora`, which takes none."""
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        S._preflight_merge_disk(
+            _FakeAdapterModel(),
+            "model",
+            "merged_16bit",
+            state_dict = self._dict(),
+            forwards_state_dict = True,
+        )
+        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+
+    def test_the_other_writer_rebuilds_the_dict(self, sized):
+        """`unsloth_save_model` merges the layers itself, so the model is sized."""
+        S._preflight_merge_disk(
+            self._model(),
+            "model",
+            "merged_16bit",
+            state_dict = self._dict(),
+        )
+        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+
+    def test_only_the_generic_call_site_says_the_dict_is_followed(self, monkeypatch):
+        """Driven rather than read, so a body that never wires it in fails."""
+        import torch
+
+        seen = []
+        monkeypatch.setattr(
+            S,
+            "_preflight_merge_disk",
+            lambda *args, **kwargs: (
+                seen.append(kwargs.get("forwards_state_dict", False)) or args[1]
+            ),
+        )
+        for function in (
+            S.unsloth_save_pretrained_merged,
+            S.unsloth_generic_save_pretrained_merged,
+        ):
+            with contextlib.suppress(Exception):
+                function(
+                    self._model(),
+                    "model",
+                    tokenizer = None,
+                    save_method = "merged_16bit",
+                    state_dict = {"weight": torch.zeros(4)},
+                )
+        assert seen == [False, True]
+
+    def test_the_writers_really_differ(self):
+        """The split above is only right while these two stay as they are."""
+        import inspect
+
+        generic = inspect.getsource(S.unsloth_generic_save)
+        assert '("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None' in generic
+        assert "v.to(dtype = _target_dtype) if v.is_floating_point() else v" in generic
+        # The other writer overwrites the caller's dictionary with its own.
+        assert "state_dict = OrderedDict()" in inspect.getsource(S.unsloth_save_model)
+
+
 class TestTheGgufSiblingIsMeasuredToo:
     """The GGUF files land in `save_directory + "_gguf"`, a SIBLING.
 
@@ -2455,6 +2599,99 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         monkeypatch.setattr(S, "_filesystem_id", lambda path: None)
         assert S._shares_filesystem("a", "b") is False
         assert S._on_separate_filesystems("a", "b") is False
+
+
+class TestTheMergeGuardAndTheConversionAreTwoPhases:
+    """The same colocated split, with a LoRA merge in front of it.
+
+    `merge_and_overwrite_lora` runs first and wants the checkpoint covered by
+    `free * 0.95`, with nothing else on the disk yet. The conversion is
+    written afterwards, next to the finished checkpoint and against no guard
+    at all. Adding the conversion to the reserved figure charges both at once
+    and asks for a peak that never exists.
+
+    Numbers: a 60GB checkpoint and a 60GB conversion. The merge phase wants
+    63.2GB and the conversion phase 120GB, so 122GB of disk clears both, and
+    the sum asks 123.2GB and refuses it.
+    """
+
+    CHECKPOINT = 60 * GB
+    SIBLING = 60 * GB
+    CONVERSION = 60 * GB
+
+    @pytest.fixture
+    def colocated_merge(self, monkeypatch):
+        state = {"free": 122 * GB, "conversion": self.CONVERSION}
+
+        def fake_estimate(**kwargs):
+            if not kwargs.get("needs_merge", True):
+                return self.SIBLING if kwargs.get("quantization_methods") else state["conversion"]
+            return self.CHECKPOINT + self.SIBLING
+
+        monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: 1000 * GB if str(path).endswith("_gguf") else state["free"],
+        )
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
+        monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        # `model` and the working directory are one mount, the `_gguf` sibling
+        # another, so the export is split and the conversion lands here.
+        monkeypatch.setattr(
+            S,
+            "_filesystem_id",
+            lambda path: 2 if str(path) == "model_gguf" else 1,
+        )
+        # Only a PeftModel reaches the merge guard whose reserve this is about.
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
+        monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
+        monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
+        monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        return state
+
+    def _preflight(self):
+        return S._preflight_gguf_disk(
+            _FakeAdapterModel(), "model", "q4_k_m", first_conversion = "bf16"
+        )
+
+    def test_the_taller_phase_decides_and_not_their_sum(self, colocated_merge):
+        """122GB clears the 63.2GB merge and then the 120GB pair."""
+        assert self._preflight() == ("model", True)
+
+    def test_the_pair_is_still_charged_in_full(self, colocated_merge):
+        colocated_merge.update(free = 119 * GB)
+        with pytest.raises(RuntimeError) as error:
+            self._preflight()
+        assert "120.0GB" in str(error.value)
+
+    def test_the_merge_reserve_survives_a_small_conversion(self, colocated_merge):
+        """A 1GB conversion leaves the merge phase the taller of the two.
+
+        61GB holds the checkpoint and the conversion together and is still
+        less than the 63.2GB `merge_and_overwrite_lora` insists on, so this
+        has to refuse: taking the maximum must not drop the reserve.
+        """
+        colocated_merge.update(conversion = 1 * GB, free = 62 * GB)
+        with pytest.raises(RuntimeError) as error:
+            self._preflight()
+        assert "63.2GB" in str(error.value)
+
+    def test_a_non_peft_export_is_unchanged(self, colocated_merge):
+        """No merge guard, so the requirement is the pair and nothing more."""
+        colocated_merge.update(free = 120 * GB)
+        assert S._preflight_gguf_disk(
+            _FakeModel(), "model", "q4_k_m", first_conversion = "bf16"
+        ) == ("model", True)
+
+    def test_the_guard_really_runs_before_the_conversion(self):
+        """The two phases are only separate while the merge is written first."""
+        import inspect
+
+        source = inspect.getsource(S.unsloth_save_pretrained_gguf)
+        assert source.index("unsloth_generic_save(**arguments)") < source.index("save_to_gguf(")
+        assert "merge_and_overwrite_lora" in inspect.getsource(S.unsloth_generic_save)
 
 
 class TestTheFallbackFollowsTheReusedCheckpoint:

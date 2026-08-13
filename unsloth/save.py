@@ -3205,6 +3205,29 @@ def _full_model_checkpoint_bytes(model, state_dict = None):
         return 0
 
 
+def _cast_16bit_state_dict_bytes(state_dict):
+    """Bytes a `"16bit"` save writes for a caller-supplied `state_dict`.
+
+    `unsloth_generic_save` casts every FLOATING entry to bf16/fp16 and leaves
+    the rest alone, then hands the dictionary straight to `save_pretrained`.
+    So the floats are two bytes per element whatever they arrived as, and an
+    integer or bool entry keeps its own width.
+
+    `numel()` and not `logical_numel`, because these are the tensors the
+    writer writes: a packed 4-bit entry is stored exactly as it stands here,
+    not expanded.
+    """
+    total = 0
+    for tensor in state_dict.values():
+        tensor = getattr(tensor, "data", tensor)
+        try:
+            floating = bool(tensor.is_floating_point())
+        except Exception:
+            floating = False
+        total += tensor.numel() * (2 if floating else tensor.element_size())
+    return int(total)
+
+
 def _same_filesystem(left, right):
     """True when two paths sit on the same mount.
 
@@ -3345,6 +3368,7 @@ def _preflight_merge_disk(
     save_method,
     push_to_hub = False,
     state_dict = None,
+    forwards_state_dict = False,
 ):
     """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
 
@@ -3357,6 +3381,12 @@ def _preflight_merge_disk(
     Skipped entirely when pushing to the hub, because there `save_directory`
     is a repo id like "user/model", not a filesystem path, and rewriting it
     would push to the wrong repository.
+
+    `forwards_state_dict` says the writer behind this call hands a supplied
+    `state_dict` to `save_pretrained` for a 16-bit save rather than building
+    its own. Only `unsloth_generic_save` does: `unsloth_save_model` rebuilds
+    the dictionary from the merged layers and drops whatever it was given, so
+    sizing the caller's there would price a save that is not happening.
     """
     if push_to_hub:
         return save_directory
@@ -3380,7 +3410,13 @@ def _preflight_merge_disk(
     # `save_pretrained` there, so a full fine-tune asked for "lora" fills
     # /kaggle/working exactly like a merge. A real PeftModel writes adapters
     # only and is still skipped.
-    full_model_lora = method == "lora" and not isinstance(model, (PeftModel, PeftModelForCausalLM))
+    is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+    full_model_lora = method == "lora" and not is_peft
+    # `unsloth_generic_save` only reaches for `model.state_dict()` when it was
+    # given none, and a model with no adapter is saved from whatever dictionary
+    # it ends up holding. A PeftModel goes to `merge_and_overwrite_lora`, which
+    # takes no state dict at all, so only the non-PEFT case follows it.
+    supplied_dict = state_dict if (forwards_state_dict and not is_peft) else None
     if compressed is None and torchao is None and method != "merged_16bit" and not full_model_lora:
         return save_directory
     try:
@@ -3389,11 +3425,19 @@ def _preflight_merge_disk(
         # one always prices an intermediate GGUF conversion this never does.
         # The full-model fallback casts nothing, so it is sized from the
         # tensors' own dtype instead.
-        need = (
-            _full_model_checkpoint_bytes(model, state_dict)
-            if full_model_lora
-            else model_16bit_bytes(model)
-        )
+        #
+        # A 16-bit save of a model with no adapter writes the dictionary it was
+        # handed, cast, and not the resident parameters: an empty or partial one
+        # writes correspondingly less, and one carrying more than the model does
+        # writes more. Sizing the model there redirects a nearly empty save off
+        # persistent Kaggle storage, or leaves a larger one to fill the working
+        # filesystem.
+        if full_model_lora:
+            need = _full_model_checkpoint_bytes(model, state_dict)
+        elif method == "merged_16bit" and supplied_dict is not None:
+            need = _cast_16bit_state_dict_bytes(supplied_dict)
+        else:
+            need = model_16bit_bytes(model)
         if need <= 0:
             return save_directory
         # What the torchao staging directory costs on whatever filesystem
@@ -3907,7 +3951,8 @@ def _preflight_gguf_disk(
         # The cache copy is not part of the merge and is not what the zoo
         # guard measures, so it rides on top of the checkpoint rather than
         # being reserved itself.
-        need_here_with_cache = checkpoint_here + max(0, need_with_cache - need)
+        cache_extra = max(0, need_with_cache - need)
+        need_here_with_cache = checkpoint_here + cache_extra
         writes_a_lora_merge = isinstance(model, (PeftModel, PeftModelForCausalLM))
         if writes_a_lora_merge and needs_merge and need_sibling > 0 and checkpoint_here > 0:
             # Four conditions, each removing a way to charge for a guard that
@@ -3932,9 +3977,7 @@ def _preflight_gguf_disk(
             # asking 30GB, and then the merge sees 16.5GB and refuses 16GB under
             # its own 5%. Added instead, this band drops the pre-warm, which is
             # the optional half, rather than failing the export.
-            need_here_with_cache = max(
-                need_here_with_cache, reserved + max(0, need_with_cache - need)
-            )
+            need_here_with_cache = max(need_here_with_cache, reserved + cache_extra)
         # The intermediate conversion is written to the working directory and
         # only moved to the sibling afterwards, so when that working directory
         # is on THIS filesystem the checkpoint and the conversion are on it
@@ -3943,13 +3986,23 @@ def _preflight_gguf_disk(
         # split branch needs this: on one filesystem the aggregate already
         # counts them both, and a conversion sharing the sibling's disk is
         # counted in `need_sibling`.
+        #
+        # `max` and not `+`, because the two figures are two PHASES and not two
+        # artefacts. The merge runs first and its guard wants the checkpoint
+        # over 0.95 with nothing else written yet; the conversion is written
+        # after, against the unreserved checkpoint. Summing them charges the
+        # reserve on top of a conversion that does not exist while the guard
+        # runs: a 60GB merge and a 60GB conversion on 122GB free clear both
+        # phases (63.2GB, then 120GB) and the sum asks 123.2GB and refuses.
         if (
             need_conversion > 0
             and conversion_directory is not None
             and _shares_filesystem(conversion_directory, save_directory)
         ):
-            need_here += need_conversion
-            need_here_with_cache += need_conversion
+            need_here = max(need_here, checkpoint_here + need_conversion)
+            need_here_with_cache = max(
+                need_here_with_cache, checkpoint_here + need_conversion + cache_extra
+            )
         # Not gated on the sibling being the TIGHTER of the two any more.
         # Now that the checkpoint is charged only its own portion, a sibling
         # with more free space than `save_directory` and still less than
@@ -6067,6 +6120,9 @@ def unsloth_generic_save_pretrained_merged(
         save_method,
         push_to_hub = push_to_hub,
         state_dict = state_dict,
+        # `unsloth_generic_save` writes a supplied dictionary rather than the
+        # resident model when there is no adapter to merge.
+        forwards_state_dict = True,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
