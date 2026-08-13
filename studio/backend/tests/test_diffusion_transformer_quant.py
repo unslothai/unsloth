@@ -10,6 +10,7 @@ about the selection ladder rather than the GPU probe, so everything runs CPU-onl
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
@@ -358,6 +359,381 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     assert tq._SMOKE_CACHE == {}
     fault[0] = RuntimeError("kernel unavailable")
     assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is False
+
+
+# ── out-of-process probe ────────────────────────────────────────────────────────
+#
+# The probe allocates, and a CUDA context is process-wide and never given back: measured on a
+# B200 host, one uncached probe takes the backend from 0 MiB to 806 MiB for the life of the
+# process. /images/download-plan reaches this while the user is only STAGING a download, so the
+# child is what keeps a plan from costing VRAM. Verdict parity with the in-process probe is the
+# contract; everything below pins one half of it.
+
+
+@pytest.fixture(autouse = True)
+def _reset_child_probe_state():
+    tq._SMOKE_CACHE.clear()
+    tq._CHILD_PROBE_UNAVAILABLE = False
+    tq._CHILD_PROBE_SPAWN_ERRORS = 0
+    yield
+    tq._SMOKE_CACHE.clear()
+    tq._CHILD_PROBE_UNAVAILABLE = False
+    tq._CHILD_PROBE_SPAWN_ERRORS = 0
+
+
+def test_the_child_answers_for_every_scheme_in_one_go(monkeypatch):
+    # One child, not one per ladder step: spawning costs 3.9 s on a B200 host (nearly all of it
+    # importing torch), so an auto ladder walking three schemes would otherwise pay it three times.
+    _stub_torch(monkeypatch)
+    spawns = {"n": 0}
+
+    def _table(device):
+        spawns["n"] += 1
+        return {TQ_INT8: True, TQ_FP8: True, TQ_NVFP4: False, TQ_MXFP8: False}
+
+    monkeypatch.setattr(tq, "_child_probe_table", _table)
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda *a: pytest.fail("probed in-process after the child answered")
+    )
+    assert [tq._scheme_supported(s, "cuda") for s in tq.TQ_SCHEMES] == [True, True, False, False]
+    assert spawns["n"] == 1
+    assert tq._SMOKE_CACHE == {
+        (TQ_INT8, "cuda"): True,
+        (TQ_FP8, "cuda"): True,
+        (TQ_NVFP4, "cuda"): False,
+        (TQ_MXFP8, "cuda"): False,
+    }
+
+
+def test_a_child_out_of_memory_is_not_cached_and_is_not_a_verdict(monkeypatch):
+    # Same contract the in-process probe holds: a full GPU says nothing about the scheme. Falling
+    # back in-process here would be worse than useless -- it would meet the same full GPU and pay
+    # the context on the way -- so the OOM is answered without re-probing.
+    _stub_torch(monkeypatch)
+    monkeypatch.setattr(tq, "_child_probe_table", lambda device: {TQ_INT8: None, TQ_FP8: True})
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda *a: pytest.fail("re-probed in-process after a child OOM")
+    )
+    assert tq._scheme_supported(TQ_INT8, "cuda") is False
+    assert tq._scheme_supported(TQ_INT8, "cuda", unproven_ok = True) is True
+    assert (TQ_INT8, "cuda") not in tq._SMOKE_CACHE
+    # The schemes that DID answer are still cached; one scheme's OOM does not lose the table.
+    assert tq._SMOKE_CACHE == {(TQ_FP8, "cuda"): True}
+
+
+def test_no_child_falls_back_to_the_in_process_probe(monkeypatch):
+    # A frozen desktop build or a sandbox that refuses to spawn must still be able to load a
+    # model: the VRAM this saves is not worth failing a load over.
+    _stub_torch(monkeypatch)
+    monkeypatch.setattr(tq, "_child_probe_table", lambda device: None)
+    monkeypatch.setattr(tq, "_smoke_probe", lambda *a, **k: True)
+    assert tq._scheme_supported(TQ_INT8, "cuda") is True
+
+
+def test_a_host_without_cuda_never_spawns_a_child(monkeypatch):
+    # CPU-only, MPS and XPU hosts answer False above the child, so they pay nothing at all.
+    _stub_torch(monkeypatch, cuda_available = False)
+    monkeypatch.setattr(
+        tq, "_child_probe_table", lambda device: pytest.fail("spawned on a CUDA-less host")
+    )
+    assert tq._scheme_supported(TQ_INT8, "cuda") is False
+    # Same for an fp8 ask on a torch without the dtype.
+    _stub_torch(monkeypatch, with_fp8 = False)
+    assert tq._scheme_supported(TQ_FP8, "cuda") is False
+
+
+def test_a_cached_scheme_does_not_spawn_a_child(monkeypatch):
+    _stub_torch(monkeypatch)
+    tq._SMOKE_CACHE[(TQ_INT8, "cuda")] = True
+    monkeypatch.setattr(tq, "_child_probe_table", lambda device: pytest.fail("spawned on a hit"))
+    assert tq._scheme_supported(TQ_INT8, "cuda") is True
+
+
+def test_the_child_entry_posts_one_table_covering_every_scheme(monkeypatch):
+    # Child side. Every scheme is attempted even after one fails: the verdicts are independent
+    # and the whole point of the child is to pay the CUDA context once.
+    posted = []
+    monkeypatch.setattr(
+        tq,
+        "_run_smoke_probe",
+        lambda scheme, device: {TQ_INT8: True, TQ_FP8: None}.get(scheme, False),
+    )
+    tq._child_probe_entry("cuda", tq.TQ_SCHEMES, types.SimpleNamespace(put = posted.append))
+    assert posted == [{TQ_INT8: True, TQ_FP8: None, TQ_NVFP4: False, TQ_MXFP8: False}]
+
+
+def test_a_spawn_failure_is_remembered_so_it_is_paid_once(monkeypatch):
+    import multiprocessing
+
+    def _no_spawn(name):
+        raise ValueError(f"no {name} start method here")
+
+    monkeypatch.setattr(multiprocessing, "get_context", _no_spawn)
+    assert tq._child_probe_table("cuda") is None
+    assert tq._CHILD_PROBE_UNAVAILABLE is True
+    # Second time round it does not even reach multiprocessing.
+    monkeypatch.setattr(
+        multiprocessing, "get_context", lambda name: pytest.fail("retried a spawn known to fail")
+    )
+    assert tq._child_probe_table("cuda") is None
+
+
+# ── the child's lifetime ────────────────────────────────────────────────────────
+
+
+class _FakeProbeChild:
+    """Stand-in for the spawned probe: alive from start() until sent the signal it obeys.
+
+    ``dies_on = None`` is the wedged child -- uninterruptible in the driver, surviving SIGKILL --
+    which is exactly the case that must not lose its lifetime record."""
+
+    def __init__(self, dies_on = "terminate"):
+        self.pid = 4321
+        self.alive = False
+        self.signals = []
+        self._dies_on = dies_on
+
+    def start(self):
+        self.alive = self._dies_on != "start"
+
+    def is_alive(self):
+        return self.alive
+
+    def join(self, timeout = None):
+        pass
+
+    def terminate(self):
+        self.signals.append("terminate")
+        if self._dies_on == "terminate":
+            self.alive = False
+
+    def kill(self):
+        self.signals.append("kill")
+        if self._dies_on == "kill":
+            self.alive = False
+
+
+class _FakeProbeQueue:
+    def __init__(self, table = None):
+        self._table = table
+        self.closed = False
+
+    def get(self, timeout = None):
+        if self._table is None:
+            raise ValueError("empty")
+        table, self._table = self._table, None
+        return table
+
+    def close(self):
+        self.closed = True
+
+    def join_thread(self):
+        pass
+
+
+class _FakeSpawnContext:
+    def __init__(self, child, queue):
+        self._child = child
+        self._queue = queue
+
+    def Queue(self):
+        return self._queue
+
+    def Process(
+        self,
+        target = None,
+        args = (),
+        daemon = None,
+    ):
+        return self._child
+
+
+@pytest.fixture
+def _probe_lifetime_records(monkeypatch):
+    """Capture what the probe adopts and forgets, without touching the real record."""
+    import utils.process_lifetime as pl
+
+    records = {"adopted": [], "forgotten": []}
+    monkeypatch.setattr(pl, "adopt_pid", records["adopted"].append)
+    monkeypatch.setattr(pl, "forget_pid", records["forgotten"].append)
+    return records
+
+
+def test_the_probe_child_is_adopted_so_a_shutdown_sweep_can_reach_it(
+    monkeypatch, _probe_lifetime_records
+):
+    # The child-side PDEATHSIG bind is Linux only, and the Windows job object is documented to
+    # fail when Studio already runs inside an incompatible host job. In that configuration this
+    # record is the only thing left that can reach a probe still holding a CUDA context, both
+    # from the shutdown sweep and from the next startup.
+    import multiprocessing
+
+    monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
+    child = _FakeProbeChild(dies_on = "start")
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda name: _FakeSpawnContext(child, _FakeProbeQueue({TQ_INT8: True})),
+    )
+    assert tq._child_probe_table("cuda") == {TQ_INT8: True}
+    assert _probe_lifetime_records["adopted"] == [child.pid]
+
+
+def test_the_queue_is_built_with_the_lease_secret_already_scrubbed(
+    monkeypatch, _probe_lifetime_records
+):
+    # On POSIX the first spawn-context queue creates the named semaphores that start
+    # multiprocessing's resource tracker, and that tracker is exec'd with this process's
+    # environment and then outlives every child. Built above the scrub it carries the
+    # native-path lease secret for the life of the backend, where the child-side scrub can no
+    # longer reach it. Measured: the secret is in the tracker's /proc/<pid>/environ when the
+    # queue is built first, and absent when it is built here.
+    import multiprocessing
+
+    from utils.native_path_leases import LEASE_SECRET_ENV
+
+    secret = "x" * 64
+    monkeypatch.setenv(LEASE_SECRET_ENV, secret)
+    monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
+    seen = {}
+
+    class _WatchingContext(_FakeSpawnContext):
+        def Queue(self):
+            seen["at_queue"] = os.environ.get(LEASE_SECRET_ENV)
+            return super().Queue()
+
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda name: _WatchingContext(
+            _FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True})
+        ),
+    )
+    assert tq._child_probe_table("cuda") == {TQ_INT8: True}
+    assert seen["at_queue"] is None
+    # And the parent has it back once the child is started.
+    assert os.environ.get(LEASE_SECRET_ENV) == secret
+
+
+# ── a spawn that failed but may not fail next time ──────────────────────────────
+
+
+def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
+    monkeypatch, _probe_lifetime_records
+):
+    # Descriptors, process slots and /dev/shm all come back. Latching the OSError would hold the
+    # backend on the in-process probe -- and so on the ~800 MiB the child exists to avoid -- for
+    # every later miss, until Studio restarts.
+    import multiprocessing
+
+    calls = {"n": 0}
+
+    def _get_context(name):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(24, "Too many open files")
+        return _FakeSpawnContext(_FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True}))
+
+    monkeypatch.setattr(multiprocessing, "get_context", _get_context)
+    monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
+    assert tq._child_probe_table("cuda") is None
+    assert tq._CHILD_PROBE_UNAVAILABLE is False
+    # The pressure clears and the next miss gets its child back.
+    assert tq._child_probe_table("cuda") == {TQ_INT8: True}
+    assert calls["n"] == 2
+    assert tq._CHILD_PROBE_SPAWN_ERRORS == 0
+
+
+def test_a_host_that_refuses_every_spawn_stops_being_asked(monkeypatch):
+    # The retry is bounded: an OSError on every attempt is indistinguishable from a sandbox that
+    # will never spawn, so the latch still lands after a short run of them.
+    import multiprocessing
+
+    calls = {"n": 0}
+
+    def _always_refuses(name):
+        calls["n"] += 1
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(multiprocessing, "get_context", _always_refuses)
+    for _ in range(tq._CHILD_PROBE_SPAWN_ERROR_LIMIT):
+        assert tq._child_probe_table("cuda") is None
+    assert tq._CHILD_PROBE_UNAVAILABLE is True
+    settled = calls["n"]
+    assert tq._child_probe_table("cuda") is None
+    assert calls["n"] == settled
+
+
+def test_a_child_that_survives_terminate_is_killed(_probe_lifetime_records):
+    # Five seconds of terminate and then giving up leaves the VRAM this probe exists to hand
+    # back held for the whole 180 s timeout, or forever if the child is wedged.
+    child = _FakeProbeChild(dies_on = "kill")
+    child.start()
+    assert tq._close_probe_child(child, _FakeProbeQueue()) is True
+    assert child.signals == ["terminate", "kill"]
+    assert _probe_lifetime_records["forgotten"] == [child.pid]
+
+
+def test_a_child_that_survives_kill_keeps_its_breadcrumb_and_is_reported(_probe_lifetime_records):
+    # Same call the chat worker makes: a survivor keeps its handle rather than being dropped
+    # silently, so the sweep still has something to retry.
+    child = _FakeProbeChild(dies_on = None)
+    child.start()
+    assert tq._close_probe_child(child, _FakeProbeQueue()) is False
+    assert child.signals == ["terminate", "kill"]
+    assert _probe_lifetime_records["forgotten"] == []
+
+
+def test_a_clean_exit_forgets_the_pid(_probe_lifetime_records):
+    # The child that posted its table and exited is not signalled at all, and its record goes.
+    child = _FakeProbeChild(dies_on = "start")
+    child.start()
+    queue = _FakeProbeQueue()
+    assert tq._close_probe_child(child, queue) is True
+    assert child.signals == []
+    assert queue.closed is True
+    assert _probe_lifetime_records["forgotten"] == [child.pid]
+
+
+def test_the_probe_body_separates_an_oom_from_a_verdict(monkeypatch):
+    # _run_smoke_probe is what BOTH the child and the in-process fallback call, so this three-way
+    # answer is the single place the two can be shown not to drift.
+    class _OOM(RuntimeError):
+        pass
+
+    fault = [None]
+
+    class _Lin:
+        def __init__(self, *a, **k):
+            pass
+
+        def to(self, **k):
+            return self
+
+        def __call__(self, x):
+            if fault[0] is not None:
+                raise fault[0]
+            return x
+
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.randn = lambda *a, **k: _FakeTensor()
+    torch.isfinite = lambda t: _FakeBool(True)
+    torch.no_grad = lambda: __import__("contextlib").nullcontext()
+    torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8cfg"
+    tqz.Float8DynamicActivationFloat8WeightConfig = lambda: "fp8cfg"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    assert tq._run_smoke_probe(TQ_INT8, "cuda") is True
+    fault[0] = _OOM("CUDA out of memory. Tried to allocate 2.00 GiB")
+    assert tq._run_smoke_probe(TQ_INT8, "cuda") is None
+    fault[0] = RuntimeError("kernel unavailable")
+    assert tq._run_smoke_probe(TQ_INT8, "cuda") is False
 
 
 def test_an_oom_is_recognised_however_it_is_spelled():

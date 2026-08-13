@@ -6101,6 +6101,96 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _remote_gguf_compute_reserve_gb(
+    llama_extra_args: Optional[list[str]] = None,
+    max_seq_length: int = 0,
+    n_parallel: int = 1,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
+    tensor_parallel: bool = False,
+    is_diffusion: bool = False,
+) -> float:
+    """Compute buffers a remote GGUF will reserve, in GB.
+
+    Split out of _estimate_gguf_required_gb so a caller that is pricing something
+    else, a drafter for instance, can hold it at zero the way it already holds
+    _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
+    """
+    # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
+    from core.inference.llama_server_args import parse_ctx_override
+
+    try:
+        ctx_override = parse_ctx_override(llama_extra_args) or 0
+    except Exception:
+        ctx_override = 0
+    ctx = max(max_seq_length or 0, ctx_override)
+    effective_ubatch = (
+        None
+        if is_diffusion
+        else _extra_args_n_ubatch(
+            llama_extra_args,
+            n_ctx = ctx if ctx > 0 else None,
+            # same floor raise the loader applies at launch
+            n_batch = _emitted_n_batch(n_batch, n_parallel),
+            n_ubatch = n_ubatch,
+        )
+    )
+    if effective_ubatch is None and not is_diffusion:
+        effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
+    if effective_ubatch:
+        # auto context: assume the native one fits at least a full micro-batch
+        budget_ctx = ctx if ctx > 0 else effective_ubatch
+        devices = max(1, int(n_devices))
+        # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
+        # times, the same step _compute_buffer_ctx_bytes applies locally; charging
+        # the single-copy rate under-reserved 4x. Tensor mode is already correct
+        # (measured at the single-device rate, replicated per device). n_layers is
+        # None here: the header is unread, so -ngl cannot be resolved, but -ot /
+        # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
+        # same model 409s while remote and loads once cached.
+        from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
+        split_mult = (
+            LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
+            if devices > 1
+            and not tensor_parallel
+            and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
+            else 1
+        )
+        mask_bytes = (
+            budget_ctx
+            * effective_ubatch
+            * 2
+            * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+            * devices
+            * split_mult
+        )
+        # The mask is only the context-linear half. The flat half needs the dims,
+        # which are unreadable remotely, but its dominant term needs just a vocab
+        # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
+        # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
+        # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
+        # an uncached load that then OOMs the training job it exists to protect.
+        # The activation scratch needs embedding_length and stays uncharged: it is
+        # the small half, and over-reserving here denies the load outright.
+        # Scaled per device only in tensor mode, mirroring the local branch: a
+        # layer split folds the flat buffer in once (_flat_buffer(False)), and
+        # only tensor mode replicates it on every card.
+        # The remote header is unknown, so reserve as if it enables embeddings.
+        _out_slots = max(1, n_parallel)
+        out_buffer_bytes = (
+            _ASSUMED_MAX_VOCAB
+            * effective_ubatch
+            * 4
+            * _out_slots
+            * (devices if tensor_parallel else 1)
+            * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        )
+        return (mask_bytes + out_buffer_bytes) / (1024**3)
+    return 0.0
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
@@ -6355,77 +6445,16 @@ def _estimate_gguf_required_gb(
             # one: this repo's listing cannot see it, local or remote, and it is
             # resident next to these weights.
             total_gb = (main_bytes + companions + _extras_bytes) / (1024**3)
-            # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
-            from core.inference.llama_server_args import parse_ctx_override
-
-            try:
-                ctx_override = parse_ctx_override(llama_extra_args) or 0
-            except Exception:
-                ctx_override = 0
-            ctx = max(max_seq_length or 0, ctx_override)
-            effective_ubatch = (
-                None
-                if is_diffusion
-                else _extra_args_n_ubatch(
-                    llama_extra_args,
-                    n_ctx = ctx if ctx > 0 else None,
-                    # same floor raise the loader applies at launch
-                    n_batch = _emitted_n_batch(n_batch, n_parallel),
-                    n_ubatch = n_ubatch,
-                )
+            total_gb += _remote_gguf_compute_reserve_gb(
+                llama_extra_args = llama_extra_args,
+                max_seq_length = max_seq_length,
+                n_parallel = n_parallel,
+                n_batch = n_batch,
+                n_ubatch = n_ubatch,
+                n_devices = n_devices,
+                tensor_parallel = tensor_parallel,
+                is_diffusion = is_diffusion,
             )
-            if effective_ubatch is None and not is_diffusion:
-                effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
-            if effective_ubatch:
-                # auto context: assume the native one fits at least a full micro-batch
-                budget_ctx = ctx if ctx > 0 else effective_ubatch
-                devices = max(1, int(n_devices))
-                # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
-                # times, the same step _compute_buffer_ctx_bytes applies locally; charging
-                # the single-copy rate under-reserved 4x. Tensor mode is already correct
-                # (measured at the single-device rate, replicated per device). n_layers is
-                # None here: the header is unread, so -ngl cannot be resolved, but -ot /
-                # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
-                # same model 409s while remote and loads once cached.
-                from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
-
-                split_mult = (
-                    LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
-                    if devices > 1
-                    and not tensor_parallel
-                    and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
-                    else 1
-                )
-                mask_bytes = (
-                    budget_ctx
-                    * effective_ubatch
-                    * 2
-                    * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-                    * devices
-                    * split_mult
-                )
-                # The mask is only the context-linear half. The flat half needs the dims,
-                # which are unreadable remotely, but its dominant term needs just a vocab
-                # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
-                # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
-                # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
-                # an uncached load that then OOMs the training job it exists to protect.
-                # The activation scratch needs embedding_length and stays uncharged: it is
-                # the small half, and over-reserving here denies the load outright.
-                # Scaled per device only in tensor mode, mirroring the local branch: a
-                # layer split folds the flat buffer in once (_flat_buffer(False)), and
-                # only tensor mode replicates it on every card.
-                # The remote header is unknown, so reserve as if it enables embeddings.
-                _out_slots = max(1, n_parallel)
-                out_buffer_bytes = (
-                    _ASSUMED_MAX_VOCAB
-                    * effective_ubatch
-                    * 4
-                    * _out_slots
-                    * (devices if tensor_parallel else 1)
-                    * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-                )
-                total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)
             return total_gb
         return None
     except Exception as e:
@@ -7175,10 +7204,29 @@ _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
 )
 
 
+def _diagnosis_text(msg: str) -> str:
+    """``msg`` up to the startup-diagnostics block, which is not ours to read.
+
+    A llama-server failure now carries a tail of the child's own stdout and the
+    log path. That evidence is quoted verbatim from an untrusted process, so
+    matching a phrase inside it says nothing about the model: llama.cpp prints
+    lines like "device does not support 16-bit storage" for reasons that have
+    nothing to do with the checkpoint, and every phrase below would then rewrite
+    the diagnosis to "This model is not supported yet". Match on the part this
+    backend wrote. A message without the block is returned unchanged, so every
+    other error source behaves exactly as before.
+    """
+    for marker in ("\n\nllama-server output:", "\n\nFull log: "):
+        head, sep, _ = msg.partition(marker)
+        if sep:
+            msg = head
+    return msg
+
+
 def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     """Whether ``msg`` is the verbose MLX per-module metadata error emitted
     while loading an NVFP4 checkpoint."""
-    lower_msg = msg.lower()
+    lower_msg = _diagnosis_text(msg).lower()
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
 
 
@@ -7186,7 +7234,8 @@ def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
     message when it matches a known unsupported-model signature; otherwise
     return ``msg`` unchanged."""
-    if any(h.lower() in msg.lower() for h in _NOT_SUPPORTED_HINTS):
+    hay = _diagnosis_text(msg).lower()
+    if any(h.lower() in hay for h in _NOT_SUPPORTED_HINTS):
         return f"This model is not supported yet. Try a different model. (Original error: {msg})"
     return msg
 
