@@ -1127,6 +1127,8 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HIP_PATH_57",
     "ROCM_PATH",
     "MLX_HOSTFILE",
+    // Read exactly like MLX_HOSTFILE: either inline JSON or a filename.
+    "MLX_IBV_DEVICES",
     "OLLAMA_MODELS",
     "DG_VISUAL_BIN",
     "UNSLOTH_DG_SHIM",
@@ -1206,7 +1208,7 @@ fn needs_os_resolution(value: &str) -> bool {
 }
 
 /// MLX_HOSTFILE holds either a filename or the host list itself, as JSON.
-const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE"];
+const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE", "MLX_IBV_DEVICES"];
 
 /// Names whose readers disagree about %VAR%: huggingface_hub expands HF_HOME
 /// (and the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE,
@@ -1353,6 +1355,11 @@ fn names_a_path(name: &str, value: &str) -> bool {
 /// invent a failure for a value the child is never going to see.
 const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
 
+/// Read only by the update and installer path (install_python_stack.py), so a
+/// stale value must not be able to fail a probe, a backend start or an auth
+/// provision that would never have looked at it.
+const UPDATE_ONLY_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
+
 /// `~` and `~name`, resolved the way ntpath.expanduser resolves them.
 ///
 /// Written out rather than skipped, because only some readers of these names
@@ -1388,23 +1395,47 @@ fn relative_override_pins_from(
     lookup: impl Fn(&str) -> Option<String>,
     absolute: impl Fn(&str) -> Option<std::path::PathBuf>,
     home: Option<&std::path::Path>,
+    skipped: &[&str],
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     let Some(cwd) = cwd else {
         // The directory being left is unknown, so nothing can be anchored to it.
         // Moving anyway would quietly retarget every relative value at the new
         // directory, so this is only survivable with nothing left to preserve.
         for name in RELATIVE_PATH_ENV.iter().chain(PATH_LIST_ENV) {
-            if MANAGED_CHILD_SCRUBBED_ENV.contains(name) {
+            if skipped.contains(name) {
                 continue;
             }
             let Some(value) = lookup(name) else { continue };
-            let value = value.trim();
-            if value.is_empty() || value.starts_with('~') || is_fully_qualified(value) {
-                continue;
+            // A list is judged entry by entry: "C:\\vendor;plugins" starts with a
+            // drive and still carries something the lost directory decided.
+            let raw = value.trim();
+            let entries: Vec<&str> = if PATH_LIST_ENV.contains(name) {
+                raw.split(';').collect()
+            } else {
+                vec![raw]
+            };
+            for entry in entries {
+                let entry = entry.trim();
+                if entry.is_empty() {
+                    // An empty PYTHONPATH component is the directory itself.
+                    if *name == "PYTHONPATH" && !raw.is_empty() {
+                        return Err(format!(
+                            "{name} names the directory it was written against, which is gone"
+                        ));
+                    }
+                    continue;
+                }
+                let entry = match home {
+                    Some(home) => expand_windows_user(entry, home),
+                    None => entry.to_string(),
+                };
+                if is_fully_qualified(&entry) {
+                    continue;
+                }
+                return Err(format!(
+                    "{name} is relative and the directory it was written against is gone"
+                ));
             }
-            return Err(format!(
-                "{name} is relative and the directory it was written against is gone"
-            ));
         }
         return Ok(Vec::new());
     };
@@ -1437,7 +1468,7 @@ fn relative_override_pins_from(
     };
     let mut pins = Vec::new();
     for name in RELATIVE_PATH_ENV {
-        if MANAGED_CHILD_SCRUBBED_ENV.contains(name) {
+        if skipped.contains(name) {
             continue;
         }
         let Some(value) = lookup(name) else { continue };
@@ -1509,6 +1540,7 @@ fn relative_override_pins_from(
 /// Relative overrides, anchored to the directory the child is being moved out of.
 fn relative_override_pins(
     work_dir: &std::path::Path,
+    skipped: &[&str],
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     relative_override_pins_from(
         std::env::current_dir().ok(),
@@ -1518,7 +1550,17 @@ fn relative_override_pins(
         // current directory.
         |value| std::path::absolute(value).ok(),
         dirs::home_dir().as_deref(),
+        skipped,
     )
+}
+
+/// What an ordinary managed child neither receives nor needs.
+fn child_skipped_env() -> Vec<&'static str> {
+    MANAGED_CHILD_SCRUBBED_ENV
+        .iter()
+        .chain(UPDATE_ONLY_ENV)
+        .copied()
+        .collect()
 }
 
 /// The error a managed spawn would fail with, without spawning anything.
@@ -1531,7 +1573,7 @@ pub(crate) fn managed_cli_context_error() -> Option<ManagedContextError> {
         Ok(work_dir) => work_dir,
         Err(error) => return Some(ManagedContextError::WorkingDirectory(error)),
     };
-    relative_override_pins(&work_dir)
+    relative_override_pins(&work_dir, &child_skipped_env())
         .err()
         .map(ManagedContextError::PathSetting)
 }
@@ -1567,15 +1609,24 @@ fn needs_explicit_cwd(work_dir: &std::path::Path) -> bool {
 
 /// Pin the working directory and mark the child as desktop-managed. Env
 /// scrubbing, creation flags and the ownership handshake stay with the caller.
+/// For the update, which is the one child that reads STUDIO_LOCAL_REPO.
 pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String> {
-    apply_managed_cli_context_at(cmd, &managed_cli_working_dir()?)
+    apply_managed_cli_context_inner(cmd, &managed_cli_working_dir()?, MANAGED_CHILD_SCRUBBED_ENV)
 }
 
 pub(crate) fn apply_managed_cli_context_at(
     cmd: &mut Command,
     work_dir: &std::path::Path,
 ) -> Result<(), String> {
-    for (name, pinned) in relative_override_pins(work_dir)? {
+    apply_managed_cli_context_inner(cmd, work_dir, &child_skipped_env())
+}
+
+fn apply_managed_cli_context_inner(
+    cmd: &mut Command,
+    work_dir: &std::path::Path,
+    skipped: &[&str],
+) -> Result<(), String> {
+    for (name, pinned) in relative_override_pins(work_dir, skipped)? {
         cmd.env(name, pinned);
     }
     if needs_explicit_cwd(work_dir) {
@@ -1583,7 +1634,7 @@ pub(crate) fn apply_managed_cli_context_at(
     }
     // Removed here as well as at the call sites, so the skip above is a fact
     // about the child rather than an assumption about every caller.
-    for name in MANAGED_CHILD_SCRUBBED_ENV {
+    for name in skipped {
         cmd.env_remove(name);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
@@ -1594,13 +1645,14 @@ pub(crate) fn apply_managed_cli_context_tokio(
     cmd: &mut tokio::process::Command,
 ) -> Result<(), String> {
     let work_dir = managed_cli_working_dir()?;
-    for (name, pinned) in relative_override_pins(&work_dir)? {
+    let skipped = child_skipped_env();
+    for (name, pinned) in relative_override_pins(&work_dir, &skipped)? {
         cmd.env(name, pinned);
     }
     if needs_explicit_cwd(&work_dir) {
         cmd.current_dir(&work_dir);
     }
-    for name in MANAGED_CHILD_SCRUBBED_ENV {
+    for name in &skipped {
         cmd.env_remove(name);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
@@ -3021,7 +3073,7 @@ mod managed_cli_working_dir_tests {
         };
 
         let pins =
-            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me"))).unwrap();
+            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV).unwrap();
         assert_eq!(
             pins,
             vec![
@@ -3044,18 +3096,18 @@ mod managed_cli_working_dir_tests {
         // An unresolvable drive-relative value refuses the whole move rather
         // than being dropped: a child moved with that override still relative
         // would read and write somewhere else than the caller named.
-        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me"))).is_err());
+        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV).is_err());
 
         // Staying put is the common case: nothing is rewritten, so a desktop
         // started from a project folder keeps every override as it was.
         assert!(
-            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")))
+            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV)
                 .unwrap()
                 .is_empty()
         );
         // The directory being left is unknown, so a relative override cannot be
         // anchored to it and the move is refused rather than retargeting it.
-        assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me"))).is_err());
+        assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV).is_err());
         // With nothing relative left to preserve, an unknown directory is fine.
         let absolute_only = |name: &str| match name {
             "HF_HOME" => Some("D:\\cache".to_string()),
@@ -3065,7 +3117,7 @@ mod managed_cli_working_dir_tests {
             _ => None,
         };
         assert!(
-            relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")))
+            relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV)
                 .unwrap()
                 .is_empty()
         );
@@ -3331,6 +3383,78 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_lost_directory_is_judged_entry_by_entry() {
+        // "C:\\vendor;plugins" starts with a drive and still carries something
+        // the directory that is gone decided.
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let home = Some(std::path::Path::new("C:\\Users\\me"));
+        let mixed = |name: &str| match name {
+            "PYTHONPATH" => Some("C:\\vendor;plugins".to_string()),
+            _ => None,
+        };
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            mixed,
+            |_| None,
+            home,
+            MANAGED_CHILD_SCRUBBED_ENV
+        )
+        .is_err());
+        // Every entry qualified: nothing is left depending on it.
+        let qualified = |name: &str| match name {
+            "PYTHONPATH" => Some("C:\\vendor;D:\\plugins".to_string()),
+            _ => None,
+        };
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            qualified,
+            |_| None,
+            home,
+            MANAGED_CHILD_SCRUBBED_ENV
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn only_the_update_child_carries_the_local_checkout() {
+        // STUDIO_LOCAL_REPO is read by the update and installer path alone, so a
+        // stale one must not fail a probe or a backend start that ignores it.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let home = Some(std::path::Path::new("C:\\Users\\me"));
+        let env = |name: &str| match name {
+            "STUDIO_LOCAL_REPO" => Some("..\\src\\unsloth".to_string()),
+            _ => None,
+        };
+        let for_update = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            env,
+            |_| None,
+            home,
+            MANAGED_CHILD_SCRUBBED_ENV,
+        )
+        .unwrap();
+        assert_eq!(
+            for_update,
+            vec![("STUDIO_LOCAL_REPO", cwd.join("..\\src\\unsloth"))]
+        );
+        let for_child = relative_override_pins_from(
+            Some(cwd),
+            &work_dir,
+            env,
+            |_| None,
+            home,
+            &child_skipped_env(),
+        )
+        .unwrap();
+        assert!(for_child.is_empty(), "a child that ignores it must not pin it");
+    }
+
+    #[test]
     fn a_tilde_is_written_out_the_way_expanduser_writes_it() {
         let home = std::path::Path::new("C:\\Users\\me");
         assert_eq!(expand_windows_user("~", home), "C:\\Users\\me");
@@ -3415,6 +3539,7 @@ mod managed_cli_working_dir_tests {
             },
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
         )
         .unwrap();
         let expected = format!(
@@ -3443,6 +3568,7 @@ mod managed_cli_working_dir_tests {
             },
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
         )
         .unwrap();
         assert_eq!(
@@ -3474,6 +3600,7 @@ mod managed_cli_working_dir_tests {
             },
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
         )
         .unwrap();
         assert_eq!(
@@ -3504,6 +3631,7 @@ mod managed_cli_working_dir_tests {
             },
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
         )
         .unwrap();
         assert!(pins.is_empty(), "a non-path value was rewritten: {pins:?}");
@@ -3524,6 +3652,7 @@ mod managed_cli_working_dir_tests {
             },
             |_| None,
             Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
         )
         .unwrap();
         // `~` is written out: only some readers of these names expand it.
@@ -3600,6 +3729,7 @@ mod managed_cli_working_dir_tests {
                 },
                 absolute,
                 Some(std::path::Path::new("C:\\Users\\me")),
+                MANAGED_CHILD_SCRUBBED_ENV,
             )
             .unwrap();
             if round == 0 {

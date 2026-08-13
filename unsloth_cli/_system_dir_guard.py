@@ -329,6 +329,8 @@ _RELATIVE_PATH_ENV = (
     "HIP_PATH_57",
     "ROCM_PATH",
     "MLX_HOSTFILE",
+    # Read exactly like MLX_HOSTFILE: either inline JSON or a filename.
+    "MLX_IBV_DEVICES",
     "OLLAMA_MODELS",
     "DG_VISUAL_BIN",
     "UNSLOTH_DG_SHIM",
@@ -424,7 +426,7 @@ def pin_relative_overrides(
 
 # MLX_HOSTFILE holds either a filename or the host list itself, as JSON
 # (`unsloth_cli/_inference.py`, `_json_rank_count_from_env`).
-_INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE",))
+_INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE", "MLX_IBV_DEVICES"))
 
 # Names whose readers disagree about %VAR% and $VAR: huggingface_hub calls
 # expandvars on HF_HOME (and on the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE

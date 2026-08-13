@@ -1318,3 +1318,26 @@ def test_cli_guard_will_not_relocate_once_the_commands_are_imported():
     message, colour, fatal = outcome
     assert (colour, fatal) == ("red", True)
     assert message is not None
+
+
+def test_cli_guard_treats_the_jaccl_device_file_like_the_host_file():
+    r"""MLX_IBV_DEVICES is read exactly like MLX_HOSTFILE (`_json_rank_count_from_env`):
+    either inline JSON or a filename, so it is pinned and the JSON left alone."""
+    environ_out: dict[str, str] = {}
+    _message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {"MLX_IBV_DEVICES": "devices.json"},
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out["MLX_IBV_DEVICES"] == r"C:\Windows\System32\devices.json"
+
+    environ_out.clear()
+    _message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {"MLX_IBV_DEVICES": '[{"device": "mlx5_0"}]'},
+        environ_out = environ_out,
+    )
+    assert environ_out["MLX_IBV_DEVICES"] == '[{"device": "mlx5_0"}]'
