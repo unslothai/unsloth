@@ -322,6 +322,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.pill import router as pill_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import storage
@@ -1266,6 +1267,7 @@ app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(pill_router, prefix = "/api/pill", tags = ["pill"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])

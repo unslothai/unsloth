@@ -66,5 +66,11 @@ export default defineConfig({
     commonjsOptions: {
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        ask: path.resolve(__dirname, "ask.html"),
+      },
+    },
   },
 });

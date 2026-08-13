@@ -18,6 +18,7 @@ mod native_intents;
 mod native_path_policy;
 mod preflight;
 mod process;
+mod selection_pill;
 mod update;
 mod windows_job;
 mod x11_threads;
@@ -1504,10 +1505,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
                 .skip_initial_state("main")
+                .with_denylist(&[selection_pill::ASK_WINDOW_LABEL])
                 .build(),
         )
         .manage(diagnostics::new_diagnostics_state())
@@ -1517,6 +1520,7 @@ fn main() {
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
+        .manage(selection_pill::new_pill_state())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
             set_training_active,
@@ -1563,6 +1567,11 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            selection_pill::commands::pill_status,
+            selection_pill::commands::pill_set_config,
+            selection_pill::commands::pill_server_port,
+            selection_pill::commands::ask_hide,
+            selection_pill::commands::ask_resize,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
@@ -1604,6 +1613,9 @@ fn main() {
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
+            if let Err(e) = selection_pill::init(app) {
+                log::warn!("selection pill init failed: {e}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

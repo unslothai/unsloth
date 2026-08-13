@@ -20,6 +20,7 @@ import { backfillModelOverrides } from "@/features/model-picker/api/migrate-mode
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { PillConfigSync } from "@/features/system-pill";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -300,6 +301,8 @@ function RootLayout() {
       <TransformersUpgradeDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
+      <PillConfigSync />
+
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>

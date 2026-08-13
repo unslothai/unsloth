@@ -101,6 +101,7 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
           test -f dist/index.html
+          test -f dist/pill.html
 
       # The crate carries ~100 unit tests (native_file_dialogs, preflight,
       # install, desktop_auth, ...) that nothing ran until now: this workflow
@@ -325,3 +326,31 @@ jobs:
       - name: Rust release type check (studio/src-tauri)
         working-directory: studio/src-tauri
         run: cargo check --all-targets --release
+
+  macos-check:
+    # The selection-pill native layer is cfg(target_os = "macos") and only ever
+    # compiled by the manual release workflow otherwise; this keeps it from
+    # rotting between releases. Check + tests only: no npm, no bundling, no
+    # codesigning.
+    name: Rust check + tests (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - name: cargo check
+        working-directory: studio/src-tauri
+        run: cargo check --locked
+
+      - name: cargo test
+        working-directory: studio/src-tauri
+        run: cargo test --locked --no-fail-fast

@@ -14,6 +14,7 @@ export type SettingsTab =
   | "data"
   | "api-keys"
   | "agents"
+  | "system"
   | "about";
 
 export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
@@ -71,6 +72,7 @@ function loadInitialTab(): SettingsTab {
     "data",
     "api-keys",
     "agents",
+    "system",
     "about",
   ];
   return valid.includes(stored as SettingsTab)

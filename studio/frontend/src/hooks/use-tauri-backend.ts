@@ -9,6 +9,20 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+
+// The pill window resolves its API base separately and can miss the one-shot
+// server-port broadcast; persist the port (shared same-origin localStorage)
+// and forward the event so it can always catch up.
+function announcePortToPill(port: number): void {
+  try {
+    window.localStorage.setItem("unsloth_backend_port", String(port));
+  } catch {
+    // storage unavailable; the event below still covers a live pill window
+  }
+  void import("@tauri-apps/api/event")
+    .then(({ emitTo }) => emitTo("pill", "server-port", port))
+    .catch(() => undefined);
+}
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
@@ -246,6 +260,7 @@ export function useTauriBackend() {
             return;
           }
           setApiBase(preflight.port);
+          announcePortToPill(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(true);
           setStartupMessage(SERVER_STARTUP_MESSAGE);
@@ -259,6 +274,7 @@ export function useTauriBackend() {
             return;
           }
           setApiBase(preflight.port);
+          announcePortToPill(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(false);
           stopExternalServerPoll();
@@ -323,6 +339,7 @@ export function useTauriBackend() {
 
       if (startupResult.status === "ready") {
         setApiBase(startupResult.port);
+        announcePortToPill(startupResult.port);
         setRunningStatus();
         startingRef.current = false;
         return;
@@ -596,6 +613,7 @@ export function useTauriBackend() {
         // a real crash and deserves the generic message.
         startTimedOutRef.current = false;
         setApiBase(e.payload);
+        announcePortToPill(e.payload);
       });
 
       register<void>("server-crashed", () => {

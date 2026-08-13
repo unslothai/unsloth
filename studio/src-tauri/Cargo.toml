@@ -14,7 +14,7 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
@@ -42,6 +42,7 @@ rand = "0.10.0"
 tauri-plugin-notification = "2.3.3"
 tempfile = "3"
 tauri-plugin-window-state = "2"
+tauri-plugin-global-shortcut = "2"
 time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -50,6 +51,23 @@ signal-hook = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSEvent",
+    "NSPanel",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSWindow",
+    "NSWorkspace",
+] }
+core-foundation = "0.10"
+core-graphics = "0.25"
+window-vibrancy = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"
