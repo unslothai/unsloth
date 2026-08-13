@@ -6007,15 +6007,115 @@ class LlamaCppBackend:
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
+    def _rocm_arch_gate_keep(
+        binary: Optional[str], torch_mod, for_llama_server: bool
+    ) -> Callable[[int], bool]:
+        """Predicate over PHYSICAL ids: False for a device the installed ROCm
+        prebuilt has no kernels for.
+
+        llama-server placement only, so the free-memory rank cannot pick a GPU that
+        binary cannot run (#7624: an iGPU reporting shared RAM outranks the dGPU and
+        the child dies with "device kernel image is invalid"). Keeps every device off
+        that path, off ROCm, on unknown coverage, and for a device with no reported
+        arch. Shared by both branches of ``_get_gpu_memory`` so the amd-smi and torch
+        paths cannot gate differently.
+        """
+        if not for_llama_server or not LlamaCppBackend._torch_is_rocm(torch_mod):
+            return lambda _idx: True
+        supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
+        if supported_archs is None:
+            return lambda _idx: True
+        arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+
+        def _keep(idx: int) -> bool:
+            _base = arch_by_id.get(idx, "")
+            if _base and _base not in supported_archs:
+                logger.warning(
+                    f"Skipping GPU {idx} ({_base}): installed llama.cpp "
+                    f"prebuilt only covers {sorted(supported_archs)}"
+                )
+                return False
+            return True
+
+        return _keep
+
+    @staticmethod
+    def _get_gpu_memory_amd_smi(
+        binary: Optional[str] = None, *, for_llama_server: bool = False
+    ) -> list[tuple[int, int, int]]:
+        """ROCm free/total VRAM per PHYSICAL gpu id via amd-smi, else ``[]``.
+
+        Same index space, shared-pool treatment and arch gate as the torch branch of
+        ``_get_gpu_memory``, read from a child process instead. Reading VRAM through
+        ``torch.cuda.mem_get_info`` creates a HIP primary context that the backend
+        never gives back (~700 MiB measured), and the GGUF models this sizes run in a
+        llama-server CHILD, so that VRAM is lost for the life of the process to
+        answer a question a subprocess can answer.
+
+        ``[]`` off ROCm and whenever amd-smi cannot answer, so the caller falls
+        through to torch exactly as before. A gate that drops every card answers
+        ``[]`` too, and torch then gates identically to the same empty list, so the
+        one context this still costs is on the arm already headed for the CPU.
+        """
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return []
+        except Exception:
+            return []
+        try:
+            from utils.hardware.amd import get_gpu_vram_mib
+
+            vram = get_gpu_vram_mib()
+            # amd-smi enumerates every card regardless of the mask, so drop the
+            # ones this process cannot see. None means no mask, i.e. all of them.
+            visible = LlamaCppBackend._resolve_visible_physical_ids()
+            if visible is not None:
+                allowed = set(visible)
+                vram = {idx: v for idx, v in vram.items() if idx in allowed}
+            if not vram:
+                return []
+            unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
+            gpus: list[tuple[int, int, int]] = []
+            for idx in sorted(vram):
+                if not arch_keeps(idx):
+                    continue
+                raw_mib, total_mib = vram[idx]
+                shared = idx in unified_ids
+                if shared:
+                    # As in the torch branch: system RAM is the real ceiling on a
+                    # shared pool, so cap before taking the host reserve.
+                    avail = LlamaCppBackend._available_system_memory_mib()
+                    if avail is not None:
+                        raw_mib = min(raw_mib, avail)
+                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
+                if free_mib < raw_mib:
+                    logger.info(
+                        f"ROCm device {idx} is a unified-memory APU sharing system "
+                        f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
+                        f"({raw_mib}->{free_mib}MiB usable)"
+                    )
+                gpus.append((idx, free_mib, 0 if shared else total_mib))
+            return gpus
+        except Exception as e:
+            logger.debug(f"amd-smi GPU probe failed: {e}")
+            return []
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
         Order: ``nvidia-smi`` (NVIDIA, respects ``CUDA_VISIBLE_DEVICES``), then
+        ``amd-smi`` (ROCm, the same answer without a HIP context), then
         ``torch.cuda.mem_get_info``, a universal fallback that works on ROCm too
         (HIP reuses the ``torch.cuda.*`` namespace). The fallback covers #5106
-        (nvidia-smi returned [] on AMD) and NVIDIA hosts without nvidia-smi on PATH.
+        (nvidia-smi returned [] on AMD) and hosts with no smi tool on PATH; it is
+        last because it costs this process a permanent CUDA/HIP context, and kept
+        because callers read ``[]`` as "no GPU" and would silently drop to CPU.
 
         On a Vulkan build the ggml Vulkan probe is authoritative, so the indices are
         ggml's compact Vulkan ordinals (what ``--device Vulkan<i>`` selects). It
@@ -6085,6 +6185,13 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
 
+        # ── AMD ROCm via amd-smi ─────────────────────────────────────
+        rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
+            binary, for_llama_server = for_llama_server
+        )
+        if rocm_gpus:
+            return rocm_gpus
+
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         try:
             import torch
@@ -6106,17 +6213,8 @@ class LlamaCppBackend:
             # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
-            # llama-server placement only: gate on the prebuilt's built-arch list so
-            # the free-memory rank cannot pick a GPU the binary has no kernels for
-            # (#7624: an iGPU reporting shared RAM outranks the dGPU and the child
-            # dies with "device kernel image is invalid"). Unknown coverage, or a
-            # device with no reported arch, keeps every device.
-            supported_archs = None
-            arch_by_id: dict[int, str] = {}
-            if for_llama_server and LlamaCppBackend._torch_is_rocm(torch):
-                supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
-                if supported_archs is not None:
-                    arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+            # Same #7624 arch gate the amd-smi branch applies, from the one helper.
+            arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
             gpus = []
             # Windows ROCm's free reading is an over-report on discrete cards too,
             # not only on the shared pool handled below (#8403). It is capped
@@ -6131,14 +6229,8 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if supported_archs is not None:
-                    _base = arch_by_id.get(idx, "")
-                    if _base and _base not in supported_archs:
-                        logger.warning(
-                            f"Skipping GPU {idx} ({_base}): installed llama.cpp "
-                            f"prebuilt only covers {sorted(supported_archs)}"
-                        )
-                        continue
+                if not arch_keeps(idx):
+                    continue
                 shared = idx in unified_ids
                 raw_mib = free_bytes // (1024 * 1024)
                 if shared:

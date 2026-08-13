@@ -251,6 +251,28 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     return num
 
 
+def _vram_used_total_mb(gpu_data: dict) -> tuple[Optional[float], Optional[float]]:
+    """(used, total) VRAM in MB, unit-aware across amd-smi formats.
+
+    Newer versions use "mem_usage" with "total_vram"/"used_vram"; older use
+    "vram" or "fb_memory_usage" with "used"/"total". Shared with the VRAM probe
+    so both read the same keys.
+    """
+    vram_data = gpu_data.get(
+        "mem_usage",
+        gpu_data.get("vram", gpu_data.get("fb_memory_usage", {})),
+    )
+    if not isinstance(vram_data, dict):
+        return None, None
+    used = _parse_memory_mb(
+        vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
+    )
+    total = _parse_memory_mb(
+        vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
+    )
+    return used, total
+
+
 def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     """Extract standardized metrics from a single GPU's amd-smi data."""
     # Output structure varies by version; try common paths
@@ -286,23 +308,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
         power_draw = None
         power_limit = None
 
-    # VRAM: unit-aware parsing across amd-smi formats. Newer versions use
-    # "mem_usage" with "total_vram"/"used_vram"; older use "vram" or
-    # "fb_memory_usage" with "used"/"total".
-    vram_data = gpu_data.get(
-        "mem_usage",
-        gpu_data.get("vram", gpu_data.get("fb_memory_usage", {})),
-    )
-    if isinstance(vram_data, dict):
-        vram_used_mb = _parse_memory_mb(
-            vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
-        )
-        vram_total_mb = _parse_memory_mb(
-            vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
-        )
-    else:
-        vram_used_mb = None
-        vram_total_mb = None
+    vram_used_mb, vram_total_mb = _vram_used_total_mb(gpu_data)
 
     # Build the standardized dict (same shape as nvidia._build_gpu_metrics)
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
@@ -355,6 +361,77 @@ def get_physical_gpu_count() -> Optional[int]:
     if isinstance(gpus, list):
         return len(gpus)
     return None
+
+
+def _gpu_entries(data: Any) -> list[tuple[int, dict]]:
+    """(physical gpu id, gpu dict) pairs from any amd-smi envelope shape.
+
+    A JSON array, a dict under "gpu_data"/"gpus"/"gpu", or a guarded
+    scalar/string fallback. The id is amd-smi's own, falling back to the
+    enumeration index when it is missing or unparseable.
+    """
+    if isinstance(data, list):
+        gpu_list = data
+    elif isinstance(data, dict):
+        gpu_list = data.get("gpu_data", data.get("gpus", data.get("gpu", [data])))
+    else:
+        gpu_list = [data]
+
+    entries: list[tuple[int, dict]] = []
+    for fallback_idx, gpu_data in enumerate(gpu_list):
+        # Skip non-dict entries (a scalar in the array would raise AttributeError).
+        if not isinstance(gpu_data, dict):
+            continue
+        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric
+        # handles bare ints/floats/strings and the {"value", "unit"} dict shape.
+        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
+        parsed_id = _parse_numeric(raw_id)
+        if parsed_id is None:
+            logger.warning(
+                "amd-smi GPU id %r could not be parsed; falling back to enumeration index %d",
+                raw_id,
+                fallback_idx,
+            )
+            idx = fallback_idx
+        else:
+            rounded = round(parsed_id)
+            if rounded != parsed_id:
+                logger.warning(
+                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
+                    raw_id,
+                    parsed_id,
+                    rounded,
+                )
+            idx = int(rounded)
+        entries.append((idx, gpu_data))
+    return entries
+
+
+def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
+    """{physical gpu id: (free MiB, total MiB)} for every AMD GPU amd-smi sees.
+
+    The out-of-process answer to the question ``torch.cuda.mem_get_info`` answers
+    in-process. That call creates a HIP primary context the process never gives
+    back (~700 MiB measured), which is pure loss in a backend whose GGUF models
+    run in a llama-server child. amd-smi reports used rather than free, so free is
+    derived; MiB and MB agree here because ``_parse_memory_mb`` normalises the
+    binary units amd-smi reports.
+
+    Empty when amd-smi is missing, disabled, or reports no usable VRAM, so callers
+    keep whatever fallback they had.
+    """
+    data = _run_amd_smi("metric")
+    if data is None:
+        return {}
+    out: dict[int, tuple[int, int]] = {}
+    for idx, gpu_data in _gpu_entries(data):
+        used_mb, total_mb = _vram_used_total_mb(gpu_data)
+        if used_mb is None or total_mb is None or total_mb <= 0:
+            continue
+        # Clamp: a used reading above total (seen when a card reports a stale
+        # figure mid-reset) must not become negative free.
+        out[idx] = (int(max(0.0, total_mb - used_mb)), int(total_mb))
+    return out
 
 
 def _first_visible_amd_gpu_id() -> Optional[str]:
@@ -438,43 +515,11 @@ def get_visible_gpu_utilization(
             "index_kind": "physical",
         }
 
-    # Extract a device list across envelope shapes: a JSON array, a dict under
-    # "gpu_data"/"gpus"/"gpu", or a guarded scalar/string fallback.
-    if isinstance(data, list):
-        gpu_list = data
-    elif isinstance(data, dict):
-        gpu_list = data.get("gpu_data", data.get("gpus", data.get("gpu", [data])))
-    else:
-        gpu_list = [data]
     visible_set = set(parent_visible_ids)
     ordinal_map = {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
     devices = []
-    for fallback_idx, gpu_data in enumerate(gpu_list):
-        # Skip non-dict entries (a scalar in the array would raise AttributeError).
-        if not isinstance(gpu_data, dict):
-            continue
-        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric
-        # handles bare ints/floats/strings and the {"value", "unit"} dict shape.
-        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
-        parsed_id = _parse_numeric(raw_id)
-        if parsed_id is None:
-            logger.warning(
-                "amd-smi GPU id %r could not be parsed; falling back to enumeration index %d",
-                raw_id,
-                fallback_idx,
-            )
-            idx = fallback_idx
-        else:
-            rounded = round(parsed_id)
-            if rounded != parsed_id:
-                logger.warning(
-                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
-                    raw_id,
-                    parsed_id,
-                    rounded,
-                )
-            idx = int(rounded)
+    for idx, gpu_data in _gpu_entries(data):
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)
