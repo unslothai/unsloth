@@ -23,6 +23,10 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
   removeExternalProviderApiKey,
+
+  PROVIDER_CAPABILITY_WILDCARD,
+  pruneProviderModelCapabilities,
+  setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
@@ -138,6 +142,25 @@ export async function syncExternalProvidersFromBackend(
     listProviderRegistry(),
     listProviderConfigs(),
   ]);
+
+  for (const entry of registryRows) {
+    // Self-hosted model ids are user-supplied, so there is no per-model entry to
+    // key off. The registry declares studio_tools once per provider type; park
+    // it under the wildcard so the per-model lookup can fall back to it.
+    const capabilities = { ...(entry.model_capabilities ?? {}) };
+    if (typeof entry.supports_studio_tools === "boolean") {
+      capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
+        ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
+        studio_tools: entry.supports_studio_tools,
+      };
+    }
+    setProviderModelCapabilities(entry.provider_type, capabilities);
+  }
+  // Writing per returned entry can only correct what came back. Capabilities are
+  // persisted in localStorage and outlive the backend that wrote them, so a
+  // provider the registry has stopped listing (hidden, or unknown to a rolled
+  // back backend) would otherwise keep its last `studio_tools: true` forever.
+  pruneProviderModelCapabilities(registryRows.map((entry) => entry.provider_type));
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
     saveLegacyKey: migrateProviderApiKey,
@@ -220,12 +243,22 @@ export async function syncExternalProvidersFromBackend(
       const synced: ExternalProviderConfig = {
         id: config.id,
         providerType: uiProviderType,
+        // Beside the UI type, which disagrees for a legacy row saved as `openai`:
+        // only the stored type decides what the backend accepts.
+        backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
+        maxOutputTokens:
+          uiProviderType === LEGACY_CUSTOM_PROVIDER_TYPE
+            ? (config.max_output_tokens ?? undefined)
+            : undefined,
 
         hasApiKey: config.has_api_key,
+
+        authKind: config.auth_kind,
+        authStatus: config.auth_status,
         enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
           ? (existing?.enablePromptCaching ?? true)
           : undefined,

@@ -55,11 +55,30 @@ import {
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
-  providerTypeSupportsVision,
+
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
+
+import {
+  addCodexReasoning,
+
+  codexLocalToolRoundId,
+  codexReasoningForToolCalls,
+  readCodexReasoning,
+
+  shouldReplayAssistantReasoning,
+
+  startsNewCodexToolRound,
+  type CodexReasoningLedger,
+} from "../codex-reasoning";
+
+import { resolveToolCallPartId } from "../tool-call-id";
+
+import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   reasoningCapsFromLoad,
@@ -74,12 +93,14 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "../provider-capabilities";
+import { selectCodeToolNames } from "./code-tool-placement";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -1152,6 +1173,21 @@ function collectAssistantTextThoughtSignature(
   return undefined;
 }
 
+function setAssistantCodexReasoning(
+  message: SerializedMessage,
+  reasoning: unknown[] | undefined,
+): void {
+  if (!reasoning) return;
+  const extra =
+    message.extra_content &&
+    typeof message.extra_content === "object" &&
+    !Array.isArray(message.extra_content)
+      ? (message.extra_content as Record<string, unknown>)
+      : {};
+  message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
+}
+
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1191,12 +1227,18 @@ function serializeAssistantReplayMessages(
   }
 
   const imageParts = collectImageParts(message);
+
+  const codexReasoning = readCodexReasoning(
+    (message as { metadata?: unknown }).metadata,
+  );
   const messages: SerializedMessage[] = [];
   const pendingTextParts: string[] = [];
   const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
   let imagePartsPending = imageParts.length > 0;
+
+  let pendingLocalToolRoundId: number | null = null;
 
   const flushAssistantAndToolResults = (force = false): void => {
     const textContent = sanitizeAssistantReplayText(
@@ -1206,13 +1248,16 @@ function serializeAssistantReplayMessages(
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
-    const reasoningOnlyTurnIsComplete =
-      message.status?.type !== "incomplete" &&
-      readIncompleteInfo((message as { metadata?: unknown }).metadata) === null;
-    const hasReasoningContent =
-      includeReasoningContent &&
-      reasoningContent.length > 0 &&
-      (hasContent || hasToolCalls || reasoningOnlyTurnIsComplete);
+    const incomplete =
+      message.status?.type === "incomplete" ||
+      readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null;
+    const hasReasoningContent = shouldReplayAssistantReasoning({
+      enabled: includeReasoningContent,
+      reasoningContent,
+      hasContent,
+      hasToolCalls,
+      incomplete,
+    });
 
     if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
       return;
@@ -1237,6 +1282,16 @@ function serializeAssistantReplayMessages(
       assistantMessage.reasoning_content = reasoningContent;
     }
 
+    if (hasToolCalls) {
+      setAssistantCodexReasoning(
+        assistantMessage,
+        codexReasoningForToolCalls(
+          codexReasoning,
+          pendingToolCalls.map((call) => call.id),
+        ),
+      );
+    }
+
     messages.push(assistantMessage);
     if (pendingToolResults.length > 0) {
       messages.push(...pendingToolResults);
@@ -1247,6 +1302,8 @@ function serializeAssistantReplayMessages(
     pendingToolCalls = [];
     pendingToolResults = [];
     imagePartsPending = false;
+
+    pendingLocalToolRoundId = null;
   };
 
   for (const part of message.content ?? []) {
@@ -1276,7 +1333,18 @@ function serializeAssistantReplayMessages(
         continue;
       }
 
-      const flushLocalPair = shouldFlushCompletedLocalToolPair(toolPart);
+
+      const provenance = getToolReplayProvenance(toolPart);
+      const localRoundId = codexLocalToolRoundId(provenance);
+      if (
+        pendingToolCalls.length > 0 &&
+        startsNewCodexToolRound(pendingLocalToolRoundId, localRoundId)
+      ) {
+        flushAssistantAndToolResults();
+      }
+      if (localRoundId !== null) pendingLocalToolRoundId = localRoundId;
+      const flushLocalPair =
+        localRoundId === null && shouldFlushCompletedLocalToolPair(toolPart);
       if (flushLocalPair && pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
@@ -1297,6 +1365,13 @@ function serializeAssistantReplayMessages(
     messages,
     collectAssistantTextThoughtSignature(message),
   );
+
+  const finalAssistant = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "assistant");
+  if (finalAssistant) {
+    setAssistantCodexReasoning(finalAssistant, codexReasoning?.final);
+  }
   return messages;
 }
 
@@ -1587,6 +1662,7 @@ export async function buildLocalTokenCountExtras(
     ragMode,
     ragTopK,
     autoHealToolCalls,
+    bypassPermissions,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1602,13 +1678,23 @@ export async function buildLocalTokenCountExtras(
     !mcpEnabledForChat &&
     !ragOn
   ) {
-    return {};
+    // Explicit false, not an omitted field: the server defaults tools on for a
+    // request that never mentions them, so every pill being off has to say so.
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
   return {
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
+    // Full access swaps the python/terminal descriptions and adds a nudge
+    // sentence, so the count needs the flag to price the same prompt.
+    bypass_permissions: bypassPermissions,
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
@@ -3545,53 +3631,47 @@ export function createOpenAIStreamAdapter(
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
         await persistResolvedQueuedModel(params.checkpoint);
-        const model = params.checkpoint.trim();
-        if (!model || parseExternalModelId(model)) {
-          throw new Error("Deep research requires a selected local model.");
-        }
-        const inferenceRequest: {
-          model: string;
-          temperature?: number;
-          topP?: number;
-          maxTokens?: number;
-          enableThinking?: boolean;
-          reasoningEffort?: string;
-        } = { model };
+        const selectedCheckpoint = params.checkpoint.trim();
+        const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
+        const researchExternalProvider = researchExternalSelection
+          ? loadExternalProviders().find(
+              (provider) => provider.id === researchExternalSelection.providerId,
+            )
+          : null;
         if (
-          Number.isFinite(params.temperature) &&
-          params.temperature >= 0 &&
-          params.temperature <= 2
+          !selectedCheckpoint ||
+          (researchExternalSelection &&
+            providerModelSupportsStudioTools(
+              researchExternalProvider?.providerType,
+              researchExternalSelection.modelId,
+            ) !== true)
         ) {
-          inferenceRequest.temperature = params.temperature;
-        }
-        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
-          inferenceRequest.topP = params.topP;
-        }
-        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
-          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
+          throw new Error(
+            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
+          );
         }
         const reasoningRequested =
           runtime.reasoningAlwaysOn ||
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
-        if (
-          runtime.reasoningStyle === "enable_thinking" ||
-          runtime.reasoningStyle === "enable_thinking_effort"
-        ) {
-          inferenceRequest.enableThinking = reasoningRequested;
-        }
-        if (
-          reasoningRequested &&
-          (runtime.reasoningStyle === "reasoning_effort" ||
-            runtime.reasoningStyle === "enable_thinking_effort")
-        ) {
-          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
-          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
-          // this model lacks is dropped by llama.cpp and the run falls back to the default.
-          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
-            runtime.reasoningEffort,
-            runtime.reasoningEffortLevels,
-          );
-        }
+        const inferenceRequest = buildResearchInferenceRequest({
+          checkpoint: selectedCheckpoint,
+          external:
+            researchExternalSelection && researchExternalProvider
+              ? {
+                  providerId: researchExternalProvider.id,
+                  providerType: researchExternalProvider.providerType,
+                  modelId: researchExternalSelection.modelId,
+                }
+              : undefined,
+          temperature: params.temperature,
+          topP: params.topP,
+          maxTokens: params.maxTokens,
+          reasoningRequested,
+          reasoningStyle: runtime.reasoningStyle,
+          reasoningEffort: runtime.reasoningEffort,
+          reasoningEffortLevels: runtime.reasoningEffortLevels,
+          clampReasoningEffort: clampReasoningEffortToLevels,
+        });
         const researchProjectId = await resolveProjectId(
           resolvedThreadId,
           readThreadRecord,
@@ -3937,6 +4017,16 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+
+      const externalUsesStudioTools =
+        providerModelSupportsStudioTools(
+          externalProvider?.providerType,
+          externalSelection?.modelId,
+        ) === true;
+
+      const supportsStudioToolsForThisTurn = isExternalRequest
+        ? externalUsesStudioTools
+        : supportsTools;
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -3961,10 +4051,15 @@ export function createOpenAIStreamAdapter(
           externalProvider.providerType === "gemini" &&
           isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
       );
+      const externalProviderUsesOAuth =
+        externalProvider?.authKind === "chatgpt_oauth";
+
       if (
         isExternalRequest &&
         !externalApiKey &&
         !externalProvider?.hasApiKey &&
+
+        !externalProviderUsesOAuth &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
       ) {
@@ -4025,6 +4120,19 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
+      // Which side of the connection the Code pill runs code on. Hosted
+      // `code_execution` and local `python` / `terminal` are two trust
+      // boundaries, not two spellings of one feature, so the stored pill keeps
+      // meaning the provider's sandbox wherever it meant that before the Studio
+      // loop reached these providers. See code-tool-placement.ts.
+      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
+        selectCodeToolNames({
+          codeToolsEnabled,
+          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+          providerHostsCodeExecution: providerHostsCodeExecution(
+            externalProvider?.providerType,
+          ),
+        });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -4254,8 +4362,9 @@ export function createOpenAIStreamAdapter(
         const imageGateReason = getImageInputUnavailableReason({
           activeModel,
           isExternalModel: isExternalRequest,
-          externalSupportsVision: providerTypeSupportsVision(
+          externalSupportsVision: providerModelSupportsVision(
             externalProvider?.providerType,
+            externalSelection?.modelId,
           ),
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
@@ -4444,6 +4553,9 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
+      let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
+      let codexRoundToolCallIds: string[] = [];
+
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Provisional reason on every streamed yield: an abort skips the terminal yields
@@ -4451,6 +4563,7 @@ export function createOpenAIStreamAdapter(
       // lose why it was short. The terminal yields overwrite or clear it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        openaiCodexReasoning: codexReasoningLedger,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -4493,22 +4606,14 @@ export function createOpenAIStreamAdapter(
       // key is unique; every tool_start/output/args/end resolves the same id via
       // this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
-      const resolveToolPartId = (backendToolCallId: string): string => {
-        if (!backendToolCallId) {
-          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
-        }
-        const confirmationId =
-          toolConfirmationIdsByBackendId.get(backendToolCallId);
-        if (confirmationId) {
-          return confirmationId;
-        }
-        let partId = toolPartIdByBackendId.get(backendToolCallId);
-        if (!partId) {
-          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
-          toolPartIdByBackendId.set(backendToolCallId, partId);
-        }
-        return partId;
-      };
+      const resolveToolPartId = (backendToolCallId: string): string =>
+        resolveToolCallPartId(
+          toolPartIdByBackendId,
+          backendToolCallId,
+          toolConfirmationIdsByBackendId.get(backendToolCallId),
+          toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
+          () => `${backendToolCallId}:${crypto.randomUUID()}`,
+        );
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -4728,11 +4833,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            mcp:
+              supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
-              !isExternalRequest &&
-              supportsTools &&
-              (ragEnabled || projectRagEnabled),
+              supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
@@ -4928,31 +5032,128 @@ export function createOpenAIStreamAdapter(
                 getExternalMaxOutputTokens(
                   externalProvider?.providerType,
                   externalSelection?.modelId,
+                  externalProvider?.maxOutputTokens,
                 ),
               ),
+
+              ...(externalUsesStudioTools && resolvedThreadId
+                ? { thread_id: resolvedThreadId }
+                : {}),
               // Forward only sampling knobs the provider accepts.
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // enabled_tools from active pills; backend maps each name
-              // to the provider's tool schema.
-              ...(webSearchEnabledForThisTurn ||
-              webFetchEnabledForThisTurn ||
-              codeExecEnabledForThisTurn ||
-              imageGenerationEnabledForThisTurn
+              // Studio executes the calls for any provider that advertises the
+              // capability. Providers that do not keep their provider-hosted
+              // tool envelope in the branch below.
+              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
+              // resolved to the provider's own sandbox is a hosted request and
+              // belongs in the branch below. Sending this body for it would
+              // attach permission_mode to a passthrough turn, which the route
+              // answers with a 400.
+              ...(supportsStudioToolsForThisTurn &&
+              (toolsEnabled ||
+                studioLocalCodeTools.length > 0 ||
+                mcpEnabledForChat ||
+                ragEnabled ||
+                projectRagEnabled)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
-                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
-                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
+                      ...(ragEnabled || projectRagEnabled
+                        ? ["search_knowledge_base"]
+                        : []),
+                      ...(toolsEnabled ? ["web_search"] : []),
+                      ...studioLocalCodeTools,
+                      // Hosted tools Studio has no local stand-in for. Their
+                      // pills stay lit whether or not a Studio tool is on, so
+                      // listing only the local names here would silently drop
+                      // Images (or Fetch) the moment Search, Code, MCP or a
+                      // project's automatic RAG selected this branch. Search
+                      // deliberately does not ride along: that is the one
+                      // Studio runs itself just above. Code rides along only
+                      // when it resolved to the provider's sandbox, which is
+                      // mutually exclusive with the local names above.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                      ...hostedCodeToolsForThisTurn,
                     ],
+                    mcp_enabled: mcpEnabledForChat,
+                    permission_mode: permissionMode,
+                    ...(permissionMode === "auto"
+                      ? {}
+                      : { confirm_tool_calls: permissionMode === "ask" }),
+                    bypass_permissions: bypassPermissions,
+                    max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
+                    tool_call_timeout:
+                      runtime.toolCallTimeout >= 9999
+                        ? 9999
+                        : runtime.toolCallTimeout * 60,
+                    // Self-hosted models often write a call as text rather than
+                    // emitting structured tool_calls, so the external loop heals
+                    // like the local one. Omitting this left the backend on its
+                    // process default, which is not what the user set in Settings.
+                    // nudge_tool_calls is deliberately absent: it is the
+                    // non-streaming client-tool passthrough retry, which this
+                    // streaming server-side loop does not perform.
+                    auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    ...(ragEnabled || projectRagEnabled
+                      ? {
+                          rag_scope: {
+                            ...(ragEnabled && ragSource.type === "kb"
+                              ? { kb_id: ragSource.kbId }
+                              : {
+                                  ...(ragEnabled && resolvedThreadId
+                                    ? { thread_id: resolvedThreadId }
+                                    : {}),
+                                  ...(projectRagEnabled && ragProjectId
+                                    ? { project_id: ragProjectId }
+                                    : {}),
+                                }),
+                            default_top_k: ragTopK,
+                            mode: ragMode,
+                            autoinject: resolveAutoInject(
+                              ragAutoInject,
+                              params.checkpoint,
+                            ),
+                            autoinject_min_score: ragAutoInjectMinScore,
+                            ...(ragAutoInject === "off"
+                              ? { whole_doc: false }
+                              : {}),
+                            context_length:
+                              runtime.ggufContextLength ??
+                              params.maxSeqLength ??
+                              undefined,
+                          },
+                        }
+                      : {}),
                   }
-                : {}),
+                : webSearchEnabledForThisTurn ||
+                    webFetchEnabledForThisTurn ||
+                    codeExecEnabledForThisTurn ||
+                    imageGenerationEnabledForThisTurn
+                  ? {
+                      enable_tools: true,
+                      enabled_tools: [
+                        ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
+                        ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                        ...(codeExecEnabledForThisTurn
+                          ? ["code_execution"]
+                          : []),
+                        ...(imageGenerationEnabledForThisTurn
+                          ? ["image_generation"]
+                          : []),
+                      ],
+                    }
+                  : // Explicit false: an omitted field falls back to the
+                    // server's tools-on default, which would bill provider
+                    // server tools.
+                    { enable_tools: false }),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -5132,7 +5333,10 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              : {}),
+              : // Explicit false, not an omitted field: the server defaults tools
+                // on for a request that never mentions them, so a model with no
+                // tool pill lit has to say so.
+                { enable_tools: false }),
           };
         };
 
@@ -5651,15 +5855,16 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // OpenAI-standard usage chunk: choices=[], usage populated.
-              if (chunk.choices?.length === 0 && chunk.usage) {
+              // OpenAI usage may arrive either in an empty trailing chunk or on
+              // the terminal Codex chunk that also carries reasoning metadata.
+              if (chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
                   timings: (chunk as Record<string, unknown>).timings as
                     | ServerTimings
                     | undefined,
                 };
-                continue;
+                if (chunk.choices?.length === 0) continue;
               }
 
               totalChunks += 1;
@@ -5702,15 +5907,26 @@ export function createOpenAIStreamAdapter(
                   | undefined
               )?.extra_content;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
-                const eGoogle = (deltaExtraContent as Record<string, unknown>)
-                  .google;
+                const extraRecord = deltaExtraContent as Record<string, unknown>;
+                const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>)
-                    .thought_signature;
+                  const sig = (eGoogle as Record<string, unknown>).thought_signature;
                   if (typeof sig === "string" && sig) {
                     latestTextThoughtSignature = sig;
                   }
                 }
+                const codexReasoning = extraRecord.openai_codex_reasoning;
+                if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
+                  codexReasoningLedger = addCodexReasoning(
+                    codexReasoningLedger,
+                    codexReasoning,
+                    codexRoundToolCallIds,
+                  );
+                }
+              }
+
+              if (chunk.choices?.[0]?.finish_reason) {
+                codexRoundToolCallIds = [];
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
@@ -5762,12 +5978,26 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Match an existing fragment by id first (canonical), then
+                  // Studio's local Codex loop follows the OpenAI tool-call delta with
+                  // tool_start/tool_end events. Resolve the backend id now so all three
+                  // event shapes update one run-unique card instead of leaving the raw
+                  // provisional card beside a second execution card.
+                  const stablePartId = stableId
+                    ? resolveToolPartId(stableId)
+                    : undefined;
+                  // Match an existing fragment by resolved id first (canonical), then
                   // by index slot; fall back to a minted tool_call_<n> id
                   // for streams that send neither.
-                  let existing = stableId
-                    ? toolCallParts.find((p) => p.toolCallId === stableId)
+                  let existing = stablePartId
+                    ? toolCallParts.find((p) => p.toolCallId === stablePartId)
                     : undefined;
+
+                  if (
+                    stablePartId &&
+                    !codexRoundToolCallIds.includes(stablePartId)
+                  ) {
+                    codexRoundToolCallIds.push(stablePartId);
+                  }
                   if (!existing && idx !== undefined) {
                     existing = toolCallParts.find(
                       (p) => (p as PositionedToolCallPart)._delta_index === idx,
@@ -5811,7 +6041,11 @@ export function createOpenAIStreamAdapter(
                     }
                   } else {
                     const callId =
-                      stableId || `tool_call_${idx ?? toolCallParts.length}`;
+                      stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+
+                    if (!codexRoundToolCallIds.includes(callId)) {
+                      codexRoundToolCallIds.push(callId);
+                    }
                     const argsText = argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
@@ -6055,6 +6289,8 @@ export function createOpenAIStreamAdapter(
             custom: {
               ...reasoningDurationTracker.metadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
+
+              openaiCodexReasoning: codexReasoningLedger,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,

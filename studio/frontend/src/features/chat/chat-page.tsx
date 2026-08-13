@@ -5,6 +5,7 @@ import {
   applyModelLoadConfigToRuntime,
   currentRuntimePerModelConfig,
   type DeletedModelRef,
+  type ExternalConnectionRef,
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
@@ -118,6 +119,7 @@ import {
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
+import { codeToolCanRun } from "./api/code-tool-placement";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
@@ -137,6 +139,8 @@ import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
@@ -163,6 +167,7 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
@@ -203,6 +208,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -314,8 +320,11 @@ const SingleContent = memo(function SingleContent({
       useResearchRunStore.getState().sessions[openResearchRunId]?.run;
     if (openRun && openRun.threadId !== activeThreadId) closeResearchPanel();
   }, [activeThreadId, openResearchRunId, closeResearchPanel]);
-  const openResearchRun = useResearchRunStore((state) =>
-    openResearchRunId ? state.sessions[openResearchRunId]?.run : undefined,
+  // A string, not the run: report deltas replace the run ~12x/s, and this owns the thread pane.
+  const openResearchThreadId = useResearchRunStore((state) =>
+    openResearchRunId
+      ? state.sessions[openResearchRunId]?.run.threadId
+      : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
   const hasInitializedArtifactPanelRef = useRef(false);
@@ -326,8 +335,8 @@ const SingleContent = memo(function SingleContent({
   const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
     useState(false);
   const researchMatchesThread = Boolean(
-    openResearchRun &&
-      openResearchRun.threadId === (threadId ?? activeThreadId),
+    openResearchThreadId &&
+      openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
   // Without a URL threadId the artifact must belong to the active thread.
@@ -539,6 +548,7 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   externalModels,
+  externalConnections,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -549,6 +559,7 @@ const CompareContent = memo(function CompareContent({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  externalConnections: ExternalConnectionRef[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -569,6 +580,7 @@ const CompareContent = memo(function CompareContent({
       models={models}
       loraModels={loraModels}
       externalModels={externalModels}
+      externalConnections={externalConnections}
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
@@ -767,6 +779,7 @@ function GeneralCompareHeader({
   models,
   loraModels,
   externalModels,
+  externalConnections,
   value,
   selectedConfig,
   selectedGgufVariant,
@@ -779,6 +792,7 @@ function GeneralCompareHeader({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  externalConnections: ExternalConnectionRef[];
   value: string;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
@@ -811,6 +825,7 @@ function GeneralCompareHeader({
         models={models}
         loraModels={loraModels}
         externalModels={externalModels}
+        externalConnections={externalConnections}
         value={value}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
@@ -834,6 +849,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models,
   loraModels,
   externalModels,
+  externalConnections,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -844,6 +860,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  externalConnections: ExternalConnectionRef[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -942,6 +959,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
+              externalConnections={externalConnections}
               value={model1.id}
               selectedConfig={model1.config}
               selectedGgufVariant={model1.ggufVariant}
@@ -973,6 +991,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
+              externalConnections={externalConnections}
               value={model2.id}
               selectedConfig={model2.config}
               selectedGgufVariant={model2.ggufVariant}
@@ -1336,8 +1355,11 @@ function ProjectLanding({
           return [
             item.id,
             {
+              // A paste-only message carries its text in the attachment, so
+              // the row would otherwise be blank.
               snippet: firstUserMessage
-                ? extractMessageText(firstUserMessage.content)
+                ? extractMessageText(firstUserMessage.content) ||
+                  attachmentsSample(firstUserMessage.attachments)
                 : "",
               date: formatProjectChatDate(item.createdAt),
             },
@@ -1945,8 +1967,12 @@ export function ChatPage({
   const latestResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
   );
-  const latestResearchRun = useResearchRunStore((state) =>
-    latestResearchRunId ? state.sessions[latestResearchRunId]?.run : undefined,
+  // Status, not the run: this subscribes in ChatPage itself, so a run selector re-rendered the
+  // whole page on every streamed research delta.
+  const latestResearchRunStatus = useResearchRunStore((state) =>
+    latestResearchRunId
+      ? state.sessions[latestResearchRunId]?.run.status
+      : undefined,
   );
   const openResearchPanel = useResearchRunStore((state) => state.openPanel);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
@@ -2200,7 +2226,26 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
-    const nextToolsEnabled = supportsBuiltinWebSearch
+    // Studio runs Search and Code itself for any provider that advertises the
+    // capability, so a self-hosted connection has no hosted builtin to key off.
+    // Keying the pill state on the hosted flags alone discarded the user's saved
+    // preference on every reload and sent enable_tools: false, even though the
+    // composer left both pills clickable.
+    const supportsStudioToolsHere =
+      providerModelSupportsStudioTools(
+        provider?.providerType,
+        selection.modelId,
+      ) === true;
+    const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
+    // Read out of the placement rule, not off the Studio-tools flag: a model on
+    // a sandbox-owning provider that cannot use it runs nothing either way, and
+    // offering the pill there restored a preference that sent no tools at all.
+    const canRunCode = codeToolCanRun({
+      hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
+      supportsStudioTools: supportsStudioToolsHere,
+    });
+    const nextToolsEnabled = canSearch
       ? isKimi
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
@@ -2220,20 +2265,13 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models have no local tool runtime, so `supportsTools` is
-      // false. The `supportsBuiltin*` flags cover providers that run tools
-      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
-      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
-      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
-      supportsTools: false,
+      supportsTools: supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
-        ? (storedCodeToolsEnabled ?? false)
-        : false,
+      codeToolsEnabled: canRunCode ? (storedCodeToolsEnabled ?? false) : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
@@ -2744,7 +2782,24 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
-        const nextToolsEnabled = supportsBuiltinWebSearch
+        // Same rule as the selection handler above: a self-hosted connection has
+        // no hosted builtin, so keying the pills on those flags threw away the
+        // user's saved preference every time this ran.
+        const supportsStudioToolsHere =
+          providerModelSupportsStudioTools(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+          ) === true;
+        const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
+        // Same placement rule as the selection handler above.
+        const canRunCode = codeToolCanRun({
+          hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+          providerHostsCodeExecution: providerHostsCodeExecution(
+            selectedProvider?.providerType,
+          ),
+          supportsStudioTools: supportsStudioToolsHere,
+        });
+        const nextToolsEnabled = canSearch
           ? isKimi
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
@@ -2774,17 +2829,13 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools false.
-          // The supportsBuiltin* flags carry server-side capability per pill:
-          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
-          // Responses-API).
-          supportsTools: false,
+          supportsTools: supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
+          codeToolsEnabled: canRunCode
             ? (storedCodeToolsEnabled ?? false)
             : false,
           imageToolsEnabled: supportsBuiltinImageGeneration
@@ -3059,6 +3110,25 @@ export function ChatPage({
         ),
     [externalProvidersForChat, lastOpenRouterChosenModel],
   );
+  // `externalModels` above is flat-mapped from `provider.models`, the ids the user ticked,
+  // so a model unticked in the connection dialog leaves it exactly like one the provider
+  // withdrew. The connection also caches the whole fetched catalogue, which tells the two
+  // apart, and the picker needs that to avoid blaming the provider for the user's own edit.
+  // Depends on the store value and the gate rather than on `externalProvidersForChat`,
+  // which is a plain conditional and so hands every hook that reads it a fresh array each
+  // render.
+  const externalConnections = useMemo<ExternalConnectionRef[]>(
+    () =>
+      connectionsEnabled
+        ? externalProviders.map((provider) => ({
+            id: provider.id,
+            name: provider.name,
+            providerType: provider.providerType,
+            availableModels: provider.availableModels,
+          }))
+        : [],
+    [connectionsEnabled, externalProviders],
+  );
 
   const localModelInventory = useDeviceInventorySources(["localModels"], {
     enabled: active,
@@ -3310,6 +3380,7 @@ export function ChatPage({
                 models={models}
                 loraModels={loraModels}
                 externalModels={externalModels}
+                externalConnections={externalConnections}
                 value={inferenceParams.checkpoint}
                 // Resident, not merely picked: an image or video load evicts
                 // the chat model and leaves this selection behind, so the tick
@@ -3450,30 +3521,32 @@ export function ChatPage({
                 </TooltipContent>
               </Tooltip>
             )}
-            {view.mode === "single" && latestResearchRun ? (
+            {view.mode === "single" &&
+            latestResearchRunId &&
+            latestResearchRunStatus ? (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => {
-                      if (openResearchRunId === latestResearchRun.id) {
+                      if (openResearchRunId === latestResearchRunId) {
                         closeResearchPanel();
                         return;
                       }
                       setSettingsOpen(false);
                       closeArtifactSurface();
-                      openResearchPanel(latestResearchRun.id);
+                      openResearchPanel(latestResearchRunId);
                     }}
                     className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
-                    aria-pressed={openResearchRunId === latestResearchRun.id}
+                    aria-pressed={openResearchRunId === latestResearchRunId}
                   >
                     <HugeiconsIcon
                       icon={Telescope02Icon}
                       className="size-icon"
                       strokeWidth={1.75}
                     />
-                    {!['completed', 'failed', 'cancelled'].includes(latestResearchRun.status) ? (
+                    {!['completed', 'failed', 'cancelled'].includes(latestResearchRunStatus) ? (
                       <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary ring-2 ring-background" />
                     ) : null}
                   </button>
@@ -3547,6 +3620,7 @@ export function ChatPage({
             models={models}
             loraModels={loraModels}
             externalModels={externalModels}
+            externalConnections={externalConnections}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}

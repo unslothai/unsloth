@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  LEGACY_CUSTOM_PROVIDER_TYPE,
+  normalizeCustomMaxOutputTokens,
+  providerModelSupportsStudioTools,
+} from "./external-providers";
+
 /**
  * Per-provider sampling parameter capability matrix.
  *
@@ -70,8 +76,8 @@ export function clampReasoningEffortToLevels(
 }
 
 /**
- * Fallback cap for unknown providers / models. Prefer
- * `getExternalMaxOutputTokens(providerType, modelId)` for the real cap.
+ * Fallback cap for unknown providers / models and Custom connections without
+ * an explicit per-connection override.
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
@@ -132,13 +138,21 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
 
 /**
  * Documented per-model output cap; unknown ids fall back to
- * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). OpenRouter `provider/model` ids have the
- * prefix stripped before matching.
+ * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). Generic Custom connections use only their
+ * explicit per-connection override and never inspect the model id. OpenRouter
+ * `provider/model` ids have the prefix stripped before matching.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  customMaxOutputTokens?: number | null,
 ): number {
+  if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
+    return (
+      normalizeCustomMaxOutputTokens(providerType, customMaxOutputTokens) ??
+      EXTERNAL_MAX_OUTPUT_TOKENS
+    );
+  }
   if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
@@ -149,7 +163,11 @@ export function getExternalMaxOutputTokens(
   const effectiveProvider =
     providerType === "openrouter"
       ? _inferProviderFromOpenrouterId(normalized) ?? providerType
-      : providerType;
+      : providerType === "openai_codex"
+        ? "openai_codex"
+        : providerType;
+  if (effectiveProvider === "openai_codex") return 128000;
+
   for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
     if (entry.providerType !== effectiveProvider) continue;
     if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
@@ -157,6 +175,30 @@ export function getExternalMaxOutputTokens(
     }
   }
   return EXTERNAL_MAX_OUTPUT_TOKENS;
+}
+
+/**
+ * The lowered Max Tokens the settings panel should write back, or null to leave it be.
+ *
+ * The availability guards are load-bearing: the caller PERSISTS this and it only ever
+ * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider
+ * is momentarily unresolved (connections toggled off, cold hydration, a deleted
+ * connection). No provider means the cap is unknown, not 32,768.
+ *
+ * Returning the cap itself is what makes it converge in one pass.
+ */
+export function resolveExternalMaxTokensClamp(input: {
+  settingsHydrated: boolean;
+  hasActiveExternalProvider: boolean;
+  isExternalModel: boolean;
+  maxTokens: number;
+  maxTokensMax: number;
+}): number | null {
+  if (!input.settingsHydrated || !input.hasActiveExternalProvider) return null;
+  if (!input.isExternalModel || input.maxTokens <= input.maxTokensMax) {
+    return null;
+  }
+  return input.maxTokensMax;
 }
 
 function _inferProviderFromOpenrouterId(
@@ -218,6 +260,10 @@ export function providerSupportsBuiltinWebSearch(
     }
     return true;
   }
+  if (providerType === "openai_codex") {
+    return providerModelSupportsStudioTools(providerType, modelId) === true;
+  }
+
   return (
     providerType === "openai" ||
     providerType === "anthropic" ||
@@ -345,6 +391,10 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
+  if (providerType === "openai_codex") {
+    return providerModelSupportsStudioTools(providerType, modelId) === true;
+  }
+
   if (providerType === "openai") {
     if (!isOpenAICloudBaseUrl(baseUrl)) return false;
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
@@ -366,6 +416,25 @@ export function providerSupportsBuiltinCodeExecution(
     return normalized.startsWith("gemini-");
   }
   return false;
+}
+
+/**
+ * Whether the provider TYPE ships a code sandbox of its own, model aside.
+ *
+ * Mirrors the `hosted_tools` entries carrying `code_execution` in the backend's
+ * PROVIDER_REGISTRY (core/inference/providers.py). Deliberately coarser than
+ * `providerSupportsBuiltinCodeExecution`: the question it answers is whether
+ * running the model's code on the USER's machine would be a relocation, and
+ * that does not depend on which model is selected. openai_codex is absent for
+ * the same reason the backend registry leaves it out -- its code tools are
+ * Studio's own, run by the Codex loop, and always have been.
+ */
+const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
+
+export function providerHostsCodeExecution(
+  providerType: string | null | undefined,
+): boolean {
+  return PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "");
 }
 
 /**
@@ -504,6 +573,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // models served via /v1/responses, which rejects temperature, top_p, and
   // presence/frequency penalty. See backend
   // external_provider._stream_openai_responses for the proxy.
+  openai_codex: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
+
   openai: {
     temperature: false,
     topP: false,
@@ -953,7 +1031,8 @@ export function getExternalReasoningCapabilities(
       ? normalizedModel.split("/").at(-1) ?? normalizedModel
       : normalizedModel;
 
-  const isOpenAIProvider = normalizedProvider === "openai";
+  const isOpenAIProvider =
+    normalizedProvider === "openai" || normalizedProvider === "openai_codex";
   const isAnthropicProvider = normalizedProvider === "anthropic";
   const isKimiProvider = normalizedProvider === "kimi";
   const isMistralProvider = normalizedProvider === "mistral";

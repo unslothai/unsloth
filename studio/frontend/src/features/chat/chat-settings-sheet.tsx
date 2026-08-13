@@ -99,6 +99,7 @@ import {
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
+  resolveExternalMaxTokensClamp,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
@@ -425,6 +426,10 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "drafter_no_vram":
+      // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
+      // in the drafter's place where the build has it, so only the drafter is off.
+      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
     case "drafter_not_found":
@@ -721,6 +726,7 @@ export function ChatSettingsPanel({
       ? getExternalMaxOutputTokens(
           externalProviderType,
           externalSelection?.modelId,
+          activeExternalProvider?.maxOutputTokens,
         )
       : isGguf && baseContext
         ? baseContext
@@ -756,15 +762,58 @@ export function ChatSettingsPanel({
     };
   }
 
+  // Lower a live Max Tokens that no longer fits the connection's cap.
+  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
+  // read as the 32,768 fallback.
+  useEffect(() => {
+    const clampedMaxTokens = resolveExternalMaxTokensClamp({
+      settingsHydrated,
+      hasActiveExternalProvider: activeExternalProvider != null,
+      isExternalModel,
+      maxTokens: params.maxTokens,
+      maxTokensMax,
+    });
+    if (clampedMaxTokens == null) {
+      return;
+    }
+    const nextParams = { ...params, maxTokens: clampedMaxTokens };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
+  }, [
+    activeExternalProvider,
+    activePreset,
+    activePresetBaseline,
+    isExternalModel,
+    maxTokensMax,
+    onParamsChange,
+    params,
+    settingsHydrated,
+    setActivePresetSource,
+  ]);
+
+  function applyPresetParamsWithinCurrentLimits(
+    presetParams: Parameters<typeof applyPresetParams>[1],
+  ): InferenceParams {
+    const nextParams = applyPresetParams(params, presetParams);
+    // Same reason the effect waits for a provider: without one `maxTokensMax` is the
+    // fallback, so applying a preset here would lower the value for good.
+    if (!isExternalModel || activeExternalProvider == null) return nextParams;
+    return {
+      ...nextParams,
+      maxTokens: Math.min(nextParams.maxTokens, maxTokensMax),
+    };
+  }
+
   function applyPreset(name: string) {
     if (!settingsHydrated) {
       return;
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange({
-        ...applyPresetParams(params, p.params),
-      });
+      onParamsChange(applyPresetParamsWithinCurrentLimits(p.params));
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
       }
@@ -824,9 +873,9 @@ export function ChatSettingsPanel({
     setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
-        onParamsChange({
-          ...        applyPresetParams(params, fallbackPreset.params),
-        });
+        onParamsChange(
+          applyPresetParamsWithinCurrentLimits(fallbackPreset.params),
+        );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
         }

@@ -50,7 +50,7 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
-  providerTypeSupportsVision,
+  providerModelSupportsVision,
 } from "./external-providers";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
@@ -81,6 +81,11 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
+import {
+  attachmentContentText,
+  attachmentsSample,
+  isPastedTextFile,
+} from "./utils/pasted-text";
 import {
   refreshContextUsage,
   setActiveBranchReader,
@@ -190,8 +195,9 @@ class VisionImageAdapter implements AttachmentAdapter {
       const provider = providers.find(
         (p) => p.id === externalSelection.providerId,
       );
-      externalSupportsVision = providerTypeSupportsVision(
+      externalSupportsVision = providerModelSupportsVision(
         provider?.providerType,
+        externalSelection.modelId,
       );
       externalModelLabel = externalSelection.modelId;
     }
@@ -327,7 +333,14 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: "text",
-          text: `<attachment name=${attachment.name}>\n${text}\n</attachment>`,
+          // A pasted file gets its own tag and size, the markers that outlive
+          // the File once the message is stored.
+          text: attachmentContentText(
+            attachment.name,
+            text,
+            isPastedTextFile(attachment.file),
+            attachment.file.size,
+          ),
         },
       ],
       status: { type: "complete" },
@@ -519,6 +532,17 @@ function extractTextParts(m: ThreadMessage | undefined): string {
     .trim();
 }
 
+// A paste leaves the message's text in an attachment, so a title built from
+// inline text alone is "New Chat" for a paste-only turn and the bare
+// instruction for "summarise this" plus a paste. The sample is bounded.
+function titleTextOf(m: ThreadMessage | undefined): string {
+  const text = extractTextParts(m);
+  if (m?.role !== "user") return text;
+  const sample = attachmentsSample(m.attachments);
+  if (sample.length === 0) return text;
+  return text.length > 0 ? `${text}\n\n${sample}` : sample;
+}
+
 async function generateTitleWithModel(payload: {
   userText: string;
   assistantText?: string;
@@ -566,6 +590,10 @@ async function generateTitleWithModel(payload: {
       repetition_penalty: 1.0,
       enable_thinking: false,
       reasoning_effort: "none",
+      // Titling is a one-shot summarisation: never let it enter the tool loop.
+      // Omitting the field would inherit the server's tools-on default and put
+      // python/terminal schemas in a 24-token prompt.
+      enable_tools: false,
       messages: [
         {
           role: "system",
@@ -866,7 +894,7 @@ function createStudioDbAdapter(
         firstUserIndex === -1
           ? undefined
           : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
-      const userText = extractTextParts(firstUser) || defaultTitle;
+      const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
       if (!autoTitle) {
