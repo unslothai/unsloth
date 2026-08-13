@@ -59,7 +59,11 @@ def _asked_a_missing_device(text):
     return any(message in text for message in _NO_DEVICE)
 
 
-def _run(code, extra_path = (), **env):
+def _run(
+    code,
+    extra_path = (),
+    **env,
+):
     """Fresh interpreter, this checkout on the path, every CUDA device hidden."""
     path = [str(entry) for entry in extra_path]
     path.append(str(_ROOT))
@@ -182,7 +186,7 @@ def test_the_import_succeeds_on_a_driverless_host():
     assert "IMPORT_OK" in out.stdout, out.stdout
 
 
-_NO_LIBCUDA_PROBE = '''
+_NO_LIBCUDA_PROBE = """
 import os
 import subprocess
 
@@ -220,7 +224,7 @@ def _no_libcuda(*args, **kwargs):
 
 
 _driver.libcuda_dirs = _no_libcuda
-'''
+"""
 
 
 def test_a_driverless_import_does_not_try_to_repair_cuda_linkage(tmp_path):
@@ -258,9 +262,9 @@ def test_a_driverless_import_does_not_try_to_repair_cuda_linkage(tmp_path):
     # "nothing was executed" assertion would be red for unrelated reasons.
     calls = log.read_text(encoding = "utf-8")
     assert "ldconfig" not in calls, f"a driverless import ran ldconfig:\n{calls}"
-    assert "check_output: ['ls'" not in calls, (
-        f"a driverless import shelled out to ls to hunt for a CUDA install:\n{calls}"
-    )
+    assert (
+        "check_output: ['ls'" not in calls
+    ), f"a driverless import shelled out to ls to hunt for a CUDA install:\n{calls}"
     assert "CUDA is not linked properly" not in out.stderr, out.stderr[-3000:]
 
 
