@@ -1244,11 +1244,13 @@ def test_cli_guard_refuses_a_value_that_would_not_fit_in_the_environment():
     # The limit is lowered rather than the value grown: the harness puts the
     # environment through os.environ so the real ntpath reads it, and Windows
     # refuses to store 32767 characters there before the guard ever sees them.
+    # The value stays under the lowered limit and only crosses it once anchored,
+    # so a guard that measured the raw value would fail this.
     with mock.patch.object(_system_dir_guard, "_WINDOWS_ENV_VALUE_LIMIT", 64):
         message, colour, chdir_calls = _guard_outcome(
             r"C:\Windows\System32",
             ["unsloth", "studio", "--api-only"],
-            environ_extra = {"HF_HOME": "x" * 80},
+            environ_extra = {"HF_HOME": "x" * 50},
         )
     assert (colour, chdir_calls) == ("red", [])
     assert "path settings" in message
@@ -1259,8 +1261,9 @@ def test_cli_guard_refuses_a_list_that_would_not_fit_in_the_environment():
     r"""Windows caps a variable at 32767 characters, and a list of relative
     entries can cross that once each names its folder in full. Reporting it here
     names the setting; discovering it when the next process starts does not."""
-    # Same reason as the scalar above: the limit is lowered, not the value grown.
-    entries = ";".join(["entry"] * 20)
+    # Same reason as the scalar above: the limit is lowered, not the value grown,
+    # and the raw list fits while the anchored one does not.
+    entries = ";".join(["entry"] * 3)
     with mock.patch.object(_system_dir_guard, "_WINDOWS_ENV_VALUE_LIMIT", 64):
         message, colour, chdir_calls = _guard_outcome(
             r"C:\Windows\System32",
