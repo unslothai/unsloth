@@ -58,6 +58,7 @@ import argparse
 import ast
 import atexit
 import bisect
+import functools
 import hashlib
 import io
 import json
@@ -260,7 +261,25 @@ class _Offsets:
         return starts[row - 1] + col
 
 
-_RE_WORD = re.compile(r"\w+")
+# The Unicode categories a Python identifier keeps but `\w` throws away. `\w`
+# matches what `str.isalnum` accepts, and a combining mark is not alphanumeric,
+# so `e` + U+0301 - the NFKC-equivalent of `é`, and a legal identifier - splits
+# into `e` and a character no pattern here matches. An alias spelled that way
+# was then read as `e` and its call missed entirely.
+_MARK_CATEGORIES = frozenset(("Mn", "Mc", "Me"))
+
+
+def _mark_class(text: str) -> str:
+    """The combining marks `text` holds, as the body of a regex character class.
+
+    Built from the marks actually present rather than from every one Unicode
+    defines, because there are thousands and `re` cannot name a category: a file
+    that holds none - every ASCII file, and nearly every other - answers with one
+    flag test and keeps the module-level patterns.
+    """
+    if text.isascii():
+        return ""
+    return "".join(sorted(c for c in set(text) if unicodedata.category(c) in _MARK_CATEGORIES))
 
 
 def _ident(name: str) -> str:
@@ -287,10 +306,26 @@ def _mentions_name(text: str, names) -> bool:
     """
     if not names:
         return False
-    for m in _RE_WORD.finditer(text):
+    for m in _ident_patterns(_mark_class(text)).word.finditer(text):
         if _ident(m.group()) in names:
             return True
     return False
+
+
+def _continues_name(stmt: list, tok) -> bool:
+    """Whether `tok` is a combining mark that belongs to the name before it.
+
+    It has to be adjacent: a mark separated by whitespace starts nothing and
+    ends nothing, and gluing it on would invent an identifier the source does
+    not spell.
+    """
+    return bool(
+        stmt
+        and stmt[-1].type == tokenize.NAME
+        and tok.start == stmt[-1].end
+        and tok.string
+        and all(unicodedata.category(c) in _MARK_CATEGORIES for c in tok.string)
+    )
 
 
 def _statements(text: str, failed: list):
@@ -313,6 +348,18 @@ def _statements(text: str, failed: list):
         for tok in tokenize.generate_tokens(io.StringIO(text).readline):
             ttype = tok.type
             if ttype in _TOK_IGNORED:
+                continue
+            if ttype == tokenize.ERRORTOKEN and _continues_name(stmt, tok):
+                # Below 3.12 `tokenize` splits identifiers on `\w`, which throws
+                # away a combining mark: `e` + U+0301 - the NFKC-equivalent of
+                # `é`, and a legal identifier - arrives as NAME `e` and an
+                # ERRORTOKEN, and no error is raised, so the whole token pass ran
+                # on a name the interpreter never sees. Gluing the mark back on
+                # is what makes the alias and its call the same name again.
+                stmt[-1] = stmt[-1]._replace(
+                    string = unicodedata.normalize("NFKC", stmt[-1].string + tok.string),
+                    end = tok.end,
+                )
                 continue
             if ttype == tokenize.NAME and not tok.string.isascii():
                 tok = tok._replace(string = unicodedata.normalize("NFKC", tok.string))
@@ -698,19 +745,29 @@ def _const_string(toks: list) -> "str | None":
     return "".join(out)
 
 
-def _loads_builtins(value: list, loaders: _Loaders) -> bool:
+def _loads_builtins(
+    value: list,
+    loaders: _Loaders,
+    known: "set | None" = None,
+) -> bool:
     """Whether `value` plainly evaluates to the `builtins` module.
 
-    Only the forms that need no dataflow to read: the module named outright, and
-    the two loader calls that take its name as a literal. `c = b` for an alias
-    `b` is deliberately not one of them - following that is general dataflow,
-    and the chain has no bound.
+    The forms that need no dataflow to read: the module named outright, the two
+    loader calls that take its name as a literal, and a copy of an alias the
+    file has already bound to it. `known` is that set of aliases; statements
+    arrive in source order and each copy adds its target to it, so
+    `import builtins as b` ... `c = b` ... `d = c` ... `d.exec(BLOB)` is read
+    through in one pass rather than by chasing a chain per call site. Refusing
+    the copy left that an enforced-scan bypass, since the alias was reported
+    only under its original name.
     """
     value = _strip_parens(value)
     if not value:
         return False
     if len(value) == 1:
-        return value[0].type == tokenize.NAME and value[0].string in _BUILTINS_NAMES
+        return value[0].type == tokenize.NAME and (
+            value[0].string in _BUILTINS_NAMES or (known is not None and value[0].string in known)
+        )
     if not (value[-1].type == tokenize.OP and value[-1].string == ")"):
         return False
     # The module name is the loader's first argument, not necessarily its only
@@ -838,7 +895,11 @@ def _unwrapped_target(group: list) -> tuple:
     return None, False
 
 
-def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
+def _assignment_bindings(
+    stmt: list,
+    loaders: _Loaders,
+    known: "set | None" = None,
+) -> list:
     """The names `stmt` assigns the `builtins` module to, in source order.
 
     `b = __import__('builtins')` reaches the builtin through `b.exec(...)` just
@@ -846,6 +907,9 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     knows are the module. Returns an empty list for every other statement,
     including `b += ...` and `b = load_model()`, so the caller can also use a
     non-empty result to mean "this statement is a binding, not a rebinding".
+
+    `known` are the aliases the file has already bound to the module, so a plain
+    copy of one (`c = b`) binds it too.
     """
     # Every accepted form ends in the module - named outright, or as the closing
     # parenthesis of a loader call - and needs a plain `=`. That is one test on
@@ -857,7 +921,7 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     if last.type == tokenize.OP and last.string == "," and len(stmt) > 3:
         last = stmt[-2]  # `b, = builtins,`: the one-tuple ends in the module
     if last.type == tokenize.NAME:
-        if last.string not in _BUILTINS_NAMES:
+        if last.string not in _BUILTINS_NAMES and not (known and last.string in known):
             return []
     elif not (last.type == tokenize.OP and last.string in (")", "]")):
         # A loader call may carry optional arguments after the module name
@@ -875,7 +939,7 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
         ttype = tok.type
         if ttype == tokenize.NAME:
             joined = ""
-            if tok.string in _BUILTINS_NAMES:
+            if tok.string in _BUILTINS_NAMES or (known and tok.string in known):
                 if assign:
                     break
                 marker = True
@@ -931,12 +995,33 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
         value = _sequence_element(value) or _bare_singleton(value)
         if value is None:
             return []
-    if not _loads_builtins(value, loaders):
+    if not _loads_builtins(value, loaders, known):
         return []
     return names
 
 
-def _walrus_bindings(stmt: list, loaders: _Loaders) -> list:
+def _copied_alias(stmt: list) -> "str | None":
+    """The name `stmt` copies into its target, for `c = b` and nothing else.
+
+    The collecting pass reads the file's aliases before it knows where each one
+    stops being the module, so a copy has to be re-checked once the rebindings
+    are in hand: `import builtins as b` ... `b = model` ... `c = b` copies the
+    model, and taking the copy on the first pass alone reported `c.exec(...)`.
+    """
+    groups = _split_top(stmt, "=")
+    if len(groups) < 2:
+        return None
+    value = _strip_parens(groups[-1])
+    if len(value) != 1 or value[0].type != tokenize.NAME:
+        return None
+    return value[0].string
+
+
+def _walrus_bindings(
+    stmt: list,
+    loaders: _Loaders,
+    known: "set | None" = None,
+) -> list:
     """The names `stmt` binds to the `builtins` module with `:=`.
 
     `if (b := builtins):` parks the module exactly as `b = builtins` does, and an
@@ -978,7 +1063,7 @@ def _walrus_bindings(stmt: list, loaders: _Loaders) -> list:
     for i, _ in pending:
         ends[i] = len(stmt)
     for i in sorted(ends):
-        if _loads_builtins(stmt[i + 1 : ends[i]], loaders):
+        if _loads_builtins(stmt[i + 1 : ends[i]], loaders, known):
             names.append(stmt[i - 1].string)
     return names
 
@@ -1085,6 +1170,15 @@ def _collect_rebindings(
         if tok.type == tokenize.NAME and tok.string in candidates:
             break
     else:
+        return
+    if stmt[0].type == tokenize.NAME and stmt[0].string == "del" and len(stmt) > 1:
+        # `del b` unbinds the alias: the `b.eval(...)` below it raises
+        # `NameError`, and inside a function the deletion makes `b` a local of
+        # that function throughout, so a call above it raises
+        # `UnboundLocalError` rather than reaching the module-level alias.
+        # Only a plain name is unbound - `del holder.b` and `del cache[k]`
+        # leave the alias exactly where it was.
+        _add_assignment_targets(stmt[1:], rebound)
         return
     head = 1 if (stmt[0].type == tokenize.NAME and stmt[0].string == "async") else 0
     if (
@@ -1269,13 +1363,19 @@ def _lambda_params(stmt: list, at: int, candidates: frozenset) -> "tuple[set, in
 
     A parameter is a name that opens an item of the list: `*`, `**` and `/` are
     punctuation between them, and everything after a `=` is a default expression
-    evaluated in the enclosing scope. A nested `lambda` in a default carries the
-    next depth-0 colon, so the walk stops there rather than reading the outer
-    parameter list past its own end.
+    evaluated in the enclosing scope.
+
+    A `lambda` written in a default owns the colons and commas that follow it
+    until its own colon closes it - `lambda run=lambda x, y: x: run(BLOB)` gives
+    both `x` and `y` to the inner lambda - so they pair off innermost-first.
+    Abandoning the outer list at the nested `lambda` instead dropped the
+    parameters already read, and the outer body was then reported as a call to
+    the imported builtin.
     """
     names: set = set()
     depth = 0
     expect = True
+    nested = 0
     k = at + 1
     while k < len(stmt):
         tok = stmt[k]
@@ -1288,15 +1388,19 @@ def _lambda_params(stmt: list, at: int, candidates: frozenset) -> "tuple[set, in
                 depth -= 1
             elif not depth:
                 if tok.string == ":":
-                    return names, k
-                if tok.string == ",":
-                    expect = True
+                    if not nested:
+                        return names, k
+                    nested -= 1  # closes an inner lambda; its body starts here
+                elif tok.string == ",":
+                    if not nested:
+                        expect = True  # the inner body ended: back in this list
                 elif tok.string == "=":
-                    expect = False
+                    if not nested:
+                        expect = False
         elif tok.type == tokenize.NAME and not depth:
             if tok.string == "lambda":
-                break
-            if expect:
+                nested += 1
+            elif expect and not nested:
                 if tok.string in candidates:
                     names.add(tok.string)
                 expect = False
@@ -1305,7 +1409,14 @@ def _lambda_params(stmt: list, at: int, candidates: frozenset) -> "tuple[set, in
 
 
 def _lambda_body_end(stmt: list, colon: int) -> int:
-    """The last token of the body of the lambda whose colon is at `colon`."""
+    """The last token of the body of the lambda whose colon is at `colon`.
+
+    A depth-0 `:` ends it too: the body of a lambda cannot hold one - a dict
+    entry, a slice and an annotation are all bracketed or written before the
+    `lambda` - so the next one belongs to an enclosing lambda whose parameter
+    list this body sits in. Running past it let a nested `lambda run: run`
+    written as a default shadow the outer body, where `run` is still the alias.
+    """
     depth = 0
     end = colon
     k = colon + 1
@@ -1318,7 +1429,7 @@ def _lambda_body_end(stmt: list, colon: int) -> int:
                 if not depth:
                     break
                 depth -= 1
-            elif not depth and tok.string == ",":
+            elif not depth and tok.string in (",", ":"):
                 break
         end = k
         k += 1
@@ -1426,7 +1537,10 @@ def _receiver_start(
                             hard = True
                         else:
                             alias = inner.string
-                    elif inner.type == tokenize.STRING and _string_body(inner.string) == "builtins":
+                    elif (
+                        inner.type == tokenize.STRING
+                        and _string_body(inner.string) in _BUILTINS_NAMES
+                    ):
                         found = True
                         hard = True
                     k -= 1
@@ -1494,7 +1608,7 @@ def _receiver_start(
                 ):
                     found = True  # `__import__(name).exec(...)`: the receiver is the call
                     hard = True
-            elif tok.type == tokenize.STRING and _string_body(tok.string) == "builtins":
+            elif tok.type == tokenize.STRING and _string_body(tok.string) in _BUILTINS_NAMES:
                 found = True
                 hard = True
             start = k
@@ -1754,7 +1868,33 @@ def _in_scope(indexed: tuple, start: int) -> bool:
     return bool(i) and reach[i - 1] > start
 
 
-def _declares_global(spans: list, start: int) -> "tuple | None":
+def _index_globals(spans: list) -> tuple:
+    """`spans`, sorted by start, with each one's enclosing span recorded.
+
+    Scope ranges nest, so the span a bisection lands on either contains the
+    offset or is a sibling written before it; from there the answer, if there is
+    one, is up the parent chain and nowhere else. That makes a lookup cost the
+    nesting depth instead of the number of declarations - N sibling functions
+    each declaring `global b` and calling `b.eval(...)` re-read all N spans per
+    call otherwise, which is quadratic on source a hostile archive member
+    chooses: 16,000 such functions fit in 645 KiB and took over 15 seconds, on
+    members allowed up to 64 MiB.
+    """
+    starts: list = []
+    ends: list = []
+    parents: list = []
+    stack: list = []
+    for at, end in spans:
+        while stack and ends[stack[-1]] <= at:
+            stack.pop()
+        parents.append(stack[-1] if stack else -1)
+        starts.append(at)
+        ends.append(end)
+        stack.append(len(starts) - 1)
+    return starts, ends, parents
+
+
+def _declares_global(indexed: tuple, start: int) -> "tuple | None":
     """The innermost scope containing `start` that declared the name global.
 
     The span itself, not a flag, because the declaring scope is also the one
@@ -1764,11 +1904,13 @@ def _declares_global(spans: list, start: int) -> "tuple | None":
     thing a declaration outranks. Innermost wins, since a nested `global` is
     the declaration that governs the call.
     """
-    found = None
-    for span in spans:
-        if span[0] <= start < span[1] and (found is None or span[0] > found[0]):
-            found = span
-    return found
+    starts, ends, parents = indexed
+    i = bisect.bisect_right(starts, start) - 1
+    while i >= 0:
+        if ends[i] > start:
+            return starts[i], ends[i]
+        i = parents[i]
+    return None
 
 
 def _index_cancellations(cancel: dict) -> dict:
@@ -1792,6 +1934,19 @@ def _index_cancellations(cancel: dict) -> dict:
             entries.append(entry)
         indexed[name] = sorted(groups.items())
     return indexed
+
+
+def _cancelled_at(cancel: dict, name: str, at: int, col: int) -> bool:
+    """Whether `name` is already cancelled at `at`, mid-collection.
+
+    The collecting pass builds `cancel` in source order, so everything written
+    above this statement is in it; the one name is indexed on its own because a
+    copy of an alias is rare enough that the allocation never adds up.
+    """
+    frontier = cancel.get(name)
+    if not frontier:
+        return False
+    return _is_cancelled(_index_cancellations({name: frontier})[name], at, col)
 
 
 def _is_cancelled(
@@ -2005,7 +2160,16 @@ def _statement_spans(
         prev = stmt[j - 1] if j else None
         attribute = prev is not None and prev.type == tokenize.OP and prev.string == "."
         if nxt.type != tokenize.OP or nxt.string != "(":
-            if direct and attribute and nxt.type == tokenize.OP and nxt.string == "=":
+            if direct and attribute and nxt.type == tokenize.OP and nxt.string in ("=", ":"):
+                if nxt.string == ":":
+                    # `holder.eval: object = eval` parks the builtin exactly as
+                    # the unannotated spelling does - the annotation is never
+                    # evaluated into the attribute. Without a `=` after it there
+                    # is no value at all (`holder.eval: object` binds nothing),
+                    # and the colon of a dict entry or a slice is inside
+                    # brackets, so it never reaches a depth-0 `=` either.
+                    if _name_index_op(stmt[j + 1 :], "=") is None:
+                        continue
                 # `holder.eval = eval` parks the builtin on an attribute, and
                 # the `holder.eval(payload)` below it is the same three tokens
                 # as `model.eval()` - the call site cannot tell them apart, and
@@ -2083,44 +2247,99 @@ _EXEC_EVAL_PATTERN_TEXT = (
     r"(?<![\w.])(?:__builtins__|builtins)\s*\)*\s*\.\s*(?:exec|eval)\s*\("
     r"|(?<![\w.])(?:exec|eval)\s*\("
 )
-RE_FALLBACK_QUALIFIED = re.compile(r"(?<![\w.])(\w+)\s*\)*\s*\.\s*(?:exec|eval)\s*\(")
-RE_FALLBACK_STR_RECEIVER = re.compile(r"""(['"])builtins\1\s*\)\s*\.\s*(?:exec|eval)\s*\(""")
+
+RE_FALLBACK_STR_RECEIVER = re.compile(
+    r"""(['"])(?:__builtins__|builtins)\1\s*\)\s*\.\s*(?:exec|eval)\s*\("""
+)
 # `__import__(name).exec(`: a loader call is the receiver whatever it is handed.
 # The callee is captured and looked up rather than spelled out, so a file that
 # renames the loader - `from builtins import __import__ as load` - is read the
 # same way. Membership beats an alternation per alias, which would cost the
 # alias count per character of the file.
-RE_FALLBACK_LOADER_RECEIVER = re.compile(
-    r"(?<![\w.])(\w+)(?:\s*\.\s*(\w+))?\s*\([^()]*\)\s*\.\s*(?:exec|eval)\s*\("
-)
 RE_FALLBACK_BARE = re.compile(r"(?<![\w.])(exec|eval)\s*\(")
-RE_FALLBACK_CALL = re.compile(r"(?<![\w.])(\w+)\s*\(")
 # `import os, builtins as b` binds `b` too, so take the whole import list and
 # look for the aliased item anywhere in it.
 RE_IMPORT_LIST = re.compile(r"(?<![\w.])import[ \t]+([^\n;]*)")
-RE_MODULE_ALIAS_ITEM = re.compile(r"(?<![\w.])builtins[ \t]+as[ \t]+(\w+)")
+
 RE_BUILTINS_FUNC_ALIAS = re.compile(r"(?<![\w.])from\s+builtins\s+import\s+([^\n]*)")
 # The same alias without an import statement: `b = __import__('builtins')`. The
 # token pass decides this properly; this is only the fallback for source that
 # will not tokenize, so it stays on one line and does not chase aliases of
 # `importlib` - what it misses, the token pass already has.
-RE_ASSIGN_BUILTINS = re.compile(
-    r"^[ \t]*(\w+)[ \t]*(?::[^=\n]+)?=[ \t]*\(*[ \t]*"
-    r"(?:(?:__import__|(?:importlib[ \t]*\.[ \t]*)?import_module)[ \t]*\([ \t]*"
-    r"""(['"])builtins\2|__builtins__|builtins)[ \t]*\)*[ \t]*$""",
-    re.M,
-)
-RE_FUNC_ALIAS_ITEM = re.compile(r"(?<![\w.])(?:exec|eval)(?:\s+as\s+(\w+))?")
+
 # Any name this file assigns to. One pass for the whole file, then a set
 # difference: an alias that is also an assignment target is not the builtin at
 # the call site, and per-name searching would reintroduce a quadratic cost.
-RE_ASSIGNED_NAME = re.compile(
-    r"^[ \t]*(\w+)[ \t]*(?::[^=\n]+)?=(?!=)"
-    r"|(?<![\w.])for\s+(\w+)\s+in\s"
-    r"|(?<![\w.])(?:def|class)\s+(\w+)"
-    r"|(?<![\w.])as\s+(\w+)\s*:",
-    re.M,
+# Every pattern that captures an identifier, as a template over the character
+# class a name is made of. `%(w)s` is `\w` for the ASCII spellings the module
+# names below keep, and `\w` widened with a file's own combining marks when it
+# holds any - so `e` + U+0301 is captured whole and `_ident` can normalize it to
+# the `é` the alias was declared as, instead of being read as `e`.
+_IDENT_PATTERN_SOURCES = (
+    ("word", r"%(w)s+", 0),
+    ("qualified", r"(?<![\w.])(%(w)s+)\s*\)*\s*\.\s*(?:exec|eval)\s*\(", 0),
+    # `__import__(name).exec(`: a loader call is the receiver whatever it is
+    # handed. The callee is captured and looked up rather than spelled out, so a
+    # file that renames the loader - `from builtins import __import__ as load` -
+    # is read the same way. Membership beats an alternation per alias, which
+    # would cost the alias count per character of the file.
+    (
+        "loader_receiver",
+        r"(?<![\w.])(%(w)s+)(?:\s*\.\s*(%(w)s+))?\s*\([^()]*\)\s*\.\s*(?:exec|eval)\s*\(",
+        0,
+    ),
+    ("call", r"(?<![\w.])(%(w)s+)\s*\(", 0),
+    ("module_alias_item", r"(?<![\w.])builtins[ \t]+as[ \t]+(%(w)s+)", 0),
+    # The same alias without an import statement: `b = __import__('builtins')`.
+    # The token pass decides this properly; this is only the fallback for source
+    # that will not tokenize, so it stays on one line and does not chase aliases
+    # of `importlib` - what it misses, the token pass already has.
+    (
+        "assign_builtins",
+        r"^[ \t]*(%(w)s+)[ \t]*(?::[^=\n]+)?=[ \t]*\(*[ \t]*"
+        r"(?:(?:__import__|(?:importlib[ \t]*\.[ \t]*)?import_module)[ \t]*\([ \t]*"
+        r"""(['"])builtins\2|__builtins__|builtins)[ \t]*\)*[ \t]*$""",
+        re.M,
+    ),
+    ("func_alias_item", r"(?<![\w.])(?:exec|eval)(?:\s+as\s+(%(w)s+))?", 0),
+    # Any name this file assigns to. One pass for the whole file, then a set
+    # difference: an alias that is also an assignment target is not the builtin
+    # at the call site, and per-name searching would reintroduce a quadratic
+    # cost.
+    (
+        "assigned_name",
+        r"^[ \t]*(%(w)s+)[ \t]*(?::[^=\n]+)?=(?!=)"
+        r"|(?<![\w.])for\s+(%(w)s+)\s+in\s"
+        r"|(?<![\w.])(?:def|class)\s+(%(w)s+)"
+        r"|(?<![\w.])as\s+(%(w)s+)\s*:",
+        re.M,
+    ),
 )
+
+
+class _Idents:
+    """One compiled family of the templates above, for a given mark class."""
+
+    __slots__ = tuple(name for name, _src, _flags in _IDENT_PATTERN_SOURCES)
+
+    def __init__(self, marks: str):
+        word = "[\\w%s]" % marks if marks else r"\w"
+        for name, src, flags in _IDENT_PATTERN_SOURCES:
+            setattr(self, name, re.compile(src % {"w": word}, flags))
+
+
+# Cached, because a file is scanned line by line as well as whole and every one
+# of those asks for the same family. The bound is what stops a hostile archive
+# recompiling it per member; the ASCII family is the one nearly every file gets.
+_ident_patterns = functools.lru_cache(maxsize = 8)(_Idents)
+_ASCII_IDENTS = _ident_patterns("")
+RE_FALLBACK_QUALIFIED = _ASCII_IDENTS.qualified
+RE_FALLBACK_LOADER_RECEIVER = _ASCII_IDENTS.loader_receiver
+RE_FALLBACK_CALL = _ASCII_IDENTS.call
+RE_MODULE_ALIAS_ITEM = _ASCII_IDENTS.module_alias_item
+RE_ASSIGN_BUILTINS = _ASCII_IDENTS.assign_builtins
+RE_FUNC_ALIAS_ITEM = _ASCII_IDENTS.func_alias_item
+RE_ASSIGNED_NAME = _ASCII_IDENTS.assigned_name
 
 
 def _preceded_by_dot(text: str, at: int) -> bool:
@@ -2132,15 +2351,16 @@ def _preceded_by_dot(text: str, at: int) -> bool:
 
 
 def _regex_bindings(text: str) -> "tuple[set, set]":
+    pat = _ident_patterns(_mark_class(text))
     modules: set = set()
     funcs: set = set()
     for m in RE_IMPORT_LIST.finditer(text):
-        for item in RE_MODULE_ALIAS_ITEM.finditer(m.group(1)):
+        for item in pat.module_alias_item.finditer(m.group(1)):
             modules.add(_ident(item.group(1)))
     for m in RE_BUILTINS_FUNC_ALIAS.finditer(text):
-        for item in RE_FUNC_ALIAS_ITEM.finditer(m.group(1)):
+        for item in pat.func_alias_item.finditer(m.group(1)):
             funcs.add(_ident(item.group(1) or item.group(0)))
-    for m in RE_ASSIGN_BUILTINS.finditer(text):
+    for m in pat.assign_builtins.finditer(text):
         modules.add(_ident(m.group(1)))
     return modules, funcs
 
@@ -2152,10 +2372,11 @@ def _regex_rebindings(text: str) -> set:
     re-parsing it - without that, `b = __import__('builtins')` would cancel the
     very alias it creates.
     """
-    aliased = {m.start() for m in RE_ASSIGN_BUILTINS.finditer(text)}
+    pat = _ident_patterns(_mark_class(text))
+    aliased = {m.start() for m in pat.assign_builtins.finditer(text)}
     return {
         _ident(g)
-        for m in RE_ASSIGNED_NAME.finditer(text)
+        for m in pat.assigned_name.finditer(text)
         if m.start() not in aliased
         for g in m.groups()
         if g
@@ -2181,14 +2402,15 @@ def _regex_spans(
     pre-3.12 f-string - one opaque STRING token the token walk skips - and
     `f"{load(name).exec(...)}"` runs the builtin exactly as `__import__` does.
     """
+    pat = _ident_patterns(_mark_class(text))
     out = []
-    for m in RE_FALLBACK_QUALIFIED.finditer(text):
+    for m in pat.qualified.finditer(text):
         name = _ident(m.group(1))
         if name in receivers and (live is None or live(name, m.start())):
             out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_STR_RECEIVER.finditer(text):
         out.append(_Span(m.start(), m.end()))
-    for m in RE_FALLBACK_LOADER_RECEIVER.finditer(text):
+    for m in pat.loader_receiver.finditer(text):
         # `importlib.import_module(n)` names the loader in the second group;
         # a bare `load(n)` names it in the first.
         owner = _ident(m.group(1)) if m.group(2) else ""
@@ -2200,7 +2422,7 @@ def _regex_spans(
     if funcs:
         # Only reachable through `from builtins import exec as ...`, so the one
         # scan over every call site in the file is confined to those files.
-        for m in RE_FALLBACK_CALL.finditer(text):
+        for m in pat.call.finditer(text):
             name = _ident(m.group(1))
             if (
                 name in funcs
@@ -2445,8 +2667,14 @@ class _ExecEvalPattern:
                     # import statement, and the call through it is route 5 with
                     # the module parked in a name first; `(b := builtins)` parks
                     # it the same way inside an expression.
-                    by_value.update(_assignment_bindings(stmt, loaders))
-                    by_value.update(_walrus_bindings(stmt, loaders))
+                    # `modules` is the running set of aliases, so a copy of one
+                    # bound above (`c = b`) is read as the module here and can
+                    # itself be copied again further down.
+                    parked = _assignment_bindings(stmt, loaders, modules)
+                    parked += _walrus_bindings(stmt, loaders, modules)
+                    if parked:
+                        by_value.update(parked)
+                        modules.update(parked)
             modules |= by_value
             if failed:
                 re_modules, re_funcs = _regex_bindings(content)
@@ -2508,6 +2736,15 @@ class _ExecEvalPattern:
                     # this statement's own header is pushed, and true for the
                     # header itself so a one-line `class C: b = model` counts.
                     in_class = (scopes and scopes[-1][1]) or opens == "class"
+                    # Whether the name this statement binds becomes a class
+                    # attribute. A `def` or `class` header binds its own name in
+                    # the ENCLOSING scope, so `import builtins as b` followed by
+                    # a module-level `class b:` really does replace the alias -
+                    # reading the header itself as "inside a class" discarded
+                    # that rebinding and reported the `b.exec(...)` under it.
+                    # Read before the header is pushed, so this is the scope
+                    # around the statement either way.
+                    binds_in_class = bool(scopes and scopes[-1][1])
                     if opens is not None:
                         scopes.append(
                             [
@@ -2624,7 +2861,20 @@ class _ExecEvalPattern:
                         rebound -= same
                         if not rebound:
                             continue
-                    aliased = _assignment_bindings(stmt, loaders) + _walrus_bindings(stmt, loaders)
+                    aliased = _assignment_bindings(stmt, loaders, modules) + _walrus_bindings(
+                        stmt, loaders, modules
+                    )
+                    if aliased:
+                        copied = _copied_alias(stmt)
+                        if (
+                            copied is not None
+                            and copied not in _BUILTINS_NAMES
+                            and _cancelled_at(cancel, copied, at, col)
+                        ):
+                            # The name being copied stopped being the module
+                            # above this line, so this is an ordinary rebinding
+                            # of the target rather than a re-arm of it.
+                            aliased = []
                     if aliased:
                         # The statement that makes the name the module is not a
                         # rebinding of it, and it undoes any earlier one:
@@ -2642,7 +2892,7 @@ class _ExecEvalPattern:
                                     scope[6].discard(name)
                         rebound.clear()
                         continue
-                    if in_class:
+                    if binds_in_class:
                         # `class C: b = model` binds an attribute of C, and the
                         # methods under it still resolve `b` to the global. So
                         # this rebinding cancels nothing they do; recording it
@@ -2655,6 +2905,15 @@ class _ExecEvalPattern:
                     # builtin and only then stops `b` being the module. Starting
                     # the span at the first token suppressed that call.
                     ends = offsets.of(*stmt[-1].end)
+                    if opens is not None:
+                        # A `def` or `class` binds its name before its own body
+                        # runs, and a one-line suite is re-yielded as its own
+                        # statement AFTER this one - so measuring from the last
+                        # token puts the binding past the body it governs, and
+                        # `def run(): return run(BLOB)` was read as a call to the
+                        # imported builtin rather than as recursion. The header
+                        # end is where a multiline definition already ends.
+                        ends = scopes[-1][5]
                     if scopes and opens is None:
                         # An assignment inside a `def` makes the name that
                         # function's local for the whole body, so the alias is
@@ -2699,8 +2958,9 @@ class _ExecEvalPattern:
                             continue
                         spans.sort()
                         scoped_imports[name] = spans
-                for spans in declared_global.values():
+                for name, spans in declared_global.items():
                     spans.sort()
+                    declared_global[name] = _index_globals(spans)
                 for spans in local_shadows.values():
                     spans.sort()
         matcher = _ExecEvalMatcher(

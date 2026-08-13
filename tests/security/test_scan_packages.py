@@ -3564,3 +3564,208 @@ def test_scope_containment_stays_linear_on_hostile_source():
     assert (
         large < 2.6 * small
     ), f"scope containment grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_a_copy_of_a_module_alias_is_the_module_too():
+    # `import builtins as b` then `c = b` puts the module in `c` as plainly as
+    # the import put it in `b`, and refusing to follow the copy left
+    # `c.exec(payload)` reported as the non-blocking MEDIUM - an enforced scan
+    # passed a file that runs the builtin.
+    prelude = "import builtins as b\nimport marshal\n"
+    copied = f"{prelude}c = b\nc.exec(marshal.loads(BLOB))\n"
+    assert _high(copied), "`c = b` copies the module into `c`"
+    chained = f"{prelude}c = b\nd = c\nd.exec(marshal.loads(BLOB))\n"
+    assert _high(chained), "the copy can itself be copied"
+    walrus = f"{prelude}if (c := b):\n    c.exec(marshal.loads(BLOB))\n"
+    assert _high(walrus), "a walrus copies it too"
+
+    # Only a copy of a name this file bound to `builtins` is one.
+    other = "import model as b\nimport marshal\nc = b\nc.exec(marshal.loads(BLOB))\n"
+    assert _high(other, "pkg/_infer.py") == [], "`model` is not the builtins module"
+    rebound = f"{prelude}b = model\nc = b\nc.exec(marshal.loads(BLOB))\n"
+    assert _high(rebound, "pkg/_infer.py") == [], "a copy of a rebound alias is not the module"
+
+
+def test_global_declaration_lookup_stays_linear_on_hostile_source():
+    # One dummy function assigning the alias, then N siblings that each declare
+    # `global b` and call `b.eval(...)`, asks one containment question per call
+    # against one span per sibling; walking them all made that quadratic.
+    # Measured on this shape before the fix: 1.32 s at N=4,000 and 3.75 s at
+    # N=8,000 (2.8x per doubling); after, 0.73 s and 1.50 s (2.0x). The
+    # assertion is the growth rate, so a slow runner moves both together.
+    def hostile(n):
+        head = "import builtins as b\n\n\ndef seed():\n    b = 1\n\n\n"
+        return head + "".join(
+            f"def f{i}():\n    global b\n    return b.eval(DATA)\n\n\n" for i in range(n)
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            spans = list(sp.RE_EXEC_EVAL.finditer(src))
+            out.append(time.monotonic() - start)
+        # `global b` is what keeps every one of those calls the module's, so
+        # none of them may be lost to the index.
+        assert len(spans) == src.count("return b.eval(DATA)"), "every aliased call must be found"
+        return min(out)
+
+    small = best_of(hostile(4_000))
+    large = best_of(hostile(8_000))
+    assert (
+        large < 2.6 * small
+    ), f"global lookup grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_a_lambda_in_a_default_keeps_the_outer_parameter_list():
+    # `lambda run=lambda x: x: run(BLOB)` is valid Python and `run` is always
+    # the outer lambda's parameter; abandoning the parameter list at the nested
+    # `lambda` dropped the shadow and reported the body as the imported builtin.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    nested = f"{prelude}x = lambda run=lambda y: y: run(marshal.loads(BLOB))\n"
+    assert _high(nested, "pkg/_infer.py") == [], "`run` is the outer lambda's parameter"
+    greedy = f"{prelude}x = lambda run=lambda y, z: y: run(marshal.loads(BLOB))\n"
+    assert _high(greedy, "pkg/_infer.py") == [], "the inner lambda owns the comma between them"
+    deep = f"{prelude}x = lambda run=lambda a=lambda c: c: a: run(marshal.loads(BLOB))\n"
+    assert _high(deep, "pkg/_infer.py") == [], "the colons pair off innermost first"
+
+    # The default itself is evaluated where the lambda is written, and a lambda
+    # that never binds the name does not shadow it.
+    in_default = f"{prelude}x = lambda y=run(marshal.loads(BLOB)): y\n"
+    assert _high(in_default), "a call in a default runs in the enclosing scope"
+    other_param = f"{prelude}x = lambda a=lambda run: run: run(marshal.loads(BLOB))\n"
+    assert _high(other_param), "the inner parameter does not reach the outer body"
+
+
+def test_an_annotated_attribute_still_parks_the_builtin():
+    # `holder.eval: object = eval` hands the builtin over exactly as the
+    # unannotated spelling does, and the `holder.eval(payload)` below it is the
+    # same three tokens as `model.eval()` - so the assignment is where the route
+    # has to be read or it is a bypass.
+    marshal_blob = "import marshal\n"
+    annotated = f"{marshal_blob}holder.eval: object = eval\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(annotated), "an annotation does not stop the assignment"
+    aliased = (
+        f"{marshal_blob}from builtins import exec as run\n"
+        "holder.exec: object = run\nholder.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(aliased), "the value may be an alias of the builtin"
+
+    # An annotation with no value binds nothing, and an ordinary method is not
+    # the builtin however it is annotated.
+    declared = f"{marshal_blob}holder.eval: object\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(declared, "pkg/_infer.py") == [], "`holder.eval: object` assigns nothing"
+    method = f"{marshal_blob}holder.eval: object = model.eval\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(method, "pkg/_infer.py") == [], "`model.eval` is a method, not the builtin"
+    mapping = f"{marshal_blob}table = {{holder.eval: 1}}\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(mapping, "pkg/_infer.py") == [], "a dict key is not an assignment"
+
+
+def test_the_dunder_builtins_key_names_the_module():
+    # `globals()['__builtins__']` is the standard way to reach the module
+    # through the globals mapping, and a script run as `__main__` gets the
+    # module itself there. Recognising only the string `builtins` let the
+    # `.exec(payload)` under it fall to the non-blocking MEDIUM.
+    marshal_blob = "import marshal\n"
+    for key in ("__builtins__", "builtins"):
+        payload = f"{marshal_blob}globals()['{key}'].exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`globals()['{key}']` is the builtins module"
+    other = f"{marshal_blob}globals()['model'].exec(marshal.loads(BLOB))\n"
+    assert _high(other, "pkg/_infer.py") == [], "another key is another object"
+
+
+def test_a_class_statement_replaces_a_module_alias():
+    # A module-level `class b:` binds `b` in the module namespace exactly as an
+    # assignment does, so the `b.exec(payload)` under it resolves to the class.
+    # Reading the header itself as "inside a class body" discarded that
+    # rebinding and reported the call as the builtin.
+    prelude = "import builtins as b\nimport marshal\n"
+    replaced = f"{prelude}\n\nclass b:\n    pass\n\n\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(replaced, "pkg/_infer.py") == [], "`class b:` replaces the alias"
+    one_line = f"{prelude}\n\nclass b: pass\n\n\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(one_line, "pkg/_infer.py") == [], "a one-line class body binds it too"
+
+    # A call above the class still reaches the module, and an assignment made
+    # INSIDE a class body is an attribute that shadows nothing.
+    above = f"{prelude}b.exec(marshal.loads(BLOB))\n\n\nclass b:\n    pass\n"
+    assert _high(above), "module-level code runs top to bottom"
+    attribute = f"{prelude}\n\nclass Holder:\n    b = 1\n\n\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(attribute), "a class attribute does not replace the global"
+
+
+def test_a_one_line_definition_binds_before_its_own_body():
+    # `def run(): return run(BLOB)` binds `run` before the body runs, so the
+    # call in there is the recursion and not the imported builtin. The body is
+    # re-yielded as its own statement AFTER the header, so measuring the
+    # binding from the header's last token put it past the call it governs.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    one_line = f"{prelude}def run(): return run(marshal.loads(BLOB))\n"
+    assert _high(one_line, "pkg/_infer.py") == [], "the body resolves `run` to the definition"
+    multiline = f"{prelude}def run():\n    return run(marshal.loads(BLOB))\n"
+    assert _high(multiline, "pkg/_infer.py") == [], "the multiline spelling was already clean"
+
+    # A definition of some other name leaves the alias alone, and a call above
+    # the definition still runs the builtin.
+    other = f"{prelude}def go(): return run(marshal.loads(BLOB))\n"
+    assert _high(other), "`def go()` does not rebind `run`"
+    above = f"{prelude}run(marshal.loads(BLOB))\n\n\ndef run(): return 1\n"
+    assert _high(above), "the call above the definition is the builtin"
+
+
+def test_deleting_an_alias_unbinds_it():
+    # `del b` unbinds the name, so `b.eval(payload)` below it raises
+    # `NameError`; ignoring `del` left that a false HIGH on ordinary cleanup.
+    prelude = "import builtins as b\nimport marshal\n"
+    deleted = f"{prelude}del b\nb.eval(marshal.loads(BLOB))\n"
+    assert _high(deleted, "pkg/_infer.py") == [], "`del b` unbinds the alias"
+    local = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def go():\n    run(marshal.loads(BLOB))\n    del run\n"
+    )
+    assert _high(local, "pkg/_infer.py") == [], "a `del` makes the name local to the whole body"
+
+    # A call above a module-level deletion still runs, and a deletion that
+    # unbinds something else leaves the alias exactly where it was.
+    above = f"{prelude}b.eval(marshal.loads(BLOB))\ndel b\n"
+    assert _high(above), "module-level code runs top to bottom"
+    for target in ("c", "holder.b", "cache[b]"):
+        payload = f"{prelude}del {target}\nb.eval(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`del {target}` does not unbind `b`"
+
+
+def test_a_combining_mark_stays_inside_an_identifier():
+    # PEP 3131 normalizes an identifier to NFKC before it is looked up, so an
+    # alias imported as `é` is called by `e` + U+0301 and the other way round.
+    # `\w` drops a combining mark, which split the second spelling into `e` and
+    # missed the call - on 3.9-3.11, where `tokenize` splits it the same way,
+    # that was every route rather than only the f-string one.
+    nfc = "\u00e9"
+    decomposed = "e\u0301"
+    assert unicodedata.normalize("NFKC", decomposed) == nfc
+    for alias in (nfc, decomposed):
+        for call in (nfc, decomposed):
+            plain = (
+                f"from builtins import exec as {alias}\nimport marshal\n"
+                f"{call}(marshal.loads(BLOB))\n"
+            )
+            assert _high(plain), f"{alias!r} called as {call!r} runs the builtin"
+            fstring = (
+                f"from builtins import exec as {alias}\nimport marshal\n"
+                f'x = f"{{{call}(marshal.loads(BLOB))}}"\n'
+            )
+            assert _high(fstring), f"{alias!r} inside an f-string runs it too"
+            module = (
+                f"import builtins as {alias}\nimport marshal\n"
+                f"{call}.exec(marshal.loads(BLOB))\n"
+            )
+            assert _high(module), f"{alias!r} as a module alias runs it too"
+
+    # The same normalization decides a rebinding, so an alias assigned away
+    # under either spelling is no longer the builtin.
+    for spelling in (nfc, decomposed):
+        rebound = (
+            f"from builtins import exec as {nfc}\nimport marshal\n"
+            f"{spelling} = None\n{nfc}(marshal.loads(BLOB))\n"
+        )
+        assert _high(rebound, "pkg/_infer.py") == [], "the rebinding is the same name"
