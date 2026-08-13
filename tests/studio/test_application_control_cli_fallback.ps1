@@ -412,6 +412,16 @@ Check "a venv with no interpreter at all still fails" (
 # the case this check was written for and the one the fallback must not swallow.
 Check "the older-unsloth guidance is still there" (
     $installText -match 'an older unsloth version was installed that does not include the Unsloth CLI')
+
+# Write-UnslothCmdShim warns and leaves an unwritable file alone, so a foreign bin\unsloth.cmd
+# can survive a run. Counting it as a launcher would put its directory on PATH and advertise
+# someone else's command as the policy-safe way in.
+# The bare Test-Path that used to gate this is checked for above, in "PATH accepts either
+# launcher". The only surviving occurrence is inside Test-UnslothCmdShimFile's own guard,
+# which is where it belongs, so the negative is anchored to the assignment rather than to
+# the string appearing anywhere in the file.
+Check "PATH counts only our own .cmd" (
+    -not ($installText -match '\$ShimUsable = .*Test-Path -LiteralPath \$ShimCmd'))
 # ...and it is still installed and still hardlinked, or every unaffected machine regresses.
 Check "the exe is still hardlinked"    ($installText -match 'New-Item -ItemType HardLink -Path \$ShimExe -Target \$UnslothExe')
 Check "the exe existence gate remains" ($installText -match '\$UnslothExe = Join-Path \$VenvDir "Scripts\\unsloth\.exe"')
@@ -438,7 +448,7 @@ Check "-ShortcutsOnly writes the .cmd" ($installText -match '(?s)if \(\$Shortcut
 # directory that population does not have.
 Check "-ShortcutsOnly creates the bin dir first" (
     $installText -match '(?s)if \(\$ShortcutsOnly\) \{.*?\[System\.IO\.Directory\]::CreateDirectory\(\$ShortcutShimDir\).*?Write-UnslothCmdShim -ShimDir \$ShortcutShimDir')
-Check "PATH accepts either launcher"   ($installText -match '(?s)\$ShimUsable = \(Test-Path -LiteralPath \$ShimExe -PathType Leaf\) -or\s*\(Test-Path -LiteralPath \$ShimCmd -PathType Leaf\)')
+Check "PATH accepts either launcher"   ($installText -match '(?s)\$ShimUsable = \(Test-Path -LiteralPath \$ShimExe -PathType Leaf\) -or\s*\(Test-UnslothCmdShimFile -Path \$ShimCmd\)')
 Check "and the env-mode export too"    ($installText -match "StudioRedirectMode -eq 'env' -and \`$ShimUsable")
 
 Write-Host "the launch instructions are probed, not assumed"

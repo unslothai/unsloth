@@ -5411,9 +5411,13 @@ exit 0
     # be hardlinked or copied, or a policy's quarantine removed it, the .cmd beside it
     # is a working launcher and its directory still belongs on PATH. Env-mode:
     # session-only export, no registry change (workspace path may be deleted later).
+    # Test-UnslothCmdShimFile, not Test-Path: Write-UnslothCmdShim warns and leaves an
+    # unwritable file alone, so a foreign bin\unsloth.cmd in a custom root can survive
+    # this run. Counting it would put its directory on PATH and advertise someone
+    # else's command as the policy-safe launcher.
     $ShimCmd = Join-Path $ShimDir "unsloth.cmd"
     $ShimUsable = (Test-Path -LiteralPath $ShimExe -PathType Leaf) -or
-                  (Test-Path -LiteralPath $ShimCmd -PathType Leaf)
+                  (Test-UnslothCmdShimFile -Path $ShimCmd)
     $pathAdded = $false
     if ($ShimUsable) {
         if ($StudioRedirectMode -ne 'env') {

@@ -1032,6 +1032,85 @@ def test_the_interpreter_fallback_waits_as_long_as_the_import_probe(studio):
     assert studio._MANAGED_CLI_IMPORT_PROBE_TIMEOUT > transaction._VERSION_TIMEOUT_SECONDS
 
 
+def test_a_custom_root_survives_the_launcher_being_quarantined(monkeypatch, studio, tmp_path):
+    """The sentinel decides which installation every studio command manages.
+
+    Only install.sh writes share/studio.conf, so on a custom-root Windows
+    install the generated unsloth.exe was the only sentinel there was. Quarantine
+    deletes it, root inference then falls back to ~/.unsloth/studio, and the CLI
+    reads and writes the wrong tree while reporting success. The .cmd shim is
+    written by the same installer for the same directory and answers the same
+    question.
+    """
+    root = tmp_path / "custom-root"
+    (root / "bin").mkdir(parents = True)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+
+    assert not studio._looks_like_installer_managed_studio_home(root)
+
+    shim = root / "bin" / "unsloth.cmd"
+    shim.write_bytes(
+        b"@echo off\r\nrem unsloth-studio-managed-launcher\r\n"
+        b'"%~dp0..\\unsloth_studio\\Scripts\\python.exe" -X utf8 -c "from unsloth_cli import app" %*\r\n'
+    )
+    assert studio._looks_like_installer_managed_studio_home(root)
+
+    # The launcher still answers on its own, so an install that never lost it is
+    # unaffected either way.
+    shim.unlink()
+    (root / "bin" / "unsloth.exe").write_bytes(b"MZ")
+    assert studio._looks_like_installer_managed_studio_home(root)
+
+
+@pytest.mark.parametrize(
+    "label, body",
+    [
+        # This decides which tree the CLI manages and the directory is on PATH,
+        # so any file of that name would otherwise be enough to redirect a root.
+        ("a hand-rolled wrapper", b'@echo off\r\npython -c "from unsloth_cli import app" %*\r\n'),
+        ("the marker without the call", b"@echo off\r\nrem unsloth-studio-managed-launcher\r\n"),
+        ("an unrelated batch file", b"@echo off\r\necho hello\r\n"),
+        ("empty", b""),
+    ],
+)
+def test_only_the_installers_own_cmd_shim_marks_a_root(monkeypatch, studio, tmp_path, label, body):
+    root = tmp_path / "root"
+    (root / "bin").mkdir(parents = True)
+    (root / "bin" / "unsloth.cmd").write_bytes(body)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+
+    assert not studio._looks_like_installer_managed_studio_home(root), (
+        f"{label} must not stand in for the installer's own shim"
+    )
+
+
+def test_an_oversized_cmd_shim_is_not_read_into_memory(monkeypatch, studio, tmp_path):
+    """Same 8 KB ceiling Test-UnslothCmdShimFile and the uninstaller apply."""
+    root = tmp_path / "root"
+    (root / "bin").mkdir(parents = True)
+    shim = root / "bin" / "unsloth.cmd"
+    shim.write_bytes(
+        b"rem unsloth-studio-managed-launcher\r\nfrom unsloth_cli import app\r\n" + b"x" * 9000
+    )
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+
+    assert not studio._looks_like_installer_managed_studio_home(root)
+
+
+def test_posix_root_inference_is_unchanged(monkeypatch, studio, tmp_path):
+    """A .cmd means nothing off Windows, and the console script still answers."""
+    root = tmp_path / "root"
+    (root / "bin").mkdir(parents = True)
+    (root / "bin" / "unsloth.cmd").write_bytes(
+        b"rem unsloth-studio-managed-launcher\r\nfrom unsloth_cli import app\r\n"
+    )
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+
+    assert not studio._looks_like_installer_managed_studio_home(root)
+    (root / "bin" / "unsloth").write_text("#!/bin/sh\n", encoding = "utf-8")
+    assert studio._looks_like_installer_managed_studio_home(root)
+
+
 def test_the_import_probe_performs_the_trampolines_own_import(studio):
     """A spec lookup here would answer a different question than the launch asks.
 

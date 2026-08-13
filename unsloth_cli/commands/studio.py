@@ -44,14 +44,54 @@ def _enable_verbose_access_logs() -> None:
 # sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
 # the installer's env var has expired), then legacy ~/.unsloth/studio.
 # UNSLOTH_STUDIO_HOME wins when both env vars are set.
+# Both halves, and the 8 KB ceiling, are Test-UnslothCmdShimFile's in install.ps1 and
+# _IsUnslothCmdShim's in scripts/uninstall.ps1. Bytes, not text: the shim is written
+# without a BOM but an edited copy may carry one, and a decode error here would be
+# indistinguishable from "not ours".
+_CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
+_CMD_SHIM_MAX_BYTES = 8192
+
+
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Unsloth root.
+
+    On Windows bin\\unsloth.cmd counts too. Only install.sh writes
+    share/studio.conf, so on a custom-root Windows install the generated
+    unsloth.exe is the only sentinel there is, and antivirus quarantine deletes
+    it -- after which this returns False, the root falls back to
+    ~/.unsloth/studio, and every `unsloth studio ...` reads and writes the wrong
+    installation. The .cmd is written by the same installer for the same
+    directory, so it answers the same question.
+
+    It has to be OUR .cmd: this decides which tree the CLI manages, and the
+    directory is on PATH, so any file of that name would otherwise be enough to
+    point a custom root at itself. Same marker Test-UnslothCmdShimFile in
+    install.ps1 and the uninstaller's recursive-delete guard require.
     """
-    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
-    return (candidate / "share" / "studio.conf").is_file() or (
-        candidate / "bin" / shim_name
-    ).is_file()
+    if (candidate / "share" / "studio.conf").is_file():
+        return True
+    if platform.system() != "Windows":
+        return (candidate / "bin" / "unsloth").is_file()
+    if (candidate / "bin" / "unsloth.exe").is_file():
+        return True
+    return _is_managed_cmd_shim(candidate / "bin" / "unsloth.cmd")
+
+
+def _is_managed_cmd_shim(path: Path) -> bool:
+    """Whether *path* is the .cmd shim this installer generates.
+
+    Read as bytes and matched on the marker line install.ps1 writes. A hand
+    rolled wrapper that happens to invoke the CLI is not this, and must not be
+    taken as proof of an installer-managed root.
+    """
+    try:
+        if path.stat().st_size > _CMD_SHIM_MAX_BYTES:
+            return False
+        body = path.read_bytes()
+    except OSError:
+        return False
+    return all(marker in body for marker in _CMD_SHIM_MARKERS)
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
