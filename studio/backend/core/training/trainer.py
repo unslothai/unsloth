@@ -234,7 +234,6 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     # the missing-FFmpeg path that decoding an Audio column would.
     try:
         from utils.datasets.format_detection import _AUDIO_EXTENSIONS, _is_audio_value
-
         row = next(iter(dataset))
         for value in row.values():
             if _is_audio_value(value):

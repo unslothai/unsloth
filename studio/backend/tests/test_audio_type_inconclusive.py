@@ -123,8 +123,7 @@ def test_every_probe_site_records_whether_it_was_definitive():
     # the previous probe, which is worse than not having it.
     lines = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8").splitlines()
     sites = [
-        i for i, l in enumerate(lines)
-        if "detect_audio_type_checked(" in l and "import" not in l
+        i for i, l in enumerate(lines) if "detect_audio_type_checked(" in l and "import" not in l
     ]
     assert sites, "no probe sites found"
     for i in sites:
@@ -137,7 +136,11 @@ def test_every_probe_site_records_whether_it_was_definitive():
 class _TypedDataset(_Dataset):
     """A dataset with a real `features` schema and rows, as a loaded HF dataset has."""
 
-    def __init__(self, features, rows = None):
+    def __init__(
+        self,
+        features,
+        rows = None,
+    ):
         self.features = features
         self._rows = rows if rows is not None else [{"audio": "hello", "text": "hi"}]
 
