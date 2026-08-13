@@ -123,6 +123,11 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 
+# Flags that take TWO values rather than one. Scanned out of `llama-server --help`:
+# every other option is `--flag VALUE` or a switch, and this list exists so the
+# positional check below does not refuse a legitimate second value.
+_TWO_VALUE_FLAGS: frozenset[str] = frozenset({"--control-vector-layer-range"})
+
 # Shape bounds. Not a security boundary -- the denylist is -- but a pasted file or a
 # runaway generator should fail here, naming the limit, rather than at execve or in
 # llama-server's own parser. Generous enough that a grammar or a JSON schema fits.
@@ -134,6 +139,25 @@ MAX_EXTRA_ARGS_BYTES = 32 * 1024
 # the full 32 KiB would pass every check here and then fail inside Popen, after the
 # load had already begun switching models.
 MAX_EXTRA_ARGS_BYTES_WINDOWS = 24 * 1024
+
+
+# CreateProcess takes the whole command line as ONE string, capped here. The rest of
+# the command (the binary, the model path, Unsloth's own flags) has to fit too, so the
+# extras are checked against the limit minus this reserve.
+WINDOWS_COMMAND_LIMIT = 32767
+WINDOWS_COMMAND_RESERVE = 8192
+
+
+def windows_command_length(args: list) -> int:
+    """Characters ``subprocess`` would put on a Windows command line for ``args``.
+
+    list2cmdline is the exact serializer Popen uses there, and it is not a sum of
+    lengths: a value needing quotes has its backslashes doubled, so an escape-heavy
+    grammar can nearly double. Measuring it is the only honest check.
+    """
+    import subprocess
+
+    return len(subprocess.list2cmdline([str(a) for a in args]))
 
 
 def max_extra_args_bytes() -> int:
@@ -188,6 +212,9 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
         return []
     out: list[str] = []
     total_bytes = 0
+    # How many following tokens the flag just seen may still claim as values. A
+    # switch claims none, so the next bare token has no owner.
+    pending_values = 0
     for raw in args:
         token = str(raw)
         if len(out) >= MAX_EXTRA_ARG_TOKENS:
@@ -220,7 +247,37 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 f"llama-server flag '{flag}' is managed by Unsloth Studio "
                 f"and cannot be passed as an extra arg"
             )
+        if flag is None:
+            # A token belonging to no flag. Today's llama-server answers "invalid
+            # argument" and refuses to start, which is a failed load rather than a
+            # 400, and a build that did accept a positional would read it as the
+            # model path: that is the one thing the -m / --model denial exists to
+            # prevent, and it would sidestep the native-path lease as well.
+            if pending_values <= 0:
+                raise ValueError(
+                    "extra llama-server args cannot contain a bare value "
+                    f"('{token[:64]}'); every value must follow its flag"
+                )
+            pending_values -= 1
+        else:
+            # Its own value when attached, otherwise the tokens that follow.
+            pending_values = (
+                0
+                if "=" in token or flag != token.strip()
+                else 2
+                if flag in _TWO_VALUE_FLAGS
+                else 1
+            )
         out.append(token)
+    if sys.platform == "win32":
+        # After the per-token walk, because this is a property of the whole list.
+        serialized = windows_command_length(out)
+        budget = WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_RESERVE
+        if serialized > budget:
+            raise ValueError(
+                "extra llama-server args are too long for a Windows command line "
+                f"({serialized} characters after quoting, limit {budget})"
+            )
     parse_ctx_override(out)
     parse_cache_override(out)
     parse_split_mode_override(out)

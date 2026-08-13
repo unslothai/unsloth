@@ -288,3 +288,39 @@ def test_a_poisoned_flag_with_an_attached_value_drops_alone():
 
     assert kept == ["--top-k", "20"]
     assert dropped == ["<flag>"]
+
+
+def test_a_bare_value_with_no_flag_is_refused():
+    # llama-server answers "invalid argument" and refuses to start, so this is a
+    # failed load rather than a 400; and a build that DID take a positional would
+    # read it as the model path, which is what denying -m / --model exists to stop.
+    for bad in (
+        ["/private/models/other.gguf"],
+        ["--top-k", "20", "/models/other.gguf"],
+        ["--top-k=20", "stray"],
+    ):
+        with pytest.raises(ValueError, match = "bare value"):
+            _lsa.validate_extra_args(bad)
+
+
+def test_a_value_that_belongs_to_a_flag_is_still_fine():
+    assert _lsa.validate_extra_args(["--numa", "distribute"])
+    assert _lsa.validate_extra_args(["--grammar", "root ::= [0-9]"])
+    # The one flag in llama-server's help that takes two values.
+    assert _lsa.validate_extra_args(["--control-vector-layer-range", "1", "10"])
+
+
+def test_the_windows_check_measures_what_popen_would_write(monkeypatch):
+    # list2cmdline is not a sum of lengths: backslashes before a quote double, so an
+    # escape-heavy grammar can pass a byte cap and still blow CreateProcess's 32767
+    # character limit once quoted, inside Popen, after the switch has begun.
+    monkeypatch.setattr(_lsa.sys, "platform", "win32", raising = False)
+    value = ("\\" * 10 + '"') * 2000
+    assert len(value) < _lsa.MAX_EXTRA_ARGS_BYTES_WINDOWS
+
+    with pytest.raises(ValueError, match = "Windows command line"):
+        _lsa.validate_extra_args(["--grammar", value])
+
+    # Same list, other platforms: no such limit, so no refusal.
+    monkeypatch.setattr(_lsa.sys, "platform", "linux", raising = False)
+    assert _lsa.validate_extra_args(["--grammar", value])

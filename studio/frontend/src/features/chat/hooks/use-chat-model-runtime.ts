@@ -1084,6 +1084,14 @@ export function useChatModelRuntime() {
                     ...(validateNUbatch != null
                       ? { n_ubatch: validateNUbatch }
                       : {}),
+                    // The same list the load below sends. A --ctx-size or cache
+                    // override in here changes the memory this preflight estimates,
+                    // so omitting it approves a different command: during training
+                    // that means approving the switch, unloading the resident model,
+                    // and having /load refuse the target with the real arguments.
+                    ...(loadLlamaExtraArgs !== undefined
+                      ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
+                      : {}),
                   }
                 : {}),
             });

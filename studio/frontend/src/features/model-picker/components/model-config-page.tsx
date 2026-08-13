@@ -1438,7 +1438,7 @@ export function ModelConfigPage({
   // that is not running, so a fast click would launch a cold model without the
   // arguments that were about to appear on screen.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
-    () => target.isGguf,
+    () => target.isGguf && !isDiffusion,
   );
   // The row does not withdraw its own objection when it unmounts, or collapsing
   // Advanced settings would re-enable Load for arguments the backend refuses. A
@@ -1446,110 +1446,9 @@ export function ModelConfigPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
-    setExtraArgsHydrating(target.isGguf);
-  }, [configId, target.ggufVariant, target.isGguf]);
+    setExtraArgsHydrating(target.isGguf && !isDiffusion);
+  }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
-  // The one field on this page whose stored value the local config may never have
-  // seen. Everything else here is written by this panel, but llama_extra_args can be
-  // set through the overrides API with no UI involved, which is exactly why that
-  // route preserves it when omitted. Showing an empty box for a model that has flags
-  // would read as "none", and the first edit would then submit a list that silently
-  // dropped them. Fetched, not guessed.
-  //
-  // Here rather than in the row that displays it: that row is inside Advanced
-  // settings, which is not rendered while the section is collapsed, so a panel
-  // opened closed would never fetch and a cold load would launch without the stored
-  // arguments. The row seeds its textarea from the config either way.
-  const extraArgsHydrated = useRef<string | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
-  useEffect(() => {
-    if (!target.isGguf) {
-      // Nothing else even has this field: the row is GGUF-only and so is the load
-      // payload, so a Transformers or MLX model must not wait on either request.
-      setExtraArgsHydrating(false);
-      return;
-    }
-    // The order the auto-switch loader tries, and for the same reason: the settings
-    // UI keys a local row by the path it loads from, while configId is a derived
-    // alias, so reading the alias first lets an older entry stay the one API loads
-    // apply while the panel shows none of it. A loose .gguf was keyed by its
-    // filename label in an early build, which is the fourth candidate here.
-    const loadId = target.id;
-    const fileVariant =
-      !target.ggufVariant && loadId.toLowerCase().endsWith(".gguf")
-        ? ggufQuantLabel(loadId.replace(/\\/g, "/").split("/").pop() ?? loadId)
-        : null;
-    const keys = [
-      modelOverrideKey(loadId, target.ggufVariant),
-      modelOverrideKey(configId, target.ggufVariant),
-      loadId,
-      ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
-      configId,
-    ].filter((key, index, all) => all.indexOf(key) === index);
-    // Joined because an array literal is a new value on every render.
-    const identity = keys.join("\u0000");
-    if (extraArgsHydrated.current === identity) {
-      setExtraArgsHydrating(false);
-      return;
-    }
-    let cancelled = false;
-    // The denylist, not the catalogue: sanitizing a stored list needs only the flags
-    // Unsloth refuses, and that route answers without running `llama-server --help`.
-    // Waiting on the probe instead would hold Load shut for as long as a cold --help
-    // takes, and releasing on a deadline would leave a legacy flag in an explicit
-    // request that /load then refuses.
-    // A last-resort release, so a request that never settles cannot disable Load for
-    // good: past this a load behaves as it did before the feature.
-    const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
-    Promise.all([fetchModelOverrides(), loadManagedLlamaFlags()])
-      .then(([overrides, managed]) => {
-        // Marked here rather than before the request: StrictMode replays the effect
-        // (setup, cleanup, setup), so a key marked up front would leave the first
-        // fetch cancelled and the second setup returning early, and the box would
-        // never fill in development.
-        if (cancelled) {
-          return;
-        }
-        extraArgsHydrated.current = identity;
-        // Through the resolver, not a literal lookup: the backend folds identities
-        // and reads whole entries in its own order before it reads a field.
-        //
-        // Sanitised before it becomes a request: hydrating turns a stored list into
-        // an EXPLICIT one, which /load validates strictly instead of putting it
-        // through the carry-over paths that drop a newly denied flag quietly.
-        // Without this, an install upgraded across a denylist change stops loading a
-        // model that worked the day before.
-        const stored = sanitizeStoredExtraArgs(
-          resolveStoredExtraArgs(overrides, keys),
-          managed ?? new Set<string>(),
-        );
-        if (stored.length === 0) {
-          return;
-        }
-        setConfig((current) =>
-          // Only a config that has not read them yet, or a slow response would land
-          // on top of an edit made in the meantime.
-          current.llamaExtraArgs === undefined
-            ? { ...current, llamaExtraArgs: stored }
-            : current,
-        );
-      })
-      .catch(() => {
-        // Nothing to say: the panel is still usable, and the load would report a
-        // real problem with the overrides service far more clearly than this could.
-      })
-      .finally(() => {
-        // Including the failure: an overrides service that is down must not leave
-        // Load disabled for good.
-        if (!cancelled) {
-          setExtraArgsHydrating(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-      clearTimeout(release);
-    };
-  }, [configId, target.id, target.ggufVariant, target.isGguf]);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =
@@ -1682,6 +1581,126 @@ export function ModelConfigPage({
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
+
+  // The one field on this page whose stored value the local config may never have
+  // seen. Everything else here is written by this panel, but llama_extra_args can be
+  // set through the overrides API with no UI involved, which is exactly why that
+  // route preserves it when omitted. Showing an empty box for a model that has flags
+  // would read as "none", and the first edit would then submit a list that silently
+  // dropped them. Fetched, not guessed.
+  //
+  // Here rather than in the row that displays it: that row is inside Advanced
+  // settings, which is not rendered while the section is collapsed, so a panel
+  // opened closed would never fetch and a cold load would launch without the stored
+  // arguments. The row seeds its textarea from the config either way.
+  const extraArgsHydrated = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
+  useEffect(() => {
+    if (!target.isGguf || resolvedIsDiffusion) {
+      // Nothing else even has this field: the row is GGUF-only and so is the load
+      // payload, so a Transformers or MLX model must not wait on either request.
+      // A diffusion GGUF is GGUF-shaped but runs through the diffusion shim, which
+      // appends no llama-server flags and whose config strips them, so it must not
+      // wait either.
+      setExtraArgsHydrating(false);
+      return;
+    }
+    // The order the auto-switch loader tries, and for the same reason: the settings
+    // UI keys a local row by the path it loads from, while configId is a derived
+    // alias, so reading the alias first lets an older entry stay the one API loads
+    // apply while the panel shows none of it. A loose .gguf was keyed by its
+    // filename label in an early build, which is the fourth candidate here.
+    const loadId = target.id;
+    const fileVariant =
+      !target.ggufVariant && loadId.toLowerCase().endsWith(".gguf")
+        ? ggufQuantLabel(loadId.replace(/\\/g, "/").split("/").pop() ?? loadId)
+        : null;
+    const keys = [
+      modelOverrideKey(loadId, target.ggufVariant),
+      modelOverrideKey(configId, target.ggufVariant),
+      loadId,
+      ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
+      configId,
+    ].filter((key, index, all) => all.indexOf(key) === index);
+    // Joined because an array literal is a new value on every render.
+    const identity = keys.join("\u0000");
+    if (extraArgsHydrated.current === identity) {
+      setExtraArgsHydrating(false);
+      return;
+    }
+    let cancelled = false;
+    // The denylist, not the catalogue: sanitizing a stored list needs only the flags
+    // Unsloth refuses, and that route answers without running `llama-server --help`.
+    // Waiting on the probe instead would hold Load shut for as long as a cold --help
+    // takes, and releasing on a deadline would leave a legacy flag in an explicit
+    // request that /load then refuses.
+    // A last-resort release, so a request that never settles cannot disable Load for
+    // good: past this a load behaves as it did before the feature.
+    const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
+    Promise.all([fetchModelOverrides(), loadManagedLlamaFlags()])
+      .then(([overrides, managed]) => {
+        // Marked here rather than before the request: StrictMode replays the effect
+        // (setup, cleanup, setup), so a key marked up front would leave the first
+        // fetch cancelled and the second setup returning early, and the box would
+        // never fill in development.
+        if (cancelled) {
+          return;
+        }
+        extraArgsHydrated.current = identity;
+        // Through the resolver, not a literal lookup: the backend folds identities
+        // and reads whole entries in its own order before it reads a field.
+        //
+        // Sanitised before it becomes a request: hydrating turns a stored list into
+        // an EXPLICIT one, which /load validates strictly instead of putting it
+        // through the carry-over paths that drop a newly denied flag quietly.
+        // Without this, an install upgraded across a denylist change stops loading a
+        // model that worked the day before.
+        const stored = sanitizeStoredExtraArgs(
+          resolveStoredExtraArgs(overrides, keys),
+          managed ?? new Set<string>(),
+        );
+        if (stored.length === 0) {
+          return;
+        }
+        // Judged here as well as in the row: with Advanced collapsed the row never
+        // mounts, so nothing would object to a stored list this build refuses (an
+        // override written through the API is only structurally validated), and
+        // Load would be live for a request that comes back 400. The managed set is
+        // enough for that: the value checks do not need the binary's catalogue.
+        setExtraArgsLoadable(
+          extraArgsAreLoadable(
+            diagnoseExtraArgs(formatExtraArgs(stored), {
+              flags: {},
+              managed: managed ?? new Set<string>(),
+              // Nothing was checked against a binary, so no flag may be called a typo.
+              probeOk: false,
+            }),
+          ),
+        );
+        setConfig((current) =>
+          // Only a config that has not read them yet, or a slow response would land
+          // on top of an edit made in the meantime.
+          current.llamaExtraArgs === undefined
+            ? { ...current, llamaExtraArgs: stored }
+            : current,
+        );
+      })
+      .catch(() => {
+        // Nothing to say: the panel is still usable, and the load would report a
+        // real problem with the overrides service far more clearly than this could.
+      })
+      .finally(() => {
+        // Including the failure: an overrides service that is down must not leave
+        // Load disabled for good.
+        if (!cancelled) {
+          setExtraArgsHydrating(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(release);
+    };
+  }, [configId, target.id, target.ggufVariant, target.isGguf, resolvedIsDiffusion]);
   const config = reconcileConfigGpuSelection(
     configState,
     resolvedIsDiffusion,

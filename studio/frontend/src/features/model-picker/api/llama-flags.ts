@@ -8,7 +8,7 @@ export type LlamaFlagCatalog = {
   /** Flag name -> its help text. Empty when the probe failed. */
   flags: Record<string, string>;
   /** Flags Unsloth manages; the load refuses these outright. */
-  managed: Set<string>;
+  managed: ReadonlySet<string>;
   /**
    * False when `--help` could not be read. Nothing may then be reported as a typo:
    * an unverifiable flag is not a wrong one.
@@ -35,6 +35,11 @@ const CATALOG_TTL_MS = 60_000;
 let inFlightCatalog: Promise<LlamaFlagCatalog | null> | null = null;
 let cachedCatalog: LlamaFlagCatalog | null = null;
 let cachedAt = 0;
+// Bumped by every invalidation. A read that started before the binary changed is
+// describing the old one, so it must neither be cached nor handed to a caller that
+// asked after the change: without this the stale promise is reused by the next call
+// and writes the previous backend's flags back for the whole TTL.
+let catalogGeneration = 0;
 
 let inFlightManaged: Promise<ReadonlySet<string> | null> | null = null;
 let cachedManaged: ReadonlySet<string> | null = null;
@@ -43,6 +48,10 @@ let cachedManaged: ReadonlySet<string> | null = null;
 export function invalidateLlamaFlagCatalog(): void {
   cachedCatalog = null;
   cachedAt = 0;
+  catalogGeneration += 1;
+  // Dropped as well as cleared: a request already on the wire answers for the
+  // binary that has just been replaced.
+  inFlightCatalog = null;
   // Not the denylist: that is Unsloth's own list and no binary changes it.
 }
 
@@ -93,6 +102,7 @@ export function loadLlamaFlagCatalog(): Promise<LlamaFlagCatalog | null> {
   if (cachedCatalog && Date.now() - cachedAt < CATALOG_TTL_MS) {
     return Promise.resolve(cachedCatalog);
   }
+  const generation = catalogGeneration;
   inFlightCatalog ??= (async () => {
     try {
       const res = await authFetch("/api/inference/llama-flags");
@@ -105,13 +115,22 @@ export function loadLlamaFlagCatalog(): Promise<LlamaFlagCatalog | null> {
         managed: new Set(body.managed ?? []),
         probeOk: Boolean(body.probe_ok),
       };
+      if (generation !== catalogGeneration) {
+        // The binary changed while this was in flight: answer the caller with
+        // "cannot verify" rather than the old build's flags, and cache nothing.
+        return null;
+      }
       cachedCatalog = catalog;
       cachedAt = Date.now();
       return catalog;
     } catch {
       return null;
     } finally {
-      inFlightCatalog = null;
+      // Only if it is still ours: an invalidation may have cleared it already, and
+      // a later call may have started its own.
+      if (generation === catalogGeneration) {
+        inFlightCatalog = null;
+      }
     }
   })();
   return inFlightCatalog;

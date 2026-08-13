@@ -512,7 +512,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
   // The panel retires it on a model change instead.
   assert.match(
     pageSource.replace(/\s+/g, " "),
-    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(target\.isGguf\); \}, \[configId, target\.ggufVariant, target\.isGguf\]\)/,
+    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(target\.isGguf && !isDiffusion\); \}, \[configId, target\.ggufVariant, target\.isGguf, isDiffusion\]\)/,
   );
 });
 
@@ -608,8 +608,13 @@ test("a model with no such field does not wait for one", () => {
   const body = panel.replace(/\s+/g, " ");
   // The row and the load payload are both GGUF-only, so a Transformers or MLX model
   // must not have Load held shut while two requests it will never use settle.
-  assert.match(body, /if \(!target\.isGguf\) \{ .*setExtraArgsHydrating\(false\); return; \}/);
-  assert.match(body, /useState\( \(\) => target\.isGguf, \)/);
+  // A diffusion GGUF is GGUF-shaped but runs through the diffusion shim, which
+  // appends no llama-server flags, so it must not wait either.
+  assert.match(
+    body,
+    /if \(!target\.isGguf \|\| resolvedIsDiffusion\) \{ .*setExtraArgsHydrating\(false\); return; \}/,
+  );
+  assert.match(body, /useState\( \(\) => target\.isGguf && !isDiffusion, \)/);
 });
 
 test("a diffusion classification retires the argument objection", () => {
@@ -658,4 +663,58 @@ test("a rollback restores the previous model with its arguments", () => {
   );
   // And the snapshot is kept on every successful load, not only an explicit one.
   assert.match(runtime, /loadedLlamaExtraArgs: loadLlamaExtraArgs !== undefined/);
+});
+
+test("a hydrated list is judged even when the row cannot be", () => {
+  const panel = pageSource.slice(
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  const body = panel.replace(/\s+/g, " ");
+  // With Advanced collapsed the row never mounts, so nothing objects to a stored
+  // list this build refuses (the overrides route only validates its shape), and
+  // Load would be live for a request that comes back 400.
+  assert.match(body, /setExtraArgsLoadable\( extraArgsAreLoadable\( diagnoseExtraArgs\(formatExtraArgs\(stored\)/);
+});
+
+test("the runtime preflight is sized with the arguments the load sends", () => {
+  const runtime = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  // A --ctx-size or cache override changes the memory /validate estimates. During
+  // training an approval it did not size for means unloading the resident model and
+  // having /load refuse the target, which is a rollback the user never asked for.
+  const validateCall = runtime.slice(
+    runtime.indexOf("await validateModel({"),
+    runtime.indexOf("// Upgrade consent runs before"),
+  );
+  assert.match(
+    validateCall,
+    /loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \}/,
+  );
+});
+
+test("a catalogue read from the previous binary is discarded", () => {
+  const flagsApi = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/api/llama-flags.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  // A switch that completes mid-request must not have the old build's flags written
+  // back, and the next caller must not be handed that same promise.
+  assert.match(flagsApi, /catalogGeneration \+= 1;/);
+  assert.match(flagsApi, /inFlightCatalog = null;/);
+  assert.match(
+    flagsApi,
+    /if \(generation !== catalogGeneration\) \{ .*return null; \}/,
+  );
 });
