@@ -304,6 +304,59 @@ def test_an_explicit_enospc_is_a_full_disk_whatever_the_size(save_mod):
     assert save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = 1)
 
 
+def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
+    """A failed pass leaves its partial output behind, and those bytes are gone
+    from the free space this measures while `needed_bytes` still describes the
+    whole file.
+
+    llama-quantize streams into the output (`llama-quant.cpp` opens the
+    `ofstream` before the tensor loop and writes each tensor as it finishes
+    one), so an export that starts with 12GB free, writes 5GB of a 10GB output
+    and then dies on an unsupported tensor is measured at 7GB against 10GB and
+    called a full disk. It never was: the room was there, and the rebuild advice
+    that would have addressed the real failure is the thing suppressed. Credit
+    the partial file back before comparing.
+    """
+    import types as _types
+
+    output = tmp_path / "model.Q4_K_M.gguf"
+    # Sparse, for the same reason the layout above is.
+    with open(output, "wb") as f:
+        f.truncate(5 * GB)
+
+    original = save_mod.shutil.disk_usage
+    try:
+        failure = RuntimeError("unknown model architecture")
+
+        # 12GB free at the start, 5GB of the 10GB output written, so 7GB left.
+        save_mod.shutil.disk_usage = lambda *_a, **_k: _types.SimpleNamespace(
+            total = 0, used = 0, free = 7 * GB
+        )
+        assert not save_mod._gguf_failure_looks_like_disk(
+            failure, str(tmp_path), needed_bytes = 10 * GB,
+            partial_output = str(output),
+        )
+
+        # A disk that really is short is still short: 1GB left plus the 5GB
+        # written is 6GB, and the output wanted 10GB.
+        save_mod.shutil.disk_usage = lambda *_a, **_k: _types.SimpleNamespace(
+            total = 0, used = 0, free = 1 * GB
+        )
+        assert save_mod._gguf_failure_looks_like_disk(
+            failure, str(tmp_path), needed_bytes = 10 * GB,
+            partial_output = str(output),
+        )
+
+        # A pass that wrote nothing at all is unchanged, and so is a caller
+        # that names an output which is not there.
+        assert save_mod._gguf_failure_looks_like_disk(
+            failure, str(tmp_path), needed_bytes = 10 * GB,
+            partial_output = str(tmp_path / "never-written.gguf"),
+        )
+    finally:
+        save_mod.shutil.disk_usage = original
+
+
 def test_a_reused_checkpoint_is_never_reclaimed(tmp_path, monkeypatch, save_mod):
     """The one that would have been a data-loss bug.
 

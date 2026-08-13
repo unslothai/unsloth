@@ -2153,7 +2153,8 @@ def save_to_gguf(
                 # a disk problem, and the outer handler cannot undo an
                 # explanation already baked into this message.
                 if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
-                    e, gguf_directory, needed_bytes = _needed
+                    e, gguf_directory, needed_bytes = _needed,
+                    partial_output = output_location,
                 ):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
@@ -2166,7 +2167,10 @@ def save_to_gguf(
                         "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
                         f"Error: {e}"
                     ) from e
-                elif _gguf_failure_looks_like_disk(e, gguf_directory, needed_bytes = _needed):
+                elif _gguf_failure_looks_like_disk(
+                    e, gguf_directory, needed_bytes = _needed,
+                    partial_output = output_location,
+                ):
                     # Kaggle is not the only place a disk fills. The rebuild
                     # advice below is only correct when the quantizer is the
                     # problem; on a full disk it is a long compile that fixes
@@ -3475,6 +3479,7 @@ def _gguf_failure_looks_like_disk(
     exc,
     save_directory = None,
     needed_bytes = None,
+    partial_output = None,
 ):
     """Is this GGUF failure plausibly about running out of disk?
 
@@ -3488,6 +3493,16 @@ def _gguf_failure_looks_like_disk(
     free has all the room it needs, and a caller that knows the size says so
     rather than being measured against a fixed floor that has nothing to do with
     it. The floor remains for callers that cannot say.
+
+    `partial_output` is the file the failed write was filling. llama-quantize
+    streams straight into it (`llama-quant.cpp` opens the `ofstream` up front and
+    writes each tensor as it finishes one), so a pass that dies partway leaves
+    those bytes on disk -- out of the free space measured here, while
+    `needed_bytes` still describes the whole output. Crediting them back asks
+    "was there room for this output", not "is there room for a second copy of
+    it": without it a 10GB export that starts with 12GB free and dies on an
+    unsupported tensor after 5GB reads as a full disk and loses the rebuild
+    advice that would have addressed the real failure.
     """
     text = f"{type(exc).__name__}: {exc}".lower()
     if any(p in text for p in _DISK_FULL_PATTERNS):
@@ -3499,14 +3514,31 @@ def _gguf_failure_looks_like_disk(
     # full because some unrelated filesystem is short would blame the disk for a
     # quantizer failure and hide the advice that would have fixed it.
     threshold = needed_bytes if needed_bytes and needed_bytes > 0 else _DISK_HEADROOM_BYTES
+    written, written_device = 0, None
+    if partial_output:
+        try:
+            _stat = os.stat(partial_output)
+            written, written_device = _stat.st_size, _stat.st_dev
+        except OSError:
+            # No partial output, or unreadable: nothing to credit back.
+            written = 0
     for path in (save_directory, os.getcwd()):
         if not path:
             continue
         try:
-            return shutil.disk_usage(path).free < threshold
+            free = shutil.disk_usage(path).free
         except OSError:
             # Never let the diagnostic be the thing that raises.
             continue
+        if written:
+            # Only on the filesystem that actually holds the partial file --
+            # bytes on one device are not room on another.
+            try:
+                if os.stat(path).st_dev == written_device:
+                    free += written
+            except OSError:
+                pass
+        return free < threshold
     return False
 
 
