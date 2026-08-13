@@ -1195,6 +1195,31 @@ def test_an_assignment_expression_parks_the_builtins_module_too():
     assert high == [], f"a walrus over a model must stay clean: {high}"
 
 
+def test_assigning_an_alias_to_itself_leaves_it_the_builtin():
+    # `b = b` cannot make `b` anything other than what it already was, but the
+    # rebinding collector saw an assignment target and the binding reader saw a
+    # right-hand side that is not the module named outright. Between them the
+    # alias was dropped and the call under it read as an ordinary method call -
+    # one line under the finding, on a line the pre-rule text scan flagged.
+    for line in ("b = b", "b: object = b", "b = (b)"):
+        payload = (
+            "import builtins as b\n"
+            "import marshal\n"
+            "mod = __import__('os')\n"
+            f"{line}\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a self-assigned alias must stay the builtin:\n{payload}"
+
+    # Only that exact shape: `b = m = m` really does rebind `b`.
+    chained = "import builtins as b\nmod = __import__('os')\nb = m = m\nb.eval()\n"
+    findings = sp.check_py_file(chained, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a chained target must still cancel the alias: {high}"
+
+
 def test_proc_self_status_read_flags_anti_analysis():
     # Reading /proc/self/status + a subprocess call is the classic anti-debug combo.
     # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/"); the

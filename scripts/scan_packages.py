@@ -755,6 +755,34 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
         _add_assignment_targets(group, rebound)
 
 
+def _self_assigned(stmt: list) -> "set | None":
+    """The names `stmt` assigns to themselves, or None if it is not that shape.
+
+    `b = b` cannot make `b` something other than what it already was: at module
+    level it rebinds the name to its own value, and inside a function it raises
+    rather than binding anything else. Yet the rebinding collector sees an
+    assignment target and the binding reader sees a right-hand side that is not
+    the module named outright, so between them a live alias was dropped and the
+    `b.exec(...)` below went unflagged. Only the exact shape is accepted:
+    `a = b = b` really does rebind `a`.
+    """
+    groups = _split_top(stmt, "=")
+    if len(groups) < 2:
+        return None
+    value = _strip_parens(groups[-1])
+    if len(value) != 1 or value[0].type != tokenize.NAME:
+        return None
+    names = set()
+    for group in groups[:-1]:
+        colon_at = _name_index_op(group, ":")  # annotated target: `b: Any = b`
+        if colon_at is not None:
+            group = group[:colon_at]
+        if len(group) != 1 or group[0].type != tokenize.NAME:
+            return None
+        names.add(group[0].string)
+    return names if names == {value[0].string} else None
+
+
 def _receiver_start(
     stmt: list,
     dot_at: int,
@@ -1488,6 +1516,12 @@ class _ExecEvalPattern:
                     _collect_rebindings(stmt, rebound, candidates)
                     if not rebound:
                         continue
+                    same = _self_assigned(stmt)
+                    if same:
+                        # `b = b` leaves the alias exactly as it was.
+                        rebound -= same
+                        if not rebound:
+                            continue
                     aliased = _assignment_bindings(stmt, loaders) + _walrus_bindings(
                         stmt, loaders
                     )
