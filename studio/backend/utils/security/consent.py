@@ -30,8 +30,8 @@ from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
     MEDIUM,
-    REMOTE_CODE_CONFIG_FILES,
     RemoteCodeUnscannable,
+    remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -74,14 +74,12 @@ class RemoteCodeDecision:
         }
 
 
-# trust_remote_code runs auto_map from ANY of these configs (model/tokenizer/
-# processor), so all of them gate consent (scanning only config.json/tokenizer would
-# miss a custom-processor VLM). The list lives in remote_code_scan so the gate and
-# scanner stay in lockstep.
-_REMOTE_CODE_CONFIG_FILES = REMOTE_CODE_CONFIG_FILES
-
-
-def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _config_has_auto_map(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
+) -> Optional[bool]:
     """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load
     would execute. Reads raw JSON with ``hf_token``; returns None when a config is
     unreadable (transient/auth) so the caller treats it as "unknown" and scans, False
@@ -93,11 +91,11 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct
     ``.gguf`` FILE reference is inert (a genuine single-file llama.cpp load).
     """
-    # A direct .gguf FILE loads via llama.cpp (auto_map inert). A bare repo id ending in
-    # .gguf can still ship safetensors + auto_map, so it falls through to the scan.
+    # A direct .gguf FILE loads via llama.cpp (auto_map inert); a bare repo id ending in .gguf can
+    # still ship safetensors + auto_map, so it falls through to the scan.
     if _is_direct_gguf_file_ref(model_name):
         return False
-    configs = _load_remote_code_configs(model_name, hf_token)
+    configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
     if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
@@ -124,7 +122,12 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     return name.count("/") >= 2
 
 
-def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
+def _load_remote_code_configs(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
+) -> Optional[list]:
     """Read every config that can declare ``auto_map`` (model/tokenizer/processor) as
     raw dicts. Returns the configs present (``[]`` when all 404, a definitive "no
     auto_map"), or None when one is unreadable (transient/auth) so the caller scans.
@@ -139,8 +142,8 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
-            for name in _REMOTE_CODE_CONFIG_FILES:
-                p = root / name
+            for name in remote_code_config_paths(load_subdirs):
+                p = root.joinpath(*Path(name).parts)
                 if p.is_file():
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
             return configs
@@ -150,7 +153,7 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
         from utils.hf_cache_settings import active_hf_hub_cache
 
         configs = []
-        for name in _REMOTE_CODE_CONFIG_FILES:
+        for name in remote_code_config_paths(load_subdirs):
             try:
                 p = hf_hub_download(
                     repo_id = model_name,
@@ -161,12 +164,10 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
             except EntryNotFoundError:
                 continue  # genuine 404 -> truly absent
             except Exception:
-                # Transient/auth failure is not "absent" -> fail closed to "unknown" so
-                # the caller scans (a tokenizer/processor-only auto_map must not slip by).
+                # Transient/auth failure is not "absent" -> fail closed to "unknown" so the caller scans.
                 return None
             configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
-        # Every config was read or a genuine 404 -> an empty list is a definitive
-        # "no auto_map", not "unknown".
+        # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:
         logger.debug("auto_map check could not read config for %s: %s", model_name, exc)
@@ -195,15 +196,16 @@ def evaluate_remote_code_consent(
 
 
 def _fingerprint_target_key(target: str) -> str:
-    """Namespace key for a target in the combined fingerprint. The pin is over CODE
-    BYTES, not the repo-id spelling: the scan canonicalizes a cached repo's casing while
-    workers pass raw input, so lowercase Hub ids (keep local paths as-is) or ``Org/Model``
-    vs ``org/model`` would fingerprint differently and reject a valid approval.
-    """
+    """Canonical namespace key for a target in the combined fingerprint."""
     try:
-        from utils.paths import is_local_path
+        import os
+        from pathlib import Path
+
+        from utils.paths import is_local_path, normalize_path
+
         if is_local_path(target):
-            return target
+            path = Path(normalize_path(target)).expanduser().resolve(strict = False)
+            return os.path.normcase(str(path))
     except Exception:
         return target
     return target.lower()
@@ -216,6 +218,7 @@ def evaluate_remote_code_consent_for_targets(
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
     subject: Optional[str] = None,
+    load_subdirs_by_target = None,
 ) -> RemoteCodeDecision:
     """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose
     code the load would execute. A LoRA load runs adapter AND base code, so all targets
@@ -237,11 +240,10 @@ def evaluate_remote_code_consent_for_targets(
             primary, False, False, None, None, "", "trust_remote_code disabled"
         )
 
-    # Persistent per-user approval: seed the stored fingerprint so the authoritative scan
-    # below auto-approves an unchanged repo (skips only the prompt, never the scan). Gated so
-    # it cannot weaken the scan: the approval must match the current scanner ruleset, and a
-    # resolvable commit SHA must match the approved revision (a moved repo re-prompts; a None
-    # SHA relies on the fingerprint). The fingerprint and the CRITICAL block still apply.
+    # Persistent per-user approval: seed the stored fingerprint so the authoritative scan below
+    # auto-approves an unchanged repo (skips only the prompt, never the scan). Gated so it cannot
+    # weaken the scan: the approval must match the current ruleset, and a resolvable commit SHA must
+    # match the approved revision. The fingerprint and the CRITICAL block still apply.
     caller_approved_fingerprint = approved_fingerprint
     if subject:
         from utils.security import remote_code_approvals
@@ -253,17 +255,20 @@ def evaluate_remote_code_consent_for_targets(
             if _sha is None or _sha == _stored.commit_sha:
                 approved_fingerprint = approved_fingerprint or _stored.fingerprint
 
-    # Gather executable .py from every target that ships auto_map. A definitively
-    # auto_map-free target contributes nothing; an unreadable config is scanned anyway.
-    # If ANY target's code is present but unscannable, fail the whole load closed.
+    # Gather executable .py from every target that ships auto_map. A definitively auto_map-free
+    # target contributes nothing; an unreadable config is scanned anyway. If ANY target's code is
+    # present but unscannable, fail the whole load closed.
     combined: dict = {}
     has_remote_code = False
+    load_subdirs_by_target = load_subdirs_by_target or {}
     for target in targets:
-        if _config_has_auto_map(target, hf_token) is False:
+        load_subdirs = tuple(load_subdirs_by_target.get(target, ()))
+        scan_kwargs = {"load_subdirs": load_subdirs} if load_subdirs else {}
+        if _config_has_auto_map(target, hf_token, **scan_kwargs) is False:
             continue
         has_remote_code = True
         try:
-            files = repo_remote_code_files(target, hf_token = hf_token)
+            files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
             logger.warning(
                 "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
@@ -282,8 +287,7 @@ def evaluate_remote_code_consent_for_targets(
                 "blocked: remote code could not be scanned",
                 approvable = False,
             )
-        # Namespace filenames by (casing-normalized) target so two repos' same-named
-        # files stay distinct and the pin tracks code, not the repo-id spelling.
+        # Namespace filenames by (casing-normalized) target so two repos' same-named files stay distinct.
         target_key = _fingerprint_target_key(target)
         for filename, body in files.items():
             combined[f"{target_key}\0{filename}"] = body
@@ -320,12 +324,12 @@ def evaluate_remote_code_consent_for_targets(
     elif approved:
         blocked, reason = False, "approved by fingerprint"
     elif sev == HIGH:
-        # HIGH is user-approvable but must pin the fingerprint via the dialog, for every
-        # repo including first-party (a compromised trusted repo still needs review).
+        # HIGH is user-approvable but must pin the fingerprint via the dialog, for every repo including
+        # first-party (a compromised trusted repo still needs review).
         blocked, reason = True, "blocked: scan found HIGH patterns; approval required"
     elif sev == MEDIUM:
-        # MEDIUM (e.g. a big embedded base64 blob) also pins approval like HIGH, so a
-        # direct API caller can't run flagged code by just setting trust_remote_code=True.
+        # MEDIUM (e.g. a big embedded base64 blob) also pins approval like HIGH, so a direct API caller
+        # can't run flagged code by just setting trust_remote_code=True.
         blocked, reason = True, "blocked: scan found MEDIUM patterns; approval required"
     else:
         blocked, reason = False, "allowed: no high-risk patterns"
@@ -338,9 +342,8 @@ def evaluate_remote_code_consent_for_targets(
             fingerprint[:12],
         )
 
-    # Persist a genuine user approval (caller supplied the matching fingerprint, not a cache
-    # seed) under the current scanner version, so the unchanged repo is not re-prompted until
-    # the code or the ruleset changes.
+    # Persist a genuine user approval (a matching fingerprint from the caller, not a cache seed)
+    # under the current scanner version, so the repo is not re-prompted until code or ruleset changes.
     if approved and subject and caller_approved_fingerprint == fingerprint:
         from utils.security import remote_code_approvals
         remote_code_approvals.record(

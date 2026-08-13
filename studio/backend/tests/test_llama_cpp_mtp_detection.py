@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import types as _types
+from importlib.util import find_spec as _find_spec
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -29,27 +30,36 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# Real httpx wins when installed: setdefault only checks whether httpx is already
+# imported, not whether it exists, so the stub used to shadow the real module for the
+# rest of the session, and it is a subset (no Response) that blew routes/inference up in
+# combined runs. find_spec rather than an import, so installing the stub stays this
+# module's only side effect on sys.modules. sys.modules is tested first because find_spec
+# raises ValueError on a module already there without a spec (every bare-ModuleType httpx
+# stub in this tree), which would be a collection error rather than one failed test.
+if "httpx" not in sys.modules and _find_spec("httpx") is None:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 import pytest
 
@@ -310,6 +320,119 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
             chat_template_override = None,
             extra_args = None,
             is_vision = False,
+        )
+        is True
+    )
+
+
+def test_forced_dspark_without_a_sidecar_stops_reloading():
+    """drafter_not_found covers both "the fetch failed" and "this repo publishes
+    none". The second is the permanent state of every repo but one, so retrying
+    it relaunched an identical server on every Apply."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3-7B-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = True,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3-7B-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
+    """The other half: the repo does publish a sidecar and the download failed, so
+    the next Apply should reload and re-run _download_dspark."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = False,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_mtp_without_a_drafter_still_reloads_to_retry_the_fetch():
+    """Negative control for the above: the MTP retry must survive."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "mtp",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "mtp",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_auto_resolved_dspark_reuses_its_server_instead_of_reloading(tmp_path):
+    """Auto keeps arriving as "auto" while the launch stored the DSpark sidecar in
+    the drafter field. Comparing the MTP field (None for these repos) against it
+    would tear down and relaunch an identical server on every Apply."""
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "draft-dspark",
+        _mtp_draft_path = str(sidecar),
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            dspark_draft_path = str(sidecar),
+            compare_mtp_draft = True,
         )
         is True
     )
@@ -647,6 +770,19 @@ def _make_fake_llama_server(path: Path, help_text: str) -> Path:
     return path
 
 
+# One fixed wall-clock second, so two revisions of a file differ only below the
+# resolution a whole-second mtime can see.
+_FIXED_MTIME_SECOND = 1_700_000_000
+
+
+def _pin_mtime(path: Path, *, nanos: int) -> Path:
+    """Pin a file's mtime `nanos` into one fixed second, so a later rewrite of it
+    differs only below the resolution a whole-second mtime can see."""
+    stamp = _FIXED_MTIME_SECOND * 1_000_000_000 + nanos
+    os.utime(path, ns = (stamp, stamp))
+    return path
+
+
 _NEEDS_BASH = pytest.mark.skipif(
     sys.platform == "win32",
     reason = "fake llama-server is a bash stub; Windows has no direct executor",
@@ -654,7 +790,9 @@ _NEEDS_BASH = pytest.mark.skipif(
 
 
 def _clear_caps_cache():
-    LlamaCppBackend._capability_cache.clear()
+    with LlamaCppBackend._capability_cache_lock:
+        LlamaCppBackend._capability_cache.clear()
+        LlamaCppBackend._capability_retry_after.clear()
 
 
 @_NEEDS_BASH
@@ -673,6 +811,68 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
 
 
 @_NEEDS_BASH
+def test_probe_server_capabilities_detects_dspark(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is True
+
+
+_DFLASH_SPEC_HELP = "--spec-type none,draft-mtp,draft-dflash,ngram-mod"
+# Padded to the same length as the DFlash one, so the two builds are the same size on
+# disk and only the sub-second mtime tells them apart.
+_PRE_DFLASH_SPEC_HELP = "--spec-type none,draft-mtp,ngram-mod".ljust(len(_DFLASH_SPEC_HELP))
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_rereads_a_binary_replaced_in_the_same_second(tmp_path):
+    """`unsloth studio update` overwrites llama-server in place. Keyed on whole
+    seconds, an update landing in the second the old build was probed in kept the key
+    identical and the new build was answered with the old one's capabilities -- and
+    "the user just installed the missing capability" is exactly the moment the cache
+    has to notice."""
+    binary = _make_fake_llama_server(tmp_path / "llama-server", _PRE_DFLASH_SPEC_HELP)
+    _pin_mtime(binary, nanos = 100_000)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(binary))["supports_dflash"] is False
+
+    before = binary.stat().st_size
+    _make_fake_llama_server(binary, _DFLASH_SPEC_HELP)
+    _pin_mtime(binary, nanos = 900_000)
+    assert binary.stat().st_size == before
+    assert LlamaCppBackend.probe_server_capabilities(str(binary))["supports_dflash"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    monkeypatch.setattr(
+        "utils.llama_cpp_freshness.read_install_marker",
+        lambda _binary: {"release_tag": "b10265-mix-89aa77b"},
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is False
+    assert caps["supports_mtp"] is True
+
+
+def test_dspark_release_gate_covers_the_whole_broken_window():
+    """Every prebuilt between the llama.cpp#26531 reshape regression and its #26577 fix
+    aborts on a DSpark load, not only the b10265 one that was first seen."""
+    broken = LlamaCppBackend._dspark_release_is_broken
+    assert broken("b10259-mix-abc1234") and broken("b10268-mix-abc1234")
+    assert not broken("b10258-mix-abc1234")
+    assert not broken("b10269-mix-abc1234")
+    assert not broken(None) and not broken("")
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch):
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
@@ -682,8 +882,13 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
 
     monkeypatch.setattr(
         "core.inference.llama_cpp.child_env_without_native_path_secret",
-        lambda: {"LD_LIBRARY_PATH": "/already-there"},
+        lambda: {
+            "LD_LIBRARY_PATH": "/already-there",
+            "LLAMA_ARG_DEVICE": "MTL0",
+            "LLAMA_ARG_OVERRIDE_TENSOR": ".*=MTL0",
+        },
     )
+    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "darwin")
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
@@ -701,9 +906,34 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     assert caps["supports_mtp"] is True
     assert captured["cmd"] == [str(fake), "--help"]
     assert captured["env"] is not None
+    assert captured["env"]["GGML_METAL_DEVICES"] == "0"
+    assert not any(name.startswith("LLAMA_ARG_") for name in captured["env"])
     ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
     assert str(fake.parent) in ld_dirs
     assert "/already-there" in ld_dirs
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_does_not_disable_devices_off_macos(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,mtp,ngram-simple\n",
+    )
+    captured = {}
+    monkeypatch.setattr("core.inference.llama_cpp.child_env_without_native_path_secret", dict)
+    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "linux")
+
+    def fake_run(_cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0
+        )
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
+    _clear_caps_cache()
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+
+    assert "GGML_METAL_DEVICES" not in captured["env"]
 
 
 @_NEEDS_BASH
@@ -1272,6 +1502,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # New canonical values pass through unchanged.
         ("auto", "auto"),
         ("mtp", "mtp"),
+        ("dspark", "dspark"),
         ("ngram", "ngram"),
         ("mtp+ngram", "mtp+ngram"),
         ("off", "off"),
@@ -1279,6 +1510,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # Legacy wire values map onto the new vocabulary.
         ("default", "auto"),
         ("draft-mtp", "mtp"),
+        ("draft-dspark", "dspark"),
         ("ngram-mod", "ngram"),
         # Comma-chained legacy values (e.g. from persisted state) collapse
         # to the right canonical mode.
@@ -1320,6 +1552,7 @@ def _resolver_backend(
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "supports_dspark": True,
         "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
@@ -1447,7 +1680,205 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
     assert backend.speculative_type is None
 
 
-@pytest.mark.parametrize("mode", ["auto", "mtp", "ngram", "mtp+ngram", "off"])
+def test_build_speculative_flags_dspark_requires_sidecar_and_leaves_fit_to_placement(
+    monkeypatch, tmp_path
+):
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert "--fit" not in parsed
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--spec-draft-n-max"] == "3"
+
+
+def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_build_speculative_flags_dspark_blames_the_binary_not_the_missing_sidecar(monkeypatch):
+    """The sidecar fetch is gated on the same supports_dspark answer, so on a
+    binary that cannot run DSpark the sidecar is legitimately absent. Reporting
+    drafter_not_found would tell the user to place a file that is not the problem,
+    and would reload the server on every Apply via the drafter_not_found dedup."""
+    backend = _resolver_backend(monkeypatch)
+    caps = LlamaCppBackend.probe_server_capabilities()
+    caps["supports_dspark"] = False
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+# ── Auto defaults to DSpark, and only where a sidecar actually exists ──
+#
+# The three shapes are the real published repos, checked against the Hub:
+#   unsloth/DeepSeek-V4-Flash-0731-GGUF  -> dspark-*.gguf at the root and in dspark/
+#   unsloth/gemma-4-12b-it-GGUF          -> MTP/mtp-gemma-4-12b-it-*.gguf, no dspark
+#   unsloth/Qwen3.5-4B-MTP-GGUF          -> head baked into the main GGUF, neither file
+
+
+def test_auto_defaults_to_dspark_when_a_sidecar_is_available(monkeypatch, tmp_path):
+    """DSpark beats every other Auto outcome for this architecture, and without it
+    these models fall through to --spec-default, i.e. no drafter at all."""
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-draft-n-max"] == "3"
+    assert backend.spec_fallback_reason is None
+    # The request stays "auto": rewriting it would make the reuse check compare
+    # "dspark" against a caller that keeps sending "auto" and reload every Apply.
+    assert backend.requested_spec_mode == "auto"
+
+
+def test_auto_keeps_mtp_for_a_separate_drafter_model(monkeypatch, tmp_path):
+    """gemma-4-12b-it ships MTP/mtp-*.gguf and no dspark sidecar, so the DSpark
+    branch must not intercept it."""
+    backend = _resolver_backend(monkeypatch)
+    drafter = tmp_path / "mtp-gemma-4-12b-it-Q8_0.gguf"
+    drafter.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = str(drafter),
+        dspark_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-mtp"
+    assert parsed["--model-draft"] == str(drafter)
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_keeps_embedded_mtp(monkeypatch):
+    """Qwen3.5-4B-MTP bakes the head into the main GGUF: no separate file of
+    either kind, so Auto must still emit MTP."""
+    backend = _resolver_backend(monkeypatch)
+    backend._nextn_predict_layers = 1
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_does_not_promote_dspark_on_a_binary_that_cannot_run_it(monkeypatch, tmp_path):
+    """_download_dspark still reports a cached sidecar an incapable binary cannot
+    launch. Promoting there would turn Auto's fallback into no speculation at all,
+    so the promotion is capability-gated and this model keeps its ngram-mod path."""
+    backend = _resolver_backend(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "found": True,
+                "mtp_token": "draft-mtp",
+                "supports_mtp": True,
+                "supports_dspark": False,
+                "mtp_probe_inconclusive": False,
+                "ngram_mod_flavor": "new",
+                "supports_ngram_mod": True,
+                "spec_draft_n_max_flag": "--spec-draft-n-max",
+            }
+        ),
+    )
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    assert "draft-dspark" not in _flags_dict(flags).get("--spec-type", "")
+    assert backend.speculative_type != "draft-dspark"
+
+
+def test_build_speculative_flags_dspark_engages_under_auto_fit(monkeypatch, tmp_path):
+    """--fit on is not a blocker. The sidecar borrows the target's token_embd and
+    output, so llama.cpp's fit step cannot build a standalone draft context to
+    measure it and skips the reserve; the load itself still gets the drafter."""
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+        dspark_fit_sized = False,
+    )
+    assert flags[flags.index("--spec-type") + 1] == "draft-dspark"
+    assert flags[flags.index("--model-draft") + 1] == str(sidecar)
+    assert backend.speculative_type == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("mode", ["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off"])
 def test_build_speculative_flags_round_trips_requested_mode(monkeypatch, mode):
     # The status round-trip is the contract that lets the UI dropdown
     # restore its picked value after reload / refresh.
@@ -2199,3 +2630,893 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
     # Sanity: with no fallback reason the same request still dedupes (matches).
     ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
     assert _matches(ok, **_drafter_not_found_kwargs()) is True
+
+
+# ── A binary that has since gained the drafter ───────────────────────
+#
+# Standing down on speculative decoding because llama-server cannot run it tells the
+# user to run `unsloth studio update`. The update changes nothing about the request, so
+# the comparators see the same intent and skip the reload: the one load the update
+# exists to fix is the one that never happens again.
+
+
+def _binary_fallback_kwargs():
+    """An Auto request for the model the fallen-back server is already running."""
+    return dict(
+        model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,
+    )
+
+
+def _stood_down_backend(**overrides):
+    """Live server that dropped its drafter because the binary could not run it."""
+    state = dict(
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _speculative_type = "default",
+        _spec_fallback_reason = "binary_no_mtp",
+        _gguf_path = None,
+    )
+    state.update(overrides)
+    return _mtp_backend(**state)
+
+
+def _fake_caps(monkeypatch, **capabilities):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: dict(capabilities)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "capability"),
+    [("dflash", "supports_dflash"), ("dspark", "supports_dspark"), ("mtp", "supports_mtp")],
+)
+def test_already_in_target_state_reloads_once_the_binary_can_run_the_drafter(
+    monkeypatch, kind, capability
+):
+    _fake_caps(monkeypatch, **{capability: True})
+    backend = _stood_down_backend(_spec_drafter_kind = kind)
+    assert _matches(backend, **_binary_fallback_kwargs()) is False
+
+
+@pytest.mark.parametrize("kind", ["dflash", "dspark", "mtp"])
+def test_already_in_target_state_keeps_deduping_while_the_binary_still_cannot(monkeypatch, kind):
+    """The half that stops this becoming a reload loop: nothing has changed, so the
+    healthy drafterless server has to be left alone."""
+    _fake_caps(
+        monkeypatch,
+        supports_dflash = False,
+        supports_dspark = False,
+        supports_mtp = False,
+    )
+    backend = _stood_down_backend(_spec_drafter_kind = kind)
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_asks_about_the_drafter_that_actually_stood_down(monkeypatch):
+    """Every kind records the same "binary_no_mtp", so a check keyed on the reason
+    alone would read a DSpark stand-down as answered by any build carrying MTP -- and
+    tear down a healthy server on every Apply for a capability it never gained."""
+    _fake_caps(monkeypatch, supports_mtp = True, supports_dspark = False, supports_dflash = False)
+    backend = _stood_down_backend(_spec_drafter_kind = "dspark")
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_never_reprobes_a_binary_nothing_has_touched(tmp_path, monkeypatch):
+    """The steady state, and the reason it has to be cheap: this runs on every Apply,
+    while the probe behind it spawns `llama-server --help` on a cold cache -- and the
+    cache is cold exactly when the binary was just replaced."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"unchanged build")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda **_kwargs: str(binary)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: pytest.fail("an untouched binary was reprobed")),
+    )
+    backend = _stood_down_backend(_spec_drafter_kind = "dflash")
+    backend._launch_binary_revision = LlamaCppBackend._binary_revision(str(binary))
+
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_sits_out_an_install_still_in_flight(tmp_path, monkeypatch):
+    """An update is not atomic, and mid-install the binary is unreadable. Reading that
+    as "a different build is installed" would tear the server down for a file that is
+    not there yet, and the reload would kill the process before finding that out."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"old build")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda **_kwargs: str(binary)),
+    )
+    backend = _stood_down_backend(
+        _spec_fallback_reason = "binary_outdated",
+        _spec_drafter_kind = "mtp",
+    )
+    backend._launch_binary_revision = LlamaCppBackend._binary_revision(str(binary))
+
+    binary.unlink()
+    assert LlamaCppBackend._binary_revision(str(binary)) == ()
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_reloads_when_the_crashed_binary_was_replaced(
+    tmp_path, monkeypatch
+):
+    """A binary_outdated stand-down comes from a launch that died on an architecture
+    the build did not know, and no --help flag advertises those, so this one has to
+    compare the file itself."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"old build")
+    _pin_mtime(binary, nanos = 100_000)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda **_kwargs: str(binary)),
+    )
+    backend = _stood_down_backend(
+        _spec_fallback_reason = "binary_outdated",
+        _spec_drafter_kind = "mtp",
+    )
+    backend._launch_binary_revision = LlamaCppBackend._binary_revision(str(binary))
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+    # Same path, same size, same second: an update landing right after the crash.
+    binary.write_bytes(b"new build")
+    _pin_mtime(binary, nanos = 900_000)
+    assert _matches(backend, **_binary_fallback_kwargs()) is False
+
+
+def test_diffusion_load_clears_the_previous_models_spec_fallback():
+    """The diffusion early-return skips _build_speculative_flags, which is what clears
+    the stand-down on every other load, and only /unload clears it otherwise. Both
+    retry rules in the dedupe read it, so an MTP model's verdict left behind by a
+    switch to DiffusionGemma relaunches the diffusion server on every Apply -- forever,
+    since the relaunch takes this same path and leaves the verdict exactly as it was."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    diffusion = src.find("if self._is_diffusion:")
+    assert diffusion != -1
+    start = src.find("return self._start_diffusion_server", diffusion)
+    assert start != -1
+    assert "self._spec_fallback_reason = None" in src[diffusion:start]
+    assert "self._spec_drafter_kind = None" in src[diffusion:start]
+    # And the DFlash retry flag: discovery runs before the metadata read that
+    # classifies this as diffusion, so a transient sidecar failure can set it for a
+    # server that will never carry a drafter, and the dedupe reads it too.
+    assert "self._dflash_retry_needed = False" in src[diffusion:start]
+
+
+def test_already_in_target_state_settles_a_dflash_listing_that_never_answered():
+    """A permanent listing error (gated repo, offline) records no answer, so
+    _dflash_sidecar_absent stays False. The drafter_not_found arm read that as "worth
+    another go" and relaunched a healthy drafter-free server on every Apply. DFlash
+    asks through _dflash_retry_needed instead, which a permanent error never sets."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _speculative_type = "default",
+        _gguf_path = None,
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dflash",
+        _dflash_sidecar_absent = False,
+        _dflash_retry_needed = False,
+    )
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_reloads_after_a_dflash_fetch_that_dropped():
+    """Under Auto a lost sidecar leaves no fallback reason at all -- the promotion
+    never ran -- so the flag is the only thing that can ask for one more attempt."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _speculative_type = "default",
+        _gguf_path = None,
+    )
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+    backend._dflash_retry_needed = True
+    assert _matches(backend, **_binary_fallback_kwargs()) is False
+
+
+_MODERN_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+--spec-draft-ngl N                      layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+_LEGACY_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+-ngld, --gpu-layers-draft N             layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+
+@_NEEDS_BASH
+def test_probe_reports_the_draft_ngl_alias_the_build_actually_has(tmp_path):
+    """--spec-draft-ngl only exists from llama.cpp b8955, so a plain "yes" for either
+    alias would make the paravirtual drafter pin emit a name an older build does not
+    know and the server would refuse to start."""
+    modern = _make_fake_llama_server(tmp_path / "modern", _MODERN_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(modern))["spec_draft_ngl_flag"] == (
+        "--spec-draft-ngl"
+    )
+
+    legacy = _make_fake_llama_server(tmp_path / "legacy", _LEGACY_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(legacy))["spec_draft_ngl_flag"] == (
+        "--gpu-layers-draft"
+    )
+
+
+@_NEEDS_BASH
+def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
+    """The negative: without it the pin must be skipped, not guessed at."""
+    neither = _make_fake_llama_server(tmp_path / "neither", "usage: llama-server\n\n--parallel N\n")
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(neither))["spec_draft_ngl_flag"] is None
+
+
+@_NEEDS_BASH
+def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monkeypatch):
+    """A transient timeout may not be pinned for the whole process, while a
+    persistent failure may not make every capability caller wait again (#8317)."""
+    import subprocess as _subprocess
+
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) <= 2:
+            raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,draft-mtp,ngram-mod\n",
+            stderr = "",
+            returncode = 0,
+        )
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+    first = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert first["mtp_probe_inconclusive"] is True
+    assert first["supports_mtp"] is False
+
+    # Immediate callers reuse the inconclusive answer instead of each paying
+    # the subprocess timeout again.
+    second = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert second is first
+    assert len(calls) == 1
+
+    # Every failed retry receives a fresh bounded window; persistent failures
+    # still do not make every caller pay the subprocess timeout.
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    retried = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert retried["mtp_probe_inconclusive"] is True
+    assert len(calls) == 2
+    assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
+    assert len(calls) == 2
+
+    # Once a later retry succeeds, the result returns to the normal long-lived
+    # cache.
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert recovered["mtp_probe_inconclusive"] is False
+    assert recovered["supports_mtp"] is True
+    assert len(calls) == 3
+    assert LlamaCppBackend.probe_server_capabilities(str(fake)) is recovered
+    assert len(calls) == 3
+
+
+@_NEEDS_BASH
+def test_concurrent_timeout_cannot_overwrite_a_successful_probe(tmp_path, monkeypatch):
+    """A late, lower-confidence result may not replace a conclusive result."""
+    import subprocess as _subprocess
+    import threading as _threading
+
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    barrier = _threading.Barrier(2)
+    assignment_lock = _threading.Lock()
+    success_published = _threading.Event()
+    call_ids = []
+    results = []
+
+    def _run(cmd, **kwargs):
+        with assignment_lock:
+            call_id = len(call_ids)
+            call_ids.append(call_id)
+        barrier.wait(timeout = 2)
+        if call_id == 0:
+            return _types.SimpleNamespace(
+                stdout = "--spec-type none,draft-mtp,ngram-mod\n",
+                stderr = "",
+                returncode = 0,
+            )
+        assert success_published.wait(timeout = 2)
+        raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+
+    def _probe():
+        result = LlamaCppBackend.probe_server_capabilities(str(fake))
+        results.append(result)
+        if not result["mtp_probe_inconclusive"]:
+            success_published.set()
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    threads = [_threading.Thread(target = _probe) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 3)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert len(call_ids) == 2
+    assert len(results) == 2
+    assert all(result["supports_mtp"] for result in results)
+    cached = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert cached["supports_mtp"] is True
+    assert cached["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_a_conclusive_probe_is_never_expired_by_the_retry_window(tmp_path, monkeypatch):
+    """Only the inconclusive answer is time-bounded. A conclusive one describes the
+    binary, which cannot change while its mtime holds, so applying the retry window to it
+    too would re-run --help forever on a perfectly healthy install (#8317)."""
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,draft-mtp,ngram-mod\n",
+            stderr = "",
+            returncode = 0,
+        )
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+
+    first = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert first["supports_mtp"] is True
+    assert len(calls) == 1
+
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS * 100
+    again = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert again is first
+    assert len(calls) == 1, "a conclusive probe must not be re-run once cached"
+
+
+@_NEEDS_BASH
+def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
+    """The cost half of #8317, stated as the caller sees it. One model load makes seven
+    capability calls; a binary that hangs for a permanent reason must pay the --help
+    timeout once across all of them, not once each."""
+    import subprocess as _subprocess
+
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--spec-type none,draft-mtp")
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+
+    # probe_server_capabilities call sites reached by a single load:
+    # llama_cpp.py 8003, 9443, 9636, 9706, 10117, 11038, 12786.
+    for _ in range(7):
+        LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 1, f"expected one --help per load, got {len(calls)}"
+
+
+@_NEEDS_BASH
+def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
+    """The found:False early return sits above the cache and costs a stat rather than a
+    subprocess, so it must stay uncached: an install finishing mid-session has to be
+    picked up without a Studio restart."""
+    binary = tmp_path / "llama-server"
+    _clear_caps_cache()
+
+    absent = LlamaCppBackend.probe_server_capabilities(str(binary))
+    assert absent["found"] is False
+    assert LlamaCppBackend._capability_cache == {}
+
+    _make_fake_llama_server(binary, "--spec-type none,draft-mtp,ngram-mod")
+    present = LlamaCppBackend.probe_server_capabilities(str(binary))
+    assert present["found"] is True
+    assert present["supports_mtp"] is True
+
+
+def _inconclusive_fallback_backend():
+    """A backend that asked for MTP, got an inconclusive probe, and launched without
+    speculative decoding. _spec_fallback_reason stays None so the UI banner is suppressed."""
+    return _mtp_backend(
+        _speculative_type = "default",
+        _spec_fallback_reason = None,
+        _capability_probe_inconclusive = True,
+        _gguf_path = None,
+    )
+
+
+def _same_settings_apply():
+    """Apply pressed again with the settings the fallback load already used. The identifier
+    has to be the fixture's own, or the reuse check refuses on identity and every assertion
+    below passes without ever reaching the speculative branch."""
+    return dict(
+        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,
+    )
+
+
+def _stub_caps(monkeypatch, **caps):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+
+
+def test_apply_reloads_once_an_inconclusive_probe_starts_answering(monkeypatch):
+    # The retry window is worth nothing if Apply dedupes against the fallback: nothing
+    # re-probes, so MTP stays off for the life of the process, which is the symptom the
+    # window exists to end (#8317).
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = "draft-mtp",
+        supports_mtp = True,
+        mtp_probe_inconclusive = False,
+    )
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
+
+
+def test_apply_still_dedupes_while_the_probe_keeps_hanging(monkeypatch):
+    # A binary that hangs for a permanent reason must not relaunch an identical server on
+    # every Apply. Only a probe that has actually turned conclusive earns the reload.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = None,
+        supports_mtp = False,
+        mtp_probe_inconclusive = True,
+    )
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is True
+
+
+def test_apply_reloads_once_even_when_the_build_turns_out_to_have_no_mtp(monkeypatch):
+    # Conclusive-and-negative still earns exactly one reload: the degradation has to be
+    # re-derived from a real answer rather than from a probe that never returned. That
+    # reload records the conclusive probe, clearing the flag, so it does not loop.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = None,
+        supports_mtp = False,
+        mtp_probe_inconclusive = False,
+    )
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
+    # Cleared flag (what the reload leaves behind) dedupes from then on.
+    settled = _mtp_backend(_speculative_type = "default", _gguf_path = None)
+    assert settled._capability_probe_inconclusive is False
+    assert _matches(settled, **_same_settings_apply()) is True
+
+
+def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
+    # An inconclusive probe reports --kv-unified absent too, so n_parallel is clamped to
+    # 1 while _requested_n_parallel keeps the ASK. The two then compare equal and Apply
+    # would never restore the slots once the probe recovers. No speculative decoding is
+    # involved, so the spec-only version of this guard missed it entirely.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = "draft-mtp",
+        supports_mtp = True,
+        supports_kv_unified = True,
+        mtp_probe_inconclusive = False,
+    )
+    clamped = _mtp_backend(
+        _speculative_type = "default",
+        _capability_probe_inconclusive = True,
+        _requested_n_parallel = 4,
+        _gguf_path = None,
+    )
+    assert _matches(clamped, n_parallel = 4, **_same_settings_apply()) is False
+
+
+def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
+    """The marker describes the RUNNING runtime, so load_model must not write it before
+    the launch is committed.
+
+    Two early exits sit between the probe and the commit and both leave the old server
+    up: the Vulkan-ordinal preflight rejects an invalid GPU selection, and a diffusion
+    load returns through _start_diffusion_server without using any llama-server
+    capability. Writing the marker early would clear it for a runtime that is still
+    degraded, or set it on a diffusion runner that would then be torn down and reloaded
+    for no reason. Checked structurally because load_model is not unit-callable.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    source = inspect.getsource(mod)
+    tree = ast.parse(source)
+    load_model = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+
+    writes = [
+        node.lineno
+        for node in ast.walk(load_model)
+        for target in getattr(node, "targets", [])
+        if isinstance(node, ast.Assign)
+        and isinstance(target, ast.Attribute)
+        and target.attr == "_capability_probe_inconclusive"
+    ]
+    assert len(writes) == 1, f"expected one commit-point write, found {len(writes)}"
+
+    diffusion_returns = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_start_diffusion_server"
+    ]
+    assert diffusion_returns, "the diffusion early return moved; re-pin this test"
+    assert writes[0] > max(diffusion_returns), (
+        "the marker is written before the diffusion early return, so a diffusion runner "
+        "would carry it and be reloaded once the probe recovers"
+    )
+
+
+def test_a_diffusion_runtime_is_never_reloaded_by_the_capability_recovery(monkeypatch):
+    # A diffusion runner consumes no llama-server capability, so it cannot be degraded by
+    # one. A marker left over from an earlier llama-server load must not make every
+    # otherwise identical diffusion Apply tear it down and start it again.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = "draft-mtp",
+        supports_mtp = True,
+        mtp_probe_inconclusive = False,
+    )
+    diffusion = _mtp_backend(
+        _speculative_type = "default",
+        _capability_probe_inconclusive = True,
+        _is_diffusion = True,
+        _gguf_path = None,
+    )
+    assert _matches(diffusion, **_same_settings_apply()) is True
+    # The same stale marker on a llama-server runtime still earns its reload.
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
+
+
+def test_unload_clears_the_capability_marker():
+    # Otherwise it outlives the runtime it describes and follows the next load in.
+    backend = _mtp_backend(_capability_probe_inconclusive = True)
+    backend._process = None
+    backend.unload_model()
+    assert backend._capability_probe_inconclusive is False
+
+
+def test_a_diffusion_load_never_pays_for_the_capability_probe():
+    # The probe is read at the snapshot commit, which a diffusion load returns long
+    # before. Reading it beside the capability gates instead made an independent
+    # diffusion launch wait out the full --help timeout this change exists to bound.
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    load_model = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+    # In-load probes go through the accumulating _launch_caps helper, so count both it
+    # and any direct call.
+    probe_calls = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "probe_server_capabilities")
+            or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
+        )
+    ]
+    diffusion_return = max(
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_start_diffusion_server"
+    )
+    # The probes that legitimately sit above the diffusion return are the pre-existing
+    # ones, and every one of them is guarded by the feature that needs it (the
+    # --kv-unified clamp behind n_parallel > 1, the DSpark lookup behind its own request),
+    # so a diffusion load short-circuits past them. An unconditional probe added up there
+    # would make an independent diffusion launch wait out the full --help timeout.
+    guarded = {
+        node.lineno
+        for branch in ast.walk(load_model)
+        if isinstance(branch, ast.If)
+        for node in ast.walk(branch)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "probe_server_capabilities")
+            or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
+        )
+    }
+    helper_body = {
+        node.lineno
+        for fn in ast.walk(load_model)
+        if isinstance(fn, ast.FunctionDef) and fn.name == "_launch_caps"
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+    }
+    unconditional = [
+        ln
+        for ln in probe_calls
+        if ln < diffusion_return and ln not in guarded and ln not in helper_body
+    ]
+    assert unconditional == [], (
+        f"unguarded probe calls above the diffusion return: {unconditional}; a diffusion "
+        "load must not pay for a capability it never consumes"
+    )
+
+
+def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
+    """The marker must describe the probe that BUILT the command, not one taken after the
+    server is up.
+
+    _wait_for_health allows up to 600s, and the retry window is 30s, so a large model's
+    startup expires the inconclusive entry many times over. Re-probing at the commit point
+    would then record False for a server that was launched without speculative decoding or
+    unified KV slots, and every identical Apply would dedupe against that degraded runtime
+    for good -- the original bug, reintroduced. Checked structurally because load_model is
+    not unit-callable.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    load_model = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+
+    commit = next(
+        node
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "_capability_probe_inconclusive"
+            for t in node.targets
+        )
+    )
+    # The committed value must be a plain name pinned earlier, never a live probe call.
+    assert isinstance(commit.value, ast.Name), (
+        "the marker is computed at the commit point; it must be pinned from the snapshot "
+        "that built the launch command instead"
+    )
+
+    health_waits = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_wait_for_health"
+    ]
+    pins = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == commit.value.id for t in node.targets)
+    ]
+    assert pins, "the pinned local vanished; re-pin this test"
+    assert health_waits, "the startup health wait moved; re-pin this test"
+    assert min(pins) < min(health_waits), (
+        "the capability snapshot is pinned after the startup wait, so a slow load can "
+        "still record a probe that is not the one the server was launched with"
+    )
+
+
+def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
+    """The launch's capability decisions are spread across the whole load, and the retry
+    window is 30s. The slot clamp runs before an HF download; the command is built after
+    it. Sampling one probe lets a later success erase the fact that an earlier one already
+    clamped the slots, so the marker has to accumulate.
+
+    Exercised on the accumulator itself: driving load_model would need a real download.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    load_model = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+    helper = next(
+        (
+            node
+            for node in ast.walk(load_model)
+            if isinstance(node, ast.FunctionDef) and node.name == "_launch_caps"
+        ),
+        None,
+    )
+    assert helper is not None, "the accumulating probe helper vanished; re-pin this test"
+
+    # It must only ever latch True, never assign the raw probe result.
+    assigns = [
+        node
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive" for t in node.targets
+        )
+    ]
+    assert assigns, "the helper no longer records the probe state"
+    for node in assigns:
+        assert isinstance(node.value, ast.Constant) and node.value.value is True, (
+            "the helper assigns the probe result directly; a later conclusive probe would "
+            "then erase an earlier degrading one"
+        )
+
+    # And nothing outside it may overwrite the accumulator mid-load.
+    outside = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive" for t in node.targets
+        )
+        and not (helper.lineno <= node.lineno <= (helper.end_lineno or helper.lineno))
+    ]
+    assert (
+        len(outside) == 1
+    ), f"expected only the initialisation outside the helper, found {outside}"
+
+
+def test_the_accumulator_latches_across_probes():
+    """Behavioural check of the same property, on a stand-in with the helper's shape."""
+    state = {"inconclusive": False}
+
+    def launch_caps(caps):
+        if caps.get("mtp_probe_inconclusive"):
+            state["inconclusive"] = True
+        return caps
+
+    launch_caps({"mtp_probe_inconclusive": True})  # slot clamp, probe timed out
+    launch_caps({"mtp_probe_inconclusive": False})  # command build, probe recovered
+    assert state["inconclusive"] is True, "a later success must not erase the earlier guess"
+
+
+def test_the_dspark_pre_download_gate_latches_into_the_launch_accumulator():
+    """The sidecar gate shapes the launch as much as the slot clamp does: an inconclusive
+    probe there skips an ~11 GB drafter, so that load ran degraded. It sits before a
+    download that can outlast the 30s retry window, so if it probes on its own the later
+    launch probe can come back conclusive and the load is remembered as a good one --
+    every identical Apply after it then dedupes against a server with no drafter.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    tree = ast.parse(inspect.getsource(mod))
+    download = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_download_dspark"
+    )
+    direct = [
+        node.lineno
+        for node in ast.walk(download)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "probe_server_capabilities"
+    ]
+    assert direct == [], (
+        f"_download_dspark probes directly at {direct}; route it through the caller's "
+        "accumulator so a guess there is not forgotten"
+    )
+
+    load_model = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+    call = next(
+        node
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_download_dspark"
+    )
+    passed = {
+        kw.value.id
+        for kw in call.keywords
+        if kw.arg == "caps_probe" and isinstance(kw.value, ast.Name)
+    }
+    assert passed == {
+        "_launch_caps"
+    }, "load_model must hand _download_dspark the accumulating probe helper"
+
+
+def test_the_dspark_gate_uses_the_probe_it_is_given():
+    """Behavioural half: the injected probe is the one consulted, and its verdict still
+    drives the skip. A default is kept so the direct callers in the tests and the CLI
+    keep working unchanged.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    signature = inspect.signature(LlamaCppBackend._download_dspark)
+    default = signature.parameters["caps_probe"].default
+    assert default is None, "caps_probe must stay optional for the standalone callers"
+
+    seen = []
+
+    def probe(binary):
+        seen.append(binary)
+        return {"supports_dspark": False, "mtp_probe_inconclusive": True}
+
+    server = LlamaCppBackend.__new__(LlamaCppBackend)
+    result = LlamaCppBackend._download_dspark(
+        server,
+        hf_repo = "unsloth/does-not-matter",
+        near_path = None,
+        binary = "/nonexistent/llama-server",
+        caps_probe = probe,
+    )
+    assert seen == ["/nonexistent/llama-server"], "the injected probe was not consulted"
+    # No sidecar on disk and an incapable binary: the fetch is skipped, which is exactly
+    # the degraded launch the accumulator has to remember.
+    assert result is None

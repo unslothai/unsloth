@@ -8,14 +8,50 @@ All providers expose OpenAI-compatible /v1/chat/completions endpoints
 with Bearer token auth and SSE streaming.
 """
 
+import ipaddress
+import os
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "openai_codex": {
+        "display_name": "ChatGPT / Codex subscription",
+        "base_url": "https://chatgpt.com/backend-api",
+        "default_models": [
+            "gpt-5.3-codex-spark",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        ],
+        "model_capabilities": {
+            "gpt-5.3-codex-spark": {"vision": False, "studio_tools": True},
+            "gpt-5.4": {"vision": True, "studio_tools": True},
+            "gpt-5.4-mini": {"vision": True, "studio_tools": True},
+            "gpt-5.5": {"vision": True, "studio_tools": True},
+            "gpt-5.6-luna": {"vision": True, "studio_tools": True},
+            "gpt-5.6-sol": {"vision": True, "studio_tools": True},
+            "gpt-5.6-terra": {"vision": True, "studio_tools": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_kind": "chatgpt_oauth",
+        "base_url_editable": False,
+        "model_ids_editable": False,
+        "model_list_mode": "curated",
+        "notes": "Personal ChatGPT subscription via the Codex Responses endpoint.",
+    },
     "openai": {
         "display_name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
         "default_models": [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
@@ -28,7 +64,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         # Scope the picker to the current generation. /v1/models returns many
         # historical snapshots, fine-tunes, and non-chat models we don't want.
-        "model_id_allowlist": re.compile(r"^(gpt-5\.[345]|gpt-4\.5|o3)(?:[-.]|$)"),
+        "model_id_allowlist": re.compile(r"^(gpt-5\.[3456]|gpt-4\.5|o3)(?:[-.]|$)"),
         # Hide dated snapshots and the retired plain gpt-5.3 id.
         "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
     },
@@ -36,6 +72,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Anthropic",
         "base_url": "https://api.anthropic.com/v1",
         "default_models": [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-opus-4-8",
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-6",
@@ -69,7 +109,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         #     `gemini-3.1-pro-preview`, so we surface 3.1 directly).
         "default_models": [
             "gemini-3.1-pro-preview",
+            "gemini-3.6-flash",
             "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
             "gemini-3.1-flash-lite",
             "gemini-3-flash-preview",
             "gemini-pro-latest",
@@ -97,17 +139,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # gemini-3-pro-preview was shut down 2026-03-09 and auto-aliased to
         # gemini-3.1-pro-preview; drop it so users see one canonical card.
         "model_id_deny_exact": ("gemini-3-pro-preview",),
-        # Chat-capable 3.5 / 3.1 / 3 / 2.5 families plus rolling *-latest
+        # Chat-capable 3.6 / 3.5 / 3.1 / 3 / 2.5 families plus rolling *-latest
         # aliases. Image-tier ids flow through the Nano Banana
         # `responseModalities` path in `_stream_gemini`. Retired 2.0 ids
-        # excluded (they 404 on use).
+        # excluded (they 404 on use). `-preview` is optional on the image ids
+        # so a GA rollover does not drop them from the picker.
         "model_id_allowlist": re.compile(
             r"^("
-            r"gemini-3\.5-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3\.6-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3\.5-(?:flash|pro|flash-lite)(?:-preview)?|"
             r"gemini-3\.1-(?:flash|pro|flash-lite)(?:-preview)?(?:-customtools)?|"
-            r"gemini-3\.1-flash-image-preview|"
+            r"gemini-3\.1-flash-image(?:-preview)?|"
             r"gemini-3-(?:flash|pro)(?:-preview)?|"
-            r"gemini-3-pro-image-preview|"
+            r"gemini-3-pro-image(?:-preview)?|"
             r"nano-banana-pro-preview|"
             r"gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
             r"gemini-2\.5-flash-image|"
@@ -347,6 +391,158 @@ def get_base_url(provider_type: str) -> str | None:
     return info["base_url"] if info else None
 
 
+# Cloud-metadata hosts. The backend fetches the base URL on the caller's behalf,
+# so one of these would hand instance credentials to whoever asked, and no LLM
+# endpoint lives here. Refused on every deployment. Keep in sync with the
+# tool-approval gate's list in core/inference/tools.py (function-local there).
+_METADATA_HOST_NAMES = frozenset(
+    {
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.tencentyun.com",
+        "instance-data.ec2.internal",
+    }
+)
+# Held parsed, so every spelling of the same address matches: fd00:ec2::254,
+# fd00:0ec2:0000:0000:0000:0000:0000:0254 and fd00:ec2::0.0.2.84 are one host.
+_METADATA_IPS = frozenset(
+    ipaddress.ip_address(address)
+    for address in (
+        "169.254.169.254",
+        "169.254.169.252",
+        "169.254.170.2",
+        "169.254.170.23",
+        "fd00:ec2::254",
+        "fd20:ce::254",
+        "100.100.100.200",
+        "100.100.100.110",
+    )
+)
+# Link-local, where the IPv4 metadata services live. Matched as a network so a
+# DNS name that merely starts with those digits (169.254.gateway.example.com) is
+# not mistaken for one.
+_METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
+
+# Opt-in for operators who expose Studio on a shared host: also refuse provider
+# URLs that resolve to a non-public address. Off by default, because loopback and
+# LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
+_BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
+
+
+# An all-numeric host is an IPv4 literal to the resolver, in decimal, octal or
+# hex. `ipaddress` parses only the dotted quad, so 2852039166, 0xA9FEA9FE and
+# 0251.0376.0251.0376 would read as names while getaddrinfo returns
+# 169.254.169.254.
+_NUMERIC_HOST_PART = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)")
+
+# IDNA label separators. httpx encodes a host through idna, which splits on all
+# of these, so http://169。254。169。254/ reaches 169.254.169.254.
+_IDNA_DOTS = str.maketrans({"。": ".", "．": ".", "｡": "."})
+
+
+def _canonical_host(hostname: str) -> str:
+    """Return the dotted-quad form of a numeric host, else ``hostname``."""
+    parts = hostname.split(".")
+    if len(parts) > 4 or not all(_NUMERIC_HOST_PART.fullmatch(part) for part in parts):
+        return hostname
+    import socket
+
+    try:
+        # inet_aton parses every legacy spelling and never touches DNS.
+        return socket.inet_ntoa(socket.inet_aton(hostname))
+    except OSError:
+        return hostname
+
+
+def _metadata_host(hostname: str) -> bool:
+    """True when ``hostname`` names a cloud metadata service."""
+    # An IPv6 scope id (fd00:ec2::254%250 once the transport decodes it) keeps
+    # the address unequal to the unscoped entry while dialling the same host.
+    hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
+    hostname = _canonical_host(hostname)
+    if hostname in _METADATA_HOST_NAMES:
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    # ::ffff:169.254.169.254 and 2002:a9fe:a9fe:: reach the same service.
+    for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
+        if candidate is not None and _metadata_host(candidate.compressed):
+            return True
+    return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
+
+
+def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
+    """Raise when ``hostname`` is, or resolves to, a non-public address."""
+    import socket
+
+    try:
+        addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                hostname,
+                port or (443 if scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Provider base URL hostname could not be resolved.") from exc
+        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses or any(not ip.is_global for ip in addresses):
+        raise ValueError(
+            "Provider base URL points at a private address, which is disabled on this "
+            f"server ({_BLOCK_PRIVATE_ENV}=1)."
+        )
+
+
+def validate_provider_base_url(base_url: str) -> str:
+    """Return a normalized provider base URL, or raise ``ValueError``.
+
+    The backend issues outbound requests to this URL with the caller's decrypted
+    API key attached, so it is caller-controlled server-side egress. Only shapes
+    that can never be a real provider endpoint are refused: a non-http(s) scheme,
+    control characters, a missing host, and cloud metadata services. Plain http,
+    loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
+    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. No
+    DNS lookup happens unless the private-address opt-in is set.
+
+    Normalization is strip + trailing-slash removal only (what the client did
+    before), so validating an already-validated URL returns it unchanged.
+    """
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("Provider base URL is required.")
+
+    raw = base_url.strip()
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in raw) or "\\" in raw:
+        raise ValueError("Provider base URL contains invalid characters.")
+
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+        hostname = parts.hostname
+    except ValueError as exc:
+        raise ValueError("Provider base URL is malformed.") from exc
+
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("Provider base URL must use http or https.")
+    # Userinfo stays allowed for gateways behind basic auth; the checks below read
+    # the parsed hostname, so http://api.openai.com@169.254.169.254/ is caught.
+    if not hostname:
+        raise ValueError("Provider base URL must contain a hostname.")
+
+    hostname = hostname.rstrip(".")
+    if _metadata_host(hostname):
+        raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
+
+    if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
+        _reject_non_public(hostname, port, scheme)
+
+    return raw.rstrip("/")
+
+
 def list_available_providers() -> list[dict[str, Any]]:
     """Return all registered providers (for the /registry endpoint).
 
@@ -363,10 +559,14 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "display_name": info["display_name"],
                 "base_url": info["base_url"],
                 "default_models": info["default_models"],
+                "model_capabilities": info.get("model_capabilities", {}),
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
                 "model_list_mode": info.get("model_list_mode", "remote"),
+                "auth_kind": info.get("auth_kind", "api_key"),
+                "base_url_editable": info.get("base_url_editable", True),
+                "model_ids_editable": info.get("model_ids_editable", True),
             }
         )
     return result

@@ -55,7 +55,11 @@ TRL_TAGS = [
     "v1.5.1",
     "v1.6.0",
     "v1.7.0",  # anchor: first release unsloth's TRL>=1.7.0 GRPO patch targets
-    "v1.7.1",  # current PyPI latest
+    "v1.7.1",
+    "v1.8.0",
+    "v1.9.0",
+    "v1.9.1",
+    "v1.9.2",  # current PyPI latest
     "main",
 ]
 

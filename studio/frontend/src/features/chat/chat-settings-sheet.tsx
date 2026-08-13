@@ -42,7 +42,12 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { NumericValueInput, snapToStep } from "@/features/model-picker";
+import { usePlatformStore } from "@/config/env";
+import {
+  NumericValueInput,
+  presetLoadSettingNames,
+  snapToStep,
+} from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import {
@@ -141,6 +146,7 @@ export function ParamSlider({
   info,
   valueSize,
   disabled,
+  inline,
 }: {
   label: string;
   value: number;
@@ -152,7 +158,43 @@ export function ParamSlider({
   info?: ReactNode;
   valueSize?: number;
   disabled?: boolean;
+  /** Label, track and value on one row, for narrow settings columns. */
+  inline?: boolean;
 }) {
+  if (inline) {
+    return (
+      <div className="flex items-center gap-3">
+        {/* A floor rather than a fixed width, so a longer label is never clipped. */}
+        <div className="flex min-w-[104px] shrink-0 items-center gap-1.5">
+          <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+            {label}
+          </span>
+          {info && <InfoHint>{info}</InfoHint>}
+        </div>
+        <Slider
+          min={min}
+          max={max}
+          step={step}
+          value={[value]}
+          onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
+          className="panel-slider min-w-0 flex-1"
+          disabled={disabled}
+        />
+        <NumericValueInput
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          onChange={onChange}
+          displayValue={displayValue}
+          ariaLabel={label}
+          size={valueSize ?? 4}
+          className="panel-number-input"
+          disabled={disabled}
+        />
+      </div>
+    );
+  }
   return (
     <div className="space-y-3.5">
       <div className="flex items-center justify-between gap-3">
@@ -361,6 +403,55 @@ interface ChatSettingsPanelProps {
   externalProviderType?: string | null;
 }
 
+/**
+ * Copy for the amber "running without speculative decoding" notice. Mirrors
+ * InferenceStatusResponse.spec_fallback_reason.
+ *
+ * Out of the JSX so the three independent dimensions (reason, drafter kind,
+ * local vs remote) read as a table rather than a five-level nested ternary,
+ * and so each string is directly testable.
+ */
+function specFallbackMessage({
+  reason,
+  drafter,
+  isLocalGguf,
+  updateAvailable,
+}: {
+  reason: string;
+  drafter: "MTP" | "DSpark" | "DFlash";
+  isLocalGguf: boolean;
+  updateAvailable: boolean;
+}): string {
+  switch (reason) {
+    case "mla_mtp_disabled":
+      return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "drafter_no_vram":
+      // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
+      // in the drafter's place where the build has it, so only the drafter is off.
+      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
+    case "runtime_error":
+      return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+    case "drafter_not_found":
+      if (drafter === "DSpark") {
+        return isLocalGguf
+          ? "No matching DSpark sidecar was found. Place its dspark-*.gguf beside the model or in its dspark folder, then reload the model."
+          : "The DSpark sidecar could not be downloaded, so this model is running without speculative decoding. Check network or Hugging Face access, then reload it.";
+      }
+      if (drafter === "DFlash") {
+        return isLocalGguf
+          ? "No matching DFlash sidecar was found. Place its dflash-*.gguf beside the model, then reload the model."
+          : "The DFlash sidecar could not be downloaded, so this model is running without speculative decoding. Check network or Hugging Face access, then reload it.";
+      }
+      return isLocalGguf
+        ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
+        : "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter.";
+    default:
+      return `${drafter} is not available in the installed llama.cpp build, so this model is running without it.${
+        updateAvailable ? " Update llama.cpp to enable it." : ""
+      }`;
+  }
+}
+
 export function ChatSettingsPanel({
   open,
   onOpenChange,
@@ -409,6 +500,13 @@ export function ChatSettingsPanel({
     isLoadedGguf ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const loadSettingNames = presetLoadSettingNames(
+    isGguf,
+    platformDeviceType,
+    platformChatOnlyReason,
+  );
   // activeModelIsLocal is the backend's own classification and covers native
   // picks. Two things must not decide this: activeNativePathToken, which
   // status reconciliation keeps across a switch to a remote GGUF (no
@@ -421,14 +519,27 @@ export function ChatSettingsPanel({
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
+  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  const nBatch = useChatRuntimeStore((s) => s.nBatch);
+  const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  const specDrafterKind = useChatRuntimeStore((s) => s.specDrafterKind);
+  // The loaded model's own kind, not the pending control: the notice explains a
+  // fallback that already happened, so a staged edit (or a preset applied without
+  // a reload) must not re-label it and point at the wrong file.
+  const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" =
+    (specDrafterKind ?? speculativeType) === "dspark"
+      ? "DSpark"
+      : (specDrafterKind ?? speculativeType) === "dflash"
+        ? "DFlash"
+        : "MTP";
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -444,7 +555,7 @@ export function ChatSettingsPanel({
     const result = await applyLlamaUpdate();
     if (result.ok) {
       const reloadHint = result.reloadRequired
-        ? " Reload your model to enable MTP."
+        ? ` Reload your model to enable ${speculativeDrafterLabel}.`
         : "";
       toast.success(
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
@@ -454,7 +565,7 @@ export function ChatSettingsPanel({
         `llama.cpp update failed: ${result.error ?? "unknown error"}`,
       );
     }
-  }, [applyLlamaUpdate]);
+  }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? ggufContextLength;
   const showSpecFallback =
     !isExternalModel &&
@@ -462,7 +573,9 @@ export function ChatSettingsPanel({
     specFallbackReason != null &&
     (speculativeType === "auto" ||
       speculativeType === "mtp" ||
-      speculativeType === "mtp+ngram");
+      speculativeType === "mtp+ngram" ||
+      speculativeType === "dspark" ||
+      speculativeType === "dflash");
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
@@ -545,6 +658,7 @@ export function ChatSettingsPanel({
     customContextLength,
     ggufContextLength,
     kvCacheDtype,
+    mlxKvBits,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
@@ -552,6 +666,8 @@ export function ChatSettingsPanel({
     speculativeType,
     specDraftNMax,
     nParallel,
+    nBatch,
+    nUbatch,
     params.maxSeqLength,
   ]);
   const activePresetLoadSummary = useMemo(
@@ -564,6 +680,7 @@ export function ChatSettingsPanel({
       customContextLength,
       ggufContextLength,
       kvCacheDtype,
+      mlxKvBits,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,
@@ -571,6 +688,8 @@ export function ChatSettingsPanel({
       speculativeType,
       specDraftNMax,
       nParallel,
+      nBatch,
+      nUbatch,
       params.maxSeqLength,
     ],
   );
@@ -625,9 +744,10 @@ export function ChatSettingsPanel({
       externalSelection?.modelId,
     );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const openAiApiKeyForSection = activeExternalProvider
-    ? getExternalProviderApiKey(activeExternalProvider.id) || null
-    : null;
+  const openAiApiKeyForSection =
+    activeExternalProvider && !activeExternalProvider.hasApiKey
+      ? getExternalProviderApiKey(activeExternalProvider.id) || null
+      : null;
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
@@ -861,19 +981,12 @@ export function ChatSettingsPanel({
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
                   <p>
-                    {specFallbackReason === "mla_mtp_disabled"
-                      ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
-                      : specFallbackReason === "runtime_error"
-                        ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                        : specFallbackReason === "drafter_not_found"
-                          ? isLocalGguf
-                            ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
-                            : "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
-                          : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
-                              llamaUpdateStatus?.update_available
-                                ? " Update llama.cpp to enable it."
-                                : ""
-                            }`}
+                    {specFallbackMessage({
+                      reason: specFallbackReason,
+                      drafter: speculativeDrafterLabel,
+                      isLocalGguf,
+                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                    })}
                   </p>
                   {mtpUpdatable && llamaUpdateStatus?.update_available && (
                     <Button
@@ -903,8 +1016,8 @@ export function ChatSettingsPanel({
           label="Preset"
           headerAction={
             <InfoHint>
-              Saving a preset also stores current load settings (context length,
-              KV cache dtype, speculative decoding, GPU layers).
+              Saving a preset also stores current load settings (
+              {loadSettingNames}).
               {currentLoadSummary ? (
                 <>
                   {" "}
@@ -1112,8 +1225,9 @@ export function ChatSettingsPanel({
                     Fast mode
                   </span>
                   <InfoHint>
-                    Beta. Up to 2.5x higher output tokens per second on
-                    Claude Opus 4.6 and 4.7 at 6x standard Opus pricing.
+                    Research preview. Up to 2.5x higher output tokens per
+                    second on Claude Opus 5 and 4.8 at 2x standard Opus
+                    pricing.
                     Switching between fast and standard invalidates the
                     prompt cache and is incompatible with the Priority
                     service tier.
@@ -1428,7 +1542,7 @@ export function ChatSettingsPanel({
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
+              className="min-h-[20rem] max-h-[48dvh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
           </div>

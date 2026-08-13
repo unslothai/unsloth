@@ -1,0 +1,743 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Unit tests for the sd-cli command builder (``sd_cpp_args.py``).
+
+Pure: no torch, no subprocess, no files. Just argv construction and the
+policy -> offload-flag / family -> text-encoder-flag mappings.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from core.inference.diffusion_memory import (
+    OFFLOAD_GROUP,
+    OFFLOAD_MODEL,
+    OFFLOAD_NONE,
+    OFFLOAD_SEQUENTIAL,
+)
+from core.inference.sd_cpp_args import (
+    CPU_BACKEND_FLAGS,
+    SdCppGenParams,
+    SdCppModelFiles,
+    SdCppUpscaleParams,
+    SdCppVideoGenParams,
+    build_img_gen_request,
+    build_sd_cpp_command,
+    build_sd_cpp_server_command,
+    build_sd_cpp_upscale_command,
+    build_sd_cpp_video_command,
+    is_ggml_unsupported_op_abort,
+    metal_text_encoder_flags,
+    native_speed_flags,
+    offload_flags,
+    text_encoder_flags_for_family,
+)
+
+
+def _pair(cmd: list[str], flag: str):
+    """Value following ``flag`` in ``cmd``, or None if the flag is absent."""
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+# ── family text-encoder wiring ──────────────────────────────────────────────
+
+
+def test_te_flags_by_family():
+    assert text_encoder_flags_for_family("z-image") == ("--llm",)
+    assert text_encoder_flags_for_family("qwen-image") == ("--qwen2vl",)
+    assert text_encoder_flags_for_family("flux.1") == ("--clip_l", "--t5xxl")
+    assert text_encoder_flags_for_family("flux.2-klein") == ("--llm",)
+    assert text_encoder_flags_for_family("unknown") == ()
+
+
+# ── Metal text-encoder placement ────────────────────────────────────────────
+
+
+def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
+    # ggml's Metal backend aborts the process on RMS_NORM with non-contiguous rows and has no per-op CPU fallback, so an LLM
+    # text encoder killed sd-server mid-generation on macOS (macos-14, FLUX.2-klein-4B Q2_K: loads on mps, first generation exits -6).
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert metal_text_encoder_flags() == ["--clip-on-cpu"]
+    for other in ("linux", "win32"):
+        monkeypatch.setattr("sys.platform", other)
+        assert metal_text_encoder_flags() == []
+    # Opt back in once ggml grows the kernel.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", "1")
+    assert metal_text_encoder_flags() == []
+
+
+def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
+    cli = build_sd_cpp_command(
+        binary = "sd-cli",
+        files = files,
+        params = SdCppGenParams(prompt = "x"),
+        output_path = "/o/x.png",
+    )
+    video = build_sd_cpp_video_command(
+        binary = "sd-cli",
+        files = SdCppModelFiles(
+            diffusion_model = "/m/h3.gguf",
+            vae = "/m/video.safetensors",
+            llm = "/m/qwen.gguf",
+        ),
+        params = SdCppVideoGenParams(prompt = "x", width = 960, height = 544, num_frames = 124),
+        output_path = "/o/x.webm",
+    )
+    assert server.count("--clip-on-cpu") == 1
+    assert cli.count("--clip-on-cpu") == 1
+    assert video.count("--clip-on-cpu") == 1
+    # An offload policy that already pins the encoder must not emit it twice.
+    dual = build_sd_cpp_server_command(
+        binary = "sd-server",
+        files = files,
+        host = "127.0.0.1",
+        port = 1234,
+        offload = offload_flags("model"),
+    )
+    assert dual.count("--clip-on-cpu") == 1
+    monkeypatch.setattr("sys.platform", "linux")
+    assert "--clip-on-cpu" not in build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
+
+
+# ── offload policy -> sd-cli flags ──────────────────────────────────────────
+
+
+def test_native_speed_flags():
+    assert native_speed_flags(None) == []
+    assert native_speed_flags("off") == []
+    assert native_speed_flags("") == []
+    # default now includes conv-direct: ~9% faster sampling on CPU (z-image Q8_0, 192 threads) at identical RSS and unchanged decode.
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+    assert native_speed_flags("max") == ["--diffusion-fa", "--diffusion-conv-direct"]
+    with pytest.raises(ValueError):
+        native_speed_flags("ludicrous")
+
+
+def test_offload_none_is_empty():
+    assert offload_flags(OFFLOAD_NONE) == []
+
+
+def test_offload_group_streams_with_flash_attention():
+    flags = offload_flags(OFFLOAD_GROUP)
+    assert "--offload-to-cpu" in flags
+    assert "--diffusion-fa" in flags
+    # group keeps CLIP/VAE resident -> no per-component cpu flags
+    assert "--clip-on-cpu" not in flags
+    assert "--vae-on-cpu" not in flags
+
+
+def test_offload_model_pushes_everything_to_cpu_and_tiles():
+    flags = offload_flags(OFFLOAD_MODEL)
+    for expected in (
+        "--offload-to-cpu",
+        "--clip-on-cpu",
+        "--vae-on-cpu",
+        "--vae-tiling",
+        "--diffusion-fa",
+    ):
+        assert expected in flags
+    # sequential maps the same as model
+    assert offload_flags(OFFLOAD_SEQUENTIAL) == flags
+
+
+def test_offload_can_keep_the_vae_off_the_cpu_path():
+    """H3's audio VAE aborts on the CPU path, so `low_vram` has to drop just that flag.
+
+    `ggml_conv_1d` hardcodes an F16 im2col destination and
+    `ggml_compute_forward_im2col_f16` then asserts the kernel is F16, while sd.cpp's
+    `audio_conv_weight_type` maps only BF16 to F16 and lets F32 through:
+    `GGML_ASSERT(src0->type == GGML_TYPE_F16) failed`, SIGABRT, exit 134. Converting the
+    checkpoint to fp16 does not help, since the type is imposed inside sd.cpp.
+
+    Everything else the policy asks for still applies. The denoiser dominates, so
+    `--offload-to-cpu` is where the saving is; dropping the mode entirely would cost far
+    more than dropping this one flag.
+    """
+    for policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
+        flags = offload_flags(policy, vae_on_cpu = False)
+        assert "--vae-on-cpu" not in flags
+        for expected in ("--offload-to-cpu", "--clip-on-cpu", "--vae-tiling", "--diffusion-fa"):
+            assert expected in flags, f"{policy}: {expected} should survive"
+    # The default is unchanged for every other family.
+    assert "--vae-on-cpu" in offload_flags(OFFLOAD_MODEL)
+    # And it is a no-op where the policy never emitted it.
+    assert offload_flags(OFFLOAD_GROUP, vae_on_cpu = False) == offload_flags(OFFLOAD_GROUP)
+
+
+def test_offload_forced_flags_dedup():
+    # vae_tiling/diffusion_fa forced on with a policy that already sets them
+    flags = offload_flags(OFFLOAD_MODEL, vae_tiling = True, diffusion_fa = True)
+    assert flags.count("--vae-tiling") == 1
+    assert flags.count("--diffusion-fa") == 1
+    # forced on top of a no-offload policy
+    none_forced = offload_flags(OFFLOAD_NONE, vae_tiling = True, diffusion_fa = True)
+    assert none_forced == ["--diffusion-fa", "--vae-tiling"]
+
+
+# ── full command construction ───────────────────────────────────────────────
+
+
+def test_build_zimage_command_minimal():
+    files = SdCppModelFiles(
+        diffusion_model = "/m/z.gguf",
+        vae = "/m/ae.sft",
+        llm = "/m/qwen3.gguf",
+    )
+    params = SdCppGenParams(prompt = "a cat", width = 512, height = 768, steps = 8, cfg_scale = 1.0, seed = 42)
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/out/x.png")
+
+    assert cmd[0] == "/bin/sd-cli"
+    assert _pair(cmd, "--mode") == "img_gen"
+    assert _pair(cmd, "--diffusion-model") == "/m/z.gguf"
+    assert _pair(cmd, "--vae") == "/m/ae.sft"
+    assert _pair(cmd, "--llm") == "/m/qwen3.gguf"
+    assert _pair(cmd, "--prompt") == "a cat"
+    assert _pair(cmd, "--width") == "512"
+    assert _pair(cmd, "--height") == "768"
+    assert _pair(cmd, "--steps") == "8"
+    assert _pair(cmd, "--cfg-scale") == "1"  # 1.0 -> "1"
+    assert _pair(cmd, "--seed") == "42"
+    assert _pair(cmd, "--output") == "/out/x.png"
+    # unset encoders are omitted
+    assert "--t5xxl" not in cmd
+    assert "--qwen2vl" not in cmd
+
+
+def test_build_flux1_dual_text_encoders():
+    files = SdCppModelFiles(
+        diffusion_model = "/m/flux.gguf",
+        vae = "/m/ae.sft",
+        clip_l = "/m/clip_l.sft",
+        t5xxl = "/m/t5.gguf",
+    )
+    params = SdCppGenParams(prompt = "x", guidance = 3.5)
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    assert _pair(cmd, "--clip_l") == "/m/clip_l.sft"
+    assert _pair(cmd, "--t5xxl") == "/m/t5.gguf"
+    assert _pair(cmd, "--guidance") == "3.5"
+    assert "--llm" not in cmd
+
+
+def test_build_appends_offload_and_extra_args_last():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(prompt = "x")
+    off = offload_flags(OFFLOAD_GROUP)
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        params,
+        output_path = "/o.png",
+        offload = off,
+        threads = 8,
+        verbose = True,
+        extra_args = ["--rng", "cuda"],
+    )
+    assert "--offload-to-cpu" in cmd
+    assert _pair(cmd, "--threads") == "8"
+    assert "-v" in cmd
+    # extra args come after everything Studio set (last-wins for power users)
+    assert cmd[-2:] == ["--rng", "cuda"]
+
+
+def test_build_negative_prompt_and_batch():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(prompt = "x", negative_prompt = "blurry")
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    assert _pair(cmd, "--negative-prompt") == "blurry"
+    # A CLI batch would silently drop every image after the first (the runner collects only the literal --output path), so the builder rejects it.
+    with pytest.raises(ValueError, match = "single-image"):
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            files,
+            SdCppGenParams(prompt = "x", batch_count = 3),
+            output_path = "/o.png",
+        )
+
+
+def test_build_omits_unset_optional_params():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(prompt = "x")  # no steps/cfg/seed/sampler
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    for flag in (
+        "--steps",
+        "--cfg-scale",
+        "--guidance",
+        "--seed",
+        "--sampling-method",
+        "--batch-count",
+        "--threads",
+        "-v",
+    ):
+        assert flag not in cmd
+
+
+def test_build_requires_diffusion_model_and_prompt():
+    with pytest.raises(ValueError):
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            SdCppModelFiles(diffusion_model = ""),
+            SdCppGenParams(prompt = "x"),
+            output_path = "/o.png",
+        )
+    with pytest.raises(ValueError):
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "   "),
+            output_path = "/o.png",
+        )
+
+
+# ── img2img / inpaint / edit / LoRA (Phase 6) ───────────────────────────────
+
+
+def test_build_img2img_adds_init_and_strength():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
+    params = SdCppGenParams(prompt = "make it autumn", init_img = "/in/src.png", strength = 0.6)
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    assert _pair(cmd, "--init-img") == "/in/src.png"
+    assert _pair(cmd, "--strength") == "0.6"
+    assert _pair(cmd, "--mode") == "img_gen"  # img2img is still img_gen mode
+
+
+def test_build_inpaint_adds_mask():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(prompt = "x", init_img = "/in/src.png", mask = "/in/mask.png", strength = 0.8)
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    assert _pair(cmd, "--mask") == "/in/mask.png"
+    assert _pair(cmd, "--init-img") == "/in/src.png"
+
+
+def test_build_inpaint_mask_without_init_img_rejected():
+    # sd-cli inpaint needs a source image, so a --mask with no --init-img is rejected up front instead of emitting doomed argv.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(prompt = "x", mask = "/in/mask.png")
+    with pytest.raises(ValueError, match = "init_img is required"):
+        build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+
+
+def test_build_rejects_none_prompt():
+    # A None prompt must be rejected, not coerced to the literal string "None" and forwarded into argv.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    with pytest.raises(ValueError, match = "prompt is required"):
+        build_sd_cpp_command(
+            "/bin/sd-cli", files, SdCppGenParams(prompt = None), output_path = "/o.png"
+        )
+
+
+def test_build_edit_repeats_ref_image():
+    files = SdCppModelFiles(diffusion_model = "/m/flux.gguf")
+    params = SdCppGenParams(prompt = "add a hat", ref_images = ("/r/a.png", "/r/b.png"))
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    # each ref image gets its own --ref-image flag
+    idxs = [i for i, t in enumerate(cmd) if t == "--ref-image"]
+    assert len(idxs) == 2
+    assert [cmd[i + 1] for i in idxs] == ["/r/a.png", "/r/b.png"]
+
+
+def test_img2img_unset_dims_lets_sdcpp_derive_from_source():
+    # img2img/inpaint/edit with dims unset must NOT force --width/--height, so sd.cpp derives the size from the input image.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        SdCppGenParams(prompt = "x", init_img = "/in/src.png"),
+        output_path = "/o.png",
+    )
+    assert "--width" not in cmd and "--height" not in cmd
+    # an edit (ref-image) run derives its size too
+    cmd2 = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        SdCppGenParams(prompt = "x", ref_images = ("/r/a.png",)),
+        output_path = "/o.png",
+    )
+    assert "--width" not in cmd2 and "--height" not in cmd2
+
+
+def test_img2img_explicit_dims_are_emitted():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        SdCppGenParams(prompt = "x", init_img = "/in/src.png", width = 768, height = 512),
+        output_path = "/o.png",
+    )
+    assert _pair(cmd, "--width") == "768" and _pair(cmd, "--height") == "512"
+
+
+def test_txt2img_unset_dims_keep_1024_default():
+    # A plain txt2img run with no dims keeps the prior 1024x1024 default.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli", files, SdCppGenParams(prompt = "x"), output_path = "/o.png"
+    )
+    assert _pair(cmd, "--width") == "1024" and _pair(cmd, "--height") == "1024"
+
+
+def test_build_lora_dir_and_apply_mode():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(
+        prompt = "a portrait <lora:mystyle:0.8>",
+        lora_dir = "/loras",
+        lora_apply_mode = "at_runtime",
+    )
+    cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+    assert _pair(cmd, "--lora-model-dir") == "/loras"
+    assert _pair(cmd, "--lora-apply-mode") == "at_runtime"
+    # the <lora:...> tag rides in the prompt unchanged
+    assert _pair(cmd, "--prompt") == "a portrait <lora:mystyle:0.8>"
+
+
+def test_txt2img_omits_image_conditioning_flags():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli", files, SdCppGenParams(prompt = "x"), output_path = "/o.png"
+    )
+    for flag in ("--init-img", "--strength", "--mask", "--ref-image", "--lora-model-dir"):
+        assert flag not in cmd
+
+
+# ── upscale mode ────────────────────────────────────────────────────────────
+
+
+def test_build_upscale_command():
+    params = SdCppUpscaleParams(
+        input_image = "/in/small.png", upscale_model = "/m/esrgan.pth", repeats = 2
+    )
+    cmd = build_sd_cpp_upscale_command("/bin/sd-cli", params, output_path = "/out/big.png")
+    assert _pair(cmd, "--mode") == "upscale"
+    assert _pair(cmd, "--init-img") == "/in/small.png"
+    assert _pair(cmd, "--upscale-model") == "/m/esrgan.pth"
+    assert _pair(cmd, "--upscale-repeats") == "2"
+    assert _pair(cmd, "--output") == "/out/big.png"
+    # no prompt / text-encoder flags in upscale mode
+    assert "--prompt" not in cmd and "--llm" not in cmd
+
+
+def test_build_upscale_rejects_non_positive_repeats():
+    # repeats=0 must not be silently swallowed into sd-cli's default of one pass.
+    with pytest.raises(ValueError, match = "repeats"):
+        build_sd_cpp_upscale_command(
+            "/bin/sd-cli",
+            SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth", repeats = 0),
+            output_path = "/o.png",
+        )
+
+
+def test_build_upscale_default_repeats_omits_flag():
+    cmd = build_sd_cpp_upscale_command(
+        "/bin/sd-cli",
+        SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),  # repeats=1
+        output_path = "/o.png",
+    )
+    assert "--upscale-repeats" not in cmd
+
+
+def test_build_upscale_requires_input_and_model():
+    with pytest.raises(ValueError):
+        build_sd_cpp_upscale_command(
+            "/bin/sd-cli",
+            SdCppUpscaleParams(input_image = "", upscale_model = "/m/e.pth"),
+            output_path = "/o.png",
+        )
+    with pytest.raises(ValueError):
+        build_sd_cpp_upscale_command(
+            "/bin/sd-cli",
+            SdCppUpscaleParams(input_image = "/i.png", upscale_model = ""),
+            output_path = "/o.png",
+        )
+
+
+# ── sd-server spawn command ──────────────────────────────────────────────────
+
+
+def test_server_command_has_model_and_listen_but_no_request_params():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
+    cmd = build_sd_cpp_server_command(
+        "/bin/sd-server", files, host = "127.0.0.1", port = 5678, vae_format = "flux2"
+    )
+    assert _pair(cmd, "--diffusion-model") == "/m/z.gguf"
+    assert _pair(cmd, "--vae") == "/m/ae.sft"
+    assert _pair(cmd, "--llm") == "/m/q.gguf"
+    assert _pair(cmd, "--vae-format") == "flux2"
+    assert _pair(cmd, "--listen-ip") == "127.0.0.1"
+    assert _pair(cmd, "--listen-port") == "5678"
+    # Per-request parameters must NOT be baked into the spawn command.
+    for flag in (
+        "--prompt",
+        "--seed",
+        "--steps",
+        "--cfg-scale",
+        "--guidance",
+        "--width",
+        "--height",
+        "--batch-count",
+    ):
+        assert flag not in cmd
+
+
+def test_server_command_maps_offload_and_speed_and_dedupes():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_server_command(
+        "/bin/sd-server",
+        files,
+        host = "127.0.0.1",
+        port = 1,
+        offload = ["--offload-to-cpu", "--diffusion-fa"],
+        native_speed = "default",  # would add --diffusion-fa again
+        threads = 8,
+    )
+    assert _pair(cmd, "--threads") == "8"
+    assert cmd.count("--diffusion-fa") == 1  # de-duped against offload
+    assert "--offload-to-cpu" in cmd
+
+
+def test_server_command_scratch_dir_expands_to_lora_upscaler_embd():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_server_command(
+        "/bin/sd-server", files, host = "127.0.0.1", port = 1, scratch_dir = "/tmp/scratch"
+    )
+    assert _pair(cmd, "--lora-model-dir") == "/tmp/scratch"
+    assert _pair(cmd, "--hires-upscalers-dir") == "/tmp/scratch"
+    assert _pair(cmd, "--embd-dir") == "/tmp/scratch"
+    # Absent when not requested.
+    bare = build_sd_cpp_server_command("/bin/sd-server", files, host = "127.0.0.1", port = 1)
+    assert "--lora-model-dir" not in bare and "--hires-upscalers-dir" not in bare
+
+
+def test_server_command_requires_diffusion_model():
+    with pytest.raises(ValueError):
+        build_sd_cpp_server_command(
+            "/bin/sd-server", SdCppModelFiles(diffusion_model = ""), host = "127.0.0.1", port = 1
+        )
+
+
+# ── img_gen request body ─────────────────────────────────────────────────────
+
+
+def test_img_gen_request_maps_core_fields():
+    req = build_img_gen_request(
+        prompt = "a fox",
+        negative_prompt = "blurry",
+        width = 512,
+        height = 768,
+        steps = 8,
+        seed = 42,
+        batch_count = 3,
+        sample_method = "euler",
+        cfg_scale = 4.0,
+    )
+    assert req["prompt"] == "a fox" and req["negative_prompt"] == "blurry"
+    assert req["width"] == 512 and req["height"] == 768
+    assert req["seed"] == 42 and req["batch_count"] == 3
+    assert req["sample_params"]["sample_steps"] == 8
+    assert req["sample_params"]["sample_method"] == "euler"
+    assert req["sample_params"]["guidance"]["txt_cfg"] == 4.0
+    assert req["output_format"] == "png"
+
+
+def test_img_gen_request_flux_uses_distilled_guidance():
+    req = build_img_gen_request(prompt = "x", steps = 4, distilled_guidance = 3.5, flow_shift = 3.0)
+    g = req["sample_params"]["guidance"]
+    assert g["distilled_guidance"] == 3.5
+    assert "txt_cfg" not in g
+    assert req["sample_params"]["flow_shift"] == 3.0
+
+
+def test_img_gen_request_requires_prompt():
+    with pytest.raises(ValueError):
+        build_img_gen_request(prompt = "   ", steps = 4)
+
+
+def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
+    # The CPU-backend rescue fires only for the deterministic "this backend cannot run this graph" abort: an OOM kill or a plain crash surfaces as itself.
+    abort = (
+        "sd-server connection lost during img_gen poll (process exited, code -6)\n"
+        "Last output:\n"
+        "[ERROR] ggml_extend.hpp:70   - ggml_metal_op_encode_impl: error: unsupported op 'MUL_MAT'\n"
+        "1   sd-server   0x00000001044f8df4 ggml_abort + 156"
+    )
+    assert is_ggml_unsupported_op_abort(abort) is True
+    # The RMS_NORM shape of the same abort (text encoder) counts too.
+    assert (
+        is_ggml_unsupported_op_abort("error: unsupported op 'RMS_NORM'\nggml_abort + 156") is True
+    )
+    # Neither marker alone is enough, and an unrelated death is never a match.
+    assert is_ggml_unsupported_op_abort("unsupported op 'MUL_MAT'") is False
+    assert is_ggml_unsupported_op_abort("ggml_abort + 156") is False
+    assert is_ggml_unsupported_op_abort("process exited, code -9") is False
+    assert is_ggml_unsupported_op_abort("") is False
+
+
+def test_server_command_appends_extra_args_last():
+    # --backend cpu is passed as extra_args by the abort rescue and sd.cpp is last-wins, so it must land after every normal flag.
+    cmd = build_sd_cpp_server_command(
+        "/x/sd-server",
+        SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/vae.sft"),
+        host = "127.0.0.1",
+        port = 1234,
+        native_speed = "default",
+        extra_args = list(CPU_BACKEND_FLAGS),
+    )
+    assert cmd[-2:] == ["--backend", "cpu"]
+    assert cmd[0] == "/x/sd-server"
+
+
+def test_minimax_h3_video_command_has_all_joint_av_components():
+    files = SdCppModelFiles(
+        diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+        vae = "/m/video.safetensors",
+        audio_vae = "/m/audio.safetensors",
+        llm = "/m/qwen.gguf",
+    )
+    cmd = build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        files,
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            fps = 24,
+            steps = 30,
+            seed = 42,
+        ),
+        output_path = "/out/result.webm",
+        offload = ["--diffusion-fa", "--offload-to-cpu"],
+    )
+    assert _pair(cmd, "--mode") == "vid_gen"
+    assert _pair(cmd, "--audio-vae") == "/m/audio.safetensors"
+    assert _pair(cmd, "--llm") == "/m/qwen.gguf"
+    assert _pair(cmd, "--video-frames") == "124"
+    assert _pair(cmd, "--fps") == "24"
+    assert _pair(cmd, "--cfg-scale") == "1"
+    assert "--rng" in cmd and _pair(cmd, "--rng") == "cpu"
+    assert cmd[-2:] == ["--diffusion-fa", "--offload-to-cpu"]
+
+
+def test_video_build_appends_extra_args_verbatim_and_last():
+    """The video mirror of the image builder's last-wins contract.
+
+    Token-wise de-duplication cannot express an override: the builder already sets --rng cpu, so
+    extra_args ["--rng", "cuda"] dropped the --rng it matched and appended a bare "cuda" for the
+    parser to choke on. Every sibling builder in this module appends the list verbatim.
+    """
+    files = SdCppModelFiles(
+        diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+        vae = "/m/video.safetensors",
+        audio_vae = "/m/audio.safetensors",
+        llm = "/m/qwen.gguf",
+    )
+    cmd = build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        files,
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            fps = 24,
+            seed = 1,
+        ),
+        output_path = "/o.webm",
+        extra_args = ["--rng", "cuda"],
+    )
+    assert cmd[-2:] == ["--rng", "cuda"]
+    assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
+    # Studio's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
+    assert cmd.count("--rng") == 2
+
+
+def _h3_video_cmd(**params):
+    return build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        SdCppModelFiles(
+            diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+            vae = "/m/video.safetensors",
+            audio_vae = "/m/audio.safetensors",
+            llm = "/m/qwen.gguf",
+        ),
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            **params,
+        ),
+        output_path = "/out/result.webm",
+    )
+
+
+def test_minimax_h3_video_command_omits_keyframe_flags_for_text_only():
+    cmd = _h3_video_cmd()
+    assert "--init-img" not in cmd
+    assert "--end-img" not in cmd
+
+
+def test_minimax_h3_video_command_carries_each_keyframe():
+    # Each keyframe combination maps to its sd.cpp flags.
+    assert _pair(_h3_video_cmd(init_img = "/k/first.png"), "--init-img") == "/k/first.png"
+    assert "--end-img" not in _h3_video_cmd(init_img = "/k/first.png")
+
+    end_only = _h3_video_cmd(end_img = "/k/last.png")
+    assert _pair(end_only, "--end-img") == "/k/last.png"
+    assert "--init-img" not in end_only
+
+    both = _h3_video_cmd(init_img = "/k/first.png", end_img = "/k/last.png")
+    assert _pair(both, "--init-img") == "/k/first.png"
+    assert _pair(both, "--end-img") == "/k/last.png"
+
+
+def test_minimax_h3_video_command_packs_references_in_reading_order():
+    # Preserve the model's reference order.
+    cmd = _h3_video_cmd(
+        ref_images = ("/r/cat.png", "/r/style.png"),
+        ref_videos = ("/r/motion", "/r/orbit"),
+        ref_video_audios = ("/r/motion.wav",),
+        ref_audios = ("/r/voice.wav",),
+    )
+    assert [c for c in cmd if c.startswith("--ref")] == [
+        "--ref-image",
+        "--ref-image",
+        "--ref-video",
+        "--ref-video",
+        "--ref-video-audio",
+        "--ref-audio",
+    ]
+    assert cmd[cmd.index("--ref-image") + 1] == "/r/cat.png"
+    assert cmd[cmd.index("--ref-video") + 1] == "/r/motion"
+    assert cmd[cmd.index("--ref-audio") + 1] == "/r/voice.wav"
+
+
+def test_minimax_h3_video_command_refuses_keyframes_with_references():
+    # sd.cpp refuses the pair itself, but only once the model is resident.
+    with pytest.raises(ValueError, match = "different denoiser partitions"):
+        _h3_video_cmd(init_img = "/k/first.png", ref_images = ("/r/cat.png",))
+    with pytest.raises(ValueError, match = "different denoiser partitions"):
+        _h3_video_cmd(end_img = "/k/last.png", ref_audios = ("/r/voice.wav",))
+
+
+def test_minimax_h3_video_command_refuses_an_unpairable_soundtrack():
+    # Reject soundtrack flags without a video at the same position.
+    with pytest.raises(ValueError, match = "reference video to pair with"):
+        _h3_video_cmd(ref_videos = ("/r/motion",), ref_video_audios = ("/r/a.wav", "/r/b.wav"))
+
+
+def test_minimax_h3_video_command_carries_the_video_flow_shift():
+    # sd.cpp derives the audio schedule against a hardcoded 3.0, so only the video shift is a flag.
+    assert "--flow-shift" not in _h3_video_cmd()
+    assert _pair(_h3_video_cmd(flow_shift = 8.5), "--flow-shift") == "8.5"
+    assert _pair(_h3_video_cmd(flow_shift = 12.0), "--flow-shift") == "12"

@@ -123,6 +123,29 @@ def _stored_cache_home() -> Optional[Path]:
         return None
 
 
+def configured_cache_key() -> str:
+    """The configured cache location, for keying caches and in-flight work.
+
+    Deliberately unresolved: resolve() can block on the very volume a caller is
+    trying to move off. Only equality matters here, not the real path.
+    """
+    explicit = (
+        _EXPLICIT_CACHE_ENV.get("HF_HUB_CACHE")
+        or _EXPLICIT_CACHE_ENV.get("HUGGINGFACE_HUB_CACHE")
+        or _EXPLICIT_CACHE_ENV.get("HF_HOME")
+    )
+    if explicit:
+        return "env:" + explicit
+    try:
+        from storage.studio_db import get_app_setting
+        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+    except Exception:
+        return "default"
+    if isinstance(value, str) and value.strip():
+        return "studio:" + value.strip()
+    return "default"
+
+
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
     env_paths = _environment_paths()
     if env_paths is not None:
@@ -153,6 +176,19 @@ def active_hf_hub_cache() -> str:
 
 
 @contextmanager
+def _xet_loader_barrier() -> Iterator[None]:
+    """Block while a Xet shim loader holds its process-wide env override. Never fails a spawn."""
+    try:
+        from utils.hf_xet_fallback import env_override_barrier
+        barrier = env_override_barrier()
+    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
+        yield
+        return
+    with barrier:
+        yield
+
+
+@contextmanager
 def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None]:
     """Apply captured env before spawn imports the child entrypoint.
 
@@ -162,7 +198,12 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
     """
 
     from utils.utils import hf_environment_restored_for_spawn
-    with _spawn_env_lock, hf_environment_restored_for_spawn():
+
+    # Also exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the
+    # flag for life, whereupon unsloth_zoo hands it STUB triton and bitsandbytes and the run
+    # silently produces nothing. Filtering a child env dict cannot help here, since spawn copies the
+    # live environment and takes no env argument.
+    with _spawn_env_lock, _xet_loader_barrier(), hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}
         for key, value in environment.items():

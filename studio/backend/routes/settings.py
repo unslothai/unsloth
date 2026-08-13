@@ -7,11 +7,19 @@ import threading
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from auth.authentication import get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from auth.storage import rotate_preview_link_secret
+
+from routes.provider_credentials import current_credential_write, require_ui_session
+
+from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
@@ -38,7 +46,18 @@ from utils.helper_precache_settings import (
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.model_memory_settings import (
+    DEFAULT_KEEP_RESIDENT,
+    DEFAULT_NO_RAM_RESERVE,
+    get_model_memory_settings,
+    memlock_limit_bytes,
+    set_model_memory_settings,
+    should_mlock,
+)
 from utils.openai_auto_switch_settings import (
+    BATCH_SIZE_MAX,
+    BATCH_SIZE_MIN,
+    DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -46,6 +65,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
     get_model_overrides,
@@ -54,6 +74,7 @@ from utils.openai_auto_switch_settings import (
     resolve_model_override_keys,
     get_stored_auto_unload_idle_seconds,
     get_stored_openai_auto_download_enabled,
+    idle_unload_is_configured,
     set_model_override,
     set_openai_auto_switch,
 )
@@ -61,6 +82,13 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.remote_access_settings import (
+    DEFAULT_REMOTE_ACCESS_AUTO_START,
+    remote_access_status,
+    set_remote_access_auto_start,
+    start_remote_access,
+    stop_remote_access,
 )
 from utils.embedding_model_settings import (
     MAX_EMBEDDING_MODEL_LENGTH,
@@ -91,6 +119,74 @@ class UploadLimitResponse(BaseModel):
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
 
 
+class HuggingFaceTokenPayload(BaseModel):
+    token: str = Field(..., min_length = 1, max_length = 512)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str) -> str:
+        normalized = value.strip(" \t\r\n\"'")
+        if not normalized:
+            raise ValueError("Hugging Face token cannot be empty")
+        return normalized
+
+
+class HuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    has_token: bool = False
+
+
+@router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def get_hugging_face_token(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def update_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+
+    # Warm the auth-owned key before the generation guard takes its write lock.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token(payload.token)
+    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+
+
+@router.put("/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse)
+def migrate_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    """Insert a browser legacy token only when the installation has none."""
+    require_ui_session(via_api_key)
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token_if_absent(payload.token)
+        token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def clear_hugging_face_token(
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    with current_credential_write(credential):
+        credential_secrets.delete_hf_token()
+    return HuggingFaceTokenResponse(token = None, has_token = False)
+
+
 class HelperPrecachePayload(BaseModel):
     enabled: bool
 
@@ -99,6 +195,27 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class ModelMemoryPayload(BaseModel):
+    # None leaves the stored value untouched, so the switches save independently.
+    keep_resident: Optional[bool] = None
+    no_ram_reserve: Optional[bool] = None
+
+
+class ModelMemoryResponse(BaseModel):
+    keep_resident: bool
+    no_ram_reserve: bool
+    default_keep_resident: bool = DEFAULT_KEEP_RESIDENT
+    default_no_ram_reserve: bool = DEFAULT_NO_RAM_RESERVE
+    # Whether --mlock is passed on the next load. False when no_ram_reserve
+    # vetoes it; the UI surfaces that rather than failing silently.
+    mlock_active: bool
+    reload_required: bool
+    # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
+    # that residency will not fully pin a model larger than this. None means
+    # unlimited (macOS) or not applicable (Windows).
+    memlock_limit_bytes: Optional[int] = None
 
 
 class HuggingFaceCachePayload(BaseModel):
@@ -124,6 +241,7 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
     auto_download_model: Optional[bool] = None
+    auto_unload_api_only: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -137,6 +255,8 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
     # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
+    # When true, the idle unload spares models loaded from the UI, not just via the API.
+    auto_unload_api_only: bool = DEFAULT_AUTO_UNLOAD_API_ONLY
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -169,10 +289,15 @@ class ModelOverridePayload(BaseModel):
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
+    # A discrete set, enforced by the normalizer; these bounds only block absurd values.
+    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
+    n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     tensor_parallel: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
@@ -206,6 +331,8 @@ class ModelOverridePayload(BaseModel):
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "n_batch",
+        "n_ubatch",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -240,6 +367,88 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+# Distinct from None, which is a real launch this policy does not govern.
+_NO_LAUNCH = object()
+
+
+def _active_launch_placement():
+    """``(state, policy_active, mlock_applicable)`` for the running child.
+
+    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
+    caller can tell "no process" apart from "a process with no load-mode".
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = bool(getattr(backend, "_memory_launch_pending", False))
+        if not backend.is_active and not pending:
+            return _NO_LAUNCH, False, True
+        return (
+            getattr(backend, "_memory_state", None),
+            bool(getattr(backend, "_memory_policy_active", False)),
+            bool(getattr(backend, "_memory_mlock_applicable", True)),
+        )
+    except Exception:
+        return _NO_LAUNCH, False, True
+
+
+def _model_memory_reload_required() -> bool:
+    """True when the loaded process's memory placement contradicts the settings.
+
+    Compares the state the child ACTUALLY launched with -- env defaults plus
+    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
+    what the current settings would produce. The idle-unload veto applies
+    immediately (the loop re-reads each poll), so only placement can be stale.
+
+    Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is
+    already committed to the pre-save flags. _memory_launch_pending covers the
+    same window before Popen, where the placement is decided but _process is
+    still None.
+    """
+    state, policy_active, mlock_applicable = _active_launch_placement()
+    if state is _NO_LAUNCH:
+        return False
+
+    # Same predicate the duplicate-load comparator uses, so the reload hint and
+    # the reload path can never disagree.
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+
+
+def _model_memory_mlock_active(want_mlock: bool) -> bool:
+    """Whether page-locking is actually in force, not merely asked for.
+
+    This drives the locked-memory cap warning, so taking it from the toggles
+    alone would tell a discrete-GPU user to raise a limit nothing consults.
+    With nothing running this is the intent, so the UI reflects the toggle. Once
+    a child exists it is what that child got: a full offload to a discrete GPU
+    skips the lock, and a diffusion runner has no load-mode at all, so claiming
+    otherwise would warn about ulimit -l for a lock nobody took. A user's own
+    --mlock counts, since the resolver reads the launched argv.
+    """
+    if not want_mlock:
+        return False
+    state, _policy_active, _applicable = _active_launch_placement()
+    if state is _NO_LAUNCH:
+        return True
+    return bool(state and state[0])
+
+
+def _model_memory_response() -> ModelMemoryResponse:
+    keep_resident, no_ram_reserve = get_model_memory_settings()
+    mlock_active = _model_memory_mlock_active(should_mlock())
+    return ModelMemoryResponse(
+        keep_resident = keep_resident,
+        no_ram_reserve = no_ram_reserve,
+        mlock_active = mlock_active,
+        reload_required = _model_memory_reload_required(),
+        memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
 
 
@@ -313,6 +522,31 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+@router.get("/model-memory", response_model = ModelMemoryResponse)
+def get_model_memory(current_subject: str = Depends(get_current_subject)) -> ModelMemoryResponse:
+    return _model_memory_response()
+
+
+@router.put("/model-memory", response_model = ModelMemoryResponse)
+def update_model_memory(
+    payload: ModelMemoryPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelMemoryResponse:
+    try:
+        set_model_memory_settings(
+            keep_resident = payload.keep_resident,
+            no_ram_reserve = payload.no_ram_reserve,
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid model memory setting."),
+            event = "settings.update_model_memory_failed",
+            log = logger,
+        ) from exc
+    return _model_memory_response()
+
+
 class CodingAgentsResponse(BaseModel):
     # All agents `unsloth start` supports, in the CLI's declared order.
     agents: tuple[str, ...] = CODING_AGENTS
@@ -336,6 +570,7 @@ def get_openai_auto_switch(
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
         auto_unload_keep_kv = get_auto_unload_keep_kv(),
         auto_download_model = get_stored_openai_auto_download_enabled(),
+        auto_unload_api_only = get_auto_unload_api_only(),
     )
 
 
@@ -344,11 +579,12 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds, keep_kv, auto_download = set_openai_auto_switch(
+        enabled, idle_seconds, keep_kv, auto_download, api_only = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
             payload.auto_unload_keep_kv,
             payload.auto_download_model,
+            payload.auto_unload_api_only,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -359,8 +595,9 @@ def update_openai_auto_switch(
             log = logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
-    if not keep_kv or not idle_unload_active:
-        # Keep-KV off or idle unload disabled: drop already-saved chat context too.
+    if not keep_kv or not idle_unload_is_configured():
+        # Drop already-saved chat context too. Configured, not effective: residency
+        # zeroes the TTL, and that must not discard KV the user still wants.
         from core.inference.llama_keepwarm import purge_kv_resume
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(
@@ -369,6 +606,7 @@ def update_openai_auto_switch(
         idle_unload_active = idle_unload_active,
         auto_unload_keep_kv = keep_kv,
         auto_download_model = auto_download,
+        auto_unload_api_only = api_only,
     )
 
 
@@ -600,9 +838,12 @@ def update_openai_auto_switch_override(
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
+                mlx_kv_bits = payload.mlx_kv_bits,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                n_batch = payload.n_batch,
+                n_ubatch = payload.n_ubatch,
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
@@ -921,6 +1162,98 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class RemoteAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class RemoteAccessResponse(BaseModel):
+    state: Literal["off", "starting", "online", "stopping", "error"]
+    url: Optional[str] = None
+    error: Optional[str] = None
+    auto_start: bool
+    default_auto_start: bool = DEFAULT_REMOTE_ACCESS_AUTO_START
+    available: bool
+    managed_by: Optional[Literal["launch", "settings", "colab"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    password_pending: bool = False
+    streaming_supported: bool = True
+
+
+def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
+
+
+def _remote_access_response(request: Request) -> RemoteAccessResponse:
+    return RemoteAccessResponse(**remote_access_status(request.app.state))
+
+
+@router.get("/remote-access", response_model = RemoteAccessResponse)
+def get_remote_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    return _remote_access_response(request)
+
+
+@router.post("/remote-access/start", response_model = RemoteAccessResponse)
+def start_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        response = RemoteAccessResponse(**start_remote_access(request.app.state))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.remote_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/remote-access/stop", response_model = RemoteAccessResponse)
+def stop_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = stop_remote_access(request.app.state)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    status.update(
+        state = "off",
+        url = None,
+        error = None,
+        managed_by = None,
+        can_start = False,
+        can_stop = False,
+    )
+    response = RemoteAccessResponse(**status)
+    logger.info("settings.remote_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/remote-access/auto-start", response_model = RemoteAccessResponse)
+def update_remote_access_auto_start(
+    request: Request,
+    payload: RemoteAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    if bool(getattr(request.app.state, "remote_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_remote_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.remote_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _remote_access_response(request)
+
+
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
 def get_preview_sharing(
     current_subject: str = Depends(get_current_subject),
@@ -1058,6 +1391,25 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
     "connections": False,
 }
 
+# Navigable sidebar rows the user can pin/reorder; the boolean is each id's default pin state.
+# Order and pin state MUST match the frontend's shipped layout (SIDEBAR_NAV_ITEM_IDS /
+# SIDEBAR_NAV_DEFAULT_PINNED in features/settings/stores/appearance-custom-store.ts): the client
+# sends every id on each save, so a missing id 422s the whole personalization PUT, and a legacy
+# record that predates sidebarNav is served this default as if it were an explicit remote choice.
+SIDEBAR_NAV_ITEM_DEFAULTS = {
+    "hub": True,
+    "projects": True,
+    "images": True,
+    "video": False,
+    "audio": False,
+    "train": True,
+    "recipes": False,
+    "export": False,
+    "api": False,
+}
+
+MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
+
 # The sidebarMenu validator below dedupes ids and re-fills any missing ones, so
 # the stored list is always exactly one entry per id. Cap the *incoming* list at
 # a generous multiple rather than len(defaults): a stale or duplicated payload
@@ -1087,6 +1439,30 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
     return [
         PersonalizationSidebarMenuItem(id = item_id, visible = visible)
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items()
+    ]
+
+
+class PersonalizationSidebarNavItem(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: Literal[
+        "hub",
+        "projects",
+        "images",
+        "video",
+        "audio",
+        "train",
+        "recipes",
+        "export",
+        "api",
+    ]
+    pinned: bool = True
+
+
+def _default_sidebar_nav() -> "list[PersonalizationSidebarNavItem]":
+    return [
+        PersonalizationSidebarNavItem(id = item_id, pinned = pinned)
+        for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items()
     ]
 
 
@@ -1127,6 +1503,11 @@ class PersonalizationCustomization(BaseModel):
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
     )
+    # Order is the sidebar's render order, so the validator keeps the client's.
+    sidebarNav: list[PersonalizationSidebarNavItem] = Field(
+        default_factory = _default_sidebar_nav,
+        max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
+    )
 
     @field_validator("sidebarMenu")
     @classmethod
@@ -1140,6 +1521,19 @@ class PersonalizationCustomization(BaseModel):
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
             if item_id not in seen:
                 items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+        return items
+
+    @field_validator("sidebarNav")
+    @classmethod
+    def _validate_sidebar_nav(
+        cls, value: list[PersonalizationSidebarNavItem]
+    ) -> list[PersonalizationSidebarNavItem]:
+        # Like sidebarMenu, but order is preserved: dedupe, then append missing.
+        seen: set[str] = set()
+        items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items():
+            if item_id not in seen:
+                items.append(PersonalizationSidebarNavItem(id = item_id, pinned = pinned))
         return items
 
 

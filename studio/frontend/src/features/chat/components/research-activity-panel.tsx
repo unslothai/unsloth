@@ -67,6 +67,7 @@ import {
   ensureResearchRunFollowed,
   ingestResearchUpdate,
   isSettledResearchRun,
+  researchProgressSummary,
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchRunStatus } from "../types/research";
@@ -78,6 +79,9 @@ const terminalStatuses = new Set<ResearchRunStatus>([
 ]);
 const ACTIVITY_FOLLOW_SETTLE_MS = 450;
 const ACTIVITY_BOTTOM_THRESHOLD_PX = 24;
+// 2px, not 1, matching use-intent-aware-autoscroll: HiDPI subpixel rounding leaves a fractional
+// gap that a 1px threshold reads as unpinned, which would keep the follow loop running forever.
+const ACTIVITY_PINNED_THRESHOLD_PX = 2;
 
 function useResearchActivityScroll(runId: string) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -94,6 +98,9 @@ function useResearchActivityScroll(runId: string) {
     let lastScrollTop = element.scrollTop;
     let followUntil = performance.now() + ACTIVITY_FOLLOW_SETTLE_MS;
     let animationFrame: number | null = null;
+    let settleTimer: number | null = null;
+    let settleCheckDue = false;
+    let layoutChanged = true;
 
     const distanceFromBottom = () =>
       Math.max(
@@ -105,24 +112,56 @@ function useResearchActivityScroll(runId: string) {
     const requestTick = () => {
       if (animationFrame === null) animationFrame = requestAnimationFrame(tick);
     };
+    // A reflow with no DOM mutation (a `font-display: swap` webfont landing, say) reaches neither
+    // observer, so the rest of the window is covered by one deferred check rather than every frame.
+    const scheduleSettleCheck = () => {
+      if (settleTimer !== null) return;
+      const remaining = followUntil - performance.now();
+      if (remaining <= 0) return;
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        // The timer lands on the deadline and its tick a frame later, so the window has closed by
+        // then; this grants that tick one last follow pass rather than dropping it to the reconcile.
+        settleCheckDue = true;
+        requestTick();
+      }, remaining);
+    };
     const tick = () => {
       animationFrame = null;
-      if (!detached && performance.now() < followUntil) {
-        if (distanceFromBottom() > 1) element.scrollTop = element.scrollHeight;
+      const settling = settleCheckDue;
+      settleCheckDue = false;
+      if (!detached && (settling || performance.now() < followUntil)) {
+        const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
+        if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
-        requestTick();
+        // Chaining on the window alone forced a layout every frame for the whole run; growth that
+        // leaves the view unpinned is the signal, and a quiet frame defers to the settle check.
+        if (layoutChanged || !pinned) {
+          layoutChanged = false;
+          requestTick();
+          return;
+        }
+        scheduleSettleCheck();
         return;
       }
       updateAtBottom(distanceFromBottom() <= ACTIVITY_BOTTOM_THRESHOLD_PX);
     };
     const followLayout = () => {
       if (detached) return;
+      layoutChanged = true;
       followUntil = performance.now() + ACTIVITY_FOLLOW_SETTLE_MS;
       requestTick();
     };
     const detach = () => {
       detached = true;
       followUntil = 0;
+      // A settle check queued by the last quiet frame would otherwise fire mid-scroll and reconcile
+      // isAtBottom back to true whenever the user has moved less than the bottom threshold.
+      if (settleTimer !== null) {
+        window.clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      settleCheckDue = false;
       updateAtBottom(false);
     };
     const innerScrollWillConsumeUpward = (target: EventTarget | null) => {
@@ -215,6 +254,7 @@ function useResearchActivityScroll(runId: string) {
 
     return () => {
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       element.removeEventListener("scroll", onScroll);
@@ -300,6 +340,7 @@ const ActivityRow = memo(function ActivityRow({
     activity.reasoning ||
       activity.plan ||
       activity.input ||
+      activity.previewLabels?.length ||
       activity.sources?.length ||
       activity.evidenceSources?.length ||
       activity.excerpt ||
@@ -317,6 +358,23 @@ const ActivityRow = memo(function ActivityRow({
         >
           {activity.input}
         </p>
+      ) : null}
+      {activity.previewLabels?.length ? (
+        <ul className="space-y-1 rounded-xl bg-muted/35 px-3 py-2">
+          {activity.previewLabels.map((label, index) => (
+            <li
+              key={`${activity.id}-preview-${index}`}
+              className="flex gap-2 leading-relaxed"
+            >
+              <span aria-hidden className="text-primary/70">
+                ·
+              </span>
+              <span className="min-w-0 break-words text-foreground/80">
+                {label}
+              </span>
+            </li>
+          ))}
+        </ul>
       ) : null}
       {activity.reasoning ? (
         <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
@@ -792,11 +850,6 @@ export function ResearchActivityPanel({
   }
   const { run, activities } = session;
   const elapsedEnd = run.completedAt ?? elapsedNow ?? run.updatedAt;
-  // Count web and document sources together so a RAG-only run is not shown as 0.
-  const documentCount = new Set(
-    (run.documentSources ?? []).map((source) => source.documentId ?? source.filename),
-  ).size;
-  const sourceCount = run.sources.length + documentCount;
   const allowedDomains = run.config?.websitePolicy?.allowedDomains ?? [];
   const blockedDomains = run.config?.websitePolicy?.blockedDomains ?? [];
   const websiteLimitLabel = allowedDomains.length
@@ -816,7 +869,10 @@ export function ResearchActivityPanel({
   return (
     <aside
       aria-label="Research activity"
-      className="relative flex min-h-0 flex-col bg-background text-foreground"
+      className={cn(
+        "relative flex min-h-0 flex-col bg-background text-foreground",
+        variant === "sheet" && "h-full",
+      )}
       style={
         variant === "panel"
           ? {
@@ -825,11 +881,7 @@ export function ResearchActivityPanel({
               marginTop:
                 "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
             }
-          : {
-              height:
-                "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-              marginTop: "var(--studio-custom-titlebar-height, 0px)",
-            }
+          : undefined
       }
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
@@ -867,10 +919,10 @@ export function ResearchActivityPanel({
               </p>
             ) : null}
             <p className="mt-1 text-ui-10p5 tabular-nums text-muted-foreground">
-              {formatElapsed(run.createdAt, elapsedEnd)} · {sourceCount}{" "}
-              sources ·{" "}
-              {run.steps.filter((step) => step.status === "completed").length}{" "}
-              actions
+              {researchProgressSummary(
+                run,
+                formatElapsed(run.createdAt, elapsedEnd),
+              )}
             </p>
           </div>
           <Button

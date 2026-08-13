@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
+import { useT } from "@/i18n";
 import {
   ArrowRight01Icon,
   DocumentAttachmentIcon,
@@ -31,6 +32,10 @@ export function DocumentUploadRedirectDialog({
   fileName,
   onOpenLearningRecipes,
 }: DocumentUploadRedirectDialogProps): ReactElement {
+  const t = useT();
+  const fileLabel =
+    fileName ?? t("studio.dataset.documentRedirect.genericFile");
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -48,29 +53,23 @@ export function DocumentUploadRedirectDialog({
             <Badge variant="outline">Recipe Studio</Badge>
           </div>
           <div className="space-y-1">
-            <DialogTitle>This file needs conversion first</DialogTitle>
+            <DialogTitle>
+              {t("studio.dataset.documentRedirect.title")}
+            </DialogTitle>
             <DialogDescription>
-              {fileName ? (
-                <>
-                  <span className="font-medium text-foreground">{fileName}</span>{" "}
-                  is source material, not a ready-to-train dataset.
-                </>
-              ) : (
-                "This file is source material, not a ready-to-train dataset."
-              )}{" "}
-              Use Data Recipes to turn documents into a dataset, then bring the
-              result back here for fine-tuning.
+              {t("studio.dataset.documentRedirect.description", {
+                file: fileLabel,
+              })}
             </DialogDescription>
           </div>
         </DialogHeader>
 
         <div className="corner-squircle rounded-2xl border border-border/70 bg-muted/20 p-4">
           <p className="text-sm font-medium text-foreground">
-            Best next step
+            {t("studio.dataset.documentRedirect.nextStepTitle")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Open Learning Recipes and start from a document-based recipe like PDF
-            grounded QA.
+            {t("studio.dataset.documentRedirect.nextStepDescription")}
           </p>
         </div>
 
@@ -80,10 +79,10 @@ export function DocumentUploadRedirectDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
           >
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button type="button" onClick={onOpenLearningRecipes}>
-            Open Learning Recipes
+            {t("studio.dataset.documentRedirect.openAction")}
             <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
           </Button>
         </DialogFooter>

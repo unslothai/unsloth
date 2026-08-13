@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
@@ -18,6 +19,9 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+_MAX_DECODE_MS = 24 * 60 * 60 * 1000
+# Far above any real context window; larger means a broken upstream payload.
+_MAX_TOKEN_COUNT = 1 << 40
 
 # Opt-in startup kill switch for Studio's in-memory API monitor.
 _DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
@@ -26,6 +30,26 @@ _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 def _api_monitor_disabled() -> bool:
     return os.environ.get(_DISABLE_ENV, "").strip().lower() in _TRUE_VALUES
+
+
+def _token_count_or_none(value: Any) -> Optional[int]:
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # snapshot() divides by these; an unbounded int makes that division raise too.
+    if count < 0 or count > _MAX_TOKEN_COUNT:
+        return None
+    return count
+
+
+def _finite_float_or_none(value: Any) -> Optional[float]:
+    # float() on a huge upstream int raises OverflowError, not ValueError/TypeError.
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -71,6 +95,20 @@ class ApiMonitorEntry:
     shared: bool = False
     # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
+    # Stamped on the first reply text; snapshot() prefers it over engine timings.
+    first_token_monotonic: Optional[float] = None
+    # The same instant, but only for output the model decoded. A tool card is client
+    # output that TTFT should count and the token-rate clock must not: the tool run
+    # between it and the first token is not decoding.
+    first_decode_monotonic: Optional[float] = None
+    prompt_ms: Optional[float] = None
+    tok_per_sec: Optional[float] = None
+    # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
+    decode_ms: Optional[float] = None
+    stop_reason: Optional[str] = None
+    # Every finish reason seen so far. An n > 1 stream reports each choice in its own
+    # chunk, so agreement can only be judged across the whole request. Not serialized.
+    stop_reasons_seen: set[str] = field(default_factory = set)
 
     def snapshot(
         self,
@@ -89,6 +127,26 @@ class ApiMonitorEntry:
         context_usage = None
         if self.total_tokens is not None and self.context_length:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
+        ttft_ms = None
+        if self.first_token_monotonic is not None:
+            # Preferred over the prompt_ms fallback: that is prefill only, so it misses
+            # the admission-queue wait before llama-server sees the request.
+            ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
+        elif self.prompt_ms is not None:
+            ttft_ms = max(0, int(self.prompt_ms))
+        tok_per_sec = self.tok_per_sec
+        if (
+            tok_per_sec is None
+            and self.completion_tokens
+            # The clock starts at the first token, so it spans only the gaps that
+            # followed it: one token has no gap to measure, hence no rate at all.
+            and self.completion_tokens > 1
+            and self.finished_monotonic is not None
+            and self.first_decode_monotonic is not None
+        ):
+            gen_s = self.finished_monotonic - self.first_decode_monotonic
+            if gen_s > 0.05:
+                tok_per_sec = (self.completion_tokens - 1) / gen_s
         payload = {
             "id": self.id,
             "endpoint": self.endpoint,
@@ -116,6 +174,12 @@ class ApiMonitorEntry:
             "event": self.event,
             "reason": self.reason,
             "progress": self.progress,
+            "ttft_ms": ttft_ms,
+            "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
+            # The engine's decode span, not the streamed window: an unknowable first-chunk token
+            # count and reasoning tokens both inflate a streamed rate. Absent rather than guessed.
+            "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
+            "stop_reason": self.stop_reason,
         }
         if include_details:
             payload["prompt"] = self.prompt
@@ -258,13 +322,26 @@ class ApiMonitor:
             if entry is not None:
                 self._entries.remove(entry)
 
-    def append_reply(self, entry_id: Optional[str], text: str) -> None:
+    def append_reply(
+        self,
+        entry_id: Optional[str],
+        text: str,
+        *,
+        stamp_first_token: bool = True,
+    ) -> None:
         if not entry_id or not text:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
+            if stamp_first_token:
+                now = time.monotonic()
+                if entry.first_token_monotonic is None:
+                    entry.first_token_monotonic = now
+                if entry.first_decode_monotonic is None:
+                    entry.first_decode_monotonic = now
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
             # generations). A reply that landed exactly on the cap has no marker
@@ -277,6 +354,29 @@ class ApiMonitor:
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
 
+    def mark_first_token(
+        self,
+        entry_id: Optional[str],
+        *,
+        decoded: bool = True,
+    ) -> None:
+        """Stamp TTFT for deltas with no reply text, e.g. reasoning tokens.
+
+        ``decoded = False`` for output the model did not generate (a tool card), which
+        starts the clock the user sees but must not start the token-rate clock.
+        """
+        if not entry_id:
+            return
+        now = time.monotonic()
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None:
+                return
+            if entry.first_token_monotonic is None:
+                entry.first_token_monotonic = now
+            if decoded and entry.first_decode_monotonic is None:
+                entry.first_decode_monotonic = now
+
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
             return
@@ -286,6 +386,70 @@ class ApiMonitor:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
+
+    def set_perf(
+        self,
+        entry_id: Optional[str],
+        *,
+        tok_per_sec: Optional[float] = None,
+        prompt_ms: Optional[float] = None,
+        decode_ms: Optional[float] = None,
+        stop_reason: Optional[str] = None,
+    ) -> None:
+        if not entry_id:
+            return
+        # Coerce before locking: arbitrary payloads, and a raise here (this runs inside
+        # streaming generators) would truncate the user's response.
+        tok_per_sec = _finite_float_or_none(tok_per_sec)
+        prompt_ms = _finite_float_or_none(prompt_ms)
+        decode_ms = _finite_float_or_none(decode_ms)
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None:
+                return
+            if tok_per_sec is not None:
+                entry.tok_per_sec = tok_per_sec
+            if prompt_ms is not None:
+                entry.prompt_ms = prompt_ms
+            # Past a day of decode it is a bad reading, not a slow model.
+            if decode_ms is not None and 0 <= decode_ms <= _MAX_DECODE_MS:
+                entry.decode_ms = decode_ms
+            if stop_reason is not None:
+                entry.stop_reason = str(stop_reason)
+            entry.updated_at = time.time()
+
+    def note_stop_reason(self, entry_id: Optional[str], reason: Optional[str]) -> None:
+        """Record one choice's finish reason, without publishing it yet.
+
+        The row carries a single stop reason, so it only describes the request once every
+        choice has reported one. An n > 1 stream finishes its choices in separate chunks,
+        so publishing here would state a request-level verdict from the first one and
+        retract it when a later choice disagrees. :meth:`finish` resolves it instead.
+        """
+        if not entry_id or not reason:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None:
+                return
+            entry.stop_reasons_seen.add(str(reason))
+            entry.updated_at = time.time()
+
+    @staticmethod
+    def _settle_stop_reason_locked(entry: ApiMonitorEntry, completed: bool) -> None:
+        """Fix the row's stop reason as it becomes terminal.
+
+        Only a completed request has one: a cancelled or failed stream stopped for that
+        reason, so any natural reason recorded on the way describes what it was doing
+        rather than how it ended. Clearing here catches the direct ``set_perf`` writers
+        too, which several streams reach before the cancellation is stamped.
+        """
+        if not completed:
+            entry.stop_reason = None
+            return
+        seen = entry.stop_reasons_seen
+        if seen:
+            entry.stop_reason = next(iter(seen)) if len(seen) == 1 else None
 
     def set_usage(
         self,
@@ -298,6 +462,11 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+        # Coerce first: snapshot() does math on these arbitrary payload values.
+        prompt_tokens = _token_count_or_none(prompt_tokens)
+        completion_tokens = _token_count_or_none(completion_tokens)
+        total_tokens = _token_count_or_none(total_tokens)
+        context_length = _token_count_or_none(context_length)
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -334,6 +503,7 @@ class ApiMonitor:
             # already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
+            self._settle_stop_reason_locked(entry, status == "completed")
             now = time.time()
             entry.status = status
             entry.updated_at = now
@@ -370,6 +540,7 @@ class ApiMonitor:
             self._fail_locked(entry, error)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        self._settle_stop_reason_locked(entry, False)
         now = time.time()
         entry.status = "error"
         entry.error = _trim(error, 1000)

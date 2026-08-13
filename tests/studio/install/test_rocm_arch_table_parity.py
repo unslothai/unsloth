@@ -54,6 +54,7 @@ _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
+_PREBUILT_PY = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 _SPOOF_PY = PACKAGE_ROOT / "tests" / "_zoo_rocm_spoof.py"
 
 
@@ -291,6 +292,10 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
 _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 9070 XT", "gfx120X-all"),
     ("AMD Radeon RX 9070", "gfx120X-all"),
+    # Workstation Navi 48, gfx1201 per rocminfo in #7624 / #7307. Its name holds neither
+    # "9070" nor "9080", so every table returned None and a host without the HIP SDK, where
+    # name inference is the only path left, got CPU torch ("not detected", PR #8398).
+    ("AMD Radeon AI PRO R9700", "gfx120X-all"),
     ("AMD Radeon RX 9060 XT", "gfx120X-all"),
     ("AMD Radeon 8060S Graphics", "gfx1151"),
     ("AMD Ryzen AI Max+ 395 w/ Radeon 8060S Graphics", "gfx1151"),
@@ -333,6 +338,9 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 9070": "gfx1201",
     "AMD Radeon RX 9060 XT": "gfx1200",
     "AMD Radeon RX 9060": "gfx1200",
+    # Navi 48 again, as the R9000 series workstation card. Sourced from the reporters'
+    # own rocminfo output (#7624, #7307), not from these tables.
+    "AMD Radeon AI PRO R9700": "gfx1201",
     # RDNA 3 -- Navi 31 / 32 / 33.
     "AMD Radeon RX 7900 XTX": "gfx1100",
     "AMD Radeon PRO W7900": "gfx1100",
@@ -468,6 +476,23 @@ class TestGpuNameArchParity:
         for where, rows in _name_tables().items():
             got = _resolve(where, rows, "NVIDIA GeForce RTX 4090")
             assert got is None, f"{where}: RTX 4090 matched {got!r}"
+
+    @pytest.mark.parametrize(
+        "gpu_name",
+        [
+            "ATI Radeon 9700 PRO",
+            "ATI Radeon 9800 PRO",
+            "AMD Radeon R9 Fury X",
+            "AMD Radeon Pro WX 9100",
+        ],
+    )
+    def test_the_r9700_arm_does_not_swallow_older_cards(self, gpu_name):
+        """The arm is spelled "R9700", not a bare "9700": ATI shipped a Radeon 9700 PRO in
+        2002 and the loose token would hand that card RDNA 4 wheels. None of these pre-RDNA
+        names may resolve to anything."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
 
     def test_inferred_arch_always_has_an_index_family(self):
         """Every arch a name table can produce must be routable to an AMD wheel
@@ -645,6 +670,45 @@ class TestTorch211PinAllowlistParity:
         assert m, "the 2.11 pin allowlist helper was not found in studio/setup.ps1"
         leaves = set(re.findall(r"'([^']+)'", m.group(1)))
         assert leaves == self._EXPECTED, f"studio/setup.ps1 pins {sorted(leaves)}"
+
+
+class TestShadowingIntegratedGfxParity:
+    """The shadowing-APU skip (#7776) exists twice: studio/setup.ps1 resolves the
+    arch and builds $ROCmIndexUrl before it ever invokes the Python stack
+    installer, so both copies of the list have to agree or one entry point keeps
+    installing the iGPU's wheel family."""
+
+    _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
+
+    def _setup_ps1_list(self):
+        source = _SETUP_PS1.read_text(encoding = "utf-8")
+        m = re.search(r"\$script:ShadowingIntegratedGfx\s*=\s*@\(([^)]*)\)", source)
+        assert m, "$script:ShadowingIntegratedGfx not found in studio/setup.ps1"
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def _prebuilt_list(self):
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "SHADOWING_INTEGRATED_GFX" for t in node.targets
+            ):
+                return set(ast.literal_eval(node.value.args[0]))
+        raise AssertionError("SHADOWING_INTEGRATED_GFX not found in install_llama_prebuilt.py")
+
+    def test_setup_ps1_matches_install_python_stack(self):
+        assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    def test_install_llama_prebuilt_matches_install_python_stack(self):
+        # _apply_host_overrides() honours setup's repick only for these arches, so drift
+        # re-splits torch and llama.cpp across two GPUs on a mixed host.
+        assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    def test_strix_is_excluded_from_every_copy(self):
+        # Supported training targets, not shadowing APUs: listing them would silently
+        # redirect Strix hosts.
+        assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
+        assert not (self._STRIX & self._setup_ps1_list())
+        assert not (self._STRIX & self._prebuilt_list())
 
 
 if __name__ == "__main__":

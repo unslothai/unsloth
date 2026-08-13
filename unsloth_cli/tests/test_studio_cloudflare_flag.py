@@ -112,24 +112,32 @@ def _invoke_run(monkeypatch, args):
 
 
 @pytest.mark.parametrize(
-    "extra_flags,expected,unexpected",
+    "extra_flags,expected,unexpected,expected_intent",
     [
         # Default (no flag) forwards --no-cloudflare explicitly so a mixed-version
         # child venv (old default: --cloudflare on) can't re-enable the tunnel.
-        ([], "--no-cloudflare", "--cloudflare"),
-        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
-        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        ([], "--no-cloudflare", "--cloudflare", "unset"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, "--no-cloudflare"),
+        (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, extra_flags, expected, unexpected):
+def test_run_reexec_forwards_cloudflare_polarity(
+    monkeypatch, extra_flags, expected, unexpected, expected_intent
+):
+    studio_mod = _studio()
+    assert f'_CLOUDFLARE_INTENT_ENV = "{studio_mod._CLOUDFLARE_INTENT_ENV}"' in (
+        _REPO_ROOT / "studio/backend/run.py"
+    ).read_text(encoding = "utf-8")
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
     if expected is not None:
         assert expected in argv, f"expected {expected} in child argv; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected} in child argv; got {argv}"
+    assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
 # ── re-exec forwarding: plain `unsloth studio` ───────────────────────
@@ -171,25 +179,30 @@ def _invoke_studio_default(
 
 
 @pytest.mark.parametrize(
-    "extra_flags,expected,unexpected",
+    "extra_flags,expected,unexpected,expected_intent",
     [
         # Default (no flag) forwards --no-cloudflare explicitly: _find_run_py can fall
         # back to an older studio-venv run.py (default on), so a mixed install must
         # not re-enable the tunnel.
-        ([], "--no-cloudflare", "--cloudflare"),
-        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
-        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        ([], "--no-cloudflare", "--cloudflare", "unset"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, "--no-cloudflare"),
+        (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, expected, unexpected):
+def test_studio_default_reexec_forwards_cloudflare(
+    monkeypatch, extra_flags, expected, unexpected, expected_intent
+):
+    studio_mod = _studio()
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
     if expected is not None:
         assert expected in argv, f"expected {expected}; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected}; got {argv}"
+    assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
 # ── in-venv path forwards cloudflare into run_server ─────────────────
@@ -239,6 +252,7 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -341,6 +355,7 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -426,6 +441,7 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
     tp_mod = sys.modules.setdefault("state.tool_policy", types.ModuleType("state.tool_policy"))
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
 
     # Force the health check to fail so startup aborts after run_server().
@@ -481,6 +497,7 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda value: calls.append(("policy", value))
+    tp_mod.set_tool_policy_default = lambda value: calls.append(("policy_default", value))
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -496,4 +513,5 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
     result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
 
     assert result.exit_code == 1, result.output
-    assert calls[:2] == [("policy", False), ("run_server", None)]
+    # Default first, then the explicit override, both before the server starts.
+    assert calls[:3] == [("policy_default", True), ("policy", False), ("run_server", None)]

@@ -28,6 +28,14 @@ def studio_datasets_cache() -> str:
 def load_dataset_cache_safe(*args, **kwargs):
     """datasets.load_dataset, retried in an Unsloth-owned cache on EACCES."""
     from datasets import load_dataset
+
+    # datasets is in sys.modules exactly now, which is what lets its bar class be
+    # patched; the server never imports it at boot, so this shared entry point is
+    # where its "Generating train split" bar stops reaching the structured log.
+    from loggers.config import quiet_third_party_progress_bars
+
+    quiet_third_party_progress_bars()
+
     try:
         return load_dataset(*args, **kwargs)
     except PermissionError as error:

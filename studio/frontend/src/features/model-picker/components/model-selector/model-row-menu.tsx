@@ -16,9 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
+  DeleteImpactSummary,
   UpdateConfirmDialog,
   ggufVariantsMatch,
   subscribeJobListeners,
+  useDeleteImpact,
 } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -51,7 +53,7 @@ interface ModelRowMenuPin {
 interface ModelRowMenuUpdate {
   title: string;
   description: ReactNode;
-  /** Repo + variant the update targets (see ModelUpdateAction). */
+  /** Repo + variant the update targets. */
   repoId: string;
   variant?: string | null;
   disabled?: boolean;
@@ -62,6 +64,9 @@ interface ModelRowMenuUpdate {
 interface ModelRowMenuDelete {
   title: string;
   description: ReactNode;
+  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually
+   * reclaims and what shared assets it leaves behind. Omit to keep the plain wording. */
+  impact?: { repoId: string; variant?: string | null };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -104,10 +109,14 @@ export function ModelRowMenu({
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && Boolean(del?.impact),
+    del?.impact?.repoId ?? "",
+    del?.impact?.variant,
+  );
   const [updateOpen, setUpdateOpen] = useState(false);
 
-  // Refresh the caller when this repo+variant's managed update completes
-  // (mirrors ModelUpdateAction).
+  // Refresh the caller when this repo+variant's managed update completes.
   const onUpdatedRef = useRef(update?.onUpdated);
   useEffect(() => {
     onUpdatedRef.current = update?.onUpdated;
@@ -182,7 +191,8 @@ export function ModelRowMenu({
             onClick={(e) => e.stopPropagation()}
             aria-label={ariaLabel}
             className={cn(
-              "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+              // Fixed box, matching ModelLoadSettingsAction beside it.
+              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
               buttonClassName,
             )}
           >
@@ -287,8 +297,14 @@ export function ModelRowMenu({
             setDeleteOpen(nextOpen);
           }}
           title={del.title}
-          description={del.description}
+          description={
+            <>
+              {del.description}
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          }
           deleting={deleting}
+          blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
           onConfirm={() => void handleDeleteConfirm()}
         />
       )}

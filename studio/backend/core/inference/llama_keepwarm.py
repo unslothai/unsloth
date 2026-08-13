@@ -60,10 +60,18 @@ _INFERENCE_SUFFIXES = (
     "/completions",
     "/messages",
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
+    "/chat/count_tokens",
     "/embeddings",
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    "/audio/speech",  # /v1/audio/speech (+ /api/inference/audio/speech); same TTS core as /audio/generate
+    # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
+    # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
+    "/images/generate",  # /api/inference/images/generate
+    "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
+    # Video runs as a background job (the POST returns at once), so this covers only the brief accept; the training-start guards also probe generate-progress.
+    "/video/generate",  # /api/inference/video/generate
 )
 
 
@@ -364,9 +372,16 @@ def _note_idle_unload_event(freed) -> None:
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import (
+        get_auto_unload_api_only,
         get_auto_unload_idle_seconds,
         get_auto_unload_keep_kv,
     )
+
+    def _user_pinned(b) -> bool:
+        """Whether the setting spares this model. Re-read like the other
+        settings: a KV save can outlive the user turning this on. getattr keeps
+        a foreign backend (tests, MLX) on the old unload-everything path."""
+        return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
 
     seen_model = None
     while True:
@@ -389,6 +404,10 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if current is not None:
                         _note_activity()
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
+                if backend.is_loaded and _user_pinned(backend):
+                    # Loaded from the UI, so the user wants it resident; only
+                    # models the API loaded are freed.
+                    continue
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     manifest = None
@@ -402,7 +421,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             logger.debug("slot save before idle unload failed: %s", exc)
                     # Re-read settings: the save can outlive a settings change.
                     ttl = get_auto_unload_idle_seconds()
-                    if ttl <= 0 or not _is_idle(ttl):
+                    if ttl <= 0 or not _is_idle(ttl) or _user_pinned(backend):
                         if manifest:
                             _delete_resume_files(manifest)
                         continue

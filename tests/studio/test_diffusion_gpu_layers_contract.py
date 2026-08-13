@@ -43,6 +43,10 @@ def llama_cpp():
         # (utils, state, models, hub, auth, storage) for every later test.
         if sys.path and sys.path[0] == backend:
             sys.path.pop(0)
+    # The dedupe comparators consult the Metal device, so on a Mac (and on the macos
+    # runners, which are paravirtual) they would normalize the request to the CPU pin and
+    # stop matching these fixtures. A private copy, so pinning cannot leak into the app.
+    module._metal_device_is_paravirtual = lambda: False
     return module
 
 
@@ -209,6 +213,26 @@ def test_backend_dedup_compares_the_requested_split(
 ):
     b = _loaded_diffusion(llama_cpp, recorded_layers = recorded, requested_ngl = requested_ngl)
     assert _in_target_state(llama_cpp, b, mode = mode, layers = layers) is expected
+
+
+def test_the_dedupe_compares_the_requested_split_through_the_paravirtual_rewrite():
+    """The single comparator now lives on the backend, so the diffusion split has to be
+    judged on the normalized intent: a virtualised Metal device launches the CPU-pinned
+    rewrite, and comparing the raw ask against it would reload a healthy server forever."""
+    bodies = {
+        node.name: (ast.get_source_segment(SRC, node) or "")
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("adopt_load_intent_if_matched", "_runtime_matches_intent")
+    }
+    adopt = bodies["adopt_load_intent_if_matched"]
+    assert "_metal_device_is_paravirtual()" in adopt
+    assert "paravirtual_normalized_request(" in adopt
+    # Normalized before the runtime comparison reads it, or the rewrite changes nothing.
+    assert adopt.index("paravirtual_normalized_request(") < adopt.index("_runtime_matches_intent(")
+    runtime = bodies["_runtime_matches_intent"]
+    assert "_diffusion_manual_ngl(intent.gpu_memory_mode, intent.gpu_layers)" in runtime
+    assert "self.diffusion_requested_ngl" in runtime
 
 
 def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):

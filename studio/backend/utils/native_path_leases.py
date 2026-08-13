@@ -19,17 +19,19 @@ import importlib
 import json
 import os
 import stat as _stat_module
+import sys
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
 _MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
 _MIN_LEASE_SECRET_BYTES = 32
+_WINDOWS_STAT_USES_FILE_ID_INFO = os.name == "nt" and sys.version_info >= (3, 12)
 
 _REPLAY_LOCK = threading.Lock()
 _USED_NONCES: dict[str, int] = {}
@@ -51,15 +53,22 @@ def native_gguf_companion_parent_allowed(
     companion_path: str | Path,
     gguf_path: str | Path,
     *,
-    allow_mtp_subdir: bool = False,
+    allowed_subdirs: Collection[str] = (),
     mtp_search_root: str | Path | None = None,
 ) -> bool:
-    """Check whether a GGUF companion is in an allowed directory."""
+    """Check whether a GGUF companion is in an allowed directory.
+
+    ``allowed_subdirs`` names the companion directories (``mtp``, ``dspark``)
+    this caller may reach into, beside the weight's own. A collection rather
+    than one flag per kind: each caller admits exactly the kind it is
+    resolving, so an MTP load never accepts a sidecar out of ``dspark/``.
+    """
     companion_parent = Path(companion_path).resolve(strict = True).parent
     gguf_parent = Path(gguf_path).resolve(strict = True).parent
     if companion_parent == gguf_parent:
         return True
-    if not allow_mtp_subdir or companion_parent.name.casefold() != "mtp":
+    permitted = {name.casefold() for name in allowed_subdirs}
+    if companion_parent.name.casefold() not in permitted:
         return False
     allowed_roots = {gguf_parent}
     if mtp_search_root is not None:
@@ -81,6 +90,8 @@ class NativePathGrant:
     expires_at_ms: int
     size_bytes: int | None
     modified_ms: int | None
+    device_id: int | None
+    file_id: int | None
 
 
 def native_path_leases_supported() -> bool:
@@ -187,6 +198,7 @@ def verify_native_path_lease(
     if not _same_native_path(resolved, path):
         raise NativePathLeaseError("Native path grant no longer resolves to the selected path.")
 
+    identity_options = _identity_options(payload)
     grant = NativePathGrant(
         operation = str(payload["operation"]),
         canonical_path = resolved,
@@ -198,6 +210,8 @@ def verify_native_path_lease(
         expires_at_ms = _required_int(payload, "expires_at_ms"),
         size_bytes = _optional_int(payload.get("size_bytes")),
         modified_ms = _optional_int(payload.get("modified_ms")),
+        device_id = identity_options[0][0] if identity_options else None,
+        file_id = identity_options[0][1] if identity_options else None,
     )
 
     if expected_path_type and grant.path_type != expected_path_type:
@@ -206,7 +220,9 @@ def verify_native_path_lease(
     if suffixes and resolved.suffix.lower() not in suffixes:
         raise NativePathLeaseError("Native path grant has an unsupported file type.")
 
-    _validate_current_stat(grant)
+    current_identity = _validate_current_stat(grant, identity_options)
+    if current_identity is not None:
+        grant = replace(grant, device_id = current_identity[0], file_id = current_identity[1])
     _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
     _remember_native_path_for_redaction(str(resolved), grant.display_label)
     return grant
@@ -324,7 +340,9 @@ def _validate_payload(
             raise NativePathLeaseError("Native path grant contains invalid characters.")
 
 
-def _validate_current_stat(grant: NativePathGrant) -> None:
+def _validate_current_stat(
+    grant: NativePathGrant, identity_options: tuple[tuple[int, int], ...]
+) -> tuple[int, int] | None:
     try:
         st = os.lstat(grant.canonical_path)
     except OSError as exc:
@@ -345,6 +363,13 @@ def _validate_current_stat(grant: NativePathGrant) -> None:
     current_modified_ms = int(st.st_mtime_ns // 1_000_000)
     if grant.modified_ms is not None and current_modified_ms != grant.modified_ms:
         raise NativePathLeaseError("Native path changed after it was selected.")
+    if grant.path_kind == "document-folder" and not identity_options:
+        raise NativePathLeaseError("Native path grant is missing its folder identity.")
+    current_identity = (st.st_dev, st.st_ino)
+    expected_identity = _runtime_identity(identity_options)
+    if expected_identity is not None and current_identity != expected_identity:
+        raise NativePathLeaseError("Native path changed after it was selected.")
+    return current_identity if expected_identity is not None else None
 
 
 def _consume_nonce(nonce: str, expires_at_ms: int) -> None:
@@ -411,6 +436,41 @@ def _optional_int(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
+        raise NativePathLeaseError("Native path grant payload is invalid.") from exc
+
+
+def _identity_options(payload: dict[str, Any]) -> tuple[tuple[int, int], ...]:
+    devices = _optional_identities(payload.get("device_id"))
+    files = _optional_identities(payload.get("file_id"))
+    if devices is None and files is None:
+        return ()
+    if devices is None or files is None or len(devices) != len(files):
+        raise NativePathLeaseError("Native path grant payload is invalid.")
+    return tuple(zip(devices, files))
+
+
+def _runtime_identity(identity_options: tuple[tuple[int, int], ...]) -> tuple[int, int] | None:
+    if not identity_options:
+        return None
+    if len(identity_options) == 1:
+        return identity_options[0]
+    # Rust encodes the legacy Win32 pair first and FILE_ID_INFO second.
+    return identity_options[1] if _WINDOWS_STAT_USES_FILE_ID_INFO else identity_options[0]
+
+
+def _optional_identities(value: Any) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value != value.lower():
+        raise NativePathLeaseError("Native path grant payload is invalid.")
+    parts = value.split(":")
+    if not 1 <= len(parts) <= 2 or any(
+        not part or any(char not in "0123456789abcdef" for char in part) for part in parts
+    ):
+        raise NativePathLeaseError("Native path grant payload is invalid.")
+    try:
+        return tuple(int(part, 16) for part in parts)
+    except ValueError as exc:
         raise NativePathLeaseError("Native path grant payload is invalid.") from exc
 
 

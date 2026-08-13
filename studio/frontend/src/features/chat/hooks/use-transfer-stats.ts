@@ -18,13 +18,13 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
-  appendSample,
-  computeTransferStats,
   type TransferSample,
   type TransferStats,
-} from "../utils/transfer-stats";
+  appendSample,
+  computeTransferStats,
+} from "@/lib/transfer-stats";
 
-export type { TransferStats } from "../utils/transfer-stats";
+export type { TransferStats } from "@/lib/transfer-stats";
 
 export function useTransferStats(
   bytes: number | null | undefined,

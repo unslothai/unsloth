@@ -18,8 +18,8 @@ export function HubDetailView({
   const [scrolled, setScrolled] = useState(false);
   // Split pane is narrower than the full-page overlay; tighter measure reads better.
   const measure = compact
-    ? "mx-auto w-full max-w-[860px] px-5 sm:px-5"
-    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    ? "mx-auto w-full max-w-[var(--hub-measure-compact)] px-5 sm:px-5"
+    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
 
   useEffect(() => {
     const el = scrollRef.current;

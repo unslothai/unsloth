@@ -8,7 +8,11 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import json
 import os
+import threading
+import time
+import types
 
 import pytest
 from fastapi import HTTPException
@@ -35,6 +39,7 @@ class _FakeBackend:
     effective_parallel_slots = 1
     _slot_save_binary = None
     _gguf_path = None
+    _loaded_by_user_action = False
 
     def __init__(
         self,
@@ -105,6 +110,10 @@ class _LoadRecorder:
         return None
 
 
+# The reload-capability checks in routes/inference ask whether idle unload is
+# CONFIGURED, not what the effective TTL is: Model Memory residency zeroes the
+# latter, and a model the idle loop already freed still has to come back. So a
+# stubbed TTL is paired with the configured reader wherever one is set.
 def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: resolves_to)
@@ -177,6 +186,164 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert req.model_path == "unsloth/B-GGUF"
     assert req.gguf_variant == "Q4_K_M"
     assert backend.model_identifier == "unsloth/B-GGUF"
+
+
+def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    warmed = []
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+
+    def _unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("the resident model must not touch the filesystem index")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _unexpected_resolve)
+    _run_hook("unsloth/Muse-Glimmer-30B-GGUF")
+    assert rec.calls == []
+    assert warmed == [1]
+
+
+def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    calls = []
+    warmed = []
+
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
+    resolver.invalidate_index(additions_only = True)
+    assert resolver._scan[0] < 0.0  # additions-only: the time of the invalidation
+    assert resolver.index_is_built() is False
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+
+    assert calls == []
+    assert warmed == [1]
+    assert len(rec.calls) == 1
+
+
+def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
+    from types import SimpleNamespace
+
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    resolver._scan = (time.monotonic(), {"unsloth/a-gguf": old})
+    resolver.invalidate_index()
+    assert resolver.index_is_built() is False
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    removed = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/removed-root/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/b-gguf": removed}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    # #8389 made a hub-style id a CONCRETE reference, so a name the refresh just proved is not
+    # here is refused rather than quietly answered by whatever is resident. This test predates
+    # that and used to assert the hook returned; what it is actually about -- one rescan, then a
+    # re-resolve that does not rescan, and the resident model left alone -- is unchanged, so the
+    # refusal is asserted alongside it instead of the test being weakened to swallow it.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+
+    assert excinfo.value.status_code == 404
+    # The third call is the refusal wording asking what the RESIDENT model is; like the second it
+    # passes allow_scan = False, which is why the rescan count below is still one.
+    assert calls == [
+        ("unsloth/B-GGUF", {}),
+        ("unsloth/B-GGUF", {"allow_scan": False}),
+        ("unsloth/A-GGUF:Q4_K_M", {"allow_scan": False}),
+    ]
+    assert scans == [1]
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/a-gguf": old}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: scans.append(1) or {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert calls == [("unsloth/B-GGUF", {})]
+    assert scans == [1]
+    assert len(rec.calls) == 1
 
 
 def test_concurrent_same_target_loads_once(monkeypatch):
@@ -485,6 +652,7 @@ def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 1)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 1 > 0)
     kw._inflight = 0
     kw._last_active = time.monotonic() - 3600
 
@@ -514,6 +682,7 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     kw._inflight = 0
     kw._pending = 0
     kw._last_active = time.monotonic() - 3600
@@ -531,7 +700,18 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
 
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.02))
-        await asyncio.sleep(0.2)
+        # Wall clock with a generous deadline, like the keep-KV test below: a fixed
+        # 0.2 s sleep is enough locally and not enough on a loaded runner, where the
+        # loop's first poll can miss the window entirely and the assertion reports an
+        # unload that never happened rather than a timing miss.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+            if unloads:
+                break
+        # Keep polling briefly after the first unload so a loop that frees repeatedly
+        # is still caught, rather than passing because we stopped watching.
+        await asyncio.sleep(0.15)
         task.cancel()
         try:
             await task
@@ -549,6 +729,7 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -607,7 +788,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -615,6 +796,51 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
     resp = settings_route.update_openai_auto_switch(payload, "tester")
     assert resp.idle_unload_active is False and resp.auto_unload_keep_kv is True
     assert kw._kv_resume is None and not saved.exists()
+
+
+def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
+    # Residency zeroes the effective TTL, but the user never turned idle unload
+    # off, so saving anything else must leave their saved KV alone.
+    import routes.settings as settings_route
+    from core.inference import llama_keepwarm as kw
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    saved.write_bytes(b"kv")
+    manifest = {
+        "identity": ("m", None, "m"),
+        "dir": str(tmp_path),
+        "slots": [{"id": 0, "filename": saved.name}],
+    }
+    kw._kv_resume = manifest
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False)
+    )
+    monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
+    monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    try:
+        assert resp.idle_unload_active is False
+        assert kw._kv_resume is manifest and saved.exists()
+    finally:
+        kw._kv_resume = None
+
+
+def test_idle_unload_is_configured_ignores_the_residency_veto(monkeypatch):
+    # The reader the purge uses must report the user's setting, not the veto.
+    import utils.model_memory_settings as mm
+    import utils.openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "_stored_idle_seconds", lambda: 300)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+
+    assert settings.get_auto_unload_idle_seconds() == 0
+    assert settings.idle_unload_is_configured() is True
+
+    monkeypatch.setattr(settings, "_stored_idle_seconds", lambda: 0)
+    assert settings.idle_unload_is_configured() is False
 
 
 def test_audio_generate_is_tracked_as_inference_path():
@@ -634,6 +860,7 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.01)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.01 > 0)
     monkeypatch.setattr(kw, "_inflight", 1)
     monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
 
@@ -958,6 +1185,7 @@ def test_count_tokens_is_tracked_as_inference_path():
 
     assert _is_inference_path("/v1/messages/count_tokens") is True
     assert _is_inference_path("/api/inference/messages/count_tokens") is True
+    assert _is_inference_path("/api/inference/chat/count_tokens") is True
     assert _is_inference_path("/v1/messages") is True
 
 
@@ -1375,6 +1603,7 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.05)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.05 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_pending", 0)
 
@@ -1546,6 +1775,32 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
     _run_hook("org/Repo-GGUF:Q4_K_M")
     assert rec.calls == []  # already serving -> no reload
     assert backend._openai_advertised_id == "org/Repo-GGUF"  # alias now recorded
+
+
+def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch):
+    # The resident short circuit matches on model_identifier, which is the load path
+    # for a manual local load. Answering from it skips the alias recording above, so a
+    # loose .gguf whose scanner alias is not its filename would be advertised, and
+    # reported in every response, as the filename instead.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)  # loaded by path, no advertised id
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook(path)
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+    assert inference_route._llama_public_model_id(backend) == "Qwen3-4B-Instruct-GGUF"
+    # Recorded, so the path now short circuits without the resolver.
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda _m, **_kw: pytest.fail("resolver re-entered")
+    )
+    _run_hook(path)
 
 
 def test_streaming_responses_uses_advertised_id_helper():
@@ -1985,6 +2240,7 @@ def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatc
         recorder = rec,
     )
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)  # standalone env TTL
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 600 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     # A is restored, but the request named B, so it is told so rather than served A.
@@ -2007,6 +2263,7 @@ def test_no_stash_reload_when_idle_off_and_auto_switch_off(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     _run_hook("org/B-GGUF")
@@ -2329,6 +2586,7 @@ def _stash(monkeypatch, *, idle = 600):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: idle)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: idle > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
 
@@ -2591,6 +2849,7 @@ def test_omitted_model_still_reloads_idle_freed_model(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 600 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     asyncio.run(
@@ -3055,6 +3314,7 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 600 > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     monkeypatch.setattr(
@@ -3180,6 +3440,1035 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+
+
+# ── /chat/count_tokens: what the recount prices ───────────────────
+
+
+def _count_tokens_backend(
+    monkeypatch,
+    loaded_id = "org/A-GGUF",
+    count = 10,
+    *,
+    supports_tools = False,
+    reasoning_style = "enable_thinking",
+):
+    """A loaded GGUF backend wired into the count endpoint, as ``(switched, counted)``: auto-switch
+    attempts, and the messages/system/tools/template kwargs the route hands to the tokenizer."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = _FakeBackend(loaded_id)
+    backend.supports_tools = supports_tools
+    # The real kwargs builder, so this pins the route against the completion path's mapping.
+    backend._supports_reasoning = True
+    backend._reasoning_always_on = False
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_effort_levels = ["high", "max"]
+    backend._supports_preserve_thinking = True
+    backend._architecture = None
+    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(
+        backend, type(backend)
+    )
+    switched: list = []
+    counted: dict = {}
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        counted.update(
+            messages = messages,
+            system = system,
+            tools = tools,
+            strict = strict,
+            chat_template_kwargs = chat_template_kwargs,
+        )
+        return count
+
+    async def _switch(*args, **kwargs):
+        switched.append(True)
+        return None
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    return switched, counted
+
+
+def _count_request(
+    messages,
+    model = "org/A-GGUF",
+    **fields,
+):
+    """A /chat/count_tokens payload built from plain message dicts."""
+    from models.inference import ChatCountTokensRequest, ChatMessage
+    return ChatCountTokensRequest(
+        model = model,
+        messages = [ChatMessage(**message) for message in messages],
+        **fields,
+    )
+
+
+def _counted_body(payload):
+    """Run the count endpoint and return its decoded JSON body."""
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    return json.loads(response.body)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("hello", id = "plain_string"),
+        # Control for the image guard below: a text-only parts array is unaffected.
+        pytest.param([{"type": "text", "text": "hello"}], id = "text_parts"),
+    ],
+)
+def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch, content):
+    # The recount has no abort signal, so a stale payload naming A must not drag the backend back.
+    switched, _counted = _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 42)
+    payload = _count_request([{"role": "user", "content": content}])
+    # The reply names B, the tokenizer that produced the total, not the A asked for.
+    assert _counted_body(payload) == {"input_tokens": 42, "model": "org/B-GGUF"}
+    assert switched == []
+
+
+def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
+    # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    gate = {}
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+    )
+    assert _counted_body(payload) == {"input_tokens": 99, "model": "org/A-GGUF"}
+    assert gate.get("tools_on") is True
+    assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == ["web_search"]
+    assert any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+
+
+# A leaked tool call in a replayed turn, plus an example naming a NOT-enabled tool the gate keeps.
+_LEAKED_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "content": 'sunny <tool_call>{"name": "web_search", "arguments": {"q": "weather"}}'
+        "</tool_call> and call it as offline_tool[ARGS]{}",
+    },
+    {"role": "user", "content": "and tomorrow?"},
+]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expect_markup"),
+    [
+        # Auto-Heal on (default): the tool path strips before rendering, so raw markup reads high.
+        pytest.param({}, False, id = "auto_heal_default_on"),
+        pytest.param({"auto_heal_tool_calls": True}, False, id = "auto_heal_on"),
+        # Off leaves the markup in the real prompt, so the count has to keep it as well.
+        pytest.param({"auto_heal_tool_calls": False}, True, id = "auto_heal_off"),
+    ],
+)
+def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expect_markup):
+    """The GGUF tool path strips stale tool-call XML out of replayed assistant turns before
+    rendering, so a count that keeps it prices text the completion removes."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(_payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        _LEAKED_TOOL_HISTORY,
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        **fields,
+    )
+    assert _counted_body(payload)["input_tokens"] == 99
+    assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    content = str(assistant[0].get("content", ""))
+    assert (
+        "<tool_call>" in content
+    ) is expect_markup, "the count must render the same replayed history the completion does"
+    assert (
+        "offline_tool[ARGS]" in content
+    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
+
+
+_PASSTHROUGH_CATALOG = [
+    {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+]
+_PASSTHROUGH_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+]
+_PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.parametrize(
+    ("cli_policy", "messages", "fields", "priced_tools"),
+    [
+        # The reported shape: `unsloth run --enable-tools` sets the process policy without asking
+        # for the tool loop, so tool history still goes to llama-server verbatim, bare.
+        pytest.param(
+            True,
+            _PASSTHROUGH_TOOL_HISTORY,
+            {},
+            None,
+            id = "cli_policy_does_not_price_a_passthrough_prompt",
+        ),
+        # Negative control: with no tool history the same policy takes the ordinary GGUF loop.
+        pytest.param(
+            True,
+            _PASSTHROUGH_PLAIN,
+            {},
+            ["web_search"],
+            id = "cli_policy_prices_an_ordinary_chat",
+        ),
+        # The passthrough is the one route that forwards the caller's own catalog.
+        pytest.param(
+            None,
+            _PASSTHROUGH_PLAIN,
+            {"tools": _PASSTHROUGH_CATALOG},
+            ["get_weather"],
+            id = "client_catalog_is_priced_verbatim",
+        ),
+        # tool_choice "none" withdraws the catalog, leaving the request on the ordinary path.
+        pytest.param(
+            None,
+            _PASSTHROUGH_PLAIN,
+            {"tools": _PASSTHROUGH_CATALOG, "tool_choice": "none"},
+            None,
+            id = "withdrawn_catalog_is_not_priced",
+        ),
+        # ... unless tool history needs those schemas to replay, keeping it on the passthrough.
+        pytest.param(
+            None,
+            _PASSTHROUGH_TOOL_HISTORY,
+            {"tools": _PASSTHROUGH_CATALOG, "tool_choice": "none"},
+            ["get_weather"],
+            id = "withdrawn_catalog_with_tool_history_is_priced",
+        ),
+        # It withdraws the process policy's own catalog too, as _client_disabled_tool_calls does.
+        pytest.param(
+            True,
+            _PASSTHROUGH_PLAIN,
+            {"tool_choice": "none"},
+            None,
+            id = "withdrawn_catalog_beats_the_cli_policy",
+        ),
+    ],
+)
+def test_chat_count_tokens_prices_the_route_the_completion_takes(
+    monkeypatch, cli_policy, messages, fields, priced_tools
+):
+    """The count must describe the request the completion actually sends (#7453).
+
+    Applying the process tool policy without first asking which route the request takes prices a
+    built-in catalog plus the action nudge, while the completion forwards verbatim and sends neither.
+    """
+    import state.tool_policy as _tp
+
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: cli_policy)
+
+    assert _counted_body(_count_request(messages, **fields))["input_tokens"] == 99
+    assert [(tool.get("function") or {}).get("name") for tool in counted.get("tools") or []] == (
+        priced_tools or []
+    )
+    # The nudge rides with the built-in selection, so it must follow the same verdict.
+    nudged = any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+    assert nudged is (priced_tools == ["web_search"])
+
+
+def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypatch):
+    """Coalescing is an ordinary-GGUF-path step, so it has to follow the routing.
+
+    ``_openai_messages_for_passthrough`` drops the empty assistant sentinel but keeps the two user
+    turns around it (a stopped response's shape), so merging prices a prompt that route never sends.
+    """
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    sentinel_thread = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "second"},
+    ]
+
+    _counted_body(_count_request(sentinel_thread, tools = _PASSTHROUGH_CATALOG))
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first",
+        "second",
+    ]
+
+    # Negative control: off the passthrough the same thread merges, so no two user turns in a row.
+    _counted_body(_count_request(sentinel_thread))
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first\n\nsecond"
+    ]
+
+
+def _in_flight_generation():
+    """One registered generation, as the completion path registers it."""
+    from state import active_generations
+    return active_generations.ActiveGeneration(threading.Event(), thread_id = "t1")
+
+
+def test_chat_count_tokens_refuses_while_a_generation_is_in_flight(monkeypatch):
+    # The whole point of the endpoint's cost budget: a count must never share llama-server with a
+    # decode. The frontend gate only covers our own tab, so the refusal has to live here too.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    # Reached only after the tool selection and message rewriting, so it doubles as proof that the
+    # refusal happens on entry rather than after the handler has already done that work.
+    reached: list = []
+    real = inference_route._llama_status_checkpoint_id
+    monkeypatch.setattr(
+        inference_route,
+        "_llama_status_checkpoint_id",
+        lambda backend: (reached.append(1), real(backend))[1],
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert reached == [], "the handler must decline before doing any of the count's work"
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_counts_again_once_the_generation_ends(monkeypatch):
+    # Control: the refusal keys on a live generation, not on the request, and it does not latch.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException):
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached once nothing is decoding"
+
+
+def test_chat_count_tokens_refuses_a_generation_that_starts_mid_count(monkeypatch):
+    # Everything between the entry guard and the tokenizer awaits, so a run can begin in the gap.
+    # _llama_status_checkpoint_id is the last call before the second guard: start a generation
+    # from inside it and the count must abandon rather than proceed with what it already built.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    started: list = []
+    real = inference_route._llama_status_checkpoint_id
+
+    def _start_a_run(backend):
+        if not started:
+            handle = _in_flight_generation()
+            handle.__enter__()
+            started.append(handle)
+        return real(backend)
+
+    monkeypatch.setattr(inference_route, "_llama_status_checkpoint_id", _start_a_run)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+
+
+def _enabled_mcp_server(
+    tmp_path,
+    monkeypatch,
+    *,
+    cached = None,
+    cooloff = False,
+):
+    """One enabled MCP server, with its discovery cache in a known state.
+
+    Both cache dicts are module globals shared across the whole test session, so they are
+    replaced rather than mutated: a leftover entry would make an "undiscovered" case look
+    discovered and quietly pass.
+    """
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "S", url = "http://mcp.test/sse", is_enabled = True
+    )
+    if cached is not None:
+        mcp_client.cache_tools("s1", cached)
+    if cooloff:
+        mcp_client.record_probe_failure("s1")
+
+    # Any probe at all is a failure of the whole design: a count must not reach the network.
+    async def _no_probes(**_kwargs):
+        raise AssertionError("a count must never probe an MCP server")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", _no_probes)
+
+
+MCP_TOOL_PAYLOAD = [{"name": "lookup", "description": "d", "inputSchema": {"type": "object"}}]
+
+
+def test_cached_mcp_tools_reads_the_cache_without_probing(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    specs, complete = cached_mcp_tools()
+    assert complete is True
+    assert [spec["function"]["name"] for spec in specs] == ["mcp__s1__lookup"]
+
+
+def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is False, (
+        "a completion would probe this server and render its schemas, so a count that skips "
+        "them is short, not exact"
+    )
+
+
+def test_cached_mcp_tools_counts_a_cooloff_server_as_complete(tmp_path, monkeypatch):
+    # The completion renders nothing for a cool-off server either, so skipping it is exact rather
+    # than short. Declining here would blank the bar over an agreement.
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cooloff = True)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is True
+
+
+def test_chat_count_tokens_declines_an_undiscovered_mcp_server(tmp_path, monkeypatch):
+    # Undercounting is the dangerous direction: it tells the user room exists that the next
+    # request will not find. Discovery is not an option on this path, so decline instead.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    payload = _count_request([{"role": "user", "content": "hello"}], mcp_enabled = True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "mcp" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached with a short tool list"
+
+
+def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
+    # MCP alone turns tools on for the completion, so the count has to render them even with the
+    # built-in tools off, or the bar is short by a whole catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}], mcp_enabled = True, enabled_tools = []
+    )
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
+    assert (
+        "mcp__s1__lookup" in names
+    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
+
+
+def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
+    # Control: the decline keys on the request asking for MCP, not on a server merely existing.
+    # tool_choice "none" would NOT be a control here: _explicit_studio_tool_loop_requested treats
+    # mcp_enabled as an explicit ask, so the completion still renders the catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must still be reached"
+
+
+def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
+    """Admission and the work are separate steps. A run that registers in between cannot be
+    prevented without a lock in front of generation startup, so the count abandons at the
+    checkpoint between /apply-template and /tokenize instead of spending the second trip."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    started: list = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        # Stand in for /apply-template returning: the run lands, then the checkpoint is polled.
+        handle = _in_flight_generation()
+        handle.__enter__()
+        started.append(handle)
+        assert should_abort is not None, "the route must give the tokenizer a way to stand down"
+        if should_abort():
+            from core.inference.llama_cpp import CountAborted
+            raise CountAborted()
+        counted.update(messages = messages)
+        return 1234
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    assert LlamaCppBackend is not None
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the second round trip must not happen"
+
+
+def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
+    # Control: the checkpoint fires on a live run, not on every count.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    seen: list = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        seen.append(should_abort() if should_abort else None)
+        counted.update(messages = messages)
+        return 1234
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert seen == [False], "an idle server must report nothing to stand down for"
+
+
+@pytest.mark.parametrize(
+    ("abort", "expect_tokenize"),
+    [(True, False), (False, True)],
+    ids = ["run_started", "still_idle"],
+)
+def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, expect_tokenize):
+    """The abort has to escape the template except-block. Swallowed, it would set
+    apply_template_failed and the text fallback would tokenize anyway, which is the work
+    being declined. The control shows the poll alone does not stop an idle count."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import CountAborted, LlamaCppBackend
+
+    posted: list = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            posted.append(url)
+            if url.endswith("/apply-template"):
+                return _FakeResponse({"prompt": "user hi"})
+            return _FakeResponse({"tokens": [1, 2]})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    call = lambda: _CountBackend().count_chat_tokens(
+        [{"role": "user", "content": "hi"}],
+        strict = True,
+        should_abort = lambda: abort,
+    )
+    if abort:
+        with pytest.raises(CountAborted):
+            call()
+    else:
+        assert call() == 2
+    assert any(u.endswith("/tokenize") for u in posted) is expect_tokenize
+
+
+def test_chat_count_tokens_refuses_image_messages(monkeypatch):
+    # Images become a short /apply-template marker: refuse rather than undercount, before the switch.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                    },
+                ],
+            }
+        ]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
+    # extra = "allow", so without this guard audio_base64 is accepted, dropped and undercounted.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [{"role": "user", "content": "what did I just say"}],
+        audio_base64 = "UklGRiQAAABXQVZF",
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "audio" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
+    # Control: the refusal keys on the audio, not on the shape of the request.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    body = _counted_body(_count_request([{"role": "user", "content": "what did I just say"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached"
+
+
+# Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
+# from these exact messages, and the tool loop opens it by splicing in what RAG retrieves.
+_PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
+_PENDING_TOOL_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "checking"},
+    {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+]
+_SETTLED_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "it renews yearly"},
+]
+
+
+@pytest.mark.parametrize(
+    ("messages", "rag_scope", "expected_total"),
+    [
+        # Retrieval splices passages in front of this turn, so counting alone says it fits.
+        pytest.param(_PENDING_USER_TURN, {"thread_id": "t1"}, None, id = "pending_user_turn"),
+        # An interrupted loop's unanswered tool result is the same pending shape.
+        pytest.param(_PENDING_TOOL_TURN, {"project_id": "p1"}, None, id = "pending_tool_turn"),
+        # Ends on an assistant turn: retrieval has no user message yet, so nothing is omitted.
+        pytest.param(_SETTLED_TURN, {"thread_id": "t1"}, 4242, id = "settled_turn_still_counts"),
+        # No documents in scope means no injection to miss, pending turn or not.
+        pytest.param(_PENDING_USER_TURN, None, 4242, id = "no_rag_scope_still_counts"),
+    ],
+)
+def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
+    monkeypatch, messages, rag_scope, expected_total
+):
+    """A recount that omits RAG injection under-reports, the one direction the context bar must
+    never be wrong in. Decline as the image case does and leave the usage the bar already had."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 4242)
+    payload = _count_request(
+        messages,
+        **({"rag_scope": rag_scope} if rag_scope else {}),
+    )
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert total == expected_total, (
+        "a pending turn whose generation would retrieve documents must be declined, "
+        "not priced without them"
+    )
+    if expected_total is None:
+        assert counted == {}, "the tokenizer must not be reached for a declined count"
+
+
+def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch):
+    """A load landing while the tokenizer runs leaves a total attributable to neither model, and
+    the caller's checkpoint guard never moved, so either identity would have it trust the number."""
+    _switched, counted = _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 555)
+    backend = inference_route.get_llama_cpp_backend()
+    inner = backend.count_chat_tokens
+
+    def _count_then_swap(*args, **kwargs):
+        result = inner(*args, **kwargs)
+        # Another tab finishes loading B while this count is in the worker thread.
+        backend.model_identifier = "org/B-GGUF"
+        return result
+
+    backend.count_chat_tokens = _count_then_swap
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert (
+        total is None
+    ), "a total counted across a model change must not be published as either model's"
+    assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
+
+
+def test_chat_count_tokens_collapses_system_turns(monkeypatch):
+    # The completion path joins every system/developer turn into one; the count renders that.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 13)
+    payload = _count_request(
+        [
+            {"role": "system", "content": "Runtime rules."},
+            {"role": "system", "content": "Studio prompt."},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    messages = counted.get("messages") or []
+    systems = [m for m in messages if m.get("role") in ("system", "developer")]
+    assert len(systems) == 1, messages
+    assert "Runtime rules." in systems[0].get("content", "")
+    assert "Studio prompt." in systems[0].get("content", "")
+
+
+@pytest.mark.parametrize(
+    ("reasoning_style", "fields", "expected"),
+    [
+        # Qwen3-style gate: with Thinking off the completion sends enable_thinking=false and the
+        # template prefills an empty <think> block; without it, the LOADED mode renders.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": False},
+            {"enable_thinking": False},
+            id = "thinking_turned_off",
+        ),
+        # gpt-oss-style: the effort level is rendered into the system turn.
+        pytest.param(
+            "reasoning_effort",
+            {"reasoning_effort": "low"},
+            {"reasoning_effort": "low"},
+            id = "effort_level",
+        ),
+        # preserve_thinking decides whether past <think> blocks stay: a short count or the history.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": True, "preserve_thinking": True},
+            {"enable_thinking": True, "preserve_thinking": True},
+            id = "preserve_thinking",
+        ),
+        # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
+        pytest.param("enable_thinking", {}, None, id = "template_default"),
+    ],
+)
+def test_chat_count_tokens_renders_the_requested_reasoning_mode(
+    monkeypatch, reasoning_style, fields, expected
+):
+    # llama-server layers request kwargs over the load-time ones: omitting them prices LOAD mode.
+    _switched, counted = _count_tokens_backend(
+        monkeypatch, count = 7, reasoning_style = reasoning_style
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}], **fields)
+    assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
+    assert counted.get("chat_template_kwargs") == expected
+
+
+@pytest.mark.parametrize(
+    ("template_kwargs", "expected_tokens"),
+    [
+        # Thinking off: the template prefills an empty <think></think> pair the completion pays for.
+        pytest.param({"enable_thinking": False}, 5, id = "thinking_off"),
+        pytest.param(None, 3, id = "template_default"),
+    ],
+)
+def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
+    monkeypatch, template_kwargs, expected_tokens
+):
+    """The kwargs have to reach llama-server itself: /apply-template runs the same parser
+    as /v1/chat/completions, so the rendered prompt only moves when they are in the body."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if not url.endswith("/apply-template"):
+                return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+            # A Qwen3-style template: thinking off prefills an empty reasoning block.
+            kwargs = body.get("chat_template_kwargs") or {}
+            prefill = "" if kwargs.get("enable_thinking", True) else " <think> </think>"
+            return _FakeResponse({"prompt": "user hi assistant" + prefill})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    assert (
+        _CountBackend().count_chat_tokens(
+            [{"role": "user", "content": "hi"}],
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+        )
+        == expected_tokens
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # A minja template that cannot render this history, or a build without the endpoint.
+        pytest.param("status", id = "apply_template_rejects"),
+        # The template call times out while the tokenizer answers.
+        pytest.param("raise", id = "apply_template_unreachable"),
+    ],
+)
+def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure):
+    """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating message
+    text, dropping every role marker, special token and tool schema (~30% of a six-turn two-tool
+    prompt). Strict callers publish what they get, so it must be an error, not an estimate."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                if failure == "raise":
+                    raise RuntimeError("timed out")
+                return _FakeResponse({"error": "template error"}, status_code = 500)
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    messages = [{"role": "user", "content": "hi there"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    with pytest.raises(RuntimeError):
+        _CountBackend().count_chat_tokens(messages, None, tools, strict = True)
+    # Non-strict callers keep the best-effort approximation they have always had.
+    assert _CountBackend().count_chat_tokens(messages, None, tools) > 0
+
+
+def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
+    """A fresh New Chat has no messages and, by default, no system prompt. The count must
+    forward that empty list as-is rather than inventing a turn to make the template happy.
+
+    Templates that index ``messages[0]`` look like they must reject an empty list, and under
+    python jinja2 they do. llama-server renders through minja, where that yields undefined
+    instead of raising, so the real engine returns the bare preamble. Checked against the
+    shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
+    mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
+    Injecting a placeholder system turn would add a system block to the count for Qwen3
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen = {}
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                seen["messages"] = body.get("messages")
+                # What minja does: no messages renders the preamble, it does not raise.
+                return _FakeResponse({"prompt": "<start_of_turn>model\n"})
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    count = _CountBackend().count_chat_tokens([], None, None, strict = True)
+    assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
+    assert count > 0, "a fresh chat still prices the template preamble"
+
+
+def test_a_count_never_spawns_mcp_servers():
+    """get_enabled_mcp_tools starts stdio MCP server processes, writes cache and cooloff state,
+    and blocks for a whole probe timeout against a server that is down. A background recount
+    must not do host work the user's completion never asked for, so the count path pins
+    mcp_allowed False rather than deriving it from payload.mcp_enabled."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "chat_count_tokens"
+    )
+
+    # The only assignment to _mcp_allowed in the handler must be the constant False.
+    assigned = [
+        node.value
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
+    ]
+    assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
+    assert all(
+        isinstance(v, ast.Constant) and v.value is False for v in assigned
+    ), "a count must never enable MCP discovery"
+
+    called = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "get_enabled_mcp_tools" not in called
 
 
 def test_audio_generate_is_reload_only(monkeypatch):
@@ -3492,6 +4781,33 @@ def _chat_error(payload):
     return exc.value.status_code, exc.value.detail
 
 
+def test_chat_mistyped_gguf_repo_404s_before_vision_guard(monkeypatch):
+    # #8376: image request with a mistyped GGUF id must 404, not 400 on the loaded model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("unsloth/text-only-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_download_enabled", lambda: False
+    )
+    monkeypatch.setattr(
+        resolver,
+        "describe_local_miss",
+        lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ()),
+    )
+    payload = _chat_request(
+        model = "unsloth/typo-vision-GGUF",
+        image_base64 = "aGVsbG8=",
+    )
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, request, "tester"))
+    assert exc.value.status_code == 404
+    assert exc.value.detail["error"]["code"] == "model_not_found"
+    assert rec.calls == []
+
+
 def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
     # The reported bug: the model is not here, so the switch did nothing and /inference/load
     # cannot fix it. Name it and list what can serve.
@@ -3705,6 +5021,7 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -3747,6 +5064,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -3779,6 +5097,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
     kw._inflight = 0
     kw._pending = 0
@@ -3809,6 +5128,7 @@ def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
 
     keep = {"on": True}
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: keep["on"])
     kw._inflight = 0
     kw._pending = 0
@@ -3850,6 +5170,7 @@ def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
 
     ttl = {"v": 0.005}
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: ttl["v"])
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: ttl["v"] > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
     kw._inflight = 0
     kw._pending = 0
@@ -4059,6 +5380,7 @@ def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 3600)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 3600 > 0)
     kw._inflight = 0
     kw._pending = 0
     kw._last_active = time.monotonic()
@@ -4109,11 +5431,11 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl) == (False, 600, False, False)
+    assert (enabled, idle, keep_kv, auto_dl, api_only) == (False, 600, False, False, False)
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -5163,7 +6485,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         def set_job(self, key, state):
             self.state = state
 
-    resolver._scan = (1234.0, {"already-here": "entry"})
+    resolver._scan = (time.monotonic(), {"already-here": "entry"})
     assert (
         download_lifecycle.finalize_worker_exit(
             _Registry(),
@@ -5179,7 +6501,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         == "complete"
     )
     stamp, entries = resolver._scan
-    assert stamp == 0.0, "a finished download left the scan looking fresh"
+    assert stamp < 0.0 and resolver._snapshot_is_trusted(stamp, time.monotonic())
     # Evidence for models already indexed has to survive, or a bare request for one
     # of them during the rebuild is answered by whatever is resident.
     assert entries == {"already-here": "entry"}
@@ -5189,8 +6511,6 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
     # The request path reads this cache without scanning, so emptying it leaves no
     # evidence until the rebuild lands. Only a completed download invalidates, and
     # that only adds, so the entries stay true.
-    import time
-
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
     resolver.invalidate_index()
@@ -5200,6 +6520,147 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
         "Q4_K_M",
         "org/old",
     )
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_trusted_cache_rechecks_snapshot_after_freshness(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    snapshot = (time.monotonic(), {"org/old": entry})
+    monkeypatch.setattr(resolver, "_scan", snapshot)
+    invalidated = False
+
+    def _invalidate_while_deciding_trust():
+        nonlocal invalidated
+        if not invalidated:
+            invalidated = True
+            resolver.invalidate_index()
+        return snapshot[0]
+
+    monkeypatch.setattr(resolver.time, "monotonic", _invalidate_while_deciding_trust)
+
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.models as model_routes
+
+    event_loop_thread = threading.get_ident()
+    calls = []
+
+    def _add(path):
+        calls.append(("add", threading.get_ident()))
+        return {"id": 7, "path": path, "created_at": "fake"}, True
+
+    def _remove(folder_id):
+        calls.append((f"remove:{folder_id}", threading.get_ident()))
+        return True
+
+    def _invalidate():
+        calls.append(("invalidate", threading.get_ident()))
+
+    monkeypatch.setattr("storage.studio_db.add_scan_folder_with_status", _add)
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(resolver, "invalidate_index", _invalidate)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+    async def _run():
+        folder = await model_routes.add_scan_folder_endpoint(
+            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+        )
+        removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
+        return folder, removed
+
+    folder, removed = asyncio.run(_run())
+
+    assert folder["path"] == "/models/custom"
+    assert removed == {"ok": True}
+    assert [name for name, _ in calls] == ["add", "invalidate", "remove:7", "invalidate"]
+    assert all(thread_id != event_loop_thread for _, thread_id in calls)
+
+
+def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
+    removed = []
+    warmed = []
+
+    def _remove(folder_id):
+        removed.append(folder_id)
+        return True
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", _remove)
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    asyncio.run(model_routes.remove_scan_folder_endpoint(7, current_subject = "tester"))
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    assert local_inventory.remove_scan_folder_response(8) == {"ok": True}
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+    assert removed == [7, 8]
+    assert warmed == [1, 1]
+
+
+def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.storage import scan_folders
+    from storage import studio_db
+
+    class _Connection:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+            self.committed = False
+            self.closed = False
+
+        def execute(self, _sql, _params):
+            return SimpleNamespace(rowcount = self.rowcount)
+
+        def commit(self):
+            self.committed = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
+    for storage in (studio_db, scan_folders):
+        for rowcount, expected in ((1, True), (0, False)):
+            connection = _Connection(rowcount)
+            monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+
+            assert storage.remove_scan_folder(7) is expected
+            assert connection.committed
+            assert connection.closed
+
+
+def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    invalidated = []
+    warmed = []
+    monkeypatch.setattr(resolver, "invalidate_index", lambda: invalidated.append(1))
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", lambda _folder_id: False)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", lambda _folder_id: False)
+
+    assert asyncio.run(model_routes.remove_scan_folder_endpoint(404, current_subject = "tester")) == {
+        "ok": True
+    }
+    assert local_inventory.remove_scan_folder_response(404) == {"ok": True}
+    assert invalidated == []
+    assert warmed == []
 
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
@@ -5810,3 +7271,296 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     stored = settings.get_model_overrides()
     assert list(stored) in ([repo], [snapshot]), stored
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
+
+
+def test_mlx_kv_bits_survives_the_whole_override_projection():
+    # Dropped here, an API auto-switch would load a remembered MLX model at full
+    # precision while the picker honored the width.
+    for bits in (8, 6, 5, 4, 3, 2):
+        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+
+    # A discrete set, so an in-range width can still be one mx.quantize rejects.
+    # bool is an int subclass, and a string width would reach LoadRequest untyped.
+    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
+        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+
+    # Ungated on is_gguf, matching the picker's own load payload.
+    for is_gguf in (True, False):
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_bits"] == 4
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+
+
+def _idle_backend(kw, monkeypatch, *, user_loaded):
+    """A loaded, long-idle GGUF backend wired into the idle loop."""
+    import time
+
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend._loaded_by_user_action = user_loaded
+
+    def _unload():
+        backend.is_loaded = False
+
+    backend.unload_model = _unload
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+def test_api_only_setting_roundtrip_and_default(monkeypatch):
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+
+    # Off on an install that never stored it, so existing setups are unchanged.
+    assert settings.get_auto_unload_api_only() is False
+    assert settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY not in store
+    assert settings.set_openai_auto_switch(True, 60, None, None, True)[4] is True
+    assert settings.get_auto_unload_api_only() is True
+    # None leaves the stored value untouched (older clients can't reset it).
+    assert settings.set_openai_auto_switch(True, 60, None, None, None)[4] is True
+    with pytest.raises(ValueError, match = "true or false"):
+        settings.set_openai_auto_switch(True, 60, None, None, "garbage")
+
+
+def test_idle_unload_still_frees_a_user_loaded_model_by_default(monkeypatch):
+    # Backwards compatibility: with the toggle off, provenance changes nothing.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is False
+
+
+def test_api_only_spares_a_user_loaded_model_but_not_an_api_one(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+
+    pinned = _idle_backend(kw, monkeypatch, user_loaded = True)
+    _drive_idle_loop(kw)
+    assert pinned.is_loaded is True
+    assert kw.get_last_unloaded_model() is None  # nothing stashed either
+
+    api_loaded = _idle_backend(kw, monkeypatch, user_loaded = False)
+    _drive_idle_loop(kw)
+    assert api_loaded.is_loaded is False
+
+
+def test_an_idle_restored_model_is_api_provenance(monkeypatch):
+    # The restore runs through the auto-switch path, so the model it brings back
+    # is unloadable again on the next idle rather than pinned forever.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    backend.is_loaded = False
+    backend.model_identifier = None
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls and backend._loaded_by_user_action is False
+
+    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is False
+
+
+def test_unload_clears_the_user_load_flag():
+    # Otherwise the next API load inherits the pin and never frees its VRAM.
+    import inspect
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    assert backend._loaded_by_user_action is False  # off until a UI load says otherwise
+    backend._loaded_by_user_action = True
+    backend.unload_model()
+    assert backend._loaded_by_user_action is False
+    # Not cleared on a bare process kill: a respawn or MTP-free reload replays
+    # the same load and must keep the provenance it had.
+    assert "_loaded_by_user_action" not in inspect.getsource(LlamaCppBackend._kill_process)
+
+
+def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
+    import inspect
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    backend._loaded_by_user_action = False
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _already_loaded(*_a, **_kw):
+        return None  # the dedupe path returns without touching the backend
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _already_loaded)
+    request = LoadRequest(model_path = "unsloth/A-GGUF")
+
+    # An explicit UI load pins, including when it deduped onto the resident model.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester", user_initiated = True))
+    assert backend._loaded_by_user_action is True
+
+    # Preview shares this helper and must not pin, so it keeps the default.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester"))
+    assert backend._loaded_by_user_action is False
+    import routes.preview as preview_route
+
+    assert "user_initiated" not in inspect.getsource(preview_route._serve_chat)
+
+
+def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_path):
+    # A KV save can take seconds; the loop re-reads the TTL and keep-KV after it
+    # for exactly that reason, so provenance has to be re-read there too.
+    from core.inference import llama_keepwarm as kw
+
+    on = {"now": False}
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: on["now"])
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+
+    manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": "f.bin", "n_saved": 1}]}
+    deleted = []
+    monkeypatch.setattr(kw, "_delete_resume_files", lambda m: deleted.append(m))
+
+    def _save(should_abort = None):
+        on["now"] = True  # the user flips the toggle while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is True
+    assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
+    assert kw._kv_resume is None
+
+
+def _age_resolver_clock(monkeypatch, seconds):
+    """Advance the resolver's monotonic clock by *seconds*.
+
+    Ageing a snapshot by rewriting its stamp assumes the host has been up longer
+    than the age; a fresh CI runner has not, and the subtraction flips the sign.
+    """
+    base = time.monotonic()
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: base + seconds))
+
+
+def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
+    # A background rebuild that keeps failing must not leave the retained entries
+    # trusted forever: a model deleted on disk would still trigger a switch.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+    _age_resolver_clock(monkeypatch, 600.0)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is None
+
+
+def test_additions_only_trust_outlasts_a_scan_slower_than_the_ttl(monkeypatch):
+    # The window tracks the rebuild's own cost, so the install this fix targets (a
+    # multi-second multi-root scan) is not pushed back onto the request path.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 16.0)
+    resolver.invalidate_index(additions_only = True)
+    _age_resolver_clock(monkeypatch, resolver._CACHE_TTL_S * 4)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+
+
+def test_a_dead_warm_worker_releases_the_slot(monkeypatch):
+    # BaseException out of the scan used to leave _warming set, killing background
+    # warming for the life of the process and putting scans back on requests.
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+
+    def _die():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(resolver, "_build_index", _die)
+    resolver.warm_index_soon()
+    for _ in range(100):
+        if not resolver._warming:
+            break
+        time.sleep(0.05)
+    assert resolver._warming is False
+    assert resolver._warm_pending is False
+
+
+def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
+    # monotonic() counts from boot, so on a host whose uptime is still under the
+    # TTL an invalidated stamp used to read as recent and serve what was revoked.
+    # Patch the module's reference, not the real time module: a stray warm thread
+    # shares that one, and a frozen global clock hangs its duty-cycle arithmetic.
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: 1.0))
+    for kwargs in ({}, {"additions_only": True}):
+        monkeypatch.setattr(resolver, "_scan", (1.0, {"org/a": "entry"}))
+        resolver.invalidate_index(**kwargs)
+        built = []
+        monkeypatch.setattr(resolver, "_build_index", lambda: (built.append(1), {})[1])
+        resolver._index()
+        assert built == [1], kwargs
+
+
+# The resident short circuit is the one path that answers without consulting the
+# index, so it must never say yes where the pre-existing resident check says no.
+# Anything it accepts, main would have accepted too: a miss only costs the scan.
+_IDENTITIES = [
+    "unsloth/Muse-GGUF",
+    "/srv/models/unsloth--Muse-GGUF",
+    "/srv/models/Muse.gguf",
+    None,
+]
+_REQUESTS = [
+    "unsloth/Muse-GGUF",
+    "unsloth/muse-gguf",
+    "unsloth/Muse-GGUF:Q4_K_M",
+    "unsloth/Muse-GGUF:Q8_0",
+    "unsloth/Muse-GGUF:latest",
+    "unsloth/Other-GGUF",
+    "/srv/models/Muse.gguf",
+    "/srv/models/MUSE.gguf",
+    "muse.gguf",
+    "../../etc/passwd",
+    "unsloth/",
+    ":Q4_K_M",
+    "unsloth/Muse GGUF",
+]
+
+
+@pytest.mark.parametrize("identity", _IDENTITIES)
+@pytest.mark.parametrize("requested", _REQUESTS)
+@pytest.mark.parametrize("quant", [None, "Q4_K_M"])
+def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
+    monkeypatch, identity, requested, quant
+):
+    backend = _FakeBackend(identity, hf_variant = quant) if identity else _FakeBackend(None)
+    backend.is_loaded = identity is not None
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    fast = inference_route._loaded_identity_satisfies(requested)
+    assert not (
+        fast and not inference_route._loaded_satisfies(requested)
+    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+
+
+def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-GGUF", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q8_0") is False
+    assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q4_K_M") is True

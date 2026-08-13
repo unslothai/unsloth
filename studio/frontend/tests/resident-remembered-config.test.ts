@@ -35,6 +35,8 @@ function config(nParallel: number | null, maxSeqLength: number | null = null) {
     speculativeType: null,
     specDraftNMax: null,
     nParallel,
+    nBatch: null,
+    nUbatch: null,
     tensorParallel: false,
     chatTemplateOverride: null,
   };

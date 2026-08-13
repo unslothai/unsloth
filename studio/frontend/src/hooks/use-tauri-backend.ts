@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
@@ -11,6 +17,20 @@ import {
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
+import {
+  APP_CLOSING_CANCELLED_EVENT,
+  APP_CLOSING_EVENT,
+  clearAppClosing,
+  isAppClosing,
+  markAppClosing,
+  subscribeAppClosing,
+} from "@/components/tauri/closing-signal";
+import {
+  INITIAL_STARTUP_MESSAGE,
+  SERVER_STARTUP_MESSAGE,
+  startupMessageFromLog,
+  type StartupMessage,
+} from "@/components/tauri/startup-messages";
 
 export type BackendStatus =
   | "checking"
@@ -64,6 +84,10 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
     return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
   }
 
+  // A backend we cannot attribute to this install no longer reaches here: the
+  // launch steps over its port. Only a mutation still refuses, and that message
+  // comes from external_conflict_message in commands.rs.
+
   if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
     return preflight.port
       ? `A desktop-owned Unsloth backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen Unsloth.`
@@ -114,6 +138,9 @@ export function useTauriBackend() {
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
+  const [startupMessage, setStartupMessage] = useState<StartupMessage>(
+    INITIAL_STARTUP_MESSAGE,
+  );
   // Track seen step names to deduplicate (Strict Mode, event replay, etc.)
   const seenStepsRef = useRef(new Set<string>());
   // True when we attached to a server we didn't spawn (can't stop it)
@@ -123,6 +150,9 @@ export function useTauriBackend() {
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
+  // Read through rather than mirrored into state: the app-closing listener is registered
+  // inside the long event effect below, which cannot reach a setState from this render.
+  const closing = useSyncExternalStore(subscribeAppClosing, isAppClosing);
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
@@ -215,6 +245,7 @@ export function useTauriBackend() {
           setApiBase(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(true);
+          setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           startExternalServerPoll(preflight.port);
           return;
@@ -228,6 +259,7 @@ export function useTauriBackend() {
           portRef.current = preflight.port;
           setIsExternalServer(false);
           stopExternalServerPoll();
+          setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           return;
         case "managed_ready":
@@ -270,6 +302,7 @@ export function useTauriBackend() {
       return;
     }
     startingRef.current = true;
+    setStartupMessage(INITIAL_STARTUP_MESSAGE);
     portRef.current = null;
     startTimedOutRef.current = false;
 
@@ -581,6 +614,17 @@ export function useTauriBackend() {
 
       register<string>("server-log", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
+        setStartupMessage((current) => startupMessageFromLog(current, e.payload));
+      });
+
+      // Reaping the backend blocks Rust's quit thread for up to ~15s. Cover the window
+      // for that, or it reads as a freeze.
+      register<void>(APP_CLOSING_EVENT, () => {
+        markAppClosing();
+      });
+
+      register<void>(APP_CLOSING_CANCELLED_EVENT, () => {
+        clearAppClosing();
       });
 
       register<void>("tray-toggle-server", () => {
@@ -627,8 +671,8 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status, logs, error, isExternalServer,
-    currentStepIndex, progressDetail, elevationPackages,
+    status, logs, error, isExternalServer, closing,
+    currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
   };
