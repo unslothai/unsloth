@@ -50,6 +50,21 @@ function toRecord(input: {
   return { id, kind: input.kind, ggufVariant };
 }
 
+function writeLegacyRecord(record: LastLocalModelLoad): void {
+  try {
+    localStorage.setItem(
+      LEGACY_STORAGE_KEY,
+      JSON.stringify({
+        id: record.id,
+        kind: record.kind,
+        ggufVariant: record.ggufVariant,
+      }),
+    );
+  } catch {
+    // Storage unavailable (private mode, quota): best effort only.
+  }
+}
+
 function readLegacyRecord(): LastLocalModelLoad | null {
   try {
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
@@ -110,7 +125,16 @@ export function recordLastLocalModelLoad(input: {
       // biome-ignore lint/style/useNamingConvention: API schema
       gguf_variant: record.ggufVariant,
     }),
-  }).catch(() => {
-    // Best effort; auto-load falls back to size order without it.
-  });
+  })
+    .then((res) => {
+      if (!res.ok) {
+        // A pre-route backend answers 404 without rejecting: keep the legacy
+        // shadow record current so the read fallback stays truthful.
+        writeLegacyRecord(record);
+      }
+    })
+    .catch(() => {
+      // Best effort; the read path falls back to the legacy record.
+      writeLegacyRecord(record);
+    });
 }

@@ -61,6 +61,15 @@ def test_put_then_get_round_trips(client):
     assert r.json() == payload
 
 
+def test_put_accepts_path_qualified_variant(client):
+    c, _ = client
+    variant = "quants/" + "a" * 80 + "/model-UD-Q4_K_XL-00001-of-00002.gguf"
+    payload = {"id": "unsloth/gemma-4-E2B-it-GGUF", "kind": "gguf", "gguf_variant": variant}
+    r = c.put("/last-local-model", json = payload)
+    assert r.status_code == 200
+    assert r.json()["gguf_variant"] == variant
+
+
 def test_put_without_variant(client):
     c, _ = client
     r = c.put("/last-local-model", json = {"id": "unsloth/Qwen3-4B", "kind": "model"})

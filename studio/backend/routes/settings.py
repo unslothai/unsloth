@@ -645,6 +645,11 @@ _MAX_VARIANT_SUFFIX_LEN = 64
 # A limit under PATH_MAX would 422 the server sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
 
+# A GGUF variant identity (GgufVariantDetail.quant) can be a path-qualified internal
+# variant key, not just a bare quant suffix, and the load/download APIs accept the
+# full value -- bound it like a path so a successful load can always be recorded.
+MAX_GGUF_VARIANT_KEY_LEN = 4096
+
 # A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
 # here and reject an oversized array at the boundary instead of walking it.
 MAX_GPU_IDS = MAX_GPU_ID + 1
@@ -970,7 +975,7 @@ LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
 class LastLocalModelPayload(BaseModel):
     id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
     kind: Literal["gguf", "model"]
-    gguf_variant: Optional[str] = Field(default = None, max_length = _MAX_VARIANT_SUFFIX_LEN)
+    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
 
 
 class LastLocalModelResponse(BaseModel):
