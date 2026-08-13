@@ -11825,9 +11825,7 @@ async def _proxy_to_external_provider(
                 stream = payload.stream,
                 **_provider_kwargs,
             )
-        disconnect_task = (
-            asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
-        )
+        disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
         try:
             sent_done = False
             stream_failed = False

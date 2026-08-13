@@ -241,9 +241,7 @@ async def stream_with_studio_tools(
     # The promotion allowlist is the selected catalog, never None: an
     # unrestricted parse re-opens markerless tool-call promotion.
     heal_names = (
-        heal_gate(policy.auto_heal, tools, tool_choice)
-        if transport.heals_text_tool_calls
-        else None
+        heal_gate(policy.auto_heal, tools, tool_choice) if transport.heals_text_tool_calls else None
     )
 
     skip_autoinject = run.continue_final_message or (
@@ -264,11 +262,7 @@ async def stream_with_studio_tools(
 
     while not cancel_event.is_set():
         turn = _Turn()
-        healer = (
-            StreamToolCallHealer(heal_names, tools)
-            if heal_names
-            else None
-        )
+        healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         tools_available = tool_choice != "none" and (unlimited or remaining > 0)
         # Withdrawing the catalog and pinning "none" together: this path owns the

@@ -25,7 +25,11 @@ from core.inference.studio_tool_loop import (
 )
 
 
-def _sse(delta = None, finish = None, **extra) -> str:
+def _sse(
+    delta = None,
+    finish = None,
+    **extra,
+) -> str:
     choice: dict = {"index": 0, "delta": delta or {}}
     if finish is not None:
         choice["finish_reason"] = finish
@@ -59,7 +63,12 @@ PY = _tool("python")
 class FakeTransport:
     """Replays scripted turns and records what the loop asked for each time."""
 
-    def __init__(self, turns, *, heals = True):
+    def __init__(
+        self,
+        turns,
+        *,
+        heals = True,
+    ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
         self.requests: list[dict] = []
@@ -97,7 +106,14 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport, *, tools = None, tool_choice = None, messages = None, **policy_kwargs):
+def _run(
+    transport,
+    *,
+    tools = None,
+    tool_choice = None,
+    messages = None,
+    **policy_kwargs,
+):
     policy_fields = {
         "tools": tools if tools is not None else [WEB],
         "max_calls": 25,
@@ -169,7 +185,20 @@ def test_structured_call_executes_and_continues(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [{"index": 0, "id": "call_a", "function": {"name": "web_search", "arguments": '{"query":"unsloth"}'}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"unsloth"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -219,7 +248,11 @@ def test_text_form_tool_call_is_healed_and_executed(executed):
         [
             [
                 _sse({"content": "Let me look. "}),
-                _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "unsloth"}}</tool_call>'}),
+                _sse(
+                    {
+                        "content": '<tool_call>{"name": "web_search", "arguments": {"query": "unsloth"}}</tool_call>'
+                    }
+                ),
                 _sse(finish = "stop"),
                 _DONE,
             ],
@@ -287,7 +320,11 @@ def test_undeclared_text_call_is_not_promoted(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'}),
+                _sse(
+                    {
+                        "content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'
+                    }
+                ),
                 _sse(finish = "stop"),
                 _DONE,
             ]
@@ -304,7 +341,7 @@ def test_fenced_rehearsal_is_documentation_not_a_call(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"content": "Docs:\n```\npython[ARGS]{\"code\": \"1\"}\n```\n"}),
+                _sse({"content": 'Docs:\n```\npython[ARGS]{"code": "1"}\n```\n'}),
                 _sse(finish = "stop"),
                 _DONE,
             ]
@@ -321,7 +358,11 @@ def test_healing_is_off_for_a_transport_that_does_not_need_it(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'}),
+                _sse(
+                    {
+                        "content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
+                    }
+                ),
                 _sse(finish = "stop"),
                 _DONE,
             ]
@@ -340,7 +381,17 @@ def test_structured_call_makes_the_healer_dormant(executed):
         [
             [
                 _sse({"content": "prefix <tool_c"}),
-                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -380,12 +431,32 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
             [
-                _sse({"tool_calls": [{"index": 0, "id": "c2", "function": {"name": "python", "arguments": '{"query":"2"}'}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c2",
+                                "function": {"name": "python", "arguments": '{"query":"2"}'},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -410,15 +481,31 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
 
 def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
     slots: list = []
-    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: slots.append(approval) or object())
-    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow")
+    monkeypatch.setattr(
+        loop_mod,
+        "begin_tool_decision",
+        lambda session, approval: slots.append(approval) or object(),
+    )
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow"
+    )
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
     monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
 
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -442,7 +529,17 @@ def test_full_access_disables_the_sandbox_at_execution(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -458,7 +555,17 @@ def test_sandbox_stays_on_by_default(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -477,7 +584,17 @@ def test_forced_choice_is_cleared_after_the_first_execution(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
