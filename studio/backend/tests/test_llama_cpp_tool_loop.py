@@ -833,6 +833,72 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
     )
 
 
+def test_tool_loop_does_not_mutate_the_caller_s_messages(monkeypatch):
+    """The caller's own message dicts stay untouched across a fold.
+
+    ``conversation`` copies the list, not the dicts. Today every fold target is a
+    result this loop just built, so nothing caller-owned is reachable -- this pins
+    that. It is worth pinning because the entry points are not all internal:
+    /v1/messages hands a client's own history straight through, and that history may
+    end on a tool result, so a fold that moved to a different target would silently
+    leave the hidden instruction in the client's list and replay it next request.
+    """
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "earlier",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": "web_search", "tool_call_id": "earlier", "content": "cloudy"},
+    ]
+    before = copy.deepcopy(messages)
+
+    tool_stream = [
+        _sse({"reasoning_content": "One search is enough."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_own_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "weather"}),
+                        },
+                    }
+                    for index in range(2)  # the second is a duplicate -> internal no-op
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = messages,
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert messages == before
+
+
 def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     tool_stream = [
         _sse({"reasoning_content": "Need a render."}),
