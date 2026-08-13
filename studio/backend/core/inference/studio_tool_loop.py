@@ -728,7 +728,14 @@ async def stream_with_studio_tools(
                 except (RuntimeError, GeneratorExit):
                     pass
 
-        truncated = turn.finish_reason == "length"
+        # Both of these mean the turn ended before the model finished saying what
+        # it wanted: "length" hit the token ceiling, "content_filter" had the
+        # output cut by the provider's own filter. Either way a call collected so
+        # far may be half-written, so it is described rather than run. "stop" is
+        # deliberately not in this set: llama.cpp and vLLM routinely finish a
+        # perfectly good tool call with it, and refusing those would disable
+        # tool calling on exactly the self-hosted servers this path exists for.
+        truncated = turn.finish_reason in ("length", "content_filter")
         if truncated and healer is not None and turn.healed:
             # A call cut off at the token limit must not run: its arguments can
             # be half-written and the model never finished saying what it wanted.
@@ -776,7 +783,13 @@ async def stream_with_studio_tools(
                     provenance = {"source": "local", "round_id": round_id + 1},
                 ):
                     yield card_line
-        calls = [] if truncated else turn.calls(used_call_ids)
+        # tool_choice "none" is an instruction, and a provider that emits a call
+        # anyway has not been authorized to run one. Withdrawing the catalog on
+        # the way out is not enough on its own: Deep Research sets "none" exactly
+        # so the scraped web text in its prompts cannot reach python or terminal,
+        # so a naive or compromised endpoint echoing a call back must not be able
+        # to execute it here.
+        calls = [] if (truncated or tool_choice == "none") else turn.calls(used_call_ids)
         if not calls:
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
