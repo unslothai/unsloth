@@ -105,15 +105,28 @@ def test_hung_child_marks_the_device_unusable(monkeypatch):
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
-def test_unspawnable_probe_does_not_condemn_the_device(monkeypatch):
+def test_unspawnable_probe_does_not_claim_the_accelerator_works(monkeypatch):
+    # A probe that never ran proves nothing, and the two ways of being wrong are not
+    # symmetric: CPU costs embedding speed, the accelerator costs the backend.
     def _no_spawn(*_args, **_kwargs):
         raise OSError("fork failed")
 
     monkeypatch.setattr(subprocess, "Popen", _no_spawn)
-    assert torch_device_probe.device_can_allocate("cuda") is True
+    assert torch_device_probe.device_can_allocate("cuda") is False
 
 
-def test_unreadable_probe_result_cleans_up_without_condemning_device(monkeypatch):
+def test_an_unrunnable_probe_still_leaves_cpu_available(monkeypatch):
+    # The opposite trade for CPU: it cannot fault a GPU driver, so a probe that never ran
+    # says nothing against it. Condemning it would push the caller past its CPU fallback
+    # to the GGUF backend, changing the embedding space over a passing failure to fork.
+    def _no_spawn(*_args, **_kwargs):
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(subprocess, "Popen", _no_spawn)
+    assert torch_device_probe.device_can_allocate("cpu") is True
+
+
+def test_unreadable_probe_result_cleans_up_and_does_not_claim_the_device_works(monkeypatch):
     process = _FakeProcess()
 
     def _broken_communicate(timeout = None):
@@ -122,8 +135,35 @@ def test_unreadable_probe_result_cleans_up_without_condemning_device(monkeypatch
     process.communicate = _broken_communicate
     _patch_popen(monkeypatch, process)
 
-    assert torch_device_probe.device_can_allocate("cuda") is True
+    assert torch_device_probe.device_can_allocate("cuda") is False
     assert "terminate" in process.calls
+
+
+def test_a_read_failure_during_teardown_does_not_escape(monkeypatch):
+    # The post-kill read used to sit inside the timeout branch, where the trailing
+    # except OSError was a sibling and could not catch it. A pipe failure there escaped
+    # device_can_allocate, so a device that really did time out raised instead of
+    # returning False, and the child never reached the reaper.
+    process = _FakeProcess(returncode = None, timeouts = 1)
+    reaped = threading.Event()
+    process.wait = lambda: reaped.set()
+    original = process.communicate
+
+    def _fail_after_first(timeout = None):
+        try:
+            return original(timeout = timeout)
+        finally:
+            process.communicate = _boom
+
+    def _boom(timeout = None):
+        process.calls.append("communicate")
+        raise OSError("pipe failed")
+
+    process.communicate = _fail_after_first
+    _patch_popen(monkeypatch, process)
+
+    assert torch_device_probe.device_can_allocate("cuda") is False
+    assert reaped.wait(timeout = 5), "unconfirmed child was never handed to the reaper"
 
 
 def test_result_is_cached_per_device(monkeypatch):
@@ -265,6 +305,11 @@ def test_windows_rocm_directories_use_numeric_version_order(monkeypatch, tmp_pat
     [
         (-11, False, True),
         (-6, False, True),
+        # Something else killed the probe; that says nothing about the device. The repo
+        # makes the same exclusion in LlamaCppBackend._is_signal_crash.
+        (-9, False, False),
+        (-15, False, False),
+        (-2, False, False),
         (0, False, False),
         (1, False, False),
         (3221225477, True, True),
