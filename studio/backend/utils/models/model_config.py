@@ -214,18 +214,22 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-4-31B-it.yaml": [
         "unsloth/gemma-4-31B-it",
         "google/gemma-4-31B-it",
+        "unsloth/gemma-4-31B-it-GGUF",
     ],
     "unsloth_gemma-4-26B-A4B-it.yaml": [
         "unsloth/gemma-4-26B-A4B-it",
         "google/gemma-4-26B-A4B-it",
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
     ],
     "unsloth_gemma-4-E2B-it.yaml": [
         "unsloth/gemma-4-E2B-it",
         "google/gemma-4-E2B-it",
+        "unsloth/gemma-4-E2B-it-GGUF",
     ],
     "unsloth_gemma-4-E4B-it.yaml": [
         "unsloth/gemma-4-E4B-it",
         "google/gemma-4-E4B-it",
+        "unsloth/gemma-4-E4B-it-GGUF",
     ],
     "unsloth_gemma-4-31B.yaml": [
         "unsloth/gemma-4-31B",
@@ -440,6 +444,10 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-4B-Instruct-2507-FP8",
         "unsloth/Qwen3-4B-Instruct-2507-FP8",
     ],
+    "unsloth_Qwen3-30B-A3B-Instruct-2507.yaml": [
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "unsloth/Qwen3-30B-A3B-Instruct-2507-bnb-4bit",
+    ],
     "unsloth_Qwen3-4B-Thinking-2507.yaml": [
         "unsloth/Qwen3-4B-Thinking-2507-unsloth-bnb-4bit",
         "Qwen/Qwen3-4B-Thinking-2507",
@@ -484,6 +492,11 @@ MODEL_NAME_MAPPING = {
     "unsloth_tinyllama-bnb-4bit.yaml": [
         "unsloth/tinyllama",
         "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+    ],
+    "unsloth_GLM-4.7-Flash.yaml": [
+        "unsloth/GLM-4.7-Flash-unsloth-bnb-4bit",
+        "unsloth/GLM-4.7-Flash-bnb-4bit",
+        "THUDM/GLM-4.7-Flash",
     ],
     "unsloth_whisper-large-v3.yaml": [
         "unsloth/whisper-large-v3",
