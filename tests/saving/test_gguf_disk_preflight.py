@@ -942,6 +942,89 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         assert os.path.isdir(target)
 
 
+class TestASeparateStagingFilesystemIsStillMeasured:
+    """The other half: `_destination_holds_torchao_staging` asks nothing there.
+
+    When `tempfile` resolves onto its own mount that helper returns True and
+    the staging filesystem is never measured at all, so a 4GB tmpfs is handed
+    a 60GB merge and `_unsloth_save_torchao` dies inside `tempfile.mkdtemp`
+    without saying which disk ran out.
+
+    A warning, not a refusal. Cancelling the redirect cannot help: the staging
+    merge goes to TMPDIR either way, so declining the move leaves the same
+    failure and puts the output on the smaller disk too.
+    """
+
+    _STAGING = 10 * GB
+
+    @pytest.fixture
+    def separate(self, monkeypatch, tmp_path):
+        """A TMPDIR on its own mount, with free space the test dictates."""
+        import tempfile
+
+        staging = tmp_path / "tmp"
+        staging.mkdir()
+        # `tempfile.gettempdir()` caches its answer on first use, so setting
+        # the variable alone would leave the process's real temp directory.
+        monkeypatch.setattr(tempfile, "tempdir", str(staging))
+        free = {"staging": 0, "other": 1000 * GB}
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: self._STAGING)
+        monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
+        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: False)
+        monkeypatch.setattr(
+            S,
+            "free_bytes",
+            lambda path: free["staging"] if str(path) == str(staging) else free["other"],
+        )
+        monkeypatch.setenv("TMPDIR", str(staging))
+        return free
+
+    def test_a_short_staging_filesystem_is_named(self, separate, capsys):
+        separate["staging"] = self._STAGING - 1
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+        out = capsys.readouterr().out
+        assert "TMPDIR" in out
+        assert "10.0GB" in out
+
+    def test_a_staging_filesystem_with_room_says_nothing(self, separate, capsys):
+        separate["staging"] = self._STAGING
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize("save_method", ["merged_16bit", "fp8", "mxfp4"])
+    def test_an_export_that_stages_nothing_is_silent(self, separate, capsys, save_method):
+        """Only torchao writes a second full copy outside `save_directory`."""
+        separate["staging"] = 0
+        S._preflight_merge_disk(_FakeModel(), "model", save_method)
+        assert capsys.readouterr().out == ""
+
+    def test_a_shared_staging_filesystem_is_left_to_the_other_helper(
+        self, separate, capsys, monkeypatch
+    ):
+        """On Kaggle both are /tmp, and that case is already charged for."""
+        separate["staging"] = 0
+        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: True)
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+        assert capsys.readouterr().out == ""
+
+    def test_it_warns_rather_than_refusing(self, separate):
+        """The preflight still returns the directory it was given."""
+        separate["staging"] = 0
+        assert S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8") == "model"
+
+    def test_an_unmeasurable_staging_filesystem_says_nothing(self, separate, monkeypatch):
+        monkeypatch.setattr(S, "free_bytes", lambda path: None)
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+
+    def test_the_staging_really_is_a_full_second_copy(self):
+        """The warning is only worth printing while this stays true."""
+        import inspect
+
+        source = inspect.getsource(S._unsloth_save_torchao)
+        assert 'tempfile.mkdtemp(prefix = "unsloth-torchao-")' in source
+        assert "save_pretrained_merged" in source or "merge" in source.lower()
+
+
 class TestMergeHeadroomMatchesTheZooGuard:
     """A working directory that is "just big enough" is not big enough.
 

@@ -3236,6 +3236,44 @@ def _destination_holds_torchao_staging(destination, need_bytes, staging_bytes):
         return True
 
 
+def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
+    """Say so when TMPDIR cannot hold the staging merge either.
+
+    `_destination_holds_torchao_staging` asks whether the DESTINATION can hold
+    the staging directory as well, which is the whole question while
+    `tempfile` resolves onto the same filesystem. When it does not, that
+    function returns True and nothing has measured the staging filesystem at
+    all, so a 4GB tmpfs is handed a 60GB merge and `_unsloth_save_torchao`
+    dies inside `tempfile.mkdtemp` without naming TMPDIR as the reason.
+
+    A warning, not a refusal: the preflight never raises, and unlike the
+    destination check this cannot be answered by cancelling the redirect.
+    The staging merge is written to TMPDIR whether or not the export was
+    relocated, so declining the move leaves the identical failure and puts
+    the output on the smaller disk as well.
+    """
+    import tempfile
+    try:
+        if staging_bytes <= 0:
+            return
+        staging_directory = tempfile.gettempdir()
+        if _same_filesystem(staging_directory, destination):
+            return
+        free = free_bytes(staging_directory)
+        if free is None or free >= staging_bytes:
+            return
+        print(
+            f"Unsloth: `{staging_directory}` has {free / 1024**3:.1f}GB free and the "
+            f"16-bit staging merge needs about {staging_bytes / 1024**3:.1f}GB there.\n"
+            f"The torchao export merges into a temporary directory before it quantizes, "
+            f"and that directory is on a different filesystem from `{destination}`, so "
+            f"the room at the destination does not help.\n"
+            f"Point TMPDIR at a filesystem with the space if the export runs out."
+        )
+    except Exception:
+        return
+
+
 def _preflight_merge_disk(
     model,
     save_directory,
@@ -3324,9 +3362,12 @@ def _preflight_merge_disk(
         return save_directory
     if message is not None:
         if not _destination_holds_torchao_staging(new_directory, need, staging):
+            _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
             return save_directory
         print(message)
+        _warn_if_torchao_staging_filesystem_is_short(new_directory, staging)
         return new_directory
+    _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
     return save_directory
 
 
