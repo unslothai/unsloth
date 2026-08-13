@@ -2780,6 +2780,20 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
+def _external_loop_permission_mode(payload) -> Optional[str]:
+    """Permission mode for the external local tool loop.
+
+    ``_fold_full_permission_into_bypass`` resolves an explicit
+    ``confirm_tool_calls=true`` with no mode to "ask", but only for requests without
+    provider routing. An external caller's opt-in would otherwise reach the loop as an
+    unset mode and default to "auto", which prompts on high-risk calls alone and so
+    silently weakens the promise to pause before every call.
+    """
+    if payload.permission_mode is None and payload.confirm_tool_calls is True:
+        return "ask"
+    return payload.permission_mode
+
+
 def _confirm_gate_needs_stream(payload) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
@@ -11780,7 +11794,7 @@ async def _proxy_to_external_provider(
                 confirm_tool_calls = _permission_mode_confirm(payload)
                 and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
-                permission_mode = payload.permission_mode,
+                permission_mode = _external_loop_permission_mode(payload),
                 disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 rag_scope = payload.rag_scope,

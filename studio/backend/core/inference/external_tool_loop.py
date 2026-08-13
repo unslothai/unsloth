@@ -31,6 +31,7 @@ from loggers import get_logger
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
     neutralize_tool_descriptions,
+    reconciled_tool_choice,
 )
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
@@ -607,6 +608,7 @@ async def stream_chat_completion_with_local_tools(
 
     # the client drops a markup-carrying tool from the catalog it sends, so authorize
     # against the same sanitized list or a withheld tool could still be executed (#7066).
+    requested_tools = tools
     tools = neutralize_tool_descriptions(tools)
     controller = ToolLoopController(tools = tools, auto_heal_tool_calls = auto_heal_tool_calls)
     all_tool_names = set(_tool_names(tools))
@@ -626,7 +628,9 @@ async def stream_chat_completion_with_local_tools(
     last_reprompt_text = ""
     # only the request is one-shot; the flag itself still merges the first generated turn.
     resume_partial_request = continue_final_message
-    forced_tool_choice = tool_choice
+    # the client sees only the sanitized list, so a choice forcing a dropped tool has
+    # to be downgraded here or the request names a function absent from `tools`.
+    forced_tool_choice = reconciled_tool_choice(tool_choice, requested_tools, tools)
     tool_denied = False
 
     try:
@@ -801,7 +805,8 @@ async def stream_chat_completion_with_local_tools(
                 if not decision.should_execute:
                     completion = controller.record_noop(decision)
                     nudge_messages.append(completion.model_message())
-                    resolved_provisional.add(decision.tool_call_id)
+                    # left unresolved on purpose: _close_provisional_cards ends any early
+                    # card this id opened, which no execution will ever close.
                     logger.info(
                         "Suppressed external local tool call as internal no-op: "
                         f"action={decision.action} tool={decision.tool_name}"

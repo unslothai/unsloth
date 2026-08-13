@@ -3211,3 +3211,33 @@ def test_auto_mode_prompts_on_dangerous_python_work(code):
 @pytest.mark.parametrize("name", _DANGEROUS_MCP)
 def test_auto_mode_prompts_on_dangerous_mcp_work(name):
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}{name}", {"code": "x"}) is True
+
+
+def test_external_loop_permission_mode_keeps_the_legacy_confirm_contract():
+    # The validator only folds confirm_tool_calls=true into "ask" for requests without
+    # provider routing, so an external one would reach the loop unset and default to
+    # "auto", prompting on high-risk calls alone despite the explicit opt-in.
+    from routes.inference import _external_loop_permission_mode
+
+    def req(**kw):
+        return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **kw)
+
+    external = req(
+        confirm_tool_calls = True,
+        enable_tools = True,
+        provider_type = "vllm",
+        stream = True,
+    )
+    assert external.permission_mode is None
+    assert _external_loop_permission_mode(external) == "ask"
+    # An explicit mode always wins, and a request that never opted in stays unset.
+    assert (
+        _external_loop_permission_mode(
+            req(confirm_tool_calls = True, permission_mode = "auto", provider_type = "vllm")
+        )
+        == "auto"
+    )
+    assert _external_loop_permission_mode(req(provider_type = "vllm")) is None
+    assert (
+        _external_loop_permission_mode(req(confirm_tool_calls = False, provider_type = "vllm")) is None
+    )
