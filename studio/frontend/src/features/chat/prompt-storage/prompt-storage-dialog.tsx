@@ -18,15 +18,18 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
   DownloadIcon,
-  GripVerticalIcon,
+  EyeIcon,
   LayoutListIcon,
   PencilIcon,
   PlayIcon,
   PlusIcon,
+  RotateCcwIcon,
   Trash2Icon,
   UploadIcon,
   XIcon,
 } from "lucide-react";
+import { MarkdownPreview } from "@/components/markdown/markdown-preview";
+import { SortablePromptItems } from "./sortable-prompt-items";
 import { Tick02Icon } from "@/lib/tick-icon";
 import {
   type ReactElement,
@@ -1488,130 +1491,245 @@ function ExportModal({
   );
 }
 
-function PromptCard({
-  entry,
-  onUse,
-  onExport,
-  onRefresh,
+// Unsaved edits live in the parent keyed by entry id, so switching rows in the
+// rail never silently throws away what you typed.
+type PromptDraft = { name: string; text: string };
+type ListDraft = { name: string; items: string[] };
+
+function relativeTime(ts: number): string {
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function RailRow({
+  title,
+  preview,
+  selected,
+  dirty,
+  badge,
+  leading,
+  onSelect,
 }: {
-  entry: PromptEntry;
-  onUse: (text: string) => void;
-  onExport: (entry: PromptEntry) => void;
-  onRefresh: () => void;
+  title: string;
+  preview: string;
+  selected: boolean;
+  dirty: boolean;
+  badge?: string;
+  leading?: ReactElement | null;
+  onSelect: () => void;
 }): ReactElement {
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(entry.name);
-  const [text, setText] = useState(entry.text);
-  const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
-  const togglePinnedPrompt = usePlusMenuPrefsStore((s) => s.togglePinnedPrompt);
-  const isPinned = pinnedPromptIds.includes(entry.id);
-
-  const handleSave = useCallback(async () => {
-    const trimName = name.trim();
-    const trimText = text.trim();
-    if (!trimText) return;
-    await savePromptEntry({ ...entry, name: trimName || "Untitled Prompt", text: trimText, updatedAt: now() });
-    setEditing(false);
-    onRefresh();
-  }, [entry, name, text, onRefresh]);
-
-  const handleDelete = useCallback(async () => {
-    await deletePromptEntry(entry.id);
-    onRefresh();
-  }, [entry.id, onRefresh]);
-
-  if (editing) {
-    return (
-      <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Prompt name..."
-          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
-        />
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={4}
-          placeholder="Prompt text..."
-          className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
-        />
-        <div className="flex gap-2 justify-end">
-          <Button size="sm" variant="ghost" onClick={() => { setName(entry.name); setText(entry.text); setEditing(false); }}>
-            <XIcon className="size-3.5 mr-1" />Cancel
-          </Button>
-          <Button size="sm" onClick={handleSave}>
-            <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="group rounded-xl border border-border/60 bg-card p-4 flex flex-col gap-2 hover:border-border hover:shadow-sm transition-all">
-      <div className="flex items-center gap-2">
-        {isPinned ? (
-          <BookmarkIcon className="size-3.5 shrink-0 fill-primary text-primary" />
-        ) : null}
-        <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
-          <button
-            type="button"
-            onClick={() => onUse(entry.text)}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
-            title="Load into composer"
-          >
-            <PlayIcon className="size-3" />Use
-          </button>
-          <div className="mx-1 h-4 w-px bg-border/60" />
-          <button
-            type="button"
-            onClick={() => togglePinnedPrompt(entry.id)}
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded-lg transition-colors",
-              isPinned
-                ? "text-primary hover:bg-primary/10"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
-            title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
-          >
-            <BookmarkIcon
-              className={cn("size-3.5", isPinned && "fill-primary")}
-            />
-          </button>
-          <button
-            type="button"
-            onClick={() => onExport(entry)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            title="Export"
-          >
-            <DownloadIcon className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            title="Edit"
-          >
-            <PencilIcon className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={handleDelete}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
-            title="Delete"
-          >
-            <Trash2Icon className="size-3.5" />
-          </button>
-        </div>
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "w-full rounded-lg px-2.5 py-2 text-left transition-colors border",
+        selected
+          ? "bg-muted/70 border-border"
+          : "border-transparent hover:bg-muted/40",
+      )}
+    >
+      <div className="flex items-center gap-1.5">
+        {leading}
+        <span className="flex-1 truncate text-xs font-medium tracking-tight">{title}</span>
+        {dirty && (
+          <span className="size-1.5 shrink-0 rounded-full bg-primary" title="Unsaved changes" />
+        )}
+        {badge && (
+          <span className="shrink-0 rounded-full bg-muted px-1.5 text-ui-11 tabular-nums text-muted-foreground">
+            {badge}
+          </span>
+        )}
       </div>
-      <p className="text-xs text-muted-foreground line-clamp-3 leading-relaxed">{entry.text}</p>
+      <p className="mt-0.5 truncate text-ui-11 text-muted-foreground/70">{preview}</p>
+    </button>
+  );
+}
+
+function EmptyDetail({
+  icon,
+  title,
+  hint,
+  onClearSearch,
+}: {
+  icon: ReactElement;
+  title: string;
+  hint?: string;
+  onClearSearch?: () => void;
+}): ReactElement {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+      <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">{icon}</div>
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium text-muted-foreground">{title}</p>
+        {hint && <p className="text-xs text-muted-foreground/60">{hint}</p>}
+        {onClearSearch && (
+          <button type="button" onClick={onClearSearch} className="text-xs text-primary hover:underline">
+            Clear search
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh: () => void }): ReactElement {
+function PromptDetail({
+  entry,
+  draft,
+  onDraftChange,
+  onUse,
+  onExport,
+  onRefresh,
+  onDeleted,
+}: {
+  entry: PromptEntry;
+  draft: PromptDraft | undefined;
+  onDraftChange: (draft: PromptDraft | undefined) => void;
+  onUse: (text: string) => void;
+  onExport: (entry: PromptEntry) => void;
+  onRefresh: () => void;
+  onDeleted: () => void;
+}): ReactElement {
+  const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const togglePinnedPrompt = usePlusMenuPrefsStore((s) => s.togglePinnedPrompt);
+  const isPinned = pinnedPromptIds.includes(entry.id);
+  const [preview, setPreview] = useState(false);
+
+  const name = draft?.name ?? entry.name;
+  const text = draft?.text ?? entry.text;
+  const dirty = draft !== undefined;
+
+  const update = useCallback(
+    (patch: Partial<PromptDraft>) => {
+      const next = { name, text, ...patch };
+      if (next.name === entry.name && next.text === entry.text) onDraftChange(undefined);
+      else onDraftChange(next);
+    },
+    [name, text, entry.name, entry.text, onDraftChange],
+  );
+
+  const handleSave = useCallback(async () => {
+    const trimText = text.trim();
+    if (!trimText) return;
+    await savePromptEntry({
+      ...entry,
+      name: name.trim() || "Untitled Prompt",
+      text: trimText,
+      updatedAt: now(),
+    });
+    onDraftChange(undefined);
+    onRefresh();
+  }, [entry, name, text, onDraftChange, onRefresh]);
+
+  const handleDelete = useCallback(async () => {
+    await deletePromptEntry(entry.id);
+    onDraftChange(undefined);
+    onDeleted();
+    onRefresh();
+  }, [entry.id, onDraftChange, onDeleted, onRefresh]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <input
+        value={name}
+        onChange={(e) => update({ name: e.target.value })}
+        placeholder="Prompt name..."
+        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+      />
+      {preview ? (
+        <MarkdownPreview
+          markdown={text}
+          className="min-h-0 max-h-none flex-1 rounded-lg border-border/60 bg-background/40 p-3 text-sm"
+        />
+      ) : (
+        <textarea
+          value={text}
+          onChange={(e) => update({ text: e.target.value })}
+          placeholder="Prompt text..."
+          className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+        />
+      )}
+      <div className="flex shrink-0 items-center gap-2 text-ui-11 text-muted-foreground/70">
+        <span className="tabular-nums">{text.length.toLocaleString()} characters</span>
+        <span className="text-muted-foreground/30">·</span>
+        <span>updated {relativeTime(entry.updatedAt)}</span>
+        {dirty && (
+          <>
+            <span className="text-muted-foreground/30">·</span>
+            <span className="text-primary">unsaved changes</span>
+          </>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1 border-t border-border/50 pt-3">
+        <button
+          type="button"
+          onClick={() => togglePinnedPrompt(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            isPinned
+              ? "text-primary hover:bg-primary/10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onExport(entry)}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          title="Export"
+        >
+          <DownloadIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleDelete}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+          title="Delete"
+        >
+          <Trash2Icon className="size-4" />
+        </button>
+        <div className="flex-1" />
+        {dirty && (
+          <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
+            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+          </Button>
+        )}
+        <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
+          {preview ? (
+            <><PencilIcon className="size-3.5 mr-1" />Edit</>
+          ) : (
+            <><EyeIcon className="size-3.5 mr-1" />Preview</>
+          )}
+        </Button>
+        <Button size="sm" variant="outline" disabled={!dirty || !text.trim()} onClick={handleSave}>
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
+        </Button>
+        <Button size="sm" onClick={() => onUse(text)} disabled={!text.trim()}>
+          <PlayIcon className="size-3 mr-1" />Use
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function NewPromptForm({
+  onClose,
+  onRefresh,
+  onCreated,
+}: {
+  onClose: () => void;
+  onRefresh: () => void;
+  onCreated: (id: string) => void;
+}): ReactElement {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
 
@@ -1619,35 +1737,36 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
     const trimText = text.trim();
     if (!trimText) return;
     const ts = now();
+    const id = newId();
     await savePromptEntry({
-      id: newId(),
+      id,
       name: name.trim() || "Untitled Prompt",
       text: trimText,
       createdAt: ts,
       updatedAt: ts,
     });
     onRefresh();
+    onCreated(id);
     onClose();
-  }, [name, text, onClose, onRefresh]);
+  }, [name, text, onClose, onRefresh, onCreated]);
 
   return (
-    <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
-      <p className="text-xs font-semibold text-muted-foreground">New Prompt</p>
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <p className="shrink-0 text-xs font-semibold text-muted-foreground">New Prompt</p>
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Prompt name (optional)..."
         autoFocus
-        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={4}
         placeholder="Write your prompt here..."
-        className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+        className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
       />
-      <div className="flex gap-2 justify-end">
+      <div className="flex shrink-0 gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
           <XIcon className="size-3.5 mr-1" />Cancel
         </Button>
@@ -1659,168 +1778,169 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
   );
 }
 
-function PromptListCard({
+function PromptListDetail({
   entry,
+  draft,
+  onDraftChange,
   onRunList,
   onExport,
   onRefresh,
+  onDeleted,
 }: {
   entry: PromptListEntry;
+  draft: ListDraft | undefined;
+  onDraftChange: (draft: ListDraft | undefined) => void;
   onRunList?: (items: string[]) => void;
   onExport: (entry: PromptListEntry) => void;
   onRefresh: () => void;
+  onDeleted: () => void;
 }): ReactElement {
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(entry.name);
-  const [items, setItems] = useState<string[]>(entry.items);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
+  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
+  const isPinned = pinnedListIds.includes(entry.id);
+  const [preview, setPreview] = useState(false);
+
+  const name = draft?.name ?? entry.name;
+  const items = draft?.items ?? entry.items;
+  const dirty = draft !== undefined;
+  const savable = items.filter((t) => t.trim()).length > 0;
+
+  const update = useCallback(
+    (patch: Partial<ListDraft>) => {
+      const next = { name, items, ...patch };
+      const same =
+        next.name === entry.name &&
+        next.items.length === entry.items.length &&
+        next.items.every((v, i) => v === entry.items[i]);
+      if (same) onDraftChange(undefined);
+      else onDraftChange(next);
+    },
+    [name, items, entry.name, entry.items, onDraftChange],
+  );
 
   const handleSave = useCallback(async () => {
     const filtered = items.filter((t) => t.trim());
     if (filtered.length === 0) return;
-    await savePromptList({ ...entry, name: name.trim() || "Untitled List", items: filtered, updatedAt: now() });
-    setEditing(false);
+    await savePromptList({
+      ...entry,
+      name: name.trim() || "Untitled List",
+      items: filtered,
+      updatedAt: now(),
+    });
+    onDraftChange(undefined);
     onRefresh();
-  }, [entry, name, items, onRefresh]);
+  }, [entry, name, items, onDraftChange, onRefresh]);
 
   const handleDelete = useCallback(async () => {
     await deletePromptList(entry.id);
+    onDraftChange(undefined);
+    onDeleted();
     onRefresh();
-  }, [entry.id, onRefresh]);
-
-  const addItem = useCallback(() => setItems((prev) => [...prev, ""]), []);
-  const removeItem = useCallback(
-    (i: number) => setItems((prev) => prev.filter((_, idx) => idx !== i)),
-    [],
-  );
-  const updateItem = useCallback(
-    (i: number, val: string) =>
-      setItems((prev) => prev.map((v, idx) => (idx === i ? val : v))),
-    [],
-  );
-
-  if (editing) {
-    return (
-      <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="List name..."
-          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
-        />
-        <p className="text-xs font-semibold text-muted-foreground">Prompts (sent in order)</p>
-        <div className="flex flex-col gap-2">
-          {items.map((item, i) => (
-            <div key={i} className="flex items-start gap-2">
-              <GripVerticalIcon className="size-4 mt-2.5 shrink-0 text-muted-foreground/30 cursor-grab" />
-              <span className="text-xs font-medium text-muted-foreground/60 mt-2.5 w-5 shrink-0 text-right">{i + 1}.</span>
-              <textarea
-                value={item}
-                onChange={(e) => updateItem(i, e.target.value)}
-                rows={2}
-                placeholder={`Prompt ${i + 1}...`}
-                className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
-              />
-              <button
-                type="button"
-                onClick={() => removeItem(i)}
-                className="flex h-7 w-7 mt-1 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors shrink-0"
-                title="Remove"
-              >
-                <XIcon className="size-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={addItem}
-          className="flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-        >
-          <PlusIcon className="size-3.5" />Add prompt
-        </button>
-        <div className="flex gap-2 justify-end">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => { setName(entry.name); setItems(entry.items); setEditing(false); }}
-          >
-            <XIcon className="size-3.5 mr-1" />Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={items.filter((t) => t.trim()).length === 0}
-          >
-            <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save List
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
   return (
-    <div className="group rounded-xl border border-border/60 bg-card p-4 flex flex-col gap-2.5 hover:border-border hover:shadow-sm transition-all">
-      <div className="flex items-center gap-2">
-        <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
-          {entry.items.length}
-        </span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
-          {onRunList && (
-            <button
-              type="button"
-              onClick={() => onRunList(entry.items)}
-              className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors"
-              title="Run list"
-            >
-              <PlayIcon className="size-3" />Run
-            </button>
-          )}
-          <div className="mx-1 h-4 w-px bg-border/60" />
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <input
+        value={name}
+        onChange={(e) => update({ name: e.target.value })}
+        placeholder="List name..."
+        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+      />
+      <p className="shrink-0 text-xs font-semibold text-muted-foreground">
+        Prompts, loaded into the composer one at a time
+      </p>
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1 flex flex-col gap-2">
+        <SortablePromptItems
+          items={items}
+          onChange={(next) => update({ items: next })}
+          preview={preview}
+        />
+        {preview ? null : (
           <button
             type="button"
-            onClick={() => onExport(entry)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            title="Export"
+            onClick={() => update({ items: [...items, ""] })}
+            className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
           >
-            <DownloadIcon className="size-3.5" />
+            <PlusIcon className="size-3.5" />Add prompt
           </button>
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            title="Edit"
-          >
-            <PencilIcon className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={handleDelete}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
-            title="Delete"
-          >
-            <Trash2Icon className="size-3.5" />
-          </button>
-        </div>
+        )}
       </div>
-      <div className="flex flex-col gap-1">
-        {entry.items.slice(0, 3).map((item, i) => (
-          <p key={i} className="text-xs text-muted-foreground flex gap-2 leading-relaxed">
-            <span className="text-muted-foreground/40 shrink-0 tabular-nums">{i + 1}.</span>
-            <span className="line-clamp-1">{item}</span>
-          </p>
-        ))}
-        {entry.items.length > 3 && (
-          <p className="text-ui-11 text-muted-foreground/50 ml-5">
-            +{entry.items.length - 3} more
-          </p>
+      <div className="flex shrink-0 items-center gap-2 text-ui-11 text-muted-foreground/70">
+        <span className="tabular-nums">{items.length} prompts</span>
+        <span className="text-muted-foreground/30">·</span>
+        <span>updated {relativeTime(entry.updatedAt)}</span>
+        {dirty && (
+          <>
+            <span className="text-muted-foreground/30">·</span>
+            <span className="text-primary">unsaved changes</span>
+          </>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1 border-t border-border/50 pt-3">
+        <button
+          type="button"
+          onClick={() => togglePinnedList(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            isPinned
+              ? "text-primary hover:bg-primary/10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onExport(entry)}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          title="Export"
+        >
+          <DownloadIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleDelete}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+          title="Delete"
+        >
+          <Trash2Icon className="size-4" />
+        </button>
+        <div className="flex-1" />
+        {dirty && (
+          <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
+            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+          </Button>
+        )}
+        <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
+          {preview ? (
+            <><PencilIcon className="size-3.5 mr-1" />Edit</>
+          ) : (
+            <><EyeIcon className="size-3.5 mr-1" />Preview</>
+          )}
+        </Button>
+        <Button size="sm" variant="outline" disabled={!dirty || !savable} onClick={handleSave}>
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
+        </Button>
+        {onRunList && (
+          <Button size="sm" onClick={() => onRunList(entry.items)} disabled={entry.items.length === 0}>
+            <PlayIcon className="size-3 mr-1" />Run
+          </Button>
         )}
       </div>
     </div>
   );
 }
 
-function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefresh: () => void }): ReactElement {
+function NewPromptListForm({
+  onClose,
+  onRefresh,
+  onCreated,
+}: {
+  onClose: () => void;
+  onRefresh: () => void;
+  onCreated: (id: string) => void;
+}): ReactElement {
   const [name, setName] = useState("");
   const [items, setItems] = useState<string[]>(["", ""]);
 
@@ -1828,72 +1948,45 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
     const filtered = items.filter((t) => t.trim());
     if (filtered.length === 0) return;
     const ts = now();
+    const id = newId();
     await savePromptList({
-      id: newId(),
+      id,
       name: name.trim() || "Untitled List",
       items: filtered,
       createdAt: ts,
       updatedAt: ts,
     });
     onRefresh();
+    onCreated(id);
     onClose();
-  }, [name, items, onClose, onRefresh]);
+  }, [name, items, onClose, onRefresh, onCreated]);
 
   const addItem = useCallback(() => setItems((prev) => [...prev, ""]), []);
-  const removeItem = useCallback(
-    (i: number) => setItems((prev) => prev.filter((_, idx) => idx !== i)),
-    [],
-  );
-  const updateItem = useCallback(
-    (i: number, val: string) =>
-      setItems((prev) => prev.map((v, idx) => (idx === i ? val : v))),
-    [],
-  );
 
   return (
-    <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
-      <p className="text-xs font-semibold text-muted-foreground">New Prompt List</p>
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <p className="shrink-0 text-xs font-semibold text-muted-foreground">New Prompt List</p>
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="List name..."
         autoFocus
-        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
-      <p className="text-xs font-semibold text-muted-foreground">
-        Prompts — loaded into the composer one at a time
+      <p className="shrink-0 text-xs font-semibold text-muted-foreground">
+        Prompts, loaded into the composer one at a time
       </p>
-      <div className="flex flex-col gap-2">
-        {items.map((item, i) => (
-          <div key={i} className="flex items-start gap-2">
-            <span className="text-xs font-medium text-muted-foreground/60 mt-2.5 w-5 shrink-0 text-right">{i + 1}.</span>
-            <textarea
-              value={item}
-              onChange={(e) => updateItem(i, e.target.value)}
-              rows={2}
-              placeholder={`Prompt ${i + 1}...`}
-              className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
-            />
-            <button
-              type="button"
-              onClick={() => removeItem(i)}
-              disabled={items.length <= 1}
-              className="flex h-7 w-7 mt-1 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
-              title="Remove"
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </div>
-        ))}
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1 flex flex-col gap-2">
+        <SortablePromptItems items={items} onChange={setItems} minItems={1} />
+        <button
+          type="button"
+          onClick={addItem}
+          className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+        >
+          <PlusIcon className="size-3.5" />Add another prompt
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={addItem}
-        className="flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-      >
-        <PlusIcon className="size-3.5" />Add another prompt
-      </button>
-      <div className="flex gap-2 justify-end">
+      <div className="flex shrink-0 gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
           <XIcon className="size-3.5 mr-1" />Cancel
         </Button>
@@ -1929,9 +2022,39 @@ export function PromptStorageDialog({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, PromptDraft>>({});
+  const [listDrafts, setListDrafts] = useState<Record<string, ListDraft>>({});
+
+  const setPromptDraft = useCallback((id: string, draft: PromptDraft | undefined) => {
+    setPromptDrafts((prev) => {
+      if (!draft) {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      }
+      return { ...prev, [id]: draft };
+    });
+  }, []);
+
+  const setListDraft = useCallback((id: string, draft: ListDraft | undefined) => {
+    setListDrafts((prev) => {
+      if (!draft) {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      }
+      return { ...prev, [id]: draft };
+    });
+  }, []);
 
   const refreshEntries = useCallback(async () => {
     try { setPromptEntries(await listPromptEntries()); } catch {}
@@ -1969,6 +2092,37 @@ export function PromptStorageDialog({
     const q = searchQuery.toLowerCase();
     return all.filter((e) => e.name.toLowerCase().includes(q));
   }, [promptLists, searchQuery]);
+
+  // Keep a row selected whenever the filtered rail is non-empty, so the detail
+  // pane never sits blank next to a list full of prompts.
+  useEffect(() => {
+    if (filteredPrompts.length === 0) {
+      if (selectedPromptId !== null) setSelectedPromptId(null);
+      return;
+    }
+    if (!filteredPrompts.some((e) => e.id === selectedPromptId)) {
+      setSelectedPromptId(filteredPrompts[0].id);
+    }
+  }, [filteredPrompts, selectedPromptId]);
+
+  useEffect(() => {
+    if (filteredLists.length === 0) {
+      if (selectedListId !== null) setSelectedListId(null);
+      return;
+    }
+    if (!filteredLists.some((e) => e.id === selectedListId)) {
+      setSelectedListId(filteredLists[0].id);
+    }
+  }, [filteredLists, selectedListId]);
+
+  const selectedPrompt = useMemo(
+    () => promptEntries.find((e) => e.id === selectedPromptId) ?? null,
+    [promptEntries, selectedPromptId],
+  );
+  const selectedList = useMemo(
+    () => promptLists.find((e) => e.id === selectedListId) ?? null,
+    [promptLists, selectedListId],
+  );
 
   const suggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -2174,134 +2328,138 @@ export function PromptStorageDialog({
           </div>
 
           {/* */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 flex flex-col gap-2.5">
-            {activeTab === "prompts" && (
-              <>
-                {!showNewPrompt ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowNewPrompt(true)}
-                    className="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-border/40 px-4 py-3 text-sm font-medium text-muted-foreground hover:border-border hover:text-foreground hover:bg-muted/50 transition-all"
-                  >
-                    <PlusIcon className="size-4" />New Prompt
-                  </button>
-                ) : (
-                  <NewPromptForm onClose={() => setShowNewPrompt(false)} onRefresh={refreshEntries} />
-                )}
+          <div className="flex-1 min-h-[420px] px-6 pb-6 grid grid-cols-[248px_minmax(0,1fr)] gap-4">
+            {/* */}
+            <div className="flex min-h-0 flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeTab === "prompts") setShowNewPrompt(true);
+                  else setShowNewList(true);
+                }}
+                className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:border-border hover:bg-muted/50 hover:text-foreground transition-all"
+              >
+                <PlusIcon className="size-3.5" />
+                {activeTab === "prompts" ? "New prompt" : "New prompt list"}
+              </button>
 
-                {filteredPrompts.length > 0 ? (
+              <div className="min-h-0 flex-1 overflow-y-auto flex flex-col gap-0.5">
+                {activeTab === "prompts" &&
                   filteredPrompts.map((entry) => (
-                    <PromptCard
+                    <RailRow
                       key={entry.id}
-                      entry={entry}
-                      onUse={handleUsePrompt}
-                      onExport={(e) => setExportCtx({ kind: "prompt", entry: e })}
-                      onRefresh={refreshEntries}
+                      title={entry.name}
+                      preview={entry.text.replace(/\s+/g, " ").trim()}
+                      selected={!showNewPrompt && entry.id === selectedPromptId}
+                      dirty={entry.id in promptDrafts}
+                      leading={
+                        pinnedPromptIds.includes(entry.id) ? (
+                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
+                      onSelect={() => {
+                        setShowNewPrompt(false);
+                        setSelectedPromptId(entry.id);
+                      }}
                     />
-                  ))
-                ) : (
-                  !showNewPrompt && (
-                    <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
-                      {searchQuery.trim() ? (
-                        <>
-                          <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                            <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-5 text-muted-foreground/40" />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <p className="text-sm font-medium text-muted-foreground">
-                              No prompts match &ldquo;{searchQuery}&rdquo;
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => setSearchQuery("")}
-                              className="text-xs text-primary hover:underline"
-                            >
-                              Clear search
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                            <BookmarkIcon className="size-5 text-muted-foreground/40" />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <p className="text-sm font-medium text-muted-foreground">No saved prompts yet</p>
-                            <p className="text-xs text-muted-foreground/60">
-                              Save prompts you use often for quick reuse
-                            </p>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )
-                )}
-              </>
-            )}
+                  ))}
 
-            {activeTab === "lists" && (
-              <>
-                {!showNewList ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowNewList(true)}
-                    className="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-border/40 px-4 py-3 text-sm font-medium text-muted-foreground hover:border-border hover:text-foreground hover:bg-muted/50 transition-all"
-                  >
-                    <PlusIcon className="size-4" />New Prompt List
-                  </button>
-                ) : (
-                  <NewPromptListForm onClose={() => setShowNewList(false)} onRefresh={refreshLists} />
-                )}
-
-                {filteredLists.length > 0 ? (
+                {activeTab === "lists" &&
                   filteredLists.map((entry) => (
-                    <PromptListCard
+                    <RailRow
                       key={entry.id}
-                      entry={entry}
-                      onRunList={onRunList}
-                      onExport={(e) => setExportCtx({ kind: "list", entry: e })}
-                      onRefresh={refreshLists}
+                      title={entry.name}
+                      preview={(entry.items[0] ?? "").replace(/\s+/g, " ").trim()}
+                      badge={String(entry.items.length)}
+                      selected={!showNewList && entry.id === selectedListId}
+                      dirty={entry.id in listDrafts}
+                      leading={
+                        pinnedListIds.includes(entry.id) ? (
+                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
+                      onSelect={() => {
+                        setShowNewList(false);
+                        setSelectedListId(entry.id);
+                      }}
                     />
-                  ))
-                ) : (
-                  !showNewList && (
-                    <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
-                      {searchQuery.trim() ? (
-                        <>
-                          <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                            <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-5 text-muted-foreground/40" />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <p className="text-sm font-medium text-muted-foreground">
-                              No prompt lists match &ldquo;{searchQuery}&rdquo;
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => setSearchQuery("")}
-                              className="text-xs text-primary hover:underline"
-                            >
-                              Clear search
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                            <LayoutListIcon className="size-5 text-muted-foreground/40" />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <p className="text-sm font-medium text-muted-foreground">No prompt lists yet</p>
-                            <p className="text-xs text-muted-foreground/60">
-                              A prompt list queues a sequence of prompts for quick reuse
-                            </p>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )
+                  ))}
+
+                {activeTab === "prompts" && filteredPrompts.length === 0 && (
+                  <p className="px-2 py-6 text-center text-ui-11 text-muted-foreground/60">
+                    {searchQuery.trim() ? "No prompts match" : "No saved prompts yet"}
+                  </p>
                 )}
-              </>
-            )}
+                {activeTab === "lists" && filteredLists.length === 0 && (
+                  <p className="px-2 py-6 text-center text-ui-11 text-muted-foreground/60">
+                    {searchQuery.trim() ? "No lists match" : "No prompt lists yet"}
+                  </p>
+                )}
+              </div>
+
+              <p className="shrink-0 px-1 pb-0.5 text-ui-11 tabular-nums text-muted-foreground/50">
+                {activeTab === "prompts"
+                  ? `${filteredPrompts.length} of ${promptEntries.length} prompts`
+                  : `${filteredLists.length} of ${promptLists.length} lists`}
+              </p>
+            </div>
+
+            {/* */}
+            <div className="min-h-0 rounded-xl border border-border/60 bg-card p-4">
+              {activeTab === "prompts" &&
+                (showNewPrompt ? (
+                  <NewPromptForm
+                    onClose={() => setShowNewPrompt(false)}
+                    onRefresh={refreshEntries}
+                    onCreated={setSelectedPromptId}
+                  />
+                ) : selectedPrompt ? (
+                  <PromptDetail
+                    key={selectedPrompt.id}
+                    entry={selectedPrompt}
+                    draft={promptDrafts[selectedPrompt.id]}
+                    onDraftChange={(d) => setPromptDraft(selectedPrompt.id, d)}
+                    onUse={handleUsePrompt}
+                    onExport={(e) => setExportCtx({ kind: "prompt", entry: e })}
+                    onRefresh={refreshEntries}
+                    onDeleted={() => setSelectedPromptId(null)}
+                  />
+                ) : (
+                  <EmptyDetail
+                    icon={<BookmarkIcon className="size-5 text-muted-foreground/40" />}
+                    title={searchQuery.trim() ? `No prompts match “${searchQuery}”` : "No saved prompts yet"}
+                    hint={searchQuery.trim() ? undefined : "Save prompts you use often for quick reuse"}
+                    onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}
+                  />
+                ))}
+
+              {activeTab === "lists" &&
+                (showNewList ? (
+                  <NewPromptListForm
+                    onClose={() => setShowNewList(false)}
+                    onRefresh={refreshLists}
+                    onCreated={setSelectedListId}
+                  />
+                ) : selectedList ? (
+                  <PromptListDetail
+                    key={selectedList.id}
+                    entry={selectedList}
+                    draft={listDrafts[selectedList.id]}
+                    onDraftChange={(d) => setListDraft(selectedList.id, d)}
+                    onRunList={onRunList}
+                    onExport={(e) => setExportCtx({ kind: "list", entry: e })}
+                    onRefresh={refreshLists}
+                    onDeleted={() => setSelectedListId(null)}
+                  />
+                ) : (
+                  <EmptyDetail
+                    icon={<LayoutListIcon className="size-5 text-muted-foreground/40" />}
+                    title={searchQuery.trim() ? `No prompt lists match “${searchQuery}”` : "No prompt lists yet"}
+                    hint={searchQuery.trim() ? undefined : "A prompt list queues a sequence of prompts for quick reuse"}
+                    onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}
+                  />
+                ))}
+            </div>
           </div>
         </DialogContent>
       </Dialog>
