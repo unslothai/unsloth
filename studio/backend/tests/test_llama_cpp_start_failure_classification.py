@@ -827,11 +827,7 @@ class TestDiagnosticsDoNotLeak:
         # only as a catastrophic guard, loose enough that no runner can trip it.
         import time
 
-        buried = (
-            "error: invalid argument: --nope\n"
-            + "x" * 10_000_000
-            + "\nggml_metal_init: error"
-        )
+        buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
         msg = _classify(buried, "/models/x.gguf", "local/x", 1)
         elapsed = time.perf_counter() - start
