@@ -7,6 +7,18 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 
+// Hydration is a network round trip with no deadline of its own: authFetch sets
+// no AbortSignal, so a wedged or unreachable server leaves the promise pending
+// for as long as the socket does. Uploads used to read these overrides
+// synchronously, so waiting forever would be a new way for a drop to hang with
+// nothing on screen. Bound it and take the local values, the way a blocked
+// localStorage already falls through to the backend defaults.
+const HYDRATION_WAIT_MS = 8_000;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function hasLocal(key: string): boolean {
   if (typeof window === "undefined") return false;
   try {
@@ -27,7 +39,10 @@ export async function resolveVisionOverrides(): Promise<{
 }> {
   // These live in the mirrored chat settings, so a fresh browser has to wait for
   // them: an ingest cannot be undone once its vision passes have run.
-  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  await Promise.race([
+    useChatRuntimeStore.getState().hydratePersistedSettings(),
+    wait(HYDRATION_WAIT_MS),
+  ]);
   const state = useChatRuntimeStore.getState();
   return {
     ocr: hasLocal(CHAT_RAG_OCR_KEY) ? state.ragOcrScanned : undefined,
