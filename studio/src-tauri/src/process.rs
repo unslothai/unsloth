@@ -1463,11 +1463,18 @@ fn relative_override_pins_from(
     // Written out, so the reader that expands %VAR% and the reader that does not
     // land in the same folder. Only for the names that have both.
     let username = lookup("USERNAME");
-    let expanded = |name: &str, value: &str| -> Option<String> {
-        if EXPANDED_ENV.contains(&name) {
-            expand_settled(value, &lookup)
-        } else {
-            Some(value.to_string())
+    // One pass does not settle every value. What the reader sees is one pass: if
+    // that names a folder on its own the value is safe to leave alone, and if it
+    // does not, the folder it names depends on where the process is standing, so
+    // the move has to be refused rather than taken with the value following it.
+    let expanded = |name: &str, value: &str| -> Result<Option<String>, String> {
+        if !EXPANDED_ENV.contains(&name) {
+            return Ok(Some(value.to_string()));
+        }
+        match expand_settled(value, &lookup) {
+            Some(settled) => Ok(Some(settled)),
+            None if is_fully_qualified(&expand_windows_vars(value, &lookup)) => Ok(None),
+            None => Err(format!("{name} does not expand to one folder")),
         }
     };
     let Some(cwd) = cwd else {
@@ -1506,7 +1513,7 @@ fn relative_override_pins_from(
                     Some(home) => expand_windows_user(entry, home, username.as_deref()),
                     None => entry.to_string(),
                 };
-                let Some(entry) = expanded(name, &entry) else {
+                let Some(entry) = expanded(name, &entry)? else {
                     continue;
                 };
                 if is_cwd_independent(&entry, windows) {
@@ -1554,9 +1561,7 @@ fn relative_override_pins_from(
             Some(home) => expand_windows_user(&original, home, username.as_deref()),
             None => original.clone(),
         };
-        // A value one pass does not settle is left exactly as written: writing
-        // back a half-expanded string would have the reader expand it again.
-        let Some(value) = expanded(name, &value) else {
+        let Some(value) = expanded(name, &value)? else {
             continue;
         };
         if value.is_empty() {
@@ -1601,7 +1606,7 @@ fn relative_override_pins_from(
                 }
                 _ => original.clone(),
             };
-            let Some(entry) = expanded(name, &entry) else {
+            let Some(entry) = expanded(name, &entry)? else {
                 entries.push(original);
                 continue;
             };
@@ -3426,34 +3431,60 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
-    fn an_expansion_that_never_settles_leaves_the_value_alone() {
-        // The reader expands once, so a value that still holds a reference after
-        // one pass would be expanded a second time by the reader and read as a
-        // folder with another drive in the middle of it.
-        let cwd = PathBuf::from("C:\\Windows\\System32");
-        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
-        let env = |name: &str| match name {
-            "USERPROFILE" => Some("C:\\Users\\me".to_string()),
-            "LOCALAPPDATA" => Some("%USERPROFILE%\\AppData\\Local".to_string()),
-            "HF_HUB_CACHE" => Some("%LOCALAPPDATA%\\hub".to_string()),
-            "HF_HOME" => Some("%HF_HOME%\\cache".to_string()),
-            _ => None,
+    fn an_expansion_that_stays_relative_refuses_the_move() {
+        // The reader expands once. When that still holds a reference the folder
+        // depends on where the process is standing, so the move is refused; when
+        // it already names a drive the value is left exactly as written.
+        fn pins(
+            lookup: impl Fn(&str) -> Option<String>,
+        ) -> Result<Vec<(&'static str, PathBuf)>, String> {
+            relative_override_pins_from(
+                Some(PathBuf::from("C:\\Windows\\System32")),
+                std::path::Path::new("C:\\Users\\me\\.unsloth"),
+                lookup,
+                |value: &str| panic!("unexpected value needing the OS: {value}"),
+                Some(std::path::Path::new("C:\\Users\\me")),
+                MANAGED_CHILD_SCRUBBED_ENV,
+                true,
+            )
+        }
+        let refused = |error: String| {
+            assert!(
+                error.contains("does not expand to one folder"),
+                "unexpected error: {error}"
+            );
         };
-        let absolute = |value: &str| panic!("unexpected value needing the OS: {value}");
-        let pins = relative_override_pins_from(
-            Some(cwd),
-            &work_dir,
-            env,
-            absolute,
-            Some(std::path::Path::new("C:\\Users\\me")),
-            MANAGED_CHILD_SCRUBBED_ENV,
-            true,
-        )
-        .unwrap();
+        // Nested: one pass leaves the reference NESTED itself holds.
+        refused(
+            pins(|name: &str| match name {
+                "USERPROFILE" => Some("C:\\Users\\me".to_string()),
+                "NESTED" => Some("%USERPROFILE%\\AppData\\Local".to_string()),
+                "HF_ASSETS_CACHE" => Some("%NESTED%\\assets".to_string()),
+                _ => None,
+            })
+            .unwrap_err(),
+        );
+        // Escaped: one pass turns %% into the reference it was protecting.
+        refused(
+            pins(|name: &str| match name {
+                "USERPROFILE" => Some("C:\\Users\\me".to_string()),
+                "XDG_CACHE_HOME" => Some("%%USERPROFILE%%\\xdg".to_string()),
+                _ => None,
+            })
+            .unwrap_err(),
+        );
+        // Self-referencing: no number of passes settles it.
+        refused(
+            pins(|name: &str| (name == "HF_HOME").then(|| "%HF_HOME%\\cache".to_string()))
+                .unwrap_err(),
+        );
+        // Already names a drive after one pass, so it means the same folder from
+        // anywhere and nothing is rewritten.
         assert_eq!(
-            pins,
-            Vec::new(),
-            "neither a nested nor a self-referencing value is written back"
+            pins(|name: &str| (name == "HF_ASSETS_CACHE")
+                .then(|| "C:\\cache\\%UNSET%\\assets".to_string()))
+            .unwrap(),
+            Vec::new()
         );
     }
 

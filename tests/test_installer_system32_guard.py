@@ -1190,34 +1190,51 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
 
 def test_cli_guard_writes_back_only_an_expansion_the_reader_agrees_with():
     r"""Every reader expands once, so the guard expands once and writes the result
-    back only when expanding it again would change nothing. A nested reference, an
-    escaped %%NAME%% and a self-reference all fail that test: the reader would
-    expand what we wrote a second time and read a folder with another drive in the
-    middle of it, so they are left exactly as written."""
+    back only when expanding it again would change nothing. When one pass still
+    names one folder the value is left alone; when it does not, the folder depends
+    on where the process is standing, so the move is refused rather than taken
+    with the value silently following it."""
     environ_out: dict[str, str] = {}
     _message, colour, _chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "--api-only"],
         environ_extra = {
             "LOCALAPPDATA": r"C:\Users\me\AppData\Local",
-            "NESTED": r"%USERPROFILE%\AppData\Local",
             "HF_HUB_CACHE": r"%LOCALAPPDATA%\hub",
-            "HF_ASSETS_CACHE": r"%NESTED%\assets",
-            "XDG_CACHE_HOME": r"%%USERPROFILE%%\xdg",
-            "HF_HOME": r"%HF_HOME%\cache",
+            # One pass leaves another reference, but it already names a drive,
+            # so it means the same folder from anywhere.
+            "HF_ASSETS_CACHE": r"C:\cache\%UNSET%\assets",
         },
         environ_out = environ_out,
     )
     assert colour == "yellow"
     # One pass settles it, so it names one folder and is written back.
     assert environ_out["HF_HUB_CACHE"] == r"C:\Users\me\AppData\Local\hub"
-    # One pass leaves another reference behind: left exactly as written.
-    assert environ_out["HF_ASSETS_CACHE"] == r"%NESTED%\assets"
-    # The escape is a literal percent to the reader, and expanding what one pass
-    # produces would consume it, so this is left alone too.
-    assert environ_out["XDG_CACHE_HOME"] == r"%%USERPROFILE%%\xdg"
-    # Self-referencing, so it never settles.
-    assert environ_out["HF_HOME"] == r"%HF_HOME%\cache"
+    assert environ_out["HF_ASSETS_CACHE"] == r"C:\cache\%UNSET%\assets"
+
+
+def test_cli_guard_refuses_to_move_under_an_expansion_that_stays_relative():
+    r"""A nested reference, an escaped %%NAME%% and a self-reference all leave one
+    pass holding another reference, and the reader resolves what it gets against
+    the working directory. Moving would take the value with it, so each of these
+    refuses instead, naming the setting that could not be preserved."""
+    for name, value, extra in (
+        ("HF_ASSETS_CACHE", r"%NESTED%\assets", {"NESTED": r"%USERPROFILE%\AppData\Local"}),
+        ("XDG_CACHE_HOME", r"%%USERPROFILE%%\xdg", {}),
+        ("HF_HOME", r"%HF_HOME%\cache", {}),
+    ):
+        environ_out: dict[str, str] = {}
+        message, colour, chdir_calls = _guard_outcome(
+            r"C:\Windows\System32",
+            ["unsloth", "studio", "--api-only"],
+            environ_extra = {name: value, **extra},
+            environ_out = environ_out,
+        )
+        assert (colour, chdir_calls) == ("red", []), name
+        assert "path settings" in message, name
+        assert name in message, name
+        # Nothing is left rewritten by the attempt.
+        assert environ_out[name] == value
 
 
 def test_cli_guard_never_refuses_an_update_over_the_local_checkout_setting():

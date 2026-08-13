@@ -582,11 +582,19 @@ def _anchor(
     if name in _EXPANDED_ENV and value:
         # Written out, so the reader that expands and the one that does not land
         # in the same folder. An unset variable is left exactly as written.
-        value = _expand_settled(value, expandvars or _os.path.expandvars)
-        if value is None:
-            # One pass did not settle it, so writing the result back would make
-            # the reader expand it a second time. Left exactly as it was.
-            return None
+        expandvars = expandvars or _os.path.expandvars
+        settled = _expand_settled(value, expandvars)
+        if settled is None:
+            # One pass does not settle it, so writing the result back would have
+            # the reader expand it a second time. What the reader does see is one
+            # pass: if that names a folder on its own the value is safe to leave
+            # alone, and if it does not, the folder it names depends on where the
+            # process is standing and the move has to be refused instead.
+            once = expandvars(value)
+            if _is_fully_qualified(once, pathmod):
+                return None
+            raise ValueError(f"{name} does not expand to one folder")
+        value = settled
     if not value:
         return None
     if _is_fully_qualified(value, pathmod):
