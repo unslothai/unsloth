@@ -18265,14 +18265,11 @@ class LlamaCppBackend:
                         return False
                     delta = choice.get("delta")
                     if isinstance(delta, dict) and any(
-                        value not in (None, "", [])
-                        for key, value in delta.items()
-                        if key != "role"
+                        value not in (None, "", []) for key, value in delta.items() if key != "role"
                     ):
                         return False
             saw_progress = True
         return saw_progress
-
 
     @staticmethod
     def _iter_text_cancellable(

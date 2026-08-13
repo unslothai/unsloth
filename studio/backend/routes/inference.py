@@ -3500,7 +3500,6 @@ def _monitor_usage(
         )
 
 
-
 def _monitor_perf_callback(monitor_id: Optional[str], context_length):
     """Build a timing sink only when a monitor row or wrapper sink can consume it."""
     if not monitor_id and _monitor_perf_sink.get() is None:
@@ -12782,6 +12781,7 @@ async def openai_chat_completions(
             if not _wants_multiple_choices(payload)
             else None
         )
+
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
                 delta = delta.model_copy(update = {"content": ""})
