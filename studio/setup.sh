@@ -1488,21 +1488,47 @@ _setup_http_get_timed() {
 # rather than risk a binary for the wrong triple.
 _SETUP_UV_PINNED_VERSION="0.12.1"
 
+# Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
+# run the GNU build", and astral drops to its musl-static archive below its floor.
+_setup_uv_glibc_minor() {
+    _sugm_line=$( (ldd --version 2>/dev/null || true) | head -1 )
+    case "$_sugm_line" in *[Mm]usl*) return 1 ;; esac
+    _sugm_ver=$(printf '%s\n' "$_sugm_line" | awk '{print $NF}')
+    case "$_sugm_ver" in
+        2.[0-9]*) : ;;
+        *) _sugm_ver=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}') ;;
+    esac
+    case "$_sugm_ver" in 2.[0-9]*) : ;; *) return 1 ;; esac
+    _sugm_minor=${_sugm_ver#2.}
+    _sugm_minor=${_sugm_minor%%.*}
+    case "$_sugm_minor" in "" | *[!0-9]*) return 1 ;; esac
+    echo "$_sugm_minor"
+    return 0
+}
+
 _setup_uv_pinned_asset() {
     _supa_os=$(uname -s 2>/dev/null || echo unknown)
     _supa_arch=$(uname -m 2>/dev/null || echo unknown)
     case "$_supa_os" in
         Linux)
-            if (ldd --version 2>&1 || true) | grep -qi musl; then return 1; fi
+            # A 32-bit userland on a 64-bit kernel still reports x86_64 from uname.
+            [ "$(getconf LONG_BIT 2>/dev/null || echo 0)" = "64" ] || return 1
+            _supa_glibc=$(_setup_uv_glibc_minor) || return 1
             case "$_supa_arch" in
                 x86_64|amd64)
+                    [ "$_supa_glibc" -ge 17 ] 2>/dev/null || return 1
                     echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
                 aarch64|arm64)
+                    [ "$_supa_glibc" -ge 28 ] 2>/dev/null || return 1
                     echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
                 *) return 1 ;;
             esac
             ;;
         Darwin)
+            # Rosetta 2 reports x86_64 from a translated shell; astral reads the same sysctl.
+            if [ "$_supa_arch" = "x86_64" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+                _supa_arch=arm64
+            fi
             case "$_supa_arch" in
                 x86_64)
                     echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
@@ -1560,6 +1586,9 @@ _setup_install_uv_pinned() {
         break
     done
     rm -rf "$_siup_work"
+    # Placed is not installed: a copy onto a busy or read-only destination can leave a file that
+    # is not executable, and reporting success there skips the fallback.
+    [ -x "$_siup_dest/uv" ] || _siup_rc=1
     [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
     return "$_siup_rc"
 }

@@ -2416,23 +2416,56 @@ _uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
 # the caller's existing path rather than risk a wrong triple.
 UV_PINNED_VERSION="0.12.1"
 
+# Echoes the glibc minor version (the N in 2.N), or nothing when this is not a glibc host or
+# the version cannot be read. "not musl" is not the same as "a glibc new enough to run the GNU
+# build": astral's installer checks a minimum and drops to its musl-static archive below it, so
+# a host we cannot positively confirm has to reach the fallback rather than take a binary that
+# will not exec.
+_uv_glibc_minor() {
+    _ugm_line=$( (ldd --version 2>/dev/null || true) | head -1 )
+    case "$_ugm_line" in *[Mm]usl*) return 1 ;; esac
+    _ugm_ver=$(printf '%s\n' "$_ugm_line" | awk '{print $NF}')
+    # getconf is the fallback for an ldd that prints no version, and for hosts with no ldd.
+    case "$_ugm_ver" in
+        2.[0-9]*) : ;;
+        *) _ugm_ver=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}') ;;
+    esac
+    case "$_ugm_ver" in 2.[0-9]*) : ;; *) return 1 ;; esac
+    _ugm_minor=${_ugm_ver#2.}
+    _ugm_minor=${_ugm_minor%%.*}
+    case "$_ugm_minor" in "" | *[!0-9]*) return 1 ;; esac
+    echo "$_ugm_minor"
+    return 0
+}
+
 # Prints "<asset> <sha256>" for this host, or nothing when the host is not pinned.
 _uv_pinned_asset() {
     _upa_os=$(uname -s 2>/dev/null || echo unknown)
     _upa_arch=$(uname -m 2>/dev/null || echo unknown)
     case "$_upa_os" in
         Linux)
-            # A musl host needs the musl archive, off a detection we cannot test here.
-            if (ldd --version 2>&1 || true) | grep -qi musl; then return 1; fi
+            # A 64-bit kernel under a 32-bit userland reports x86_64 from uname but cannot load
+            # a 64-bit binary, so ask the userland, not the kernel.
+            [ "$(getconf LONG_BIT 2>/dev/null || echo 0)" = "64" ] || return 1
+            # Rejects musl, an unreadable libc, and a glibc below astral's floor for the triple.
+            _upa_glibc=$(_uv_glibc_minor) || return 1
             case "$_upa_arch" in
                 x86_64|amd64)
+                    [ "$_upa_glibc" -ge 17 ] 2>/dev/null || return 1
                     echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
                 aarch64|arm64)
+                    [ "$_upa_glibc" -ge 28 ] 2>/dev/null || return 1
                     echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
                 *) return 1 ;;
             esac
             ;;
         Darwin)
+            # Under Rosetta 2 a translated shell reports x86_64 on an Apple Silicon Mac. astral
+            # reads the same sysctl and ships the native build; matching it keeps the uv the user
+            # ends up with identical to the one they had before.
+            if [ "$_upa_arch" = "x86_64" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+                _upa_arch=arm64
+            fi
             case "$_upa_arch" in
                 x86_64)
                     echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
@@ -2500,13 +2533,18 @@ _uv_install_pinned() {
                 [ "$_uip_exe" = "uv" ] && _uip_placed=1
             fi
         done
-        if [ "$_uip_placed" = "1" ]; then
+        # Placed is not installed: a copy onto a busy or read-only destination can leave a file
+        # that is not executable, and reporting success there skips the fallback and leaves the
+        # caller with a uv it cannot run.
+        if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ]; then
             export PATH="$_uip_dest:$PATH"
             _uip_rc=0
         fi
         break
     done
     rm -rf "$_uip_work"
+    # Nothing is unwound on the failure path on purpose: the fallback installs over whatever is
+    # at the destination, and deleting there would take out a working uv the host already had.
     return "$_uip_rc"
 }
 

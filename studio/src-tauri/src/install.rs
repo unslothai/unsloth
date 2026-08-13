@@ -47,6 +47,13 @@ fn generic_failure_message(code: i32) -> String {
 const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
 const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
 
+/// The id only means a verdict when it is the value of a PowerShell error record's
+/// `FullyQualifiedErrorId` field, which is how the parse error prints it. Requiring the field
+/// name keeps an ordinary line that merely names the id, from a scanner log or a diagnostic,
+/// from attaching antivirus guidance to an unrelated failure. A wrapper that split the record
+/// across writes loses the guidance rather than inventing one, which is the safe direction.
+const POWERSHELL_ERROR_ID_FIELD: &str = "FullyQualifiedErrorId";
+
 /// "Nothing was changed" only holds for a block on install.ps1 itself, which AMSI rejects before
 /// its first statement. install.ps1 also runs `unsloth studio setup` near the end, and that child
 /// spawns studio/setup.ps1 through the same inherited pipes: a block there arrives after the venv,
@@ -67,20 +74,36 @@ const AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS: &str = "This machine's security pol
      of the installer, so setup did not finish and some components may already be installed. Ask \
      whoever manages the device to allow it.";
 
-fn security_block_guidance(text: &str, started: bool) -> Option<&'static str> {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SecurityBlockKind {
+    Malware,
+    AdminPolicy,
+}
+
+impl SecurityBlockKind {
+    /// Resolved at message time, not at observation time: stdout and stderr are read by
+    /// independent threads, so a `[TAURI:STEP]` written before the block can be observed after
+    /// it. Choosing the wording from the final `started` value is the only way the "nothing was
+    /// changed" claim can be trusted.
+    fn guidance(self, started: bool) -> &'static str {
+        match (self, started) {
+            (Self::Malware, false) => AMSI_MALWARE_GUIDANCE_PRE_START,
+            (Self::Malware, true) => AMSI_MALWARE_GUIDANCE_IN_PROGRESS,
+            (Self::AdminPolicy, false) => AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START,
+            (Self::AdminPolicy, true) => AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS,
+        }
+    }
+}
+
+fn security_block_kind(text: &str) -> Option<SecurityBlockKind> {
+    if !text.contains(POWERSHELL_ERROR_ID_FIELD) {
+        return None;
+    }
     if text.contains(AMSI_MALWARE_ERROR_ID) {
-        return Some(if started {
-            AMSI_MALWARE_GUIDANCE_IN_PROGRESS
-        } else {
-            AMSI_MALWARE_GUIDANCE_PRE_START
-        });
+        return Some(SecurityBlockKind::Malware);
     }
     if text.contains(AMSI_ADMIN_BLOCK_ERROR_ID) {
-        return Some(if started {
-            AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS
-        } else {
-            AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START
-        });
+        return Some(SecurityBlockKind::AdminPolicy);
     }
     None
 }
@@ -101,7 +124,7 @@ struct InstallFailureContext {
     explicit_error: Option<String>,
     explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
-    security_block: Option<&'static str>,
+    security_block: Option<SecurityBlockKind>,
     started: bool,
     output_tail: VecDeque<InstallOutputLine>,
 }
@@ -187,7 +210,7 @@ impl InstallFailureContext {
     /// wrapper that folded the streams together would otherwise lose it.
     fn note_security_block(&mut self, text: &str) {
         if self.security_block.is_none() {
-            self.security_block = security_block_guidance(text, self.started);
+            self.security_block = security_block_kind(text);
         }
     }
 
@@ -243,7 +266,7 @@ impl InstallFailureContext {
         // Appended, not substituted: the raw id is what a diagnostics report and a vendor
         // submission need, the guidance is what the user needs.
         match self.security_block {
-            Some(guidance) => format!("{} {}", base, guidance),
+            Some(kind) => format!("{} {}", base, kind.guidance(self.started)),
             None => base,
         }
     }
@@ -1429,6 +1452,35 @@ mod tests {
         assert!(message.contains("blocked part of the installer"), "{message}");
         assert!(!message.contains("nothing was changed"), "{message}");
         assert!(message.contains("some components may already be installed"), "{message}");
+    }
+
+    #[test]
+    fn the_wording_follows_the_final_started_state_not_the_arrival_order() {
+        // stdout and stderr are read by independent threads, so the STEP a child wrote before
+        // the block can be observed after it. Deciding the wording when the token arrives would
+        // tell the user nothing was changed on a run that had already installed PyTorch.
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("nothing was changed"), "{message}");
+    }
+
+    #[test]
+    fn merely_naming_the_error_id_is_not_a_verdict() {
+        // The id is only a verdict as the value of a PowerShell error record's field. A scanner
+        // log or a test fixture that prints the bare string must not attach antivirus guidance
+        // to whatever fails next.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("scanning fixture ScriptContainedMaliciousContent");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
     }
 
     #[test]

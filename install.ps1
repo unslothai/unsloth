@@ -1418,6 +1418,12 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            # WriteAllText replaces the unnamed data stream and leaves any other NTFS stream on
+            # an existing file alone, so a launcher that somehow acquired a mark of the web keeps
+            # it across the rewrite. The shortcut loads this under RemoteSigned, which refuses a
+            # marked unsigned script, so clear the mark on the file we just authored. A no-op on
+            # every ordinary install, where the stream was never there.
+            Unblock-File -LiteralPath $launcherPs1 -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
             # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk

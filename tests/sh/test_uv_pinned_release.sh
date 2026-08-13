@@ -183,54 +183,78 @@ fi
 
 # Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
 # installing at all, so every host must either get its own triple or decline to the fallback.
-_probe_asset() { # $1 fn, $2 os, $3 arch, $4 libc
+# $4 libc: musl | none (no ldd and no getconf) | a glibc version | rosetta (Darwin only)
+# $5 bits: what getconf LONG_BIT reports, so a 32-bit userland on a 64-bit kernel is covered.
+_probe_asset() { # $1 fn, $2 os, $3 arch, $4 libc, $5 bits
     (
         set +e
-        # Bind before the stubs: inside a function body $2/$3/$4 are the stub's own arguments.
-        _pa_os="$2"; _pa_arch="$3"; _pa_libc="$4"
+        # Bind before the stubs: inside a function body $2..$5 are the stub's own arguments.
+        _pa_os="$2"; _pa_arch="$3"; _pa_libc="$4"; _pa_bits="$5"
         tauri_log() { :; }
         # shellcheck disable=SC1090
         . "$WORK/uvfns.sh"
         uname() { case "${1:-}" in -m) echo "$_pa_arch" ;; *) echo "$_pa_os" ;; esac; }
-        ldd() { if [ "$_pa_libc" = musl ]; then echo "musl libc 1.2.4"; else echo "ldd (GNU libc) 2.35"; fi; }
+        ldd() {
+            case "$_pa_libc" in
+                musl) echo "musl libc (x86_64)" ;;
+                none) return 127 ;;
+                *) echo "ldd (Ubuntu GLIBC $_pa_libc-0ubuntu1) $_pa_libc" ;;
+            esac
+        }
+        getconf() {
+            case "${1:-}" in
+                LONG_BIT) echo "$_pa_bits" ;;
+                GNU_LIBC_VERSION) [ "$_pa_libc" = none ] && return 1; echo "glibc $_pa_libc" ;;
+            esac
+        }
+        sysctl() { [ "$_pa_libc" = rosetta ] && echo 1; }
         "$1" 2>/dev/null
     )
 }
 _matrix_bad=0
-# "<os> <arch> <libc> <expected triple, or - to decline>"
-while read -r _m_os _m_arch _m_libc _m_want; do
+# "<os> <arch> <libc> <bits> <expected triple, or - to decline>"
+while read -r _m_os _m_arch _m_libc _m_bits _m_want; do
     [ -n "$_m_os" ] || continue
     # `|| _m_got=`: a declining host exits non-zero, and set -e would end the run here.
-    _m_got=$(_probe_asset _uv_pinned_asset "$_m_os" "$_m_arch" "$_m_libc") || _m_got=""
+    _m_got=$(_probe_asset _uv_pinned_asset "$_m_os" "$_m_arch" "$_m_libc" "$_m_bits") || _m_got=""
+    _m_label="$_m_os/$_m_arch/$_m_libc/$_m_bits"
     if [ "$_m_want" = "-" ]; then
-        [ -z "$_m_got" ] || { echo "      $_m_os/$_m_arch/$_m_libc should decline, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)); }
+        [ -z "$_m_got" ] || { echo "      $_m_label should decline, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)); }
     else
         case "$_m_got" in
             "uv-$_m_want.tar.gz "*) : ;;
-            *) echo "      $_m_os/$_m_arch/$_m_libc expected $_m_want, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)) ;;
+            *) echo "      $_m_label expected $_m_want, got '$_m_got'"; _matrix_bad=$((_matrix_bad + 1)) ;;
         esac
     fi
 done <<'MATRIX'
-Linux x86_64 gnu x86_64-unknown-linux-gnu
-Linux amd64 gnu x86_64-unknown-linux-gnu
-Linux aarch64 gnu aarch64-unknown-linux-gnu
-Linux arm64 gnu aarch64-unknown-linux-gnu
-Darwin x86_64 gnu x86_64-apple-darwin
-Darwin arm64 gnu aarch64-apple-darwin
-Darwin aarch64 gnu aarch64-apple-darwin
-Linux x86_64 musl -
-Linux aarch64 musl -
-Linux armv7l gnu -
-Linux i686 gnu -
-Linux ppc64le gnu -
-Linux riscv64 gnu -
-Linux s390x gnu -
-Darwin i386 gnu -
-FreeBSD x86_64 gnu -
-SunOS x86_64 gnu -
-MINGW64_NT-10.0 x86_64 gnu -
-CYGWIN_NT-10.0 x86_64 gnu -
-unknown unknown gnu -
+Linux x86_64 2.35 64 x86_64-unknown-linux-gnu
+Linux amd64 2.35 64 x86_64-unknown-linux-gnu
+Linux aarch64 2.35 64 aarch64-unknown-linux-gnu
+Linux arm64 2.28 64 aarch64-unknown-linux-gnu
+Linux x86_64 2.17 64 x86_64-unknown-linux-gnu
+Darwin x86_64 2.35 64 x86_64-apple-darwin
+Darwin arm64 2.35 64 aarch64-apple-darwin
+Darwin aarch64 2.35 64 aarch64-apple-darwin
+Darwin x86_64 rosetta 64 aarch64-apple-darwin
+Linux x86_64 musl 64 -
+Linux aarch64 musl 64 -
+Linux x86_64 none 64 -
+Linux aarch64 none 64 -
+Linux x86_64 2.12 64 -
+Linux aarch64 2.27 64 -
+Linux x86_64 2.35 32 -
+Linux aarch64 2.35 32 -
+Linux armv7l 2.35 64 -
+Linux i686 2.35 64 -
+Linux ppc64le 2.35 64 -
+Linux riscv64 2.35 64 -
+Linux s390x 2.35 64 -
+Darwin i386 2.35 64 -
+FreeBSD x86_64 2.35 64 -
+SunOS x86_64 2.35 64 -
+MINGW64_NT-10.0 x86_64 2.35 64 -
+CYGWIN_NT-10.0 x86_64 2.35 64 -
+unknown unknown 2.35 64 -
 MATRIX
 if [ "$_matrix_bad" = 0 ]; then
     ok "every host either gets its own triple or declines to the fallback"
