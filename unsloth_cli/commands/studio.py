@@ -3396,21 +3396,19 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
-# The launcher refresh re-runs the installer with --shortcuts-only. It fetches rather
-# than shipping a copy, so a launcher fix reaches users without waiting for a release.
+# The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
+# so a launcher fix reaches users without waiting for a release.
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
 _INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
-# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. A redirect
-# anywhere else, or to plain http, is refused rather than followed.
+# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. Anywhere
+# else, or plain http, is refused rather than followed.
 _INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 # install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
 _INSTALLER_MAX_BYTES = 8 * 1024 * 1024
-# The one token the refresh actually depends on. Internal names like
-# create_studio_shortcuts or Install-UnslothStudio would be tighter, but they can be
-# renamed in a perfectly good installer, and this check failing means every wheel-based
-# refresh is skipped until new Python ships. `--shortcuts-only` is the flag this code
-# passes, so an installer without it cannot serve the request anyway.
+# The flag this code passes, so an installer without it cannot serve the request.
+# Internal names would be tighter but can be renamed in a perfectly good installer,
+# and a false negative here skips every wheel-based refresh until new Python ships.
 _INSTALLER_MARKERS = {
     "install.sh": (b"--shortcuts-only",),
     "install.ps1": (b"--shortcuts-only",),
@@ -3479,10 +3477,9 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
         with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
             body = response.read(_INSTALLER_MAX_BYTES + 1)
-            # read(amt) returns what arrived and does NOT check it against
-            # Content-Length; only a further read() does, raising IncompleteRead on a
-            # short body. Without this a transfer cut off mid-file still carries the
-            # markers below and would be piped into bash as a half-written script.
+            # read(amt) does not check Content-Length; only a further read() does,
+            # raising IncompleteRead. Without it a transfer cut off mid-file still
+            # carries the markers and would be piped into bash half-written.
             if len(body) <= _INSTALLER_MAX_BYTES:
                 body += response.read()
     except (
@@ -3562,8 +3559,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         if _should_hide_windows_subprocesses():
             ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
-        # any() stops at the first candidate that actually launched, and only an
-        # unlaunchable one moves on, which is what the old loop did.
+        # Stops at the first candidate that launched; only an unlaunchable one moves on.
         if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
             return
         fetched = _fetch_installer(installer_name, verbose = verbose)
