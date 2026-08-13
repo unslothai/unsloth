@@ -1147,7 +1147,6 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
         return False
     try:
         from core.training.worker import _rocm_classify_unified_memory
-
         return _rocm_classify_unified_memory(props)[1]
     except Exception as e:
         logger.debug("ROCm unified-memory classification failed: %s", e)
