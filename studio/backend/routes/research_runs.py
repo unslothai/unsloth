@@ -209,8 +209,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         # inline key would have to be persisted, and _is_sensitive_key exists to
         # stop exactly that. Only the provider-type allowlist is widened.
         if (
-            not provider_runs_local_tools(provider_type)
-            or not isinstance(provider_id, str)
+            not isinstance(provider_id, str)
             or not provider_id.strip()
             or not isinstance(external_model, str)
             or not external_model.strip()
@@ -222,11 +221,20 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        if provider["provider_type"] != provider_type or not provider["is_enabled"]:
+        # The saved row is the only authority on routing: _proxy_to_external_provider
+        # overwrites provider_type from the config whenever provider_id is set. The
+        # client's providerType is a UI label, and resolveUiProviderTypeFromConfig
+        # reports "custom" / "vllm" / "ollama" for a legacy connection still stored
+        # as backend type "openai", so comparing it for equality rejects connections
+        # the chat route drives happily. Check the capability on the saved type and
+        # persist that, so the durable config matches how the hop is routed.
+        saved_provider_type = provider["provider_type"]
+        if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires an enabled connection of the requested provider type",
+                detail = "Durable research requires an enabled connection whose provider supports Studio tools",
             )
+        request["providerType"] = saved_provider_type
 
     # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
     # stringified, so {"auth": "sk-..."} would slip past the sensitive-key scan (inner key

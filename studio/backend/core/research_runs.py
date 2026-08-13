@@ -1132,7 +1132,7 @@ class ResearchSupervisor:
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
-            name = "deep-research workflow",
+            name = auth_storage.RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
         )

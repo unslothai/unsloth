@@ -2287,22 +2287,25 @@ def _hosted_only_enabled_tools(enabled_tools: Any) -> Optional[list[str]]:
     return kept or None
 
 
-def _request_is_internal_workflow(request: Any) -> bool:
-    """True only for Studio's own workflow keys (Deep Research, data recipes).
+def _request_is_research_workflow(request: Any) -> bool:
+    """True only for a Deep Research worker's own key.
 
-    Checked against the stored internal-key hashes, never a prefix, so a caller
-    cannot mint one by sending an sk-unsloth-looking bearer. Fails closed when the
-    probe raises, so a storage error withholds saved credentials rather than
-    handing them out.
+    Scoped to that one workflow, not to "internal" in general: a data-recipe job
+    also holds an internal key and can read provider ids, so authorizing every
+    workflow would let it spend an unrelated saved credential. The name is set by
+    Studio at mint time and is checked against the stored key row, never a prefix
+    a caller could send. Fails closed when the probe raises, so a storage error
+    withholds saved credentials rather than handing them out.
     """
     token = _request_api_key_token(request)
     if token is None:
         return False
     try:
-        return bool(auth_storage.is_internal_api_key(token))
+        workflow = auth_storage.internal_api_key_workflow(token)
     except Exception:
         logger.debug("external_provider.internal_key_probe_failed", exc_info = True)
         return False
+    return workflow == auth_storage.RESEARCH_WORKFLOW_KEY_NAME
 
 
 def _request_used_api_key(request: Any) -> bool:
@@ -11712,13 +11715,13 @@ async def _proxy_to_external_provider(
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
         payload.encrypted_api_key,
-        # A durable Deep Research hop authenticates with an internal workflow key,
+        # A durable Deep Research hop authenticates with its own workflow key,
         # which is still an API key, so the plain check would drop the saved
         # provider id and fail before the provider is ever contacted. The run's
         # connection was already validated as an enabled saved one by
         # research_runs._sanitize_config, and the key is verified against storage.
         allow_saved_key = (
-            not _request_has_api_key(request) or _request_is_internal_workflow(request)
+            not _request_has_api_key(request) or _request_is_research_workflow(request)
         ),
     )
 

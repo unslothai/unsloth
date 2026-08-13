@@ -1867,3 +1867,49 @@ def test_stream_completion_gives_a_model_switch_more_than_the_generic_backoff(mo
     assert len(sent) == research_runs._MAX_MODEL_WAITS + 1
     # Each wait is longer than the last: a swap that has not finished in 5s needs more, not less.
     assert sum(delays) == 30.0
+
+
+def test_sanitize_config_accepts_a_legacy_custom_connection_saved_as_openai(monkeypatch):
+    """The UI label must not be able to reject a connection the chat route drives.
+
+    resolveUiProviderTypeFromConfig reports "custom" for a migrated connection
+    whose saved row is still backend type "openai", and the composer advertises
+    Deep Research for it. The hop routes off the saved row, so the durable config
+    has to keep the canonical type.
+    """
+    from routes import research_runs as research_runs_route
+
+    monkeypatch.setattr(
+        research_runs_route.providers_db,
+        "get_provider",
+        lambda provider_id: {"id": provider_id, "provider_type": "openai", "is_enabled": 1},
+    )
+    request = {
+        "model": "gpt-oss-20b",
+        "providerId": "p1",
+        "providerType": "custom",
+        "externalModel": "gpt-oss-20b",
+    }
+    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "m"})
+    assert config["inferenceRequest"]["providerType"] == "openai"
+    assert config["inferenceRequest"]["providerId"] == "p1"
+
+
+def test_sanitize_config_rejects_a_saved_connection_without_studio_tools(monkeypatch):
+    """The capability check moves to the saved type, so it still refuses a row
+    that cannot run the tool loop even when the client claims a capable type."""
+    from routes import research_runs as research_runs_route
+
+    monkeypatch.setattr(
+        research_runs_route.providers_db,
+        "get_provider",
+        lambda provider_id: {"id": provider_id, "provider_type": "anthropic", "is_enabled": 1},
+    )
+    request = {
+        "model": "m",
+        "providerId": "p1",
+        "providerType": "custom",
+        "externalModel": "claude-sonnet-4-5",
+    }
+    with pytest.raises(Exception):
+        _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "m"})
