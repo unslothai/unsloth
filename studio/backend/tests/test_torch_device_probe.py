@@ -183,6 +183,10 @@ def test_result_is_cached_per_device(monkeypatch):
         "HIP_VISIBLE_DEVICES",
         "ROCR_VISIBLE_DEVICES",
         "HSA_OVERRIDE_GFX_VERSION",
+        # _TORCH_DEVICE maps DeviceType.XPU to "xpu", so the probe runs on Intel too and
+        # its selectors move the silicon underneath a cached verdict just as the rest do.
+        "ZE_AFFINITY_MASK",
+        "ONEAPI_DEVICE_SELECTOR",
     ],
 )
 def test_device_identity_change_invalidates_cache(monkeypatch, variable):
@@ -214,6 +218,31 @@ def test_child_uses_selected_device_without_preexec(monkeypatch):
     assert argv[0] == sys.executable
     assert argv[-2] == "xpu"
     assert "preexec_fn" not in kwargs
+
+
+def test_the_child_deadline_does_not_depend_on_the_gil(monkeypatch):
+    # The deadline exists for a torch that hangs in a native call, and that is exactly when
+    # a threading.Timer cannot fire: its callback needs the GIL, which a long C call never
+    # returns to the interpreter to release. SIGALRM with no handler is enforced by the
+    # kernel, so it runs no Python at all.
+    script = torch_device_probe._PROBE_SCRIPT
+    assert "signal.alarm" in script
+    assert script.index("signal.alarm") < script.index("import torch")
+    # Windows has no alarm, so the timer stays as the fallback there.
+    assert "threading.Timer" in script
+
+
+def test_the_kernel_enforces_the_child_deadline():
+    # Proves the mechanism rather than trusting it: no handler is installed, so the default
+    # disposition terminates the process, and the exit is the signal itself.
+    if not hasattr(signal, "alarm"):
+        pytest.skip("POSIX only")
+    done = subprocess.run(
+        [sys.executable, "-c", "import signal, time; signal.alarm(1); time.sleep(30)"],
+        capture_output = True,
+        timeout = 60,
+    )
+    assert done.returncode == -int(signal.SIGALRM)
 
 
 def test_child_has_its_own_deadline(monkeypatch):

@@ -36,11 +36,18 @@ _STDERR_TAIL_CHARS = 600
 # say something killed the probe, not that the device cannot be used.
 _FATAL_SIGNALS = frozenset({4, 6, 7, 8, 11})
 
+# Anything that changes which physical device a device string names, or which kernels the
+# runtime emits for it. A change invalidates a cached verdict, since the same "cuda" or
+# "xpu" would then be a different piece of silicon: a stale pass could skip the probe on an
+# untested device, and a stale failure could pin a working one to CPU. The XPU selectors
+# matter because _TORCH_DEVICE maps DeviceType.XPU to "xpu", so this probe runs there too.
 _DEVICE_IDENTITY_ENV_VARS = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "HSA_OVERRIDE_GFX_VERSION",
+    "ZE_AFFINITY_MASK",
+    "ONEAPI_DEVICE_SELECTOR",
 )
 
 # The matmul tests allocation and vendor BLAS initialization. item() synchronizes
@@ -49,12 +56,22 @@ _DEVICE_IDENTITY_ENV_VARS = (
 # registrations are process-local and are not inherited by this interpreter.
 _PROBE_SCRIPT = """
 import os
+import signal
 import sys
 import threading
 
-_watchdog = threading.Timer(float(sys.argv[2]), lambda: os._exit(70))
-_watchdog.daemon = True
-_watchdog.start()
+# The deadline has to hold even when torch hangs inside a native call, which is the case
+# it exists for. A threading.Timer cannot: its callback needs the GIL, and a long C call
+# never returns to the interpreter loop to release it. SIGALRM with NO handler installed is
+# enforced by the kernel instead, so it does not run Python and does not need the GIL.
+# Windows has no alarm, so the timer stays as the fallback there.
+_deadline = float(sys.argv[2])
+if hasattr(signal, "alarm"):
+    signal.alarm(int(_deadline) or 1)
+else:
+    _watchdog = threading.Timer(_deadline, lambda: os._exit(70))
+    _watchdog.daemon = True
+    _watchdog.start()
 
 if sys.platform == "win32":
     _handles = []
