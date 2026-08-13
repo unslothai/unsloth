@@ -78,6 +78,21 @@ def test_select_track_prefers_requested_language_and_human_captions():
     assert _select_track([_track("ar"), _track("de", "asr")], {}, ["de"])["languageCode"] == "de"
 
 
+def test_select_track_prefers_an_exact_locale_over_an_earlier_regional_sibling():
+    # pt-PT is listed first and shares the base language, so a positional scan would
+    # hand a Brazilian viewer the European Portuguese transcript.
+    tracks = [_track("pt-PT"), _track("pt-BR")]
+    assert _select_track(tracks, {}, ["pt-BR"])["languageCode"] == "pt-BR"
+    assert _select_track(tracks, {}, ["pt-PT"])["languageCode"] == "pt-PT"
+    # No exact match for the region: the base language still answers.
+    assert _select_track(tracks, {}, ["pt-AO"])["languageCode"] == "pt-PT"
+    # A human base-language track outranks an auto-generated exact match.
+    assert (
+        _select_track([_track("pt"), _track("pt-BR", "asr")], {}, ["pt-BR"])["languageCode"]
+        == "pt"
+    )
+
+
 def test_select_track_falls_back_to_the_default_audio_track_language():
     # Multi-language videos list captions alphabetically, so index 0 is usually a
     # translation of a language nobody in the video is speaking.

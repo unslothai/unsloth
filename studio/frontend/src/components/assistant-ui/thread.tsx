@@ -3615,7 +3615,11 @@ const Composer: FC<{
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
       {youtubeOfferUrl && !isDictating && !disabled ? (
+        // Keyed by URL: pasting a second link while the first is still fetching
+        // remounts the prompt, so its cleanup aborts the request that is no
+        // longer the one on offer.
         <YoutubeTranscriptPrompt
+          key={youtubeOfferUrl}
           url={youtubeOfferUrl}
           onClose={() => setYoutubeLink(null)}
         />

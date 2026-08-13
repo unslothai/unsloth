@@ -178,13 +178,18 @@ def _select_track(
         wanted = str(language).strip().lower()
         if not wanted:
             continue
+        base = wanted.split("-")[0]
         for want_generated in (False, True):
-            for track in tracks:
-                if (track.get("kind") == "asr") is not want_generated:
-                    continue
-                code = str(track.get("languageCode") or "").lower()
-                if code == wanted or code.split("-")[0] == wanted.split("-")[0]:
-                    return track
+            candidates = [t for t in tracks if (t.get("kind") == "asr") is want_generated]
+            # exact locale before the base-language fallback: a pt-BR request must not
+            # take a pt-PT track just because it is listed first
+            for matches_wanted in (
+                lambda code: code == wanted,
+                lambda code: code.split("-")[0] == base,
+            ):
+                for track in candidates:
+                    if matches_wanted(str(track.get("languageCode") or "").lower()):
+                        return track
     return tracks[_default_track_index(tracks, tracklist)]
 
 
