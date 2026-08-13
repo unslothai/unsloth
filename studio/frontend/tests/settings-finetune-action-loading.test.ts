@@ -7,26 +7,17 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
+
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DATA_TAB = path.join(SRC, "features/settings/tabs/data-tab.tsx");
-
-const source = await readFile(DATA_TAB, "utf8");
-const STATIC_FINE_TUNE_IMPORT = /finetune-recipe/;
+const RECIPE_MODULE = /finetune-recipe/;
 const ACTION_FINE_TUNE_IMPORT =
   /await import\(\s*"\.\.\/components\/finetune-recipe"\s*\)/g;
 
-test("fine-tuning workflow dependencies load only when their actions run", () => {
-  // Bundle membership follows the static import graph, so this structural
-  // assertion guards startup loading more directly than exercising the actions.
-  const imports = source.slice(0, source.indexOf("export function DataTab"));
-  assert.doesNotMatch(
-    imports,
-    STATIC_FINE_TUNE_IMPORT,
-    "the Data tab must not pull fine-tuning workflows into Studio startup",
-  );
-
-  const actionImports = source.match(ACTION_FINE_TUNE_IMPORT);
-  assert.equal(actionImports?.length, 2);
+test("both Data tab fine-tuning actions defer their workflow import", async () => {
+  const source = await readFile(DATA_TAB, "utf8");
+  assert.equal(source.match(ACTION_FINE_TUNE_IMPORT)?.length, 2);
 });
 
 async function* walk(dir: string): AsyncGenerator<string> {
@@ -37,22 +28,48 @@ async function* walk(dir: string): AsyncGenerator<string> {
   }
 }
 
+/**
+ * Module specifiers of the `import`/`export ... from` declarations in a file,
+ * which is the edge set that fixes bundle membership. A deferred `import(...)`
+ * parses as a call expression rather than a declaration, so it is never
+ * collected and the pattern this PR adopts stays allowed.
+ */
+const staticSpecifiers = (file: string, text: string): string[] => {
+  const parsed = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.ESNext,
+    // Parent pointers are only needed for getText(); StringLiteral.text is enough.
+    false,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const specifiers: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      // `export { x }` with no `from` has no specifier and adds no edge.
+      const specifier = node.moduleSpecifier;
+      if (specifier && ts.isStringLiteral(specifier))
+        specifiers.push(specifier.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(parsed, visit);
+  return specifiers;
+};
+
 test("no module statically imports the fine-tuning workflow", async () => {
-  // The check above holds one FILE. The property being bought is repo-wide: a
-  // static import added to any other eagerly reached module would put the whole
-  // Recipe Studio chunk back into startup with that assertion still green, which
-  // is exactly the regression this PR exists to prevent.
+  // Bundle membership follows the static import graph, and the property being
+  // bought is repo-wide: a static import added to any eagerly reached module
+  // would put the whole Recipe Studio chunk back into startup. Parsed rather
+  // than scanned by line, because the import this PR removed spanned four lines
+  // and a line-oriented check keyed on `import` cannot see a specifier that
+  // sits on the closing `} from "..."` line.
   const offenders: string[] = [];
   for await (const file of walk(SRC)) {
     const text = await readFile(file, "utf8");
-    for (const line of text.split("\n")) {
-      // Static only: `await import(...)` and `import(...)` are the deferred forms
-      // this PR introduces and are what we want everyone to use.
-      if (!/finetune-recipe/.test(line)) continue;
-      if (/\bimport\s*\(/.test(line)) continue;
-      if (/^\s*(import|export)\b/.test(line)) {
-        offenders.push(`${path.relative(SRC, file)}: ${line.trim()}`);
-      }
+    for (const specifier of staticSpecifiers(file, text)) {
+      if (RECIPE_MODULE.test(specifier))
+        offenders.push(`${path.relative(SRC, file)}: ${specifier}`);
     }
   }
   assert.deepEqual(
