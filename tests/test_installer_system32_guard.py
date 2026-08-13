@@ -319,7 +319,6 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
 # ── unsloth_cli: the message the user actually reads ──
 
 
-
 def _expand_windows_vars(value: str, environ: dict[str, str]) -> str:
     """%NAME% against the fake environment: os.path.expandvars would read the host's."""
     out = value
