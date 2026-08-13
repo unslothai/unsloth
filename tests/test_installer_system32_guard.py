@@ -1170,9 +1170,7 @@ def test_cli_guard_leaves_a_bracketed_directory_alone_only_where_it_is_json():
     assert environ_out["MLX_HOSTFILE"] == "[llama]"
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("typer") is None, reason = "typer is not installed"
-)
+@pytest.mark.skipif(importlib.util.find_spec("typer") is None, reason = "typer is not installed")
 def test_cli_guard_reads_the_invocation_not_the_hosts_argv():
     """A host that imports the app and calls it never touches sys.argv, so the
     callback has to classify the arguments Click was given: `studio --api-only`
