@@ -876,3 +876,93 @@ class TestTheGateNeverRewritesAnUnmappableMask:
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
 
         assert LlamaCppBackend._visibility_mask_is_unmappable() is unmappable
+
+
+class TestCpuSentinelDropsAnInheritedDevicePick:
+    """llama.cpp reads LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU as the env spelling
+    of --device / --main-gpu (common/arg.cpp set_env), and neither the chat
+    forced-CPU launch nor the embedding CPU launch passes those flags. Masking
+    every device away while leaving an inherited pick in place is the one
+    combination llama.cpp cannot serve: it rejects a device name that no longer
+    enumerates, so the child exits instead of running on the CPU we chose. The
+    file already treats an inherited LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_FIT as
+    live input, so this is the same rule, not a new one.
+    """
+
+    def test_the_cpu_sentinel_clears_the_pick(self):
+        env = {"LLAMA_ARG_DEVICE": "HIP0", "LLAMA_ARG_MAIN_GPU": "1", "PATH": "/usr/bin"}
+        LlamaCppBackend._emit_child_gpu_visibility(env, "-1")
+        assert "LLAMA_ARG_DEVICE" not in env
+        assert "LLAMA_ARG_MAIN_GPU" not in env
+        assert env["CUDA_VISIBLE_DEVICES"] == "-1"
+        assert env["PATH"] == "/usr/bin"  # nothing else touched
+
+    @pytest.mark.parametrize("pinned", ["0", "1,2", ""])
+    def test_a_real_pin_keeps_it(self, pinned):
+        """Only the CPU sentinel clears the pick. With devices visible the
+        inherited selection is still the user's, and it still resolves."""
+        env = {"LLAMA_ARG_DEVICE": "HIP0"}
+        LlamaCppBackend._emit_child_gpu_visibility(env, pinned)
+        assert env["LLAMA_ARG_DEVICE"] == "HIP0"
+
+    def test_the_embedding_cpu_launch_clears_it_too(self, tmp_path, monkeypatch):
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "HIP0")
+        monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")
+        backend = LlamaServerBackend.__new__(LlamaServerBackend)
+        env = backend._build_env(str(tmp_path / "llama-server"), use_gpu = False)
+        assert "LLAMA_ARG_DEVICE" not in env
+        assert "LLAMA_ARG_MAIN_GPU" not in env
+        assert env["CUDA_VISIBLE_DEVICES"] == ""
+        assert env["HIP_VISIBLE_DEVICES"] == "-1"
+
+    def test_the_embedding_gpu_launch_keeps_it(self, tmp_path, monkeypatch):
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "HIP0")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda _b = None: [])
+        )
+        backend = LlamaServerBackend.__new__(LlamaServerBackend)
+        env = backend._build_env(str(tmp_path / "llama-server"), use_gpu = True)
+        assert env["LLAMA_ARG_DEVICE"] == "HIP0"
+
+
+class TestArchForcedCpuHoldsNoVram:
+    """An arch-gated launch is a zero-VRAM launch that arrived through an
+    AUTOMATIC request, which is exactly what routes/inference.py:8206 means by
+    "recovery may turn an automatic GPU request into a zero-VRAM load". Without
+    it in holds_no_vram the CPU-only server keeps the CHAT claim, blocks an
+    image/video pipeline from coexisting, and can be unloaded mid-load by an
+    owner it never competed with.
+    """
+
+    def _backend(self):
+        backend = LlamaCppBackend()
+        backend._gpu_memory_mode = "auto"
+        backend._gpu_layers = -1
+        backend._gpu_offload_active = False
+        return backend
+
+    def test_an_automatic_arch_gated_launch_holds_no_vram(self):
+        backend = self._backend()
+        assert backend.holds_no_vram is False, "precondition: auto mode alone is not zero-VRAM"
+        backend._arch_gate_forced_cpu = True
+        assert backend.holds_no_vram is True
+
+    def test_the_manual_zero_offload_rule_is_unchanged(self):
+        backend = LlamaCppBackend()
+        backend._gpu_memory_mode = "manual"
+        backend._gpu_layers = 0
+        backend._gpu_offload_active = False
+        assert backend.holds_no_vram is True
+        backend._gpu_offload_active = True
+        assert backend.holds_no_vram is False
+        backend._gpu_offload_active = None
+        assert backend.holds_no_vram is False
+
+    def test_an_ordinary_gpu_load_still_holds_vram(self):
+        backend = self._backend()
+        backend._gpu_offload_active = True
+        assert backend.holds_no_vram is False

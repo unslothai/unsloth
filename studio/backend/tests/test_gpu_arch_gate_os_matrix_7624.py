@@ -1887,3 +1887,59 @@ class TestAnInstallFromBeforeThisPr:
         # CUDA_VISIBLE_DEVICES is 0 because ROCr re-indexes the visible agents
         # from zero; the physical pick is the ROCR one.
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "1", "CUDA_VISIBLE_DEVICES": "0"}
+
+
+class TestArchForcedCpuFlagLifecycle:
+    """``_arch_gate_forced_cpu`` drives ``holds_no_vram``, so it has to be
+    per-load state: a CPU-masked launch that kept the flag would go on claiming
+    zero VRAM for the GPU load that replaces it."""
+
+    def _host(self):
+        return [
+            _device("gfx1101", free_mib = 12049),
+            _device("gfx1036", free_mib = 30000, is_integrated = 1),
+        ]
+
+    def test_every_device_uncovered_sets_it(self, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        capture: dict = {}
+        _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(self._host(), vendor = "amd"),
+            GFX103X,  # covers neither card
+            returncode = None,
+            capture = capture,
+        )
+        backend = capture["backend"]
+        assert backend._arch_gate_forced_cpu is True
+        # The GPU arbiter reads this: a child masked onto the CPU must not keep
+        # the CHAT claim or block an image/video pipeline.
+        assert backend.holds_no_vram is True
+
+    def test_a_covered_card_leaves_it_alone(self, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        capture: dict = {}
+        _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(self._host(), vendor = "amd"),
+            GFX110X,  # the dGPU survives
+            returncode = None,
+            capture = capture,
+        )
+        backend = capture["backend"]
+        assert backend._arch_gate_forced_cpu is False
+        assert backend.holds_no_vram is False
+
+    def test_unload_clears_it(self):
+        backend = LlamaCppBackend()
+        backend._arch_gate_forced_cpu = True
+        backend.unload_model()
+        assert backend._arch_gate_forced_cpu is False

@@ -3419,6 +3419,11 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
+        # The ROCm arch gate masked every device away and the child launched with
+        # no GPU visible at all (#7624). An automatic request that recovery
+        # turned into a zero-VRAM launch, which is why holds_no_vram cannot ask
+        # for manual mode alone.
+        self._arch_gate_forced_cpu: bool = False
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
         # RAW requested GPU pin, before the fit narrowed it. self._gpu_ids records the
@@ -4035,12 +4040,22 @@ class LlamaCppBackend:
     def holds_no_vram(self) -> bool:
         """Whether the resident server is a confirmed zero-VRAM launch.
 
-        True only for a deliberate manual zero-offload load whose launched argv carried no GPU
+        True for a deliberate manual zero-offload load whose launched argv carried no GPU
         companion, pin or tensor mode, so the child was started with the GPUs hidden. The GPU
         arbiter uses this to leave an image/video pipeline alone when re-asserting ownership for
         such a model. ``_gpu_offload_active`` is None when no GPU was detected at all (nothing to
         arbitrate) and True when something still reached the GPU, so both keep the normal path.
+
+        True for an arch-gated launch as well, and on stronger evidence: the ROCm gate found the
+        installed llama.cpp has no kernels for any card here, so the child was masked onto the CPU
+        with the "-1" sentinel and cannot see a device at all (#7624). That one arrives through an
+        AUTOMATIC request, so asking for manual mode alone would answer False for the very case
+        the caller at routes/inference.py:8206 documents -- "recovery may turn an automatic GPU
+        request into a zero-VRAM load" -- and a server holding no VRAM would keep the CHAT claim,
+        block an image/video pipeline, and be unloadable by an owner it never competed with.
         """
+        if self._arch_gate_forced_cpu:
+            return True
         return (
             self._gpu_memory_mode == "manual"
             and self._gpu_layers == 0
@@ -5021,6 +5036,23 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _clear_child_device_selection(env: dict) -> None:
+        """Drop an inherited explicit llama.cpp device pick from a CPU-only child.
+
+        llama.cpp reads LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU as the env spelling
+        of --device / --main-gpu (common/arg.cpp set_env), and Studio passes
+        neither on the CPU path, so a value exported into the parent environment
+        reaches the child. Hiding every device while leaving the pick in place is
+        the one combination llama.cpp cannot serve: parse_device_list rejects a
+        name that no longer enumerates and the child exits instead of running on
+        the CPU we just chose for it. Same reasoning as the inherited
+        LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_FIT handling elsewhere in this file --
+        an inherited LLAMA_ARG_* is live input, not noise.
+        """
+        for name in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+            env.pop(name, None)
+
+    @staticmethod
     def _emit_child_gpu_visibility(
         env: dict,
         pinned: str,
@@ -5049,6 +5081,8 @@ class LlamaCppBackend:
         Linux ROCr variable (Windows HIP has no ROCr layer), so the ROCR pin
         would be dead there while the cleared HIP mask stops selecting."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
+        if pinned == "-1":
+            LlamaCppBackend._clear_child_device_selection(env)
         try:
             import torch as _torch
 
@@ -10556,6 +10590,9 @@ class LlamaCppBackend:
         self._gpu_layers = intent.gpu_layers
         self._n_cpu_moe = intent.n_cpu_moe
         self._tensor_split = intent.tensor_split
+        # A fresh intent has not been arch-gated yet; the launch sets it below if
+        # every device turns out to be uncovered.
+        self._arch_gate_forced_cpu = False
         self._tensor_parallel = intent.tensor_parallel
         self._gpu_ids = intent.gpu_ids
         self._requested_gpu_ids = None
@@ -14976,6 +15013,9 @@ class LlamaCppBackend:
                     # spares only a server whose flag is exactly False -- so None
                     # unloads one whose death frees no VRAM at all.
                     self._gpu_offload_active = False
+                    # And the same fact for the GPU arbiter: this child was masked
+                    # onto the CPU, so it must not hold a GPU claim (holds_no_vram).
+                    self._arch_gate_forced_cpu = True
                 elif _deliberate_cpu_only:
                     self._gpu_offload_active = self._zero_offload_gpu_flag(
                         _last_spawn_cmd, _detected_gpus, env
@@ -15781,6 +15821,7 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
+            self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
             self._requested_spec_mode = None

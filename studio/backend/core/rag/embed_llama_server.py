@@ -295,6 +295,15 @@ class LlamaServerBackend:
             # at the driver layer, below HIP, so clearing it would expose MORE of
             # them to the HSA enumeration that dies on an uncovered arch (#7624).
             env["HIP_VISIBLE_DEVICES"] = "-1"
+            # An inherited LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU is the env
+            # spelling of --device / --main-gpu, which this command line does not
+            # pass. Hiding every device while leaving that pick in place is the
+            # one combination llama.cpp cannot serve: it rejects a device name
+            # that no longer enumerates and the child exits instead of running on
+            # the CPU. Same clear the chat forced-CPU sentinel makes.
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            LlamaCppBackend._clear_child_device_selection(env)
         return env
 
     @staticmethod
