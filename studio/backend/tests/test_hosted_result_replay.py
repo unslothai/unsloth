@@ -99,7 +99,12 @@ class FakeTransport:
     # the provider's own _toolEvent frames on the way through.
     sanitizes_provider_frames = True
 
-    def __init__(self, turns, *, max_turns = 20):
+    def __init__(
+        self,
+        turns,
+        *,
+        max_turns = 20,
+    ):
         self.turns = [list(turn) for turn in turns]
         self.requests: list[dict] = []
         self.max_turns = max_turns
@@ -343,9 +348,7 @@ def test_an_event_without_a_call_id_is_ignored(executed):
     transport = FakeTransport(
         [
             [
-                _hosted_event(
-                    {"type": "tool_end", "tool_name": "web_search", "result": "orphan"}
-                ),
+                _hosted_event({"type": "tool_end", "tool_name": "web_search", "result": "orphan"}),
                 _text("hello"),
                 _call_line(),
                 _finish(),
