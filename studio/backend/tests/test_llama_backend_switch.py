@@ -302,13 +302,9 @@ def test_a_failed_whisper_repair_can_be_retried_from_the_same_selection(monkeypa
     away and back.
     """
     monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
-    monkeypatch.setattr(
-        whisper_upd, "repair_pairing_plan", lambda: {"phase": {"repair": True}}
-    )
+    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: {"phase": {"repair": True}})
 
-    plan = _whisper_phase_plan(
-        "cuda", llama_will_run = False, llama_skip_reason = "already_selected"
-    )
+    plan = _whisper_phase_plan("cuda", llama_will_run = False, llama_skip_reason = "already_selected")
 
     assert plan["phase"]["repair"] is True
 
@@ -325,15 +321,14 @@ def test_an_already_selected_request_with_a_healthy_pairing_stays_refused(monkey
     )
 
     monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: False)
-    assert _whisper_phase_plan(
-        "cuda", llama_will_run = False, llama_skip_reason = "already_selected"
-    ) == {}
+    assert (
+        _whisper_phase_plan("cuda", llama_will_run = False, llama_skip_reason = "already_selected")
+        == {}
+    )
 
     # Every other refusal stays refused whatever the pairing looks like.
     monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
-    assert _whisper_phase_plan(
-        "cuda", llama_will_run = False, llama_skip_reason = "local_link"
-    ) == {}
+    assert _whisper_phase_plan("cuda", llama_will_run = False, llama_skip_reason = "local_link") == {}
     assert planned == []
 
 
