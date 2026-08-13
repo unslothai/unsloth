@@ -1607,9 +1607,12 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         break
     done
     rm -rf "$_siup_work"
-    # Placed is not installed: a copy onto a busy or read-only destination can leave a file that
-    # is not executable, and reporting success there skips the fallback.
-    [ -x "$_siup_dest/uv" ] || _siup_rc=1
+    # Placed is not installed, and the executable bit is not proof it runs: a host whose loader is
+    # not where a GNU binary looks for it passes every static check and fails on first use. The
+    # archive is digest-verified astral uv here, so ask it directly.
+    if [ ! -x "$_siup_dest/uv" ] || ! "$_siup_dest/uv" --version >/dev/null 2>&1; then
+        _siup_rc=1
+    fi
     [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
     return "$_siup_rc"
 }

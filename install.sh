@@ -2575,10 +2575,14 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
                 [ "$_uip_exe" = "uv" ] && _uip_placed=1
             fi
         done
-        # Placed is not installed: a copy onto a busy or read-only destination can leave a file
-        # that is not executable, and reporting success there skips the fallback and leaves the
-        # caller with a uv it cannot run.
-        if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ]; then
+        # Placed is not installed, and the executable bit is not proof it runs. The archive is
+        # digest-verified astral uv at this point, so ask it: a host whose glibc version we could
+        # read but whose loader is not where a GNU binary looks for it (a stripped NixOS-derived
+        # image without nix-ld is the real case) would otherwise pass every static check and then
+        # fail on first use, with the fallback already skipped. One exec closes that whole class,
+        # including a wrong triple and a destination we could not actually write.
+        if [ "$_uip_placed" = "1" ] && [ -x "$_uip_dest/uv" ] \
+           && "$_uip_dest/uv" --version >/dev/null 2>&1; then
             export PATH="$_uip_dest:$PATH"
             _uip_rc=0
         fi

@@ -286,6 +286,38 @@ else
     bad "no staging file is left behind"
 fi
 
+# A binary that cannot execute must decline, not report success. The executable bit says nothing
+# about whether the loader a GNU binary asks for exists: a stripped NixOS-derived image reads a
+# glibc version from getconf, passes every static check, and then fails on first use with the
+# fallback already skipped. Stand in for that with an archive whose uv cannot run.
+mkdir -p "$WORK/src_bad/uv-fake-triple"
+printf '\177ELF not a real loader target\n' > "$WORK/src_bad/uv-fake-triple/uv"
+printf '#!/bin/sh\necho uvx\n' > "$WORK/src_bad/uv-fake-triple/uvx"
+tar -czf "$WORK/uv-bad.tar.gz" -C "$WORK/src_bad" uv-fake-triple
+if command -v sha256sum >/dev/null 2>&1; then
+    BAD_EXEC_SHA=$(sha256sum "$WORK/uv-bad.tar.gz" | awk '{print $1}')
+else
+    BAD_EXEC_SHA=$(shasum -a 256 "$WORK/uv-bad.tar.gz" | awk '{print $1}')
+fi
+mkdir -p "$WORK/home_noexec"
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-bad.tar.gz $BAD_EXEC_SHA"; }
+    download() { cp -f "$WORK/uv-bad.tar.gz" "$2"; }
+    HOME="$WORK/home_noexec"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_noexec" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_noexec"; then
+    bad "a uv that cannot execute declines to the fallback"
+else
+    ok "a uv that cannot execute declines to the fallback"
+fi
+
 # Host matrix. A wrong triple installs a binary that cannot execute, which is worse than not
 # installing at all, so every host must either get its own triple or decline to the fallback.
 # $4 libc: musl | none (no ldd and no getconf) | a glibc version | rosetta (Darwin only)
