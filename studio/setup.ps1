@@ -20,6 +20,14 @@
 #>
 
 $ErrorActionPreference = "Stop"
+
+# This script is spawned as powershell.exe -- Windows PowerShell 5.1 (see the PSModulePath note
+# below) -- where the Invoke-WebRequest progress bar is redrawn on every read and sets the rate
+# instead of the link: the VC++ runtime (24.4 MB, Ensure-VCRedist) took 38.18s with the bar on
+# against 0.29s with it off on a windows-latest runner. -UseBasicParsing does not help; only this
+# preference does. Script scope, in a separate short-lived process, so nothing outlives it.
+$ProgressPreference = 'SilentlyContinue'
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
@@ -31,9 +39,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 #   The 'Get-ExecutionPolicy' command was found in the module
 #   'Microsoft.PowerShell.Security', but the module could not be loaded.
 #
-# astral's uv installer calls Get-ExecutionPolicy, and the run ends there with
-# exit 1 and no further output. The try/catch around that call does not help,
-# because Invoke-Expression runs the installer in this process.
+# Any Security cmdlet reached during the run ends it there with exit 1 and no
+# further output -- Get-AuthenticodeSignature, which verifies the VC++ runtime
+# download, sits on this path. A try/catch does not help, because the failure is
+# module loading in this process rather than an error the caller can catch.
 #
 # Prepended, not appended: the problem is precedence, not absence. Clearing the
 # variable so 5.1 rebuilds its default does not help either, because the
@@ -124,9 +133,9 @@ function Write-StudioLine {
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
-# "rocm". "cpu" forces the CPU-only prebuilt. "vulkan" selects Vulkan even
-# when CUDA or ROCm is detected. "hip"/"rocm" opts out of automatic Vulkan.
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
+# "hip", or "rocm". Concrete values select and persist a backend across updates;
+# "auto" restores detection. Overrides Studio's Settings > System selection.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -497,6 +506,26 @@ function Get-CanonicalDir {
 function Test-StudioHomeIsCustom {
     return ((Get-CanonicalDir -Path $StudioHome) -ne
         (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
+}
+
+# Is this bin\unsloth.cmd one install.ps1 wrote? Only then does it prove the root is
+# ours. The name alone is a plausible wrapper for anything built on unsloth, and the
+# caller uses the answer to decide whether a user-chosen venv may be deleted. The
+# trampoline is the marker; no other file carries it. Mirrored in install.ps1
+# (Test-UnslothCmdShimFile) and scripts/uninstall.ps1 (_IsUnslothCmdShim).
+function Test-UnslothCmdShimFile {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 8192) { return $false }
+        $text = [System.IO.File]::ReadAllText($Path)
+    } catch {
+        # Unreadable proves nothing, and "proves nothing" must not mean "deletable".
+        return $false
+    }
+    return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
 # Shared default cache, or the custom Studio home's llama.cpp tree.
@@ -1013,10 +1042,13 @@ function Get-RocmPinStaleTags {
 # or a hanging Intel driver init would block a bare `& python -c ...` forever. ProcessStartInfo,
 # not &, so stderr cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import
 # cannot deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-# reads as .Ok = $false. Mirrors install.ps1's copy.
+# reads as .Ok = $false, and .Error carries WHICH failure: stderr used to be drained and thrown
+# away, so "the HIP DLLs will not load", "torch is not installed" and "the import never came back"
+# all reached the caller as one silent False -- and one such caller deletes the environment over
+# that answer. Mirrors install.ps1's copy.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-    $result = [pscustomobject]@{ Ok = $false; Output = "" }
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
     if (-not $PythonExe -or -not $Code) { return $result }
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1031,13 +1063,21 @@ function Invoke-BoundedPythonProbe {
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
             try { $proc.Kill() } catch {}
+            # Synthesised, not read back: waiting on the reader tasks of a wedged child would
+            # reintroduce the hang this helper exists to bound.
+            $result.Error = "python did not answer within $TimeoutSec seconds"
             return $result
         }
         $result.Output = $outTask.GetAwaiter().GetResult()
-        [void]$errTask.GetAwaiter().GetResult()
+        # Kept, not discarded: the only place a failed probe's OSError / WinError text exists, and
+        # the caller decides what to do with the venv based on it.
+        $result.Error = $errTask.GetAwaiter().GetResult()
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
-    } catch { return $result }
+    } catch {
+        $result.Error = $_.Exception.Message
+        return $result
+    }
 }
 
 # True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the three
@@ -1163,6 +1203,27 @@ function Test-VenvTorchIsXpu {
         $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
         return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+xpu")
+    } catch { return $false }
+}
+
+# Is this venv's torch a ROCm wheel? The AMD counterpart of the check above, for the same reason:
+# on an AMD box whose HIP runtime faulted the DLL load raises OSError (or hangs) while version.py
+# on disk still names a perfectly good wheel, so answering by launching the interpreter that just
+# died is how a working environment got deleted. Read off disk, never imported.
+#
+# The label is always "+rocm", never "+gfx", on every index that publishes wheels:
+# repo.amd.com/rocm/whl/<arch>/torch/ (the Windows wheels, arch in the URL only) ships
+# torch-2.11.0+rocm7.13.0-cp312-cp312-win_amd64.whl, and download.pytorch.org/whl/rocm6.4 ships
+# the two-component 2.8.0+rocm6.4 (Linux only). "gfx" is accepted anyway, cheaply, so a future
+# per-arch local label cannot make this read a ROCm venv as unknown and delete it. The dist-info
+# name is NOT usable either -- pip normalises the local label out of it.
+function Test-VenvTorchIsRocm {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $false }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $false }
+        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+(rocm|gfx)")
     } catch { return $false }
 }
 
@@ -1666,7 +1727,7 @@ function Write-LlamaFailureLog {
 }
 # Plain (no ANSI) form of a step/substep message on the OS stdout handle.
 # Write-Host on 5.1 goes through the Information stream, which does not survive
-# every install.ps1 -> unsloth.exe -> python -> powershell.exe chain.
+# every install.ps1 -> python -> powershell.exe chain.
 #
 # One half of an either/or: when redirected this is the ONLY sink. It used to
 # run in ADDITION to Write-Host, assuming that never reached the pipe. It does,
@@ -2045,6 +2106,10 @@ $HipSdkInstalled = $false   # HIP SDK binary found (independent of device access
 $ROCmGpuLabel = $null
 $script:ROCmGpuLabels = @()   # every AMD adapter name WMI reported (shadowing-aware inference)
 $script:ROCmGfxArch = $null
+# Beside ROCmGfxArch, NOT inside the `-not $HasNvidiaSmi` block below: the ROCm summary
+# reads this unconditionally, so an NVIDIA host would hit an undefined variable under a
+# caller's Set-StrictMode. Assigning here also clears a stale value on a re-invocation.
+$script:ROCmUnsupportedGfxArch = $null
 # APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
 # enumerates the APU first, so an index-0 pick reads the iGPU's arch and the dGPU never
 # gets its wheels (#7776: gfx1036 Raphael shadowing a gfx1200 RX 9060 XT). In sync with
@@ -2348,13 +2413,50 @@ if (-not $HasNvidiaSmi) {
             # inference forwards nothing: code 45 ("not connected") is routine on a muxless
             # laptop with a parked dGPU, and with no healthy peer there is nothing to
             # depose. Mirrors the same fallback in install_python_stack.py's WMI path.
-            $wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }
+            # @() wraps the WHOLE if, not each branch: a one-element array unrolls on its way
+            # out of an if-expression, and a scalar's .Count is $null under Windows PowerShell
+            # 5.1, so the single Radeon in the machine read as no AMD GPU at all -- no
+            # $script:ROCmGpuLabels, no inferred gfx arch, "gpu none" in the report, and an
+            # installed +rocm venv judged stale against a required "cpu" (#8335). Same idiom as
+            # the Intel scan below and in install.ps1.
+            $wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
                 $ROCmGpuLabel = $script:ROCmGpuLabels[0]
             }
         } catch {}
     }
+    # Peer names for the REPORT ONLY. amd-smi can confirm a runtime with no gfx token and
+    # only the first card's name, and the scan above is skipped there, so the verdict below
+    # would speak for a host it has seen one adapter of. Kept out of $script:ROCmGpuLabels
+    # deliberately: that feeds the inference, and widening it turned a CPU install into ROCm.
+    $script:ROCmPeerLabels = @()
+    if ($HasROCm -and -not $script:ROCmGfxArch) {
+        try {
+            $peerGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" })
+            $healthyPeers = @($peerGpus | Where-Object {
+                ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+            $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerGpus })
+            $script:ROCmPeerLabels = @($usePeers | ForEach-Object { $_.Name })
+        } catch {}
+    }
+
+    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+    # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
+    # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
+    # RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
+    # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from LLVM's AMDGPU
+    # tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14 professional parts LLVM
+    # omits; nothing is guessed, so Polaris 11/12 (RX 460/550/560, a different die) is
+    # left out.
+    $unsupportedNameArchTable = @(
+        @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
+        @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+        @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
+        @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
+    )
+    $script:ROCmUnsupportedGfxArch = $null
     # ── Arch resolution: env-var override → name inference ──────────────────
     # Runs after all probes, even when none confirmed a ROCm runtime ($HasROCm false):
     # the Adrenalin driver alone runs the per-gfx ROCm llama.cpp prebuilt (bundles its
@@ -2374,7 +2476,7 @@ if (-not $HasNvidiaSmi) {
         #    (gfx120X/110X/1151/1150/103X); unknown names fall back cleanly to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
-                @{ P = "9070|9080";                                           A = "gfx1201" }  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080)
+                @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
                 @{ P = "9060";                                                A = "gfx1200" }  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
                 @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                 @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
@@ -2395,7 +2497,12 @@ if (-not $HasNvidiaSmi) {
             }
             # Only the WMI path carries more than one name; other callers left a single
             # synthesized label, so default to it.
-            $gpuNames = if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) }
+            # @() wraps the WHOLE if, not each branch: a one-element branch unrolls on its way
+            # out, leaving a bare String on a single-adapter host, and $gpuNames[$nameIdx] then
+            # indexes the NAME and yields "A". Nothing maps, and the $nameArches[0] rescue below
+            # is skipped under a visible-device mask, so a pinned single-GPU host inferred no
+            # arch at all -- the same "gpu none" the WMI scan above used to report.
+            $gpuNames = @(if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) })
             # Index over the ADAPTER list, not the inferred arches: an unrecognised name
             # drops out below, and indexing the shortened list would name the wrong card.
             $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count
@@ -2420,8 +2527,55 @@ if (-not $HasNvidiaSmi) {
                 $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+            } else {
+                # Nothing mapped: the card may be a generation ROCm never covered rather
+                # than one we failed to recognise (unslothai#8529). $script:ROCmGfxArch
+                # stays null either way, so only the wording of the report below moves.
+                # Stay quiet when a PEER is covered: "no override can help" is false beside a
+                # card that has wheels. Read-only; never reaches $gpuNames or the inference.
+                # HIP/ROCR only, unlike Test-VisibleDevicesPinned: CUDA_VISIBLE_DEVICES says
+                # nothing about which Radeon was chosen, and counting it would fire the verdict
+                # beside a covered card.
+                $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
+                    Where-Object { $null -ne $_ }
+                $unsupPeerCovered = $false
+                if ($unsupMasked) {
+                    # Under a mask a peer cannot answer for the named card, as the
+                    # arch-borrowing rule above. But $gpuNames is one synthesized label on the
+                    # amd-smi path, and $nameIdx cannot index a card it never saw, so a mask
+                    # onto a supported peer would be blamed on adapter 0. Unseen peer, no
+                    # verdict: Win32_VideoController does not promise HIP's order to guess with.
+                    $unsupPeerCovered = ($script:ROCmPeerLabels.Count -gt $gpuNames.Count)
+                } else {
+                    foreach ($peerName in $script:ROCmPeerLabels) {
+                        if (Get-GfxArchFromGpuName -Name $peerName -Table $nameArchTable) {
+                            $unsupPeerCovered = $true
+                            break
+                        }
+                    }
+                }
+                if (-not $unsupPeerCovered) {
+                    $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
+                }
             }
         }
+    }
+    # 3. Last resort: the arch install.ps1 resolved a second ago. Last because everything above
+    #    is mask- and shadowing-aware and the installer's scan is not, so this fills a gap rather
+    #    than deposing a better answer. Without it, a scan that answers there but not here expects
+    #    cpu torch against the ROCm wheels just placed, calls the venv stale, and loops forever.
+    #    Private, never UNSLOTH_ROCM_GFX_ARCH: nested installers read that as an operator
+    #    override, and this value is inferred, not chosen by anyone.
+    #    Skipped under a visible-device mask, matching the inference above, which leaves
+    #    $pickedName unset rather than borrowing a peer's arch when pinned. The installer's scan
+    #    ignores the masks, so its answer is the FIRST adapter, not the selected one, and taking
+    #    it would install for a GPU the mask hides from the runtime entirely. A host that wants
+    #    an arch named under a mask sets UNSLOTH_ROCM_GFX_ARCH, which still wins above.
+    if (-not $script:ROCmGfxArch -and $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -and
+        -not (Test-VisibleDevicesPinned)) {
+        $script:ROCmGfxArch = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF.Trim().ToLower()
+        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+        substep "gfx arch forwarded by the installer: $script:ROCmGfxArch" "Cyan"
     }
     # Capture ROCm version early for display and wheel selection.
     # Run whenever the HIP SDK binary is present, not just when the device is accessible --
@@ -2487,6 +2641,10 @@ $script:IsIntelXpu = $false
 # $script:IsIntelXpu on purpose: it steers the INSTALL, not the hardware report, which must stay
 # honest about the NVIDIA GPU that is also in the machine.
 $script:PreservedXpuVenv = $false
+# Flavour tag ("rocm" / "cu128" / "xpu") of a GPU wheel the stale check below kept. Declared here,
+# like the flag above it, because the index selection reads it on every run while a fresh install
+# never reaches the assignment -- so under a caller's Set-StrictMode the read would be fatal.
+$script:PreservedInstallerTorchTag = $null
 $IntelGpuLabel = $null
 if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     try {
@@ -2543,13 +2701,17 @@ if ($HasNvidiaSmi) {
     substep "$IntelGpuLabel"
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-StudioLine ""
-} elseif ($HasROCm) {
+} elseif ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
+    # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
+    # and only a market name, which sets $HasROCm without an arch.
     step "gpu" $ROCmGpuLabel
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
-} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
-    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel -and -not $script:ROCmUnsupportedGfxArch) {
+    # HIP SDK installed but ROCm can't see the device (driver issue, not SDK issue).
+    # Excludes cards already known to be out of scope: the #8529 reporters installed the
+    # HIP SDK BECAUSE this arm said to, so unguarded it hides the arm below from them.
     $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
     Write-StudioLine ""
     step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
@@ -2565,6 +2727,39 @@ if ($HasNvidiaSmi) {
     step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
     substep "Detected: $ROCmGpuLabel" "Cyan"
     substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    Write-StudioLine ""
+} elseif ($script:ROCmUnsupportedGfxArch) {
+    # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
+    # unknown" arm below: the arch is known here, and that arm's advice cannot succeed
+    # on this GPU (unslothai#8529).
+    Write-StudioLine ""
+    step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+    # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+    # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+    # VAR=value resolves as a command name here and sets nothing.
+    # Both claims are conditional: an explicit index pin is honoured for any arch, and
+    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
+    # is published, so the usual advice would abort the next update instead of helping.
+    $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                   (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
+    if ($unsupPinned) {
+        substep "Unsloth ships no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, but the torch" "Yellow"
+        substep "index you pinned is used as given, so torch is whatever it publishes." "Yellow"
+    } else {
+        substep "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+        substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
+        substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
+    }
+    if ((Get-HostMachineArch) -eq "arm64") {
+        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+    } else {
+        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+        substep "until you install or update again." "Yellow"
+    }
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -3008,13 +3203,17 @@ $script:CudaArch = $CudaArch
 $script:CudaToolkitReady = $true
 }
 
-if ($HasROCm) {
+if ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
     $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
     step "rocm" $rocmVerLabel
 } elseif ($script:ROCmGfxArch) {
     # GPU training/inference works via AMD's bundled-runtime ROCm PyTorch wheels;
     # the HIP SDK is optional (only the system ROCm toolchain).
     step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
+} elseif ($script:ROCmUnsupportedGfxArch) {
+    # Naming the HIP SDK here would read as "install it and this resolves"; on a
+    # generation with no ROCm PyTorch wheels it never does (unslothai#8529).
+    step "rocm" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
 } elseif ($ROCmGpuLabel) {
     step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }
@@ -3808,13 +4007,29 @@ Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
 # every accepted spelling to one value both sides parse identically.
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+# The torch family install.ps1 settled on, in the vocabulary the probe below produces (cu<digits>
+# / rocm / xpu / cpu). $null means it did not say: an installer predating the variable (setup.ps1
+# ships in the pip package, install.ps1 is fetched from unsloth.ai, so the two can be different
+# ages), --no-torch, or a custom index whose leaf names no flavor. Absent is unknown rather than a
+# mismatch, which keeps an older cached installer on its pre-variable behaviour. IsNullOrWhiteSpace
+# rather than a presence test: 7.5+ keeps an empty assignment as a present blank value, 5.1 and
+# 7.0-7.4 remove the variable.
+$InstallerTorchTag = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_INSTALLER_TORCH_TAG)) { $null }
+                     else { $env:UNSLOTH_INSTALLER_TORCH_TAG.Trim().ToLowerInvariant() }
 # Only the stale-venv block below assigns this, but the XPU install reads it to decide whether to
 # force-reinstall and a fresh install never enters that block. Declaring it keeps a caller's
 # Set-StrictMode from making the read fatal.
 $installedTorchTag = $null
+# Hoisted for the same reason: four install arms read it to decide --force-reinstall and the
+# installer-managed repair below raises it, yet only the block a fresh install never enters
+# assigns it.
+$script:PinChangedForceReinstall = $false
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
+    # Declared before the branch that assigns it: the failure message below reads its .Error, and
+    # a venv with no python.exe never runs the probe at all.
+    $_verProbe = $null
     $shouldRebuild = $false
     # Set when a stale venv under a pin is repaired in place (force-reinstall) not wiped.
     $script:PinChangedForceReinstall = $false
@@ -3850,6 +4065,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "xpu"
             substep "PyTorch did not respond in time but this venv holds an XPU build -- keeping it." "Yellow"
             substep "If training fails, update the Intel GPU compute driver." "Yellow"
+        } elseif (Test-VenvTorchIsRocm -VenvPath $VenvDir) {
+            # Same rescue on the AMD side, and the one that has cost users whole installs: a
+            # faulted Adrenalin or HIP runtime makes `import torch` raise at the DLL load or never
+            # return, so a fine ROCm environment read as "torch could not be imported" and was
+            # thrown away, which does not fix a driver. version.py on disk still names the wheel,
+            # so trust it and point at the driver instead (#8335, #7275).
+            $installedTorchTag = "rocm"
+            substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
+            substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
         } else {
             $shouldRebuild = $true
         }
@@ -3947,7 +4171,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # A +xpu venv is never wiped by a DIRECT update: on a hybrid NVIDIA+Arc box the promotion
     # above is gated on -not $HasNvidiaSmi, so a later pinless update expects a cu* tag, calls the
     # working Arc venv stale and deletes it -- then exits, because only install.ps1 creates venvs.
-    # Under install.ps1 ($InstallerManagedSetup) the rollback copy exists, so leave that alone.
+    # Under install.ps1 the in-place repair below covers every flavour, so this escape stays out.
     if ($shouldRebuild -and -not $InstallerManagedSetup -and $installedTorchTag -eq "xpu") {
         substep "Keeping the installed Intel XPU environment (this host expects $expectedTorchTag)." "Yellow"
         substep "Re-run install.ps1 to replace it -- that path rebuilds with a rollback copy." "Yellow"
@@ -3959,23 +4183,101 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedXpuVenv = $true
     }
 
+    # A GPU wheel install.ps1 SELECTED is never force-reinstalled onto a different family on the
+    # strength of a rescan. Only a wheel matching the family install.ps1 reported in
+    # $env:UNSLOTH_INSTALLER_TORCH_TAG counts as its answer, because "there is a GPU wheel in the
+    # venv" does not by itself mean this run put it there: the migrated-venv arm (install.ps1's
+    # `if ($_Migrated)`) installs unsloth alone and never touches torch, and install.ps1's flavor
+    # repair no-ops whenever its expected tag is 'cpu' or unrecognised. So an ordinary upgrade off
+    # the legacy ~/.unsloth/studio/.venv layout can hand setup a +cu118 wheel from a previous
+    # install on different hardware; preserving THAT would leave the environment permanently wrong
+    # and, on a mapped AMD host, the kept cu* tag also blocks the ROCm reroute below (it needs
+    # $CuTag -eq "cpu"). Those repair in place, as they did before this guard existed.
+    #
+    # $InstallerTorchTag $null means the installer did not say (an older cached install.ps1, or
+    # --no-torch), and unknown falls back to preserving, the behaviour that shipped before the
+    # variable existed. Otherwise the disagreement is between setup's second probe and the first,
+    # not with the hardware -- a Get-CimInstance that threw, an nvidia-smi that did not answer, the
+    # single-Radeon unroll of #8335 -- and setup has no better claim than the installer that just
+    # ran: the in-place repair below would --force-reinstall the other family over a working GPU
+    # environment and exit 0, at which point install.ps1 discards the rollback copy and the damage
+    # is permanent. A loud failure traded for a silently wrong install is worse than the loop this
+    # block exists to end.
+    #
+    # Covers cpu rescans (+rocm -> cpu) and family-to-family ones (+rocm -> cu128, +cu128 -> rocm,
+    # +xpu -> cu128) alike. Nothing legitimate is suppressed: a venv whose torch does not import at
+    # all leaves $installedTorchTag $null and still repairs, a CPU wheel that has to become a GPU
+    # one still repairs, cu* -> cu* already repaired in place above, and an explicit index pin
+    # escaped before that. A genuine GPU swap is install.ps1's job, done before calling here.
+    #
+    # $expectedTorchTag is read in the MESSAGE, never in the condition: it is assigned only inside
+    # the `if (-not $shouldRebuild)` block above, so on a venv whose torch would not import it was
+    # never created and reading it under a caller's Set-StrictMode is fatal. The body is reached
+    # only once $installedTorchTag has answered, which is only true on the path that assigned it.
+    if ($shouldRebuild -and $InstallerManagedSetup -and
+        $installedTorchTag -and $installedTorchTag -ne "cpu" -and
+        ((-not $InstallerTorchTag) -or $installedTorchTag -eq $InstallerTorchTag)) {
+        substep "This host rescanned as $expectedTorchTag but the installer just placed a $installedTorchTag build here -- keeping it." "Yellow"
+        substep "Set UNSLOTH_TORCH_INDEX_URL to move this environment onto another PyTorch build on purpose." "DarkGray"
+        $shouldRebuild = $false
+        # Keeping the wheel is only half the job: the index selection below re-runs the same
+        # rescan, and two of its arms force-reinstall torch regardless of
+        # $script:PinChangedForceReinstall (the AMD arm always, the XPU arm whenever the installed
+        # tag is not xpu), undoing this guard from a thousand lines further down.
+        $script:PreservedInstallerTorchTag = $installedTorchTag
+        # Same reason as the direct-update escape above, and it needs its own flag: stay on the
+        # xpu index, or triton-windows lands over torch's XPU triton with nothing to swap it back.
+        if ($installedTorchTag -eq "xpu") { $script:PreservedXpuVenv = $true }
+    }
+
+    $reason = $null
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
-        if ($InstallerManagedSetup) {
-            substep "Stale venv detected ($reason)." "Yellow"
-            Write-StudioLine "   [ERROR] The existing Unsloth environment needs repair." -ForegroundColor Red
-            Write-StudioLine "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
-            Exit-SetupFailure "The existing Unsloth environment needs repair"
+        # "torch could not be imported" covers a dead GPU driver, a half-written wheel and no torch
+        # at all. Print what python actually said (the last stderr line is the exception), so a
+        # WinError 126 reads as a driver problem instead of a broken install.
+        if ($_verProbe -and -not $_verProbe.Ok -and $_verProbe.Error) {
+            # No @(...)[0] around this: the guard above passes on a whitespace-only stderr,
+            # Where-Object then drops every line, and [0] into the empty array that leaves is fatal
+            # under a caller's Set-StrictMode. -Last 1 already yields one string or nothing.
+            $_probeErrLine = $_verProbe.Error -split "`r?`n" |
+                Where-Object { $_.Trim() } | Select-Object -Last 1
+            if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
         }
+    }
+
+    # The abort that used to live here was an unrecoverable fixed point, reported from four
+    # separate triggers (#5942, #7275, #8335, plus a driver crash). It told the user to re-run
+    # install.ps1 for a safe rollback replace -- but install.ps1 IS the caller under
+    # $InstallerManagedSetup, it had already done exactly that earlier in the same run, and its
+    # failure path moves the previous environment straight back, so every attempt ended on the
+    # byte-identical state it started from and the install could never converge.
+    #
+    # Repair in place instead of wiping: the dependency pass force-reinstalls the torch trio from
+    # the resolved index over this venv, the route an index-pin change and a cu* family change
+    # already take above. Deleting is not an option here anyway -- install.ps1 invokes setup
+    # through the venv's own python.exe, which is therefore locked by the process running this.
+    if ($shouldRebuild -and $InstallerManagedSetup) {
+        substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
+        substep "install.ps1 keeps a rollback copy of the previous environment until this run succeeds." "DarkGray"
+        $script:PinChangedForceReinstall = $true
+        $shouldRebuild = $false
+    }
+
+    if ($shouldRebuild) {
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
         # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;
         # -PathType Leaf rejects a directory masquerading as the sentinel.
+        # The .cmd counts too, and for the same reason the uninstaller accepts it: a
+        # policy's quarantine can take the unsigned .exe and leave a root that is still
+        # ours. Content-checked, never by name -- this guard gates a recursive delete.
         if (
             $StudioHomeIsCustom -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and
+            -not (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
         ) {
             Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
@@ -3999,11 +4301,41 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
 } else {
     substep "reusing existing virtual environment at $VenvDir"
     $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    $_venvActivate = Join-Path $VenvDir "Scripts\Activate.ps1"
     if (Test-Path -LiteralPath $_venvPyExe) {
+        # The interpreter is not the only file the rest of this script needs. Everything below
+        # reaches the venv through the dot-sourced Activate.ps1 and a bare `python` (Fast-Install
+        # resolves its target with (Get-Command python).Source), and install.ps1 deliberately
+        # leaves the venv's Scripts directory off PATH. So a venv that kept python.exe but lost
+        # Activate.ps1 fails the dot-source non-terminatingly at the "Continue" the pip section
+        # runs at, installs the whole stack into whatever interpreter is on PATH, and exits 0.
+        # Newly reachable now that an installer-managed stale verdict repairs instead of aborting.
+        if (-not (Test-Path -LiteralPath $_venvActivate)) {
+            Write-StudioLine "[ERROR] $VenvDir has no activation script at Scripts\Activate.ps1." -ForegroundColor Red
+            Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+            Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+            Exit-SetupFailure "No activation script at $_venvActivate"
+        }
         try {
             $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
             if ($_venvPyVer) { substep $_venvPyVer }
         } catch {}
+    } else {
+        # Stop here, because nothing downstream would: the activation below is a dot-source, and a
+        # MISSING script is a NON-terminating error at the "Continue" the pip section runs at, so
+        # setup would print one red line and carry on, resolving every `python` and `uv pip` that
+        # follows against whatever interpreter is on PATH, installing the whole stack outside the
+        # environment it was asked to build, and exiting 0 over a venv with not one package in it.
+        #
+        # An interpreter-less venv is incomplete, not out of date, so none of the decisions above
+        # apply: the in-place torch repair has no interpreter to repair through, and the rebuild
+        # path deletes the directory only to hit "Virtual environment not found" a few lines up.
+        # Unlike the abort this replaced upstream, re-creating the environment genuinely changes
+        # this state -- install.ps1 still holds the rollback copy of the previous one.
+        Write-StudioLine "[ERROR] $VenvDir has no interpreter at Scripts\python.exe." -ForegroundColor Red
+        Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+        Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+        Exit-SetupFailure "No interpreter at $_venvPyExe"
     }
 }
 
@@ -4014,8 +4346,272 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
+# Existence is not activation. The two refusals above check that a file is THERE; neither can tell
+# whether dot-sourcing it took effect, and the ways it silently does not are ordinary damage on a
+# half-written venv. Activate.ps1 prepends the venv to PATH in its LAST statement, 28 lines after
+# it sets $env:VIRTUAL_ENV, so a copy truncated by an interrupted or out-of-disk `python -m venv`
+# parses, runs to its last complete statement and returns without printing anything at all, and an
+# unparseable one is a ParserError, non-terminating at the "Continue" set just above. Either way
+# the dot-source "succeeds" with the ambient interpreter still first on PATH -- the system or
+# Microsoft Store python, since install.ps1 keeps the venv's Scripts directory off PATH on purpose.
+# Fast-Install hands exactly that to `uv pip install --python`, the whole stack lands outside the
+# venv, every Exit-SetupFailure below keys off that wrong interpreter's exit code, and setup exits
+# 0 -- at which point install.ps1 commits over the rollback copy and the previous working
+# environment is gone for good.
+#
+# So assert the post-condition instead of a third pre-condition: the `python` now in effect has to
+# live under $VenvDir. $env:VIRTUAL_ENV would not do, precisely because Activate.ps1 sets it
+# before the line that matters.
+function Assert-VenvActivated {
+    param([Parameter(Mandatory = $true)][string]$VenvDir)
+
+    # Both sides normalised through Get-Item, which is what Activate.ps1 itself uses to build the
+    # PATH entry ($VenvExecDir = Get-Item -Path $VenvExecPath): agreeing on the normaliser keeps a
+    # short 8.3 path, a substituted drive, a junction or a differently cased drive letter from
+    # reading as "outside". A guard that false-positives here would break every install, so every
+    # branch that cannot PROVE the interpreter is wrong returns.
+    $venvRoot = $null
+    try { $venvRoot = (Get-Item -LiteralPath $VenvDir -Force -ErrorAction Stop).FullName.TrimEnd('\', '/') } catch { $venvRoot = $null }
+    if (-not $venvRoot) { return }
+
+    $_pyCmd = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
+    # A function or alias named python carries no Source to judge, and judging it wrong would
+    # refuse an install that works. Only an application resolved off PATH is decidable, and that
+    # is also the only shape Fast-Install's -- python hand-off can be aimed at.
+    if ($_pyCmd -and $_pyCmd.CommandType -ne 'Application') { return }
+    $_pyPath = $null
+    if ($_pyCmd -and $_pyCmd.Source) {
+        try { $_pyPath = (Get-Item -LiteralPath $_pyCmd.Source -Force -ErrorAction Stop).FullName } catch { $_pyPath = $_pyCmd.Source }
+    }
+
+    if ($_pyPath) {
+        foreach ($_sep in @('\', '/')) {
+            if ($_pyPath.StartsWith($venvRoot + $_sep, [System.StringComparison]::OrdinalIgnoreCase)) { return }
+        }
+    }
+
+    $_where = if ($_pyPath) { $_pyPath } else { "nothing on PATH" }
+    Write-StudioLine "[ERROR] Activating $VenvDir did not take effect: python resolves to $_where." -ForegroundColor Red
+    Write-StudioLine "        The activation script is present but did not put the environment on PATH," -ForegroundColor Yellow
+    Write-StudioLine "        so the environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+    Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    Exit-SetupFailure "Activating $VenvDir did not put its interpreter on PATH (python resolves to $_where)"
+}
+
+# Mirrors install.ps1's Install-UvFromRelease: same archive, destination priority and user-PATH
+# prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
+# running remote script text in-process, which is what AMSI scores hardest. Bumping the version
+# means bumping all 3 hashes:
+#   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
+$UvPinnedVersion = "0.12.1"
+$UvPinnedAssets = @{
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+}
+
+# Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
+# cannot pick between the x86_64 and i686 archives. install.ps1's resolution order.
+function Get-UvHostArch {
+    $osArch = ""
+    try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
+    $signals = @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
+    foreach ($s in $signals) {
+        if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
+    }
+    foreach ($s in $signals) {
+        if ([string]::IsNullOrWhiteSpace($s)) { continue }
+        switch ($s.ToLowerInvariant()) {
+            "amd64" { return "x86_64" }
+            "x64" { return "x86_64" }
+            "x86" { return "x86" }
+        }
+    }
+    return "unknown"
+}
+
+# Writes to the pipeline, not the console: under Invoke-SetupCommand a quiet run swallows this
+# exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
+# the call site are unchanged.
+function Get-SetupUvExecutableVerdict {
+    # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
+    # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
+    # no verdict, and the digest already proved the bytes are astral's pinned release.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        if (-not $proc.WaitForExit(20000)) {
+            try { $proc.Kill() } catch {}
+            Write-Output "uv did not answer --version within 20s; installing it unprobed."
+            return "unknown"
+        }
+        # The timed overload can return before the exit code is cached, which is how
+        # arm64 and the Windows containers reported an EMPTY code and had a working uv
+        # read as broken. The parameterless wait settles it and returns at once, since
+        # the process has already exited. No code at all is still no verdict.
+        try { $proc.WaitForExit() } catch {}
+        $code = $null
+        try { $code = $proc.ExitCode } catch {}
+        if ($null -eq $code -or "$code" -eq "") {
+            Write-Output "uv --version gave no exit code; installing it unprobed."
+            return "unknown"
+        }
+        if ($code -eq 0) { return "ok" }
+        $detail = ""
+        try {
+            $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+        } catch {}
+        if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+        Write-Output "uv --version exited $code.$detail"
+        return "failed"
+    } catch {
+        Write-Output "could not probe uv: $($_.Exception.Message); installing it unprobed."
+        return "unknown"
+    } finally {
+        Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-UvFromPinnedRelease {
+    $arch = Get-UvHostArch
+    if (-not $UvPinnedAssets.ContainsKey($arch)) {
+        Write-Output "No uv build is published for this architecture ($arch)."
+        return $false
+    }
+    $asset  = $UvPinnedAssets[$arch].Asset
+    $wanted = $UvPinnedAssets[$arch].Sha256
+
+    # astral's destination priority, so an existing uv is replaced in place and the Get-Command
+    # probe after Refresh-Environment still finds it.
+    $destDir = $null
+    foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
+        if ($candidate) { $destDir = $candidate; break }
+    }
+    if (-not $destDir -and $env:XDG_DATA_HOME) { $destDir = Join-Path $env:XDG_DATA_HOME "../bin" }
+    if (-not $destDir) {
+        $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+        if (-not $userHome) {
+            Write-Output "Could not determine a home directory to install uv into."
+            return $false
+        }
+        $destDir = Join-Path $userHome ".local\bin"
+    }
+
+    # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL (and its older
+    # alias INSTALLER_DOWNLOAD_URL) outrank the mirror variables there, and a host that sets one
+    # usually cannot reach the public endpoints at all, so trying those first would stall. The pin
+    # still applies: a source serving a different build fails the digest and the caller falls back.
+    $uvBase = if ($env:UV_DOWNLOAD_URL) {
+        @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+        @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
+        @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+    } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
+        @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+    } else {
+        @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
+          "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
+    }
+
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-uv-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $zip  = Join-Path $work $asset
+    try {
+        [System.IO.Directory]::CreateDirectory($work) | Out-Null
+        # Digest per mirror, as install.ps1 does: a proxy answering 200 with its own body is a
+        # successful download by every measure Invoke-WebRequest has.
+        $downloaded = $false
+        foreach ($base in $uvBase) {
+            Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
+            try {
+                Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+            } catch {
+                Write-Output "uv download failed: $($_.Exception.Message)"
+                continue
+            }
+            $actual = ""
+            try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
+            if ($actual -eq $wanted) {
+                $downloaded = $true
+                break
+            }
+            Write-Output "uv download failed checksum verification -- discarding it."
+            Write-Output "expected $wanted, got $actual"
+            Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $downloaded) { return $false }
+
+        # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
+        Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+        [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
+        $stagedUv = Join-Path $work "uv.exe"
+        if (-not (Test-Path -LiteralPath $stagedUv)) {
+            Write-Output "uv.exe was not present in $asset."
+            return $false
+        }
+        # Run it where it landed, before the destination is touched: a host can have a working
+        # older uv while a policy refuses this one, and copying first leaves it with neither.
+        if ((Get-SetupUvExecutableVerdict -Path $stagedUv) -eq "failed") {
+            Write-Output "the downloaded uv $UvPinnedVersion could not run on this machine."
+            return $false
+        }
+
+        # uvw.exe is the windowless launcher and has no console to answer a probe on, so the
+        # staged uv.exe above stands for the set: it came from the same verified archive.
+        # Copy-Item under Stop so a locked or ACL-denied destination fails the install rather
+        # than leaving half a set behind quietly.
+        $haveUv = $true
+        foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
+            $src = Join-Path $work $exe
+            if (-not (Test-Path -LiteralPath $src)) { continue }
+            $dst = Join-Path $destDir $exe
+            try {
+                Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+            } catch {
+                $haveUv = $false
+                break
+            }
+            if ($exe -eq "uv.exe") {
+                # Invoke-SetupCommand sets ErrorActionPreference to Continue, so compare
+                # against the archive we verified: a stale uv.exe must not pass for ours.
+                $copied = $false
+                try {
+                    $copied = (Test-Path -LiteralPath $dst) -and
+                        (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                        (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                } catch { $copied = $false }
+                if (-not $copied) { $haveUv = $false; break }
+            }
+        }
+        if (-not $haveUv) {
+            Write-Output "uv.exe was not present in $asset."
+            return $false
+        }
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # astral's PATH treatment and opt-outs: an unmanaged install forces no-modify-path there, so
+    # it must here too. The user-PATH prepend is what survives the Refresh-Environment below.
+    if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL) {
+        Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
+    }
+    $env:PATH = "$destDir;$env:PATH"
+    # Recorded on the script scope as well as returned: the caller runs this through
+    # Invoke-SetupCommand, which hands back [int]$LASTEXITCODE rather than the pipeline value,
+    # so the return alone cannot tell the fallback whether to run.
+    $script:UvPinnedInstalled = $true
+    return $true
+}
+
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
+Assert-VenvActivated -VenvDir $VenvDir
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
@@ -4024,7 +4620,18 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        Invoke-SetupCommand { Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1") } | Out-Null
+        $script:UvPinnedInstalled = $false
+        Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        # The merge base ran astral's installer here, so a failed pinned install needs somewhere
+        # to go: with no fallback the setup drops to pip for torch, bitsandbytes and Triton, which
+        # is a different resolver rather than a different download. winget, not the remote script,
+        # which is the shape this branch removes and is what install.ps1 already tries first.
+        if (-not $script:UvPinnedInstalled -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Invoke-SetupCommand {
+                winget install --id astral-sh.uv --source winget --accept-source-agreements `
+                    --accept-package-agreements --silent
+            } | Out-Null
+        }
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
@@ -4032,6 +4639,11 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
 }
+# Refresh-Environment rebuilt PATH from the registry, and the re-activation meant to put the venv
+# back sits inside a catch that swallows everything -- including a dot-source that died after
+# Activate.ps1's own `deactivate -nondestructive` had restored the pre-venv PATH. Re-check outside
+# the catch: this is the last statement before Fast-Install starts resolving `python`.
+Assert-VenvActivated -VenvDir $VenvDir
 
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
@@ -4170,11 +4782,15 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # date" path would leave the user on CPU torch with Train/Export disabled.
         # Force the dependency pass so the ROCm wheels get installed.
         if ($script:ROCmGfxArch) {
-            $_torchIsCpu = $true
-            try {
-                & python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>$null
-                if ($LASTEXITCODE -eq 0) { $_torchIsCpu = $false }
-            } catch {}
+            # Bounded, like every other torch probe here and for the reason the disk-based ROCm
+            # rescue above exists: on a faulted HIP runtime `import torch` never comes back, and
+            # the rescue now KEEPS that venv rather than deleting it, so this is the first
+            # `import torch` such a host reaches and an unbounded call would hang setup forever.
+            # A probe that does not answer keeps $_torchIsCpu true, the same safe direction as
+            # before: one dependency pass, never a silent skip.
+            $_rocmTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" `
+                -Code "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"
+            $_torchIsCpu = -not $_rocmTorchProbe.Ok
             if ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
@@ -4320,6 +4936,17 @@ if ($PinnedTorchIndexUrl) {
     # NVIDIA + Arc host reaches. Ahead of the NVIDIA arm deliberately: converting halfway leaves
     # +xpu torch under triton-windows and no XPU index to swap it back. install.ps1 converts.
     $CuTag = "xpu"
+} elseif ($script:PreservedInstallerTorchTag) {
+    # The stale check kept the GPU wheel install.ps1 placed here minutes ago. That decision has to
+    # reach the install arms below or it is undone there: the AMD arm force-reinstalls
+    # unconditionally and the XPU arm whenever the installed tag is not xpu, so neither is held off
+    # by $script:PinChangedForceReinstall staying false. Selecting the family already installed
+    # keeps both out of the way -- a cu* tag skips the AMD reroute below (it needs $CuTag -eq
+    # "cpu") and the XPU arm (it needs "xpu") and lands on the CUDA arm, which forces nothing; a
+    # kept +rocm venv reads as "cpu" here and lands on the CPU arm, whose bare torch range a +rocm
+    # build already satisfies. The +xpu case is the branch above. Behind the pin check, like every
+    # other arm: an explicit pin repairs in place before the guard runs anyway.
+    $CuTag = if (Test-CudaFamilyLeaf $script:PreservedInstallerTorchTag) { $script:PreservedInstallerTorchTag } else { "cpu" }
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
 } elseif ($script:IsIntelXpu) {
@@ -4620,11 +5247,12 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
-# No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
-# running launcher only ever failed (WinError 32) and printed a scary warning. It's
-# also unnecessary: install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and
-# 'studio update' goes through uv (--upgrade-package), whose pip fallback no-ops on
-# the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# No unsloth.exe rename needed. install.ps1 no longer starts the generated console
+# script at all (it runs the CLI through the venv's python.exe, #8490), so the rename
+# would now target a file nothing is holding -- but it was never needed either:
+# install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and 'studio update'
+# goes through uv (--upgrade-package), whose pip fallback no-ops on the
+# already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
@@ -4998,16 +5626,14 @@ $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
-$explicitVulkanSourceBuild = (
-    -not $IsMacOS -and
-    (
-        $sourceLlamaBackend -eq "vulkan" -or
-        (
-            $sourceLlamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
-            $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
-        )
-    )
-)
+$explicitLlamaSourceBackend = $null
+if (-not $IsMacOS) {
+    if ($sourceLlamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
+        $explicitLlamaSourceBackend = if ($sourceLlamaBackend -eq "hip") { "rocm" } else { $sourceLlamaBackend }
+    } elseif ($sourceLlamaBackend -ne "auto" -and $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")) {
+        $explicitLlamaSourceBackend = "vulkan"
+    }
+}
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
@@ -5196,11 +5822,11 @@ if ($LocalLlamaCppSrc) {
 
 if ($LocalLlamaCppLinked) {
     # local directory linked above; skip prebuilt install
-} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {
+} elseif ($explicitLlamaSourceBackend -and $NeedLlamaSourceBuild) {
     Write-StudioLine ""
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "Red"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override" "Yellow"
-    Exit-SetupFailure "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+    step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build" "Red"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND" "Yellow"
+    Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 } elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-StudioLine ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
@@ -5274,11 +5900,11 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # The backend override is case-insensitive and whitespace-trimmed. cpu
-        # maps to the persisted --force-cpu choice. vulkan is consumed directly
-        # by install_llama_prebuilt.py and does not change the torch backend.
+        # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself, and
+        # it is also the only side that can see a choice recorded in the install
+        # marker, so forwarding a second copy from here could only ever disagree
+        # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $legacyForceVulkan = $sourceLegacyForceVulkan
         $windowsArm64 = (
             $env:OS -eq "Windows_NT" -and
             (
@@ -5286,31 +5912,16 @@ if ($LocalLlamaCppLinked) {
                 "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
             )
         )
-        $explicitVulkanBackend = $false
-        if ($llamaBackend -eq "cpu") {
-            $prebuiltArgs += "--force-cpu"
-        } elseif ($llamaBackend -eq "vulkan") {
+        if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
             } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
-                $prebuiltArgs += @("--llama-backend", "vulkan")
-                $explicitVulkanBackend = $true
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
-        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "hip", "rocm")) {
-            Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
-        }
-        if (
-            -not $IsMacOS -and
-            $llamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
-            $legacyForceVulkan -in @("1", "true", "yes", "on")
-        ) {
-            if ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
-            }
-            $explicitVulkanBackend = $true
+        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "cpu", "cuda", "hip", "rocm")) {
+            Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -5373,27 +5984,32 @@ if ($LocalLlamaCppLinked) {
                 if (Test-PathQuiet $_cand) { $PreservedLlamaServerFound = $true; break }
             }
             if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
-            # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-            # request, and it leaves LlamaCppDegraded false, so without this the
-            # run reports success on the backend the user asked to replace.
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+            # A preserved server may not satisfy an explicit backend request, and
+            # it leaves LlamaCppDegraded false. Never report success on an
+            # unverified backend after the requested replacement ran out of space.
+            if ($explicitLlamaSourceBackend) {
+                step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, so the installer will not keep an unverified existing backend" "Red"
+                Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
             }
+        } elseif ($prebuiltExit -eq 5) {
+            step "llama.cpp" "selected backend could not be installed" "Red"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                substep "Existing install was restored" "Yellow"
+            }
+            substep "Check the error above, choose another backend, or retry" "Yellow"
+            Exit-SetupFailure "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
         } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
-                substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
-            } else {
-                substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
-                $NeedLlamaSourceBuild = $true
-            }
+            # Exit 2 means no concrete backend was in play: a request the installer
+            # could not honour -- named here or recorded in the install marker,
+            # which this script cannot see -- exits 5 above instead.
+            substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
+            $NeedLlamaSourceBuild = $true
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
             Write-LlamaFailureLog -Output $prebuiltOutput

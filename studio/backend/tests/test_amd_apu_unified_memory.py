@@ -13,6 +13,19 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 
+_VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_gpu_mask(monkeypatch):
+    """These tests fake a torch host and then ask about GPU ordinal 0. A mask
+    inherited from the shell remaps that ordinal onto a physical id the fake
+    host does not have, so the answer flips to False and nine tests fail. CI
+    runners carry no mask, so it only ever bites locally. The tests that are
+    about a mask still set their own, after this."""
+    for _m in _VISIBLE_DEVICE_MASKS:
+        monkeypatch.delenv(_m, raising = False)
+
 
 def _fake_torch(
     hip,
@@ -339,3 +352,51 @@ class TestTheProbeTestsDoNotDependOnHostRam:
         capped = LlamaCppBackend._get_gpu_memory()
         assert rows == [(0, _B200_FREE_MIB - 1024, 0)]
         assert capped == [(0, 14_000 - 1024, 0)]
+
+
+class TestTheOptOutHelper:
+    """_unified_memory_opted_out, the #8651 escape hatch. ggml tests presence, not
+    value, so only ABSENCE is off and this decides when to make it absent."""
+
+    @pytest.mark.parametrize(
+        "env,expected",
+        [
+            ({}, False),  # nothing set: the default decides
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}, False),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "2"}, False),  # any value is ON to ggml
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "true"}, False),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "0"}, True),  # the reported trap
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": ""}, True),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": " Off "}, True),  # trimmed, folded
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "no"}, True),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "false"}, True),
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}, True),
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),  # exact "1", like the DC switch
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "yes"}, False),
+            # The switch has to beat a truthy value.
+            (
+                {
+                    "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1",
+                    "GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1",
+                },
+                True,
+            ),
+        ],
+    )
+    def test_opt_out_decisions(self, env, expected):
+        assert LlamaCppBackend._unified_memory_opted_out(env) is expected
+
+    def test_none_reads_the_process_env(self, monkeypatch):
+        """The default arg is the process env, so a shell export is honoured."""
+        monkeypatch.delenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", raising = False)
+        monkeypatch.setenv("UNSLOTH_DISABLE_UNIFIED_MEMORY", "1")
+        assert LlamaCppBackend._unified_memory_opted_out() is True
+
+    def test_a_hostile_env_fails_open(self):
+        """Fails open: a bad env must not block a load. False is pre-#8651."""
+
+        class _Exploding(dict):
+            def get(self, *_args, **_kwargs):
+                raise RuntimeError("no")
+
+        assert LlamaCppBackend._unified_memory_opted_out(_Exploding()) is False

@@ -12,6 +12,8 @@ subprocess.poll() branch so a crashed llama-server surfaces a structured
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import types as _types
 from pathlib import Path
 from unittest import mock
@@ -32,10 +34,8 @@ import httpx  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# Sibling tests install lightweight httpx stubs via sys.modules.setdefault.
-# When collected together, our `httpx` may be such a stub lacking `get`. Add
-# the missing attributes so production code finds a working `httpx.get` and
-# the standard exception types regardless of collection order.
+# Sibling tests install lightweight httpx stubs, so when collected together our `httpx`
+# may be a stub lacking `get`. Fill in the gaps so collection order does not matter.
 if not hasattr(httpx, "get"):
     httpx.get = None  # placeholder; every test below monkeypatches it
 for _exc_name in (
@@ -137,6 +137,43 @@ class TestWaitForHealthResilience:
         monkeypatch.setattr(httpx, "get", cycling)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is True
         assert calls["n"] >= 3
+
+    def test_stdout_readiness_wakes_probe_before_fallback_interval(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._health_probe_event = threading.Event()
+        calls = {"n": 0}
+
+        def becomes_healthy(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("not yet")
+            return mock.Mock(status_code = 200)
+
+        monkeypatch.setattr(httpx, "get", becomes_healthy)
+        wake = threading.Timer(0.02, b._health_probe_event.set)
+        wake.start()
+        start = time.monotonic()
+        try:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.5) is True
+        finally:
+            wake.cancel()
+        assert time.monotonic() - start < 0.25
+        assert calls["n"] == 2
+
+    def test_stdout_drain_sets_health_event_on_readiness_line(self):
+        b = _make_backend()
+        b._health_probe_event = threading.Event()
+        b._process.stdout = iter(["main: server is listening on http://127.0.0.1:12345\n"])
+        event_seen_while_draining = []
+        b._llama_log_fh = mock.Mock()
+        b._llama_log_fh.write.side_effect = lambda _line: event_seen_while_draining.append(
+            b._health_probe_event.is_set()
+        )
+
+        b._drain_stdout()
+
+        assert event_seen_while_draining == [True]
 
     def test_dead_process_before_probe_returns_false(self, monkeypatch):
         """poll() != None on entry: _wait_for_health returns False
