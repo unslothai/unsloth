@@ -217,6 +217,43 @@ test("row meta falls back to the curated seeds", () => {
   assert.match(text, /if\s*\(map\.has\(r\.id\)\)\s*continue;/);
 });
 
+test("a family name is not read out of a longer word", () => {
+  // The fallbacks match model FAMILIES, and a stem runs into its own version digits, so what
+  // must not follow is more word. Every one of these is a real repo naming shape.
+  for (const id of [
+    "org/fluxion-7b",
+    "org/pixartful-7b",
+    "org/ltxtra-2b",
+    "org/mochimo-7b",
+    "nunchaku/SVDQuant-int4",
+  ]) {
+    const caps = detectCapabilities({ id });
+    assert.equal(caps.imageGen, false, `${id} read as an image generator`);
+    assert.equal(caps.videoGen, false, `${id} read as a video generator`);
+  }
+  // ...while the versions themselves still resolve, including the family whose name ends in a
+  // letter of its own.
+  assert.equal(detectCapabilities({ id: "org/flux1-dev-fp8" }).imageGen, true);
+  assert.equal(detectCapabilities({ id: "stabilityai/sd3.5-large" }).imageGen, true);
+  assert.equal(detectCapabilities({ id: "THUDM/CogVideoX-5b" }).videoGen, true);
+  assert.equal(detectCapabilities({ id: "stabilityai/svd-xt" }).videoGen, true);
+});
+
+test("every pipeline tag the Video picker lists reads as video generation", () => {
+  // Same contract as the Images one below, and the reason image-text-to-video had to reach
+  // VIDEO_GEN_TASKS: a row the glyph calls video must route to the Video page, not to a chat load.
+  const tags = declarationText("VIDEO_GEN_TASKS").match(/"([^"]+)"/g) ?? [];
+  assert.ok(tags.length > 0, "no tags parsed out of VIDEO_GEN_TASKS");
+  for (const quoted of tags) {
+    const tag = quoted.slice(1, -1);
+    assert.equal(
+      detectCapabilities({ id: "someone/unfamiliar-name", pipelineTag: tag }).videoGen,
+      true,
+      `${tag} is listed by the Video picker but does not read as video generation`,
+    );
+  }
+});
+
 test("every pipeline tag the Images picker lists reads as image generation", () => {
   // A row the picker lists has to draw the glyph whatever its repo is called, so the tags
   // detectCapabilities knows cannot be a subset of the ones the picker filters on.

@@ -351,6 +351,30 @@ assert.equal(fitsCurated(H3, 74, 100), false);
 // A GGUF ladder self-fits via pickDefaultQuant, and an unknown id is not ours to judge.
 assert.equal(fitsCurated("unsloth/MiniMax-H3-GGUF", 12, 64), undefined);
 assert.equal(fitsCurated("someone/not-in-the-catalog", 12, 64), undefined);
+// Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget for
+// an stt row: Whisper Large runs on a card too small to hold it. A tts load rejects CPU offload
+// (inference.py raise_if_offloaded), so Orpheus is judged on the card alone.
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 4,
+    systemRamGb: 32,
+  }),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 4,
+    systemRamGb: 0,
+  }),
+  false,
+);
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/orpheus-3b-0.1-ft", AUDIO_CATALOG, {
+    gpuGb: 4,
+    systemRamGb: 32,
+  }),
+  false,
+);
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 

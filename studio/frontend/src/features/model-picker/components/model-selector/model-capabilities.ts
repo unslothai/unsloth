@@ -47,7 +47,6 @@ const VIDEO_GEN_TAGS = new Set([
   "video-to-video",
   // What MiniMax-H3 is tagged with on the Hub: a frame plus a prompt in, video out.
   "image-text-to-video",
-  "text-image-to-video",
 ]);
 
 // Repo-name fallbacks, bounded so we never read a token out of a longer word.
@@ -68,12 +67,18 @@ const AUDIO_NAME_RE = new RegExp(
 // Families, not the word "image": a local GGUF carries no tags, and "Z-Image-Turbo-GGUF" has to
 // read as an image generator from its name alone. Video is matched FIRST below, since
 // "HunyuanVideo" and "hunyuanimage" share a stem and the video families are the narrower set.
+//
+// These end on a letter boundary rather than END: a family stem runs straight into its version
+// ("flux1", "sd3", "Wan2.2"), so what must not follow is more WORD. Without it "fluxion-7b",
+// "ltxtra-2b" and "SVDQuant" all read as generators.
+const FAMILY_END = "(?![a-z])";
 const IMAGE_GEN_NAME_RE = new RegExp(
-  `${SEP}(?:flux|sdxl|sd3|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|ideogram|lumina|hunyuanimage|krea|kolors|playground|pixart)`,
+  `${SEP}(?:flux|sdxl|sd3|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|ideogram|lumina|hunyuanimage|krea|kolors|playground|pixart)${FAMILY_END}`,
   "i",
 );
 const VIDEO_GEN_NAME_RE = new RegExp(
-  `${SEP}(?:wan\\d|ltx|hunyuanvideo|minimax[-_]?h\\d|cogvideo|mochi|animatediff|svd|zeroscope)`,
+  // cogvideox keeps its trailing letter: it is part of the family name, not another word.
+  `${SEP}(?:wan\\d|ltx|hunyuanvideo|minimax[-_]?h\\d|cogvideox?|mochi|animatediff|svd|zeroscope)${FAMILY_END}`,
   "i",
 );
 

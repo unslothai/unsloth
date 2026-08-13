@@ -2035,7 +2035,13 @@ export const IMAGE_GEN_TASKS = [
 
 // Video-generation pipeline tasks: owned by the Video page, never chat-loadable. The backend reports "text-to-video" for video-diffusion GGUFs.
 // image-to-video is included because HF gives the LTX-2 family that pipeline_tag, so a text-to-video-only filter dropped it out of Video Hub search.
-export const VIDEO_GEN_TASKS = ["text-to-video", "image-to-video"] as const;
+// image-text-to-video is MiniMax-H3's tag: a frame plus a prompt in, video out. Without it the
+// Video picker never finds such a model and chat tries to load it as a language model.
+export const VIDEO_GEN_TASKS = [
+  "text-to-video",
+  "image-to-video",
+  "image-text-to-video",
+] as const;
 
 // Speech pipeline tasks: owned by the Audio page. TTS picks load there rather than into chat; ASR picks map to the dictation sidecar.
 export const AUDIO_GEN_TASKS = [
@@ -4296,10 +4302,13 @@ export function HubModelPicker({
         : undefined;
       if (catalog && curatedFits !== undefined) {
         const curatedBytes = curatedSizeBytesFor(id, catalog);
+        // The catalog is the only source of a count for a curated repo the listing never
+        // returns and whose id spells no "<n>B", so the chip must fall back to it here too.
+        const params = totalParams ?? curatedTotalParamsFor(id, catalog);
         map.set(id, {
           est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
           status: curatedFits ? null : "exceeds",
-          detail: totalParams ? formatCompact(totalParams) : null,
+          detail: params ? formatCompact(params) : null,
         });
         continue;
       }

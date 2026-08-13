@@ -965,8 +965,9 @@ export function pickDefaultArtifact(
  * with, since a row click loads that exact artifact.
  *
  * System RAM is not part of a discrete-GPU budget: a pipeline goes wholly on the card unless the
- * catalog states a measured offload tier, which is what `offloadFitTiers` is for. A unified-memory
- * host reports RAM and no GPU, and there the RAM is the card.
+ * catalog states a measured offload tier, which is what `offloadFitTiers` is for, or unless the
+ * loader falls back to CPU, which only transcription does. A unified-memory host reports RAM and
+ * no GPU, and there the RAM is the card.
  *
  * Undefined where nothing can be judged, so the caller shows no verdict rather than a wrong one:
  * an unknown budget, an id the catalog does not carry, a GGUF quant ladder (it self-fits via
@@ -977,12 +978,20 @@ export function curatedArtifactFitsDevice(
   catalog: CatalogGroup[],
   budget: DeviceBudget,
 ): boolean | undefined {
-  const artifact = artifactForRepoId(repoId, catalog)?.artifact;
-  if (!artifact || artifact.format === "gguf") return undefined;
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit || hit.artifact.format === "gguf") return undefined;
+  const { group, artifact } = hit;
   if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
   if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(artifact, budget);
   if (artifact.approxSizeGb === undefined) return undefined;
-  const deviceGb = budget.gpuGb > 0 ? budget.gpuGb : budget.systemRamGb;
+  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
+  // there. An image, video or TTS load rejects CPU offload, so those get the card alone.
+  const deviceGb =
+    group.task === "stt"
+      ? budget.gpuGb + budget.systemRamGb
+      : budget.gpuGb > 0
+        ? budget.gpuGb
+        : budget.systemRamGb;
   return artifact.approxSizeGb <= deviceGb * 0.7;
 }
 
