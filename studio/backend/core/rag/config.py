@@ -83,7 +83,12 @@ EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server")
 
 
-def embedding_identity(backend: str, model: str, *, gguf_repo: str | None = None) -> str:
+def embedding_identity(
+    backend: str,
+    model: str,
+    *,
+    gguf_repo: str | None = None,
+) -> str:
     """Tagged identity for ``documents.embedding_model``.
 
     The configured model comes first so a row written before identities carried a tag
@@ -96,7 +101,7 @@ def embedding_identity_model(identity: str | None) -> str | None:
     """The configured model inside a tagged identity, or None when untagged."""
     for tag in EMBEDDING_IDENTITY_TAGS:
         if identity and identity.startswith(f"{tag}:"):
-            return identity[len(tag) + 1:].split(":", 1)[0]
+            return identity[len(tag) + 1 :].split(":", 1)[0]
     return None
 
 
