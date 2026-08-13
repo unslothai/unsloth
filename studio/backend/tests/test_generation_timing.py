@@ -76,6 +76,7 @@ def test_a_faulting_device_wait_still_produces_timings(monkeypatch):
     """An async CUDA fault surfaces at the next synchronize, which is inside the stamp. The call
     sites stamp in a finally and only then end the streamer, so a raise here would strand the
     stream and kill the worker thread on a traceback that belongs to generate()."""
+
     def _boom(device = None):
         raise RuntimeError("CUDA error: device-side assert triggered")
 
