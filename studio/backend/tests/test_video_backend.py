@@ -3597,7 +3597,7 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
     backend = VideoBackend()
     fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
     assert fam is not None
-    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3"):
         backend._run_load_h3_native(
             fam = fam,
             token = None,
