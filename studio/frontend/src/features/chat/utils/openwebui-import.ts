@@ -247,8 +247,10 @@ function outputItemsToParts(output: unknown[]): unknown[] {
 
     if (item.type === "function_call_output") {
       const callId = str(item.call_id);
+      // `output` is a plain string for most tools and a content array only when
+      // the tool returned images or files.
       const outputParts = Array.isArray(item.output) ? item.output : [];
-      let resultText = "";
+      let resultText = typeof item.output === "string" ? item.output : "";
       const images: string[] = [];
       for (const part of outputParts) {
         if (!isDict(part)) continue;
@@ -443,10 +445,14 @@ export function openWebUIRecordToConversation(
 
   for (const node of collectNodes(chat)) {
     const { content, attachments } = messageParts(node.raw);
+    const role = roleOf(node.raw);
     // A message that renders to nothing (a failed turn holding only an error)
     // is dropped, and its children relink to the nearest ancestor that stayed.
+    // A user turn that uploaded a file and typed nothing still renders, as
+    // studio shows attachments on user messages.
+    const renders = content.length > 0 || (role === "user" && attachments.length > 0);
     const parentId = node.parentId ? (keptIdByOriginal.get(node.parentId) ?? null) : null;
-    if (content.length === 0) {
+    if (!renders) {
       if (node.parentId) {
         const inherited = keptIdByOriginal.get(node.parentId);
         if (inherited) keptIdByOriginal.set(node.id, inherited);
@@ -463,7 +469,7 @@ export function openWebUIRecordToConversation(
       id,
       threadId,
       parentId,
-      role: roleOf(node.raw),
+      role,
       content: content as MessageRecord["content"],
       ...(attachments.length > 0
         ? { attachments: attachments as MessageRecord["attachments"] }

@@ -353,3 +353,95 @@ test("epoch seconds on the record and milliseconds on the blob both land in the 
   assert.ok(millis);
   assert.equal(millis.createdAt, 1_700_000_000_000);
 });
+
+test("a tool result stored as a plain string is kept, not flattened to nothing", () => {
+  // The Responses API documents `output` as a string OR a content array, and a
+  // string is what a tool returning text produces.
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          childrenIds: [],
+          role: "assistant",
+          content: "Lisbon is sunny.",
+          timestamp: 1,
+          output: [
+            { type: "function_call", call_id: "call_1", name: "web_search", arguments: '{"query":"lisbon"}' },
+            { type: "function_call_output", call_id: "call_1", output: '{"temp":"21C"}' },
+            { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "Lisbon is sunny." }] },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const toolCall = parts(conversation, 0).find((part) => part.type === "tool-call");
+  assert.ok(toolCall);
+  assert.equal(toolCall.result, '{"temp":"21C"}');
+
+  // An orphan string output, with no call to attach it to, still shows as text.
+  const orphan = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf(
+        [
+          {
+            id: "a",
+            parentId: null,
+            role: "assistant",
+            timestamp: 1,
+            output: [{ type: "function_call_output", call_id: "call_gone", output: "21C" }],
+          },
+        ],
+        "a",
+      ),
+    }),
+    "fallback",
+  );
+  assert.ok(orphan);
+  assert.equal(text(orphan, 0), "21C");
+});
+
+test("a user turn that uploaded a file without typing survives, and keeps its descendants", () => {
+  // Open WebUI sends an empty prompt with a file attached, so real exports
+  // contain turns whose only content is the upload.
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "u",
+          parentId: null,
+          childrenIds: ["a"],
+          role: "user",
+          content: "",
+          timestamp: 1,
+          files: [{ type: "file", id: "f1", name: "spec.pdf", url: "/api/v1/files/f1" }],
+        },
+        { id: "a", parentId: "u", childrenIds: [], role: "assistant", content: "It is a spec.", timestamp: 2 },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.equal(conversation.messages.length, 2);
+  const attachments = conversation.messages[0]
+    .attachments as unknown as Array<Record<string, unknown>>;
+  assert.equal(attachments[0].name, "spec.pdf");
+  // The reply hangs off the upload, not off the root.
+  assert.equal(conversation.messages[1].parentId, conversation.messages[0].id);
+
+  // A turn that renders nothing at all is still dropped.
+  const failed = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf([{ id: "u", parentId: null, role: "user", content: "", timestamp: 1 }], "u"),
+    }),
+    "fallback",
+  );
+  assert.equal(failed, null);
+});

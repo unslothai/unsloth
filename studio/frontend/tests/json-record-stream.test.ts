@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  decodeTextChunks,
   fileImportSource,
+  readAllText,
   streamJsonRecords,
   type TextChunk,
 } from "../src/features/chat/utils/json-record-stream.ts";
@@ -17,6 +19,10 @@ async function* asChunks(text: string, size: number): AsyncGenerator<TextChunk> 
     const slice = text.slice(index, index + size);
     yield { text: slice, bytes: Buffer.byteLength(slice) };
   }
+}
+
+async function drain(chunks: AsyncIterable<unknown>): Promise<void> {
+  for await (const chunk of chunks) void chunk;
 }
 
 async function collect(text: string, size: number): Promise<unknown[]> {
@@ -181,13 +187,13 @@ test("byte counts are reported for progress, not decoded character counts", asyn
   // Four bytes each in UTF-8, two UTF-16 units each in the decoded string.
   const text = JSON.stringify([{ id: "🦥🦥🦥" }]);
   let bytes = 0;
-  for await (const _ of streamJsonRecords(asChunks(text, 8), {
-    onBytes: (n) => {
-      bytes += n;
-    },
-  })) {
-    // drain
-  }
+  await drain(
+    streamJsonRecords(asChunks(text, 8), {
+      onBytes: (n) => {
+        bytes += n;
+      },
+    }),
+  );
   assert.equal(bytes, Buffer.byteLength(text));
   assert.ok(bytes > text.length);
 });
@@ -229,4 +235,59 @@ test("multi-byte characters split across File reads decode intact, not as replac
   assert.deepEqual(out, records);
   assert.equal(bytes, file.size);
   assert.ok(!JSON.stringify(out).includes("�"));
+});
+
+test("an array that ends between records fails instead of reporting a complete import", async () => {
+  // An interrupted download stops on a record boundary as often as inside one,
+  // and every chat after the cut is missing either way.
+  for (const truncated of ['[{"id":1}', '[{"id":1},', '[{"id":1},\n', "[", '[{"id":1},{"id":2}']) {
+    await assert.rejects(collect(truncated, 3), SyntaxError, truncated);
+  }
+
+  // The closing bracket is what makes it complete, at every chunk size.
+  for (const size of [1, 4, 64]) {
+    assert.deepEqual(await collect('[{"id":1},{"id":2}]', size), [{ id: 1 }, { id: 2 }]);
+    assert.deepEqual(await collect('[{"id":1}]\n', size), [{ id: 1 }]);
+  }
+
+  // JSONL has no closing delimiter to require.
+  assert.deepEqual(await collect('{"id":1}\n{"id":2}', 5), [{ id: 1 }, { id: 2 }]);
+  assert.deepEqual(await collect('{"id":1}\n{"id":2}\n', 5), [{ id: 1 }, { id: 2 }]);
+});
+
+test("invalid UTF-8 is rejected on the desktop path and tolerated on the browser path", async () => {
+  async function* bytes(): AsyncGenerator<Uint8Array> {
+    yield new Uint8Array([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22]); // {"a":"
+    yield new Uint8Array([0xff]); // not a UTF-8 sequence
+    yield new Uint8Array([0x22, 0x7d]); // "}
+  }
+
+  const lenient: string[] = [];
+  for await (const chunk of decodeTextChunks(bytes())) lenient.push(chunk.text);
+  assert.equal(lenient.join(""), '{"a":"�"}');
+
+  await assert.rejects(drain(decodeTextChunks(bytes(), true)), TypeError);
+
+  // A file that stops mid-character is a truncated read, not valid text.
+  const cutShort = (async function* () {
+    yield new Uint8Array([0xe6, 0x97]); // first two bytes of a 3-byte character
+  })();
+  await assert.rejects(drain(decodeTextChunks(cutShort, true)), TypeError);
+});
+
+test("the whole-file read is bounded by bytes, not by decoded string length", async () => {
+  // Three bytes per character, one UTF-16 unit each: a length check would pass a
+  // file three times the limit.
+  const text = "日".repeat(64);
+  const source = {
+    name: "chats.csv",
+    async *chunks() {
+      for (const chunk of [text, text]) {
+        yield { text: chunk, bytes: Buffer.byteLength(chunk) };
+      }
+    },
+  };
+
+  assert.equal((await readAllText(source, 512, "CSV")).length, 128);
+  await assert.rejects(readAllText(source, 300, "CSV"), /chats\.csv is too large to import as CSV/);
 });

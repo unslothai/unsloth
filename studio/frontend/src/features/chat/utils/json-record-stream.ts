@@ -15,28 +15,67 @@ export interface ImportSource {
   chunks(): AsyncIterable<TextChunk>;
 }
 
+/**
+ * Decode byte ranges into text. `fatal` rejects invalid UTF-8 instead of
+ * substituting replacement characters, which the desktop path requires.
+ */
+export async function* decodeTextChunks(
+  byteChunks: AsyncIterable<Uint8Array>,
+  fatal = false,
+): AsyncGenerator<TextChunk> {
+  const decoder = new TextDecoder("utf-8", { fatal });
+  for await (const bytes of byteChunks) {
+    if (!bytes.byteLength) continue;
+    // Preserve UTF-8 characters split across chunks.
+    yield { text: decoder.decode(bytes, { stream: true }), bytes: bytes.byteLength };
+  }
+  const tail = decoder.decode();
+  if (tail) yield { text: tail, bytes: 0 };
+}
+
+async function* fileBytes(file: File): AsyncGenerator<Uint8Array> {
+  const reader = file.stream().getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function fileImportSource(file: File): ImportSource {
   return {
     name: file.name,
     size: file.size,
-    async *chunks() {
-      const reader = file.stream().getReader();
-      const decoder = new TextDecoder("utf-8");
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value?.byteLength) continue;
-          // Preserve UTF-8 characters split across chunks.
-          yield { text: decoder.decode(value, { stream: true }), bytes: value.byteLength };
-        }
-        const tail = decoder.decode();
-        if (tail) yield { text: tail, bytes: 0 };
-      } finally {
-        reader.releaseLock();
-      }
-    },
+    // Browser imports stay lenient about invalid UTF-8, as `file.text()` was.
+    chunks: () => decodeTextChunks(fileBytes(file)),
   };
+}
+
+/**
+ * Read a whole source. The bound is the bytes read, not the length of the
+ * decoded string: multibyte text is longer in bytes than in UTF-16 units.
+ */
+export async function readAllText(
+  source: ImportSource,
+  maxBytes: number,
+  format: string,
+): Promise<string> {
+  let text = "";
+  let bytes = 0;
+  for await (const chunk of source.chunks()) {
+    text += chunk.text;
+    bytes += chunk.bytes;
+    if (bytes > maxBytes) {
+      throw new Error(
+        `${source.name} is too large to import as ${format} (maximum ${Math.floor(maxBytes / 1024 / 1024)} MiB).`,
+      );
+    }
+  }
+  return text;
 }
 
 /**
@@ -95,6 +134,7 @@ export async function* streamJsonRecords(
   let inString = false;
   let escaped = false;
   let sawArrayStart = false;
+  let sawArrayEnd = false;
   // True while every emitted record has occupied one line.
   let emittedRecord = false;
   let lineFramed = false;
@@ -131,6 +171,8 @@ export async function* streamJsonRecords(
             continue;
           }
           if (code !== OPEN_BRACE && code !== OPEN_BRACKET) {
+            // The array's own closing bracket: the file is complete from here on.
+            if (code === CLOSE_BRACKET && sawArrayStart) sawArrayEnd = true;
             // Commas, newlines, and any stray scalar between records: nothing to import.
             scan++;
             continue;
@@ -182,22 +224,29 @@ export async function* streamJsonRecords(
     }
   }
 
-  if (start >= 0) {
-    const tail = buffer.slice(start).trim();
-    if (!tail) return;
+  const tail = start >= 0 ? buffer.slice(start).trim() : "";
+  if (tail) {
     if (sawArrayStart) {
       // Arrays have no line boundary on which to recover a truncated record.
       yield JSON.parse(tail);
-      return;
+    } else {
+      // Recover complete JSONL rows after a broken one.
+      const salvaged = salvageLines(tail, lineFramed);
+      if (salvaged.records.length === 0) {
+        // Report one truncated record instead of each of its lines.
+        options.onMalformed?.(tail);
+      } else {
+        for (const text of salvaged.damaged) options.onMalformed?.(text);
+        yield* salvaged.records;
+      }
     }
-    // Recover complete JSONL rows after a broken one.
-    const salvaged = salvageLines(tail, lineFramed);
-    if (salvaged.records.length === 0) {
-      // Report one truncated record instead of each of its lines.
-      options.onMalformed?.(tail);
-      return;
-    }
-    for (const text of salvaged.damaged) options.onMalformed?.(text);
-    yield* salvaged.records;
+  }
+
+  // A download cut between two records leaves every record read so far intact,
+  // so the missing bracket is the only sign that the rest never arrived.
+  if (sawArrayStart && !sawArrayEnd) {
+    throw new SyntaxError(
+      "The JSON array ends before its closing bracket, so the export is incomplete.",
+    );
   }
 }

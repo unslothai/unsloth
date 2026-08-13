@@ -14,7 +14,9 @@ import {
 } from "./chat-history-storage";
 import { parseCsv } from "./csv-parse";
 import {
+  decodeTextChunks,
   fileImportSource,
+  readAllText,
   streamJsonRecords,
   type ImportSource,
 } from "./json-record-stream";
@@ -52,6 +54,24 @@ export interface ImportResult {
 
 export { fileImportSource, type ImportSource };
 
+async function* nativeBytes(handle: {
+  size: number;
+  token: string;
+}): AsyncGenerator<Uint8Array> {
+  const { readNativeChatImportChunk } = await import("@/lib/native-files");
+  let offset = 0;
+  while (offset < handle.size) {
+    const bytes = await readNativeChatImportChunk(
+      handle.token,
+      offset,
+      NATIVE_CHUNK_BYTES,
+    );
+    if (bytes.byteLength === 0) break;
+    offset += bytes.byteLength;
+    yield bytes;
+  }
+}
+
 /** Desktop: the file stays on disk and is redeemed one range at a time. */
 export function nativeImportSource(handle: {
   name: string;
@@ -61,42 +81,10 @@ export function nativeImportSource(handle: {
   return {
     name: handle.name,
     size: handle.size,
-    async *chunks() {
-      const { readNativeChatImportChunk } = await import("@/lib/native-files");
-      const decoder = new TextDecoder("utf-8");
-      let offset = 0;
-      while (offset < handle.size) {
-        const bytes = await readNativeChatImportChunk(
-          handle.token,
-          offset,
-          NATIVE_CHUNK_BYTES,
-        );
-        if (bytes.byteLength === 0) break;
-        offset += bytes.byteLength;
-        yield {
-          text: decoder.decode(bytes, { stream: true }),
-          bytes: bytes.byteLength,
-        };
-      }
-      const tail = decoder.decode();
-      if (tail) yield { text: tail, bytes: 0 };
-    },
+    // Decoding is fatal here because the native reader it replaced rejected
+    // invalid UTF-8 outright rather than saving a chat full of U+FFFD.
+    chunks: () => decodeTextChunks(nativeBytes(handle), true),
   };
-}
-
-// Record framing
-
-async function readAll(source: ImportSource, maxBytes: number): Promise<string> {
-  let text = "";
-  for await (const chunk of source.chunks()) {
-    text += chunk.text;
-    if (text.length > maxBytes) {
-      throw new Error(
-        `${source.name} is too large to import as CSV (maximum ${Math.floor(maxBytes / 1024 / 1024)} MiB).`,
-      );
-    }
-  }
-  return text;
 }
 
 // Record conversion
@@ -340,7 +328,7 @@ export async function importConversationsFromSource(
   const report = () => options.onProgress?.({ ...progress });
 
   if (/\.csv$/i.test(source.name)) {
-    const text = await readAll(source, CSV_MAX_BYTES);
+    const text = await readAllText(source, CSV_MAX_BYTES, "CSV");
     for (const conversation of parseImportText(text, source.name)) {
       await writeConversation(conversation, projectId);
       progress.imported++;
@@ -352,6 +340,7 @@ export async function importConversationsFromSource(
 
   const inFlight = new Set<Promise<void>>();
   let index = 0;
+  let failure: unknown;
 
   try {
     for await (const record of streamJsonRecords(source.chunks(), {
@@ -382,12 +371,25 @@ export async function importConversationsFromSource(
       inFlight.add(task);
       if (inFlight.size >= WRITE_CONCURRENCY) await Promise.race(inFlight);
     }
-  } finally {
-    await Promise.allSettled(inFlight);
+  } catch (error) {
+    // A read that dies partway still leaves earlier chats saved.
+    failure = error;
   }
 
+  await Promise.allSettled(inFlight);
+  // Those chats have to reach the sidebar even when the read failed, or the UI
+  // stays empty until a reload and a retry duplicates every one of them.
   if (progress.imported > 0) notifyChatHistoryUpdated();
   report();
+
+  if (failure !== undefined) {
+    const reason = failure instanceof Error ? failure.message : String(failure);
+    throw new Error(
+      progress.imported > 0
+        ? `${reason} ${progress.imported} conversation${progress.imported === 1 ? " was" : "s were"} imported before it stopped.`
+        : reason,
+    );
+  }
   return { imported: progress.imported, failed: progress.failed };
 }
 

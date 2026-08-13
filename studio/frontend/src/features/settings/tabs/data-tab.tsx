@@ -273,7 +273,6 @@ export function DataTab() {
             : t("settings.chat.importedChatCount", { count: imported }),
         { id: toastId },
       );
-      setCount(await countAllChats().catch(() => count));
     } catch (error) {
       toast.error(t("settings.chat.importFailed"), {
         id: toastId,
@@ -281,6 +280,8 @@ export function DataTab() {
       });
     } finally {
       setImporting(false);
+      // Chats saved before a failed read still changed the count.
+      setCount(await countAllChats().catch(() => count));
     }
   };
 
