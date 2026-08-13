@@ -76,8 +76,7 @@ def load_dataset_cache_safe(*args, **kwargs):
         # OSError's selected subclass for winerror=1314 varies by Python/runtime.
         if _is_windows_symlink_privilege_error(error):
             logger.warning(
-                "Windows denied a Hugging Face cache symlink (%s); "
-                "retrying with regular files",
+                "Windows denied a Hugging Face cache symlink (%s); retrying with regular files",
                 error,
             )
             _disable_hf_symlinks_for_process()
