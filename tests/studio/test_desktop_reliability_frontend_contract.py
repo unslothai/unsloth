@@ -41,6 +41,9 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+
+DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
+MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 VIDEO_API = FRONTEND / "features/video/api.ts"
 RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
@@ -207,6 +210,35 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "fs::write(&path, content)" not in native_dialogs
 
 
+def test_media_galleries_save_natively_with_feedback():
+    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+        "\n}\n\nasync function downloadImage", 1
+    )[0]
+    download = images_page.split("async function downloadImage(", 1)[1].split(
+        "\n}\n\nfunction formatTimestamp", 1
+    )[0]
+    video_download = video_page.split("const handleDownload = useCallback(", 1)[1].split(
+        "\n\n  const handleDelete", 1
+    )[0]
+
+    assert "await downloadUrl(src, filename);" in download
+    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
+    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
+    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    assert "blob.type !== `image/${format}`" in reencode
+    assert "isDownloadCancelled(error)" in download
+    assert "if (isTauri)" in download
+    assert 'toast.success("Image saved", { description: filename });' in download
+    assert 'document.createElement("a")' not in download
+
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "if (isTauri)" in video_download
+    assert 'toast.success("Video saved"' in video_download
+    assert "function saveLink(" not in video_page
+
+
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
@@ -287,8 +319,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
-    assert "URL.createObjectURL(blob)" in video_page
+    # Converted exports cross the same native boundary after the backend returns their blob.
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
@@ -403,6 +436,16 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_windows_browser_guard_runs_only_in_release_builds():
+    # WebView2 is not reachable from Python, so pin the release-only call that
+    # keeps refresh controls available during development.
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    assert "fn setup_windows_browser_guards" in source
+    before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
+    assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
+
+
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
     section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
     dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
@@ -496,15 +539,22 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only.
-    assert source.count("{showSidebarSurface && pinned && (") == 2
+
+    # Keep the decoration below z-50 modals and outside the z-[70] header.
+    assert 'data-slot="window-titlebar-decoration"' in source
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
-        in source
+        'className="pointer-events-none absolute inset-x-0 '
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
     )
+    # The border is always visible.
+    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
+    # The backing and corner only appear when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in source
+        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        in decoration
     )
 
 
@@ -717,10 +767,52 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    assert (
+        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
+    )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_image_page_structural_panes_share_the_container_breakpoint():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
+    section = source.split("Settings column + preview canvas", 1)[1]
+
+    assert "@container" in shell
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
+    assert "@[50rem]:w-[408px]" in section
+    assert "md:flex-row" not in section
+    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
+    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
+    # -action mask, which is why the two are asserted together -- the small padding is
+    # only correct while the fade is there to dissolve the last control into the footer.
+    assert "panel-scroll-fade-action" in section
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
+    assert "p-6 px-10 @[50rem]:pt-[60px]" in section
+    assert "border-t border-foreground/10 px-10 py-3" in section
+
+
+def test_image_train_rail_matches_create_and_header():
+    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "pl-10 @[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "@container hover-scrollbar" in layout
+    assert "@[50rem]:pt-[42px]" in layout
+    assert "md:w-[416px]" not in layout
+
+
+def test_compact_media_link_keeps_accessible_name_and_truncation():
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+
+    assert "aria-label={label}" in button
+    assert 'cn("min-w-0 truncate", labelClassName)' in button
+    assert "arrowClassName" in button
 
 
 def test_media_page_headers_out_stack_the_mac_drag_region():
@@ -734,17 +826,43 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         source = page.read_text(encoding = "utf-8")
-        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        # matched on the band's size alone: Images lays its header out as a grid and Video as a
+        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
         band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        groups = re.findall(r'"([^"]*pointer-events-auto flex[^"]*items-center gap-[^"]*)"', band)
         assert len(groups) >= 2, (page.name, groups)
         for group in groups:
             assert "pointer-events-auto" in group, (page.name, group)
+
+
+def test_images_header_tracks_preview_and_preserves_titlebar_controls():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
+    header = opening + after.split("{/* Train mode", 1)[0]
+
+    assert "const { isMobile, pinned } = useSidebar();" in source
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
+    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in opening
+    assert "@[50rem]:border-r" in header
+    assert "isMobile" in header and "pl-12" in header
+    assert "!pinned && isTauri" in header
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
+    assert 'className="!h-[34px] max-w-full overflow-hidden"' in header
+    assert "contents @[50rem]:grid" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "@[50rem]:col-start-2" in header
+    assert "@[50rem]:col-start-3" in header
+    assert 'labelClassName="hidden @[50rem]:inline"' in header
+    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

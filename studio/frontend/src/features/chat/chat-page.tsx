@@ -5,6 +5,7 @@ import {
   applyModelLoadConfigToRuntime,
   currentRuntimePerModelConfig,
   type DeletedModelRef,
+  type ExternalConnectionRef,
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
@@ -60,6 +61,11 @@ import {
   useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  useDeviceInventorySources,
+} from "@/features/hub/inventory";
+import { chatLocalModelOptions } from "./local-model-options";
+import {
   type NativeIntent,
   NativeAttachmentTargetContext,
   NativeModelChip,
@@ -112,7 +118,7 @@ import {
   useState,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
-import { listLocalModels, notifyChatHistoryUpdated } from "./api/chat-api";
+import { notifyChatHistoryUpdated } from "./api/chat-api";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
@@ -132,6 +138,8 @@ import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
@@ -189,7 +197,6 @@ import {
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
-import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import { clearNewChatDraft } from "./utils/composer-draft";
@@ -535,6 +542,7 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   externalModels,
+  externalConnections,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -545,6 +553,7 @@ const CompareContent = memo(function CompareContent({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  externalConnections: ExternalConnectionRef[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -565,6 +574,7 @@ const CompareContent = memo(function CompareContent({
       models={models}
       loraModels={loraModels}
       externalModels={externalModels}
+      externalConnections={externalConnections}
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
@@ -763,6 +773,7 @@ function GeneralCompareHeader({
   models,
   loraModels,
   externalModels,
+  externalConnections,
   value,
   selectedConfig,
   selectedGgufVariant,
@@ -775,6 +786,7 @@ function GeneralCompareHeader({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  externalConnections: ExternalConnectionRef[];
   value: string;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
@@ -807,6 +819,7 @@ function GeneralCompareHeader({
         models={models}
         loraModels={loraModels}
         externalModels={externalModels}
+        externalConnections={externalConnections}
         value={value}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
@@ -830,6 +843,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models,
   loraModels,
   externalModels,
+  externalConnections,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -840,6 +854,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  externalConnections: ExternalConnectionRef[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -938,6 +953,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
+              externalConnections={externalConnections}
               value={model1.id}
               selectedConfig={model1.config}
               selectedGgufVariant={model1.ggufVariant}
@@ -969,6 +985,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
+              externalConnections={externalConnections}
               value={model2.id}
               selectedConfig={model2.config}
               selectedGgufVariant={model2.ggufVariant}
@@ -1868,18 +1885,8 @@ export function ChatPage({
   const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
-    void (async () => {
-      await hydratePersistedSettings();
-      try {
-        const synced = await syncExternalProvidersFromBackend(
-          useExternalProvidersStore.getState().providers,
-        );
-        setExternalProviders(synced);
-      } catch {
-        // Silent on startup; Connections settings still surfaces load errors.
-      }
-    })();
-  }, [hydratePersistedSettings, setExternalProviders]);
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   useEffect(() => {
     // Skip while off-route: ChatPage stays mounted, and toast+navigate here would
@@ -2226,12 +2233,11 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models have no local tool runtime, so `supportsTools` is
-      // false. The `supportsBuiltin*` flags cover providers that run tools
-      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
-      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
-      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
-      supportsTools: false,
+      supportsTools:
+        providerModelSupportsStudioTools(
+          provider?.providerType,
+          selection.modelId,
+        ) === true,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
@@ -2625,6 +2631,12 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeAudioDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
     attachmentScope,
@@ -2635,6 +2647,7 @@ export function ChatPage({
     onAutoLoad: handleNativeModelDropAutoLoad,
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
+    onAttachAudio: handleNativeAudioDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -2773,11 +2786,11 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools false.
-          // The supportsBuiltin* flags carry server-side capability per pill:
-          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
-          // Responses-API).
-          supportsTools: false,
+          supportsTools:
+            providerModelSupportsStudioTools(
+              selectedProvider?.providerType,
+              selectedExternal?.modelId,
+            ) === true,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
@@ -3058,39 +3071,37 @@ export function ChatPage({
         ),
     [externalProvidersForChat, lastOpenRouterChosenModel],
   );
+  // `externalModels` above is flat-mapped from `provider.models`, the ids the user ticked,
+  // so a model unticked in the connection dialog leaves it exactly like one the provider
+  // withdrew. The connection also caches the whole fetched catalogue, which tells the two
+  // apart, and the picker needs that to avoid blaming the provider for the user's own edit.
+  // Depends on the store value and the gate rather than on `externalProvidersForChat`,
+  // which is a plain conditional and so hands every hook that reads it a fresh array each
+  // render.
+  const externalConnections = useMemo<ExternalConnectionRef[]>(
+    () =>
+      connectionsEnabled
+        ? externalProviders.map((provider) => ({
+            id: provider.id,
+            name: provider.name,
+            providerType: provider.providerType,
+            availableModels: provider.availableModels,
+          }))
+        : [],
+    [connectionsEnabled, externalProviders],
+  );
 
-  const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
+  const localModelInventory = useDeviceInventorySources(["localModels"], {
+    enabled: active,
+  });
+  const localModels = useMemo<LoraModelOption[]>(
+    () => chatLocalModelOptions(localModelInventory.localModels.rows),
+    [localModelInventory.localModels.rows],
+  );
 
   const refreshLocalModels = useCallback(() => {
-    void listLocalModels()
-      .then((res) => {
-        setLocalModels(
-          res.models
-            .filter(
-              (m) =>
-                m.source === "lmstudio" ||
-                m.source === "models_dir" ||
-                m.source === "custom",
-            )
-            .map((m) => ({
-              id: m.id,
-              name:
-                m.source === "lmstudio" && m.model_id
-                  ? m.model_id
-                  : m.display_name,
-              baseModel:
-                m.source === "lmstudio"
-                  ? "LM Studio"
-                  : m.source === "custom"
-                    ? "Custom Folders"
-                    : "Local models",
-              updatedAt: m.updated_at ?? undefined,
-              source: "local" as const,
-            })),
-        );
-      })
-      .catch(() => {});
-  }, [navigate]);
+    void localModelInventory.refresh();
+  }, [localModelInventory.refresh]);
 
   const refreshModelLists = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -3119,6 +3130,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
@@ -3127,8 +3139,8 @@ export function ChatPage({
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
     void refresh({ includeLoras: true });
-    refreshLocalModels();
-  }, [refresh, refreshLocalModels]);
+    void localModelInventory.refreshIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
+  }, [refresh, localModelInventory.refreshIfOlderThan]);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
@@ -3329,6 +3341,7 @@ export function ChatPage({
                 models={models}
                 loraModels={loraModels}
                 externalModels={externalModels}
+                externalConnections={externalConnections}
                 value={inferenceParams.checkpoint}
                 // Resident, not merely picked: an image or video load evicts
                 // the chat model and leaves this selection behind, so the tick
@@ -3566,6 +3579,7 @@ export function ChatPage({
             models={models}
             loraModels={loraModels}
             externalModels={externalModels}
+            externalConnections={externalConnections}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}

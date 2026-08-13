@@ -497,7 +497,7 @@ def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp
         }
     }
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
         lambda **_kwargs: train,
@@ -530,7 +530,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
         take = lambda _count: [{"text": "example"}],
     )
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
         lambda **kwargs: stream
@@ -1020,3 +1020,24 @@ def test_mlx_worker_callsites_select_config_validation_policy(monkeypatch):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_cached_spark_snapshot_root_still_gets_the_llm_subfolder(tmp_path):
+    """An offline or cache-pinned snapshot root has an LLM/ child, which the previous check
+    read as "already at the tokenizer" and sent AutoTokenizer at the root, which has none."""
+    from core.training.trainer import _spark_tts_tokenizer_kwargs
+
+    snapshot = tmp_path / "snapshots" / "abc123"
+    (snapshot / "LLM").mkdir(parents = True)
+
+    assert _spark_tts_tokenizer_kwargs("bicodec", str(snapshot)) == {"subfolder": "LLM"}
+    assert _spark_tts_tokenizer_kwargs("bicodec", "unsloth/Spark-TTS-0.5B") == {"subfolder": "LLM"}
+    # Already pointed at the tokenizer directory.
+    assert _spark_tts_tokenizer_kwargs("bicodec", str(snapshot / "LLM")) == {}
+    # A local checkpoint holding its own tokenizer.
+    local = tmp_path / "my-ft"
+    local.mkdir()
+    (local / "tokenizer_config.json").write_text("{}", encoding = "utf-8")
+    assert _spark_tts_tokenizer_kwargs("bicodec", str(local)) == {}
+    # Not Spark at all.
+    assert _spark_tts_tokenizer_kwargs("snac", str(snapshot)) == {}

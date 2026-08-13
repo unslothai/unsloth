@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -43,10 +44,153 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Fallback when the mirror cannot serve this host (release missing, or a host we do not build).
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest). A missing tag falls back to latest.
-DEFAULT_TAG = "master-809-eb7f35c"
+#
+# The -u<id> suffix means the mirror built upstream master-813-bfbef5b plus the patch set in its
+# patches/ directory, and the id is the hash of that set. MiniMax-H3 needs it: an unpatched build
+# aborts on the default --cfg-scale, aborts again on --vae-on-cpu, and quantizes H3's 1-D norms
+# into an output uncorrelated with its own bf16 reference. All three fixes are open upstream
+# (leejet/stable-diffusion.cpp#1861, #1862, #1863) and the patches are deleted once they ship
+# there, at which point this pin goes back to a plain upstream tag.
+#
+# leejet has no release under this name, so the upstream fallback cannot match the pin and drops
+# to leejet's latest, which is the documented behaviour for a mirror-only tag.
+DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
 
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
+
+# ``master-<n>-<sha>-u<id>``: the mirror's marker for "upstream tree plus our patches/".
+_MIRROR_ONLY_TAG_RE = re.compile(r"^master-\d+-[0-9a-f]+-u[0-9a-f]+$")
+
+# What the managed directory records about the install it holds, so a later ensure_* can tell a CPU
+# bundle from a CUDA one instead of reusing whatever binary happens to be on disk.
+INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+def accelerator_class(accelerator: Optional[str]) -> str:
+    """The accelerator an install actually serves. ``auto`` resolves to the plain build, so it and
+    ``cpu`` are the same install and must not look like an upgrade to one another."""
+    accel = (accelerator or "auto").strip().lower()
+    return "cpu" if accel in ("auto", "cpu", "") else accel
+
+
+def read_install_record(root: Path) -> dict:
+    """The install record in ``root``, or ``{}`` when there is none (an install predating the
+    record, or a directory that is not ours). Never raises."""
+    try:
+        with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+            rec = json.load(f)
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def installed_accelerator(root: Path) -> Optional[str]:
+    """The accelerator class the install in ``root`` was built for, or None when unrecorded.
+
+    The memo wins over the file, but only while the file is exactly the one it could not replace.
+    It exists for a record that stayed readable and stale (still naming the PREVIOUS accelerator)
+    after a successful install, where trusting the file re-downloads the bundle on every selection.
+    Once anything else rewrites that file -- the installer CLI, another Studio -- the content no
+    longer matches the snapshot and the file is the newer answer again.
+
+    Only a SUCCESSFUL read that disagrees retires the memo. A record we cannot read right now is
+    not a newer answer: the memo's own reason for existing is a record this process could not
+    write, and on Windows another writer holding that file open reads as a failure. Dropping the
+    memo on it would hand the next selection the stale accelerator it was protecting against, and
+    that is a multi-GB reinstall on every load."""
+    memo = _INSTALLED_ACCELERATOR_MEMO.get(str(root))
+    val = None
+    if memo is not None:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
+            val = memo[0]
+        else:
+            _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
+    val = val or read_install_record(root).get("accelerator")
+    return val if isinstance(val, str) and val else None
+
+
+# Set ONLY when the on-disk record could not be written: install root -> (accelerator, the raw
+# record bytes seen at that moment). An unwritable record (a read-only file, a directory in its
+# place) otherwise means the accelerator reads as the PREVIOUS one, or as unknown, forever -- and
+# either is a mismatch for a GPU target, so every later engine selection re-downloads the same
+# multi-GB bundle. Keyed on the snapshot so it only speaks for the record it saw: once anything
+# else updates that file (the installer CLI, another Studio), the file is newer and wins again.
+_INSTALLED_ACCELERATOR_MEMO: dict[str, tuple[str, Optional[str]]] = {}
+
+
+def _raw_install_record(root: Path) -> Optional[str]:
+    """The record file's bytes as text, or None when it cannot be read. Never raises.
+
+    None is "cannot tell", NOT empty content: an absent file, a directory in its place and a
+    transient permission/sharing failure all land here, and none of them proves the record was
+    rewritten. Callers must not treat it as a value that differs from a snapshot."""
+    try:
+        with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+            return f.read()
+    except Exception:  # noqa: BLE001 -- absent / unreadable / a directory: all "cannot tell"
+        return None
+
+
+# The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at
+# all: with only half of it remembered, an unwritable record leaves a serverless install looking
+# server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
+_INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
+
+
+def installed_ships_server(root: Path) -> Optional[bool]:
+    """Whether the bundle installed in ``root`` carried an sd-server, or None when unrecorded.
+
+    None is the honest answer for every install that predates this field, and callers must treat
+    it as "unknown" rather than "serverless": a missing sd-server is otherwise indistinguishable
+    from one a bundle never shipped, and suppressing the reinstall on a guess would strand a tree
+    whose server was deleted (by hand, or by the runnability repair) on the one-shot CLI forever.
+
+    The memo WINS over the file, for the same reason ``installed_accelerator``'s does: it is only
+    set by an install that completed in this process, and the case it exists for is a record that
+    could not be written, where the file is stale or absent."""
+    memo = _INSTALLED_SHIPS_SERVER_MEMO.get(str(root))
+    val = memo if memo is not None else read_install_record(root).get("ships_server")
+    return val if isinstance(val, bool) else None
+
+
+def _write_install_record(
+    root: Path,
+    *,
+    accelerator: str,
+    repo: str,
+    tag: Optional[str],
+    ships_server: Optional[bool] = None,
+) -> None:
+    """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one.
+
+    The write itself stays best-effort -- a metadata failure must not throw away binaries that
+    extracted correctly -- but the answer is memoised either way, so this process never re-installs
+    what it just installed."""
+    klass = accelerator_class(accelerator)
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    if ships_server is not None:
+        rec["ships_server"] = ships_server
+        _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
+    else:
+        # An install that did not report the capability must not leave an older memo standing in
+        # for this one -- the tree is now whatever this bundle put there.
+        _INSTALLED_SHIPS_SERVER_MEMO.pop(str(root), None)
+    try:
+        with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
+            json.dump(rec, f)
+    except OSError as exc:
+        # Remember it, pinned to the record we could not replace.
+        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
+        print(
+            f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
+            f"remembering {klass} for this process only",
+            flush = True,
+        )
+    else:
+        # The file is authoritative again, so a memo from an earlier failed write must not outlive it.
+        _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
 
 
 def _repo() -> str:
@@ -57,6 +201,31 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def is_mirror_only_tag(tag: Optional[str]) -> bool:
+    """True for a ``<upstream tag>-u<id>`` tag, which only the Unsloth mirror can serve.
+
+    The mirror publishes such a tag when it builds the upstream tree plus the patch set in its
+    ``patches/`` directory, so by construction upstream has no release under that name."""
+    return bool(tag) and bool(_MIRROR_ONLY_TAG_RE.match(tag))
+
+
+# A mirror release built on top of an upstream one carries a "-u<short sha>" suffix naming the
+# fork commit (master-813-bfbef5b-u13b9d92 is upstream master-813-bfbef5b plus fork commit 13b9d92).
+_MIRROR_TAG_SUFFIX = re.compile(r"-u[0-9a-f]{7,}$")
+
+
+def upstream_tag_for(tag: Optional[str]) -> Optional[str]:
+    """The upstream release ``tag`` was built from: the same tag with the mirror's fork suffix
+    dropped, or ``tag`` unchanged when it carries none.
+
+    Without this, pinning a fork-only tag silently costs every host the mirror does not build
+    (Linux Vulkan/ROCm, Windows GPU) its pinned install: the exact string 404s upstream and the
+    fallback settles for upstream *latest*, which is any build published since."""
+    if not tag:
+        return tag
+    return _MIRROR_TAG_SUFFIX.sub("", tag) or tag
 
 
 # accelerator -> the token that must appear in a Linux/Windows asset name.
@@ -204,12 +373,34 @@ def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
 
 
 def default_install_dir() -> Path:
-    """``~/.unsloth/stable-diffusion.cpp`` (or under ``UNSLOTH_STUDIO_HOME`` /
-    ``STUDIO_HOME`` if set), the sibling of the llama.cpp install the finder
-    probes."""
-    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    base = Path(home).parent if home else Path.home() / ".unsloth"
-    return base / "stable-diffusion.cpp"
+    """``<UNSLOTH_STUDIO_HOME>/stable-diffusion.cpp``, else the legacy
+    ``~/.unsloth/stable-diffusion.cpp``.
+
+    The same placement ``install_llama_prebuilt.default_managed_llama_dir`` uses for
+    llama.cpp, and the whisper.cpp / node installs use for theirs: the tree goes
+    *under* the Studio home, so side-by-side Studios stay isolated and nothing outside
+    the home is ever claimed. The legacy default home ``~/.unsloth/studio`` still maps
+    to ``~/.unsloth/stable-diffusion.cpp`` so an existing install is reused.
+
+    Kept byte-identical in meaning to ``sd_cpp_engine.managed_install_root``; the two
+    are separate because this script must run standalone, before the backend package is
+    importable.
+
+    Derived from an absolute home: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the
+    install dir relative to whatever the working directory happens to be."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    legacy = Path.home() / ".unsloth" / "stable-diffusion.cpp"
+    if not home:
+        return legacy
+    root = Path(home).expanduser()
+    legacy_studio = Path.home() / ".unsloth" / "studio"
+    try:
+        root = root.resolve()
+        is_legacy = root == legacy_studio.resolve()
+    except (OSError, ValueError):
+        root = root.absolute()
+        is_legacy = root == legacy_studio
+    return legacy if is_legacy else root / "stable-diffusion.cpp"
 
 
 def _make_executable(path: Path) -> None:
@@ -223,6 +414,72 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
         if p.is_file():
             return p
     return None
+
+
+class SupersededBinaryError(RuntimeError):
+    """An install failed PART WAY through replacing the managed tree.
+
+    Distinct from every other install failure because the tree is now a mixture of two bundles.
+    ``ensure_*`` must not record it as a failed accelerator upgrade: that memo suppresses the
+    mismatch for the whole process, so the mixed tree would be accepted forever instead of being
+    retried, which is the opposite of what withholding the install record is for."""
+
+
+def _binary_names() -> tuple[str, ...]:
+    """The executables the managed tree may hold, in both platform spellings."""
+    suffix = ".exe" if sys.platform == "win32" else ""
+    return (f"sd-cli{suffix}", f"sd-server{suffix}")
+
+
+def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
+    """Where this archive puts its executables, resolved to absolute paths under ``target``.
+
+    Read from the MEMBER LIST, never from the extracted tree: a leftover binary from an earlier
+    install looks identical on disk once extraction has run, which is the whole confusion here."""
+    names = _binary_names()
+    out: set[Path] = set()
+    for member in zf.namelist():
+        if member.rsplit("/", 1)[-1] in names:
+            out.add((target / member).resolve())
+    return out
+
+
+def _tree_has_binaries(root: Path) -> bool:
+    """True when ``root`` already holds an sd-cli / sd-server from an earlier bundle.
+
+    Asked BEFORE extraction, because that is the only moment the answer is about the previous
+    bundle alone."""
+    for name in _binary_names():
+        for found in root.rglob(name):
+            if found.is_file():
+                return True
+    return False
+
+
+def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
+    """Remove managed sd-cli / sd-server copies this bundle did NOT write.
+
+    Extraction MERGES into the tree, so a bundle whose layout differs from the previous one (or
+    that ships no server at all) leaves the old accelerator's executables behind -- and
+    ``_layout_candidates`` prefers ``build/bin`` over the prebuilt's versioned subdirectory, so the
+    stale one keeps winning. Nothing downstream repairs that: a leftover binary is still RUNNABLE,
+    so ``_usable_or_discard_managed`` keeps it, and once the record below names the new accelerator
+    ``_accelerator_changed`` trusts the tree and serves the old build forever.
+
+    Raises when a copy cannot go, which withholds the record and makes the next load retry."""
+    names = _binary_names()
+    for name in names:
+        for found in sorted(root.rglob(name)):
+            if not found.is_file() or found.resolve() in supplied:
+                continue
+            try:
+                found.unlink()
+            except OSError as exc:
+                raise SupersededBinaryError(
+                    f"could not remove the superseded binary {found}: {exc}. It was not written by "
+                    f"this bundle, and leaving it would keep serving the previous accelerator."
+                ) from exc
+            print(f"removed a superseded binary -> {found}", flush = True)
 
 
 def _locate_sd_server(root: Path) -> Optional[Path]:
@@ -341,13 +598,19 @@ def _resolve_with_fallback(
     allow_upstream = (
         not repo_pinned and primary == DEFAULT_REPO and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
     )
+    mirror_only = is_mirror_only_tag(tag)
 
     # (repo, tag_to_fetch, allow_latest): with a pin, try the exact pin on every repo first, then each repo's latest.
     attempts: list[tuple[str, Optional[str], bool]] = []
     if tag:
         attempts.append((primary, tag, False))
         if allow_upstream:
-            attempts.append((UPSTREAM_FALLBACK_REPO, tag, False))
+            # The mirror's own tag does not exist upstream, so the pin has to be translated back
+            # to the upstream release it was built from -- otherwise this attempt always 404s and
+            # the pin degrades to upstream latest for every host the mirror does not build.
+            # This supersedes simply skipping the attempt for a mirror-only tag: skipping kept the
+            # round trip cheap but dropped the pin entirely on those hosts.
+            attempts.append((UPSTREAM_FALLBACK_REPO, upstream_tag_for(tag), False))
         attempts.append((primary, None, True))
         if allow_upstream:
             attempts.append((UPSTREAM_FALLBACK_REPO, None, True))
@@ -368,6 +631,19 @@ def _resolve_with_fallback(
                     file = sys.stderr,
                     flush = True,
                 )
+                # A mirror-only pin means the shipped default carries fixes that upstream has
+                # not released. Falling back is still better than no native engine at all for
+                # every other model, but the H3 failures are SILENT (it renders, just wrongly),
+                # so this has to be said out loud rather than left to the generic line above.
+                if mirror_only:
+                    print(
+                        f"warning: {repo} has no {tag}; this build lacks the MiniMax-H3 fixes, "
+                        "so H3 will abort on the default cfg-scale and on --vae-on-cpu, and a "
+                        "blanket --type will quantize its 1-D norms into a broken render. Other "
+                        "models are unaffected.",
+                        file = sys.stderr,
+                        flush = True,
+                    )
             return repo, release, chosen
     return primary, None, None
 
@@ -427,6 +703,10 @@ def install(
         except OSError:
             pass
     archive = target / chosen
+    # Set the moment the tree stops being purely the OLD bundle. From then on it is a mixture of
+    # two bundles and every later failure has to be reported as an incomplete replacement, not as
+    # "this accelerator is unavailable".
+    replacing = False
     print(f"downloading {chosen} -> {archive}", flush = True)
     try:
         _download(url, archive)
@@ -434,24 +714,105 @@ def install(
         _verify_sha256(archive, asset.get("digest"))
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
+            supplied = _archive_binary_paths(zf, target)
+            # The boundary opens HERE, not at the sweep, whenever an existing bundle is about
+            # to gain a SECOND copy of a binary. Same path is the obvious case: zipfile rewrites
+            # each member in place, so an interrupted extract leaves the old sd-cli truncated.
+            # A different layout is the same problem one step removed, because the new copy WINS
+            # the next lookup -- _layout_candidates prefers build/bin, then the newest
+            # subdirectory by mtime -- while still having had neither the sweep, nor
+            # _make_executable, nor (on a Windows CUDA upgrade) the cudart DLLs the fetch below
+            # can still fail to get. Either way, calling that an ordinary failure makes ensure_*
+            # memoise the accelerator and serve the half-finished copy for the rest of the
+            # process. A first install has nothing to compete with, so it stays ordinary and the
+            # accelerator really is the thing that was unavailable.
+            replacing = bool(supplied) and _tree_has_binaries(target)
             _safe_extractall(zf, target)
-        # Windows CUDA builds need the separately-published cudart runtime DLLs.
+        # Nothing is swept until this bundle is known to have supplied the one binary the install
+        # cannot do without. A malformed archive is caught below either way, but only AFTER the
+        # sweep would have deleted the working sd-cli that ensure_sd_cpp_binary keeps precisely so
+        # a failed upgrade still leaves something to generate with.
+        cli_name = _binary_names()[0]
+        if not any(p.name == cli_name for p in supplied):
+            raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
+        # Windows CUDA builds need the separately-published cudart runtime DLLs. Still before the
+        # sweep, so a failure here costs nothing extra when the old copies are still in place;
+        # when the extract above already overwrote them, ``replacing`` is what makes this report
+        # as an incomplete replacement instead of a missing accelerator. Nothing it writes is an
+        # sd-cli or an sd-server, so the sweep below cannot take it.
         _maybe_fetch_windows_cudart(release, chosen, target)
+        # Extraction merges, so anything the previous bundle put somewhere this one does not write
+        # survives -- and it outranks the new copy whenever its path sorts higher. Drop what this
+        # bundle did not supply, so the tree and the record written below agree.
+        #
+        # LAST, and past it the tree is mixed whatever the layout was: the caller has to retry the
+        # sweep rather than memoise the accelerator as unavailable.
+        if _may_own:
+            # Set BEFORE the call, not after: the sweep removes copies one at a time, so a failure
+            # inside it has already changed the tree.
+            replacing = True
+            _discard_superseded_binaries(target, supplied)
+    except SupersededBinaryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- past the boundary, every failure is a mixed tree
+        if not replacing:
+            raise
+        raise SupersededBinaryError(
+            f"the managed tree was left part way through a replacement: {exc}"
+        ) from exc
     finally:
         # Always drop the archive: a corrupt or partial one must not linger and defeat a later retry.
-        archive.unlink(missing_ok = True)
-    sd_cli = _locate_sd_cli(target)
-    if not sd_cli:
-        raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
-    if sys.platform != "win32":
-        _make_executable(sd_cli)
-    print(f"installed sd-cli -> {sd_cli}", flush = True)
-    # The same archive ships the persistent sd-server; make it runnable so the native backend can prefer it.
-    sd_server = _locate_sd_server(target)
-    if sd_server is not None and sys.platform != "win32":
-        _make_executable(sd_server)
-    if sd_server is not None:
-        print(f"installed sd-server -> {sd_server}", flush = True)
+        # Inside the boundary too: an unlink failure after the sweep is still a mixed tree.
+        try:
+            archive.unlink(missing_ok = True)
+        except OSError as exc:
+            if replacing:
+                raise SupersededBinaryError(
+                    f"the managed tree was left part way through a replacement: {exc}"
+                ) from exc
+            raise
+    # EVERYTHING from the sweep on is finalisation of a tree that is now a mixture of two bundles:
+    # locating the new binaries, chmod-ing them, and the record. Reported as an ordinary failure,
+    # any of these makes ensure_* memoise the accelerator as unavailable and hand back a
+    # pre-install path the sweep may already have removed. Reported as an incomplete replacement,
+    # the caller re-finds what survived and the next load retries.
+    try:
+        sd_cli = _locate_sd_cli(target)
+        if not sd_cli:
+            raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
+        if sys.platform != "win32":
+            _make_executable(sd_cli)
+        print(f"installed sd-cli -> {sd_cli}", flush = True)
+        # The same archive ships the persistent sd-server; make it runnable so the native backend
+        # can prefer it.
+        sd_server = _locate_sd_server(target)
+        if sd_server is not None and sys.platform != "win32":
+            _make_executable(sd_server)
+        if sd_server is not None:
+            print(f"installed sd-server -> {sd_server}", flush = True)
+    except SupersededBinaryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- past the sweep, every failure is a mixed tree
+        if not replacing:
+            raise
+        raise SupersededBinaryError(
+            f"the managed tree was left part way through a replacement: {exc}"
+        ) from exc
+    # Written only now, on a complete install: a record naming an accelerator whose binaries never
+    # finished extracting would suppress the very reinstall that repairs it. Only for a directory we
+    # own -- an unowned one is the user's build, which we never claim to have installed.
+    if _may_own:
+        _write_install_record(
+            target,
+            accelerator = accelerator,
+            repo = used_repo,
+            tag = release.get("tag_name"),
+            # Read off the archive's MEMBER LIST, so "this bundle is serverless" is recorded fact
+            # rather than something a later load has to infer from an sd-server not being there.
+            # A leftover server from an earlier bundle is indistinguishable on disk, which is the
+            # whole confusion the record exists to settle.
+            ships_server = any(p.name == _binary_names()[1] for p in supplied),
+        )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
     return sd_cli
 

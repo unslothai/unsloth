@@ -19,7 +19,10 @@ export const ja = {
     modelSourceAriaLabel: "モデルのソース",
     hubSectionAriaLabel: "Hub セクション",
     pickModelFile: "ディスクからモデルファイルを選択",
-    ejectLoadedModel: "読み込み済みモデルをアンロード",
+    modelDropped: "提供終了",
+    modelDroppedByProvider: "{provider} · 提供終了",
+    modelDisabled: "無効",
+    modelDisabledByProvider: "{provider} · 無効",
     multipleMatches:
       "一致する{noun}が複数あります。リストから1つ選択してください。",
     rateLimitedTitle: "Hugging Face のレート制限に達しました",
@@ -85,6 +88,9 @@ export const ja = {
       recipes: "レシピ",
       images: "画像",
       video: "動画",
+      audio: "音声",
+      trainChecking: "このマシンのトレーニング対応を確認しています...",
+      videoChecking: "このマシンの動画生成対応を確認しています...",
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
       newBadge: "新機能",
@@ -369,6 +375,9 @@ export const ja = {
         keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
         keepKvDescription:
           "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+        apiOnly: "API が読み込んだモデルのみアンロード",
+        apiOnlyDescription:
+          "アイドル時の自動アンロードでは、Studio から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
@@ -403,10 +412,6 @@ export const ja = {
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
-      gettingStarted: "はじめに",
-      startOnboarding: "オンボーディングを開始",
-      startOnboardingDescription: "アカウントを変更せずにセットアップウィザードを再開します。",
-      startOnboardingAction: "オンボーディングを開始",
       uploads: {
         sectionTitle: "アップロード",
         maxUploadSize: "トレーニングデータセットのアップロード容量制限",
@@ -877,6 +882,11 @@ export const ja = {
         "アシスタントの応答にモデルのメタデータを表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
+      thinking: {
+        collapseByDefault: "思考をデフォルトで折りたたむ",
+        collapseByDefaultDescription:
+          "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTMLブロックを折りたたむ",
@@ -884,6 +894,9 @@ export const ja = {
           "Canvas モードでは完全な HTML を自動的に折りたたみます。Canvas がオフのときも、コードフェンスで囲まれた HTML ドキュメントを折りたたむには、この設定をオンにします。",
         allowNetworkAccess: "Canvas のネットワークアクセスを許可",
         allowNetworkAccessDescription: "CanvasのプレビューがCDNからスクリプト、スタイル、フォント、メディア、ネットワークリソースを読み込むことを許可します。完全にオフラインでプレビューする場合はオフのままにしてください。",
+        blockedBanner: "{hosts} からの外部リソース {count} 件をブロックしました。",
+        blockedBannerPlural: "{hosts} からの外部リソース {count} 件をブロックしました。",
+        blockedBannerAction: "この Canvas で許可",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",
@@ -940,6 +953,10 @@ export const ja = {
         "このデバイスに保存されているチャット履歴とアップロード済みファイルを管理します。",
       archivedChats: "アーカイブ済みチャット",
       archivedChatsDescription: "アーカイブしたチャットを表示・管理します。",
+      archivedImages: "アーカイブ済み画像",
+      archivedImagesDescription: "アーカイブした画像を表示・管理します。",
+      archivedVideos: "アーカイブ済み動画",
+      archivedVideosDescription: "アーカイブした動画を表示・管理します。",
       manageAction: "管理",
       exportArchivedChats: "エクスポート",
       exportingArchivedChats: "エクスポート中...",
@@ -1154,25 +1171,8 @@ export const ja = {
       modelTooltip: "ファインチューニングするベースモデルです。",
       methodTooltip: "モデルの学習方法です。LoRA と QLoRA はすべての重みではなく小さなアダプターを更新します。",
       datasetTooltip: "モデルのファインチューニングに使う学習データです。",
-      hfTokenLabel: "Hugging Face トークン",
       hfTokenDescription:
         "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",
-      hfTokenGet: "トークンを取得",
-      hfTokenChecking: "トークンを確認中…",
-      modelPickerDescription:
-        "Hugging Face を検索するか、このデバイス上のトレーニング可能なモデルを選択します。",
-      trainingMethod: "トレーニング方法",
-      trainingMethodDescription: "{model} のファインチューニング方法を選択",
-      trainingMethodTooltip:
-        "QLoRA は 4 ビット量子化により VRAM 使用量を最小限に抑えます。LoRA は 16 ビットの重みを使用し、フルファインチューニングはすべての重みを更新します。",
-      datasetPickerDescription:
-        "Hugging Face を検索するか、このデバイス上のデータセットを選択します。",
-      uploadDataset: "データセットをアップロード",
-      uploadDatasetDescription:
-        "CSV、JSONL、JSON、Parquet に対応しています。",
-      chooseFile: "ファイルを選択",
-      format: "形式",
-      autoDetect: "自動検出",
       uploadLocalLabel: "またはローカルファイルをアップロード",
       sourceBrowse: "参照",
       releaseToUpload: "ドロップしてアップロード",
@@ -1339,24 +1339,8 @@ export const ja = {
       history: "履歴",
     },
     loadingRuntime: "トレーニングランタイムを読み込み中...",
+    checkingSupport: "このマシンのトレーニング対応を確認しています...",
     backToHistory: "履歴に戻る",
-    sections: {
-      model: "モデル",
-      dataset: "データセット",
-      params: "パラメーター",
-      training: "トレーニング",
-      charts: "チャート",
-      progress: "トレーニング進捗",
-    },
-    configure: {
-      title: "設定",
-      description: "モデル、データセット、およびトレーニング設定を選択します。",
-      startTraining: "トレーニング開始",
-      starting: "開始中...",
-      loadingModel: "モデルを読み込み中...",
-      checkingDataset: "データセットを確認中...",
-      trainingConfig: "トレーニング構成",
-    },
     dataset: {
       selectors: {
         subset: "サブセット",
@@ -1378,7 +1362,6 @@ export const ja = {
         manualTooLong: "128 文字以内で入力してください。",
         manualInvalid: "この値には未対応の文字が含まれています。",
       },
-      source: "データセットのソース",
       sourceAriaLabel: "データセットのソース",
       localDataset: "ローカルデータセット",
       localDatasetRows: " / {count} 行",
@@ -1395,8 +1378,6 @@ export const ja = {
       fileTooLarge: "ファイルが大きすぎます",
       fileTooLargeDescription:
         "{file} のサイズは {size} です。トレーニング用アップロードの上限は {limit} です。",
-      uploadLimitsHint:
-        "CSV、JSONL、JSON、Parquet · 上限 {limit}、PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "このファイルは先に変換する必要があります",
         genericFile: "このファイル",
@@ -1476,7 +1457,6 @@ export const ja = {
       evalDatasetUploaded: "評価データセットをアップロードしました",
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",
-      preview: "データセットのプレビュー",
       previewLoadingHuggingFace:
         "Hugging Face からデータセットのプレビューを取得しています...",
       previewLoading: "プレビューを読み込んでいます...",
@@ -1498,8 +1478,6 @@ export const ja = {
         requiredDescription:
           "ヘッダーのドロップダウンを使用して列にロールを割り当ててください。少なくとも {required} を割り当てる必要があります。",
       },
-      split: "分割",
-      subset: "サブセット",
       s3: {
         title: "S3 構成",
         description: "Amazon S3 から .parquet, .json, .jsonl, または .csv データセットを読み込みます",
@@ -1509,18 +1487,11 @@ export const ja = {
         regionPlaceholder: "us-east-1",
         prefix: "パスプレフィックス",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "オプション。バケット内のデータセットファイルへのパス",
         accessKeyId: "アクセスキー ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "シークレットアクセスキー",
         secretAccessKeyPlaceholder: "AWS シークレットアクセスキーを入力してください",
         useIamRole: "IAM ロールを使用",
-        useIamRoleTooltip: "アクセスキーの代わりに IAM ロールの資格情報を使用します（EC2/SageMaker で推奨）",
-        testConnection: "接続をテスト",
-        connectionSuccess: "S3 バケットへの接続に成功しました",
-        connectionFailed: "S3 バケットへの接続に失敗しました",
-        comingSoon: "S3 統合は近日公開予定",
-        comingSoonDescription: "S3 データセットの読み込みには boto3 が必要です。この機能は現在開発中です。",
       },
     },
     params: {
@@ -1706,7 +1677,6 @@ export const ja = {
         "実行は削除されましたが、関連ファイルを削除できませんでした。",
       deleteArtifactsRetainedError:
         "アダプターファイルを削除できなかったため、トレーニング実行は履歴に保持されました。",
-      emptyTitle: "トレーニング実行がまだありません",
       emptyDescription: "トレーニング実行がまだありません。「設定」タブで最初のトレーニングを開始してください。",
       loadError: "トレーニング実行の読み込みに失敗しました",
       deleteError: "トレーニング実行の削除に失敗しました。もう一度お試しください。",
@@ -1717,9 +1687,6 @@ export const ja = {
       runNotFound: "実行が見つかりません",
       deleteTitle: "トレーニング実行を削除しますか？",
       deleteDescription: "これにより、このトレーニング実行とすべてのメトリクスが永久に削除されます。この操作は取り消せません。",
-      runCount: "{count} 件の実行",
-      oneRun: "1 件の実行",
-      resume: "再開",
       resumeTraining: "トレーニングを再開",
       resuming: "再開中...",
       deleteRun: "実行を削除",
@@ -1850,9 +1817,6 @@ export const ja = {
       dataset: "データセット",
       datasetStreaming: "データセット: ストリーミング（完全なダウンロードなし）",
       modelWeights: "モデルの重み",
-    },
-    tour: {
-      guidedTour: "ガイドツアー",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

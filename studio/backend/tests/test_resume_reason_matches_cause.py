@@ -79,7 +79,23 @@ def test_an_intact_checkpoint_still_gets_the_provenance_reason(tmp_path, unresum
 
     monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)
 
-    summary = training_history._summary_from_row(_row(tmp_path), False)
+    summary = training_history._summary_from_row(
+        _row(
+            tmp_path,
+            config_json = json.dumps(
+                {
+                    "model_name": "unsloth/Llama-3.2-1B-Instruct",
+                    "hf_dataset": "yahma/alpaca-cleaned",
+                    RESOURCE_PROVENANCE_KEY: {
+                        "version": 1,
+                        "status": "incomplete",
+                        "model_status": "incomplete",
+                    },
+                }
+            ),
+        ),
+        False,
+    )
 
     assert summary.resume_blocked_reason == _ATTESTATION
 

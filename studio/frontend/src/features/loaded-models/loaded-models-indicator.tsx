@@ -61,14 +61,9 @@ const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   stt: Mic01Icon,
 };
 
-// Nothing to report on the auth and onboarding screens. Desktop auto-authenticates,
-// so only the browser needs the token check: polling before one exists is all 401s.
-const HIDDEN_ROUTES = new Set([
-  "/login",
-  "/signup",
-  "/change-password",
-  "/onboarding",
-]);
+// Nothing to report on auth screens. Desktop auto-authenticates, so only the
+// browser needs the token check: polling before one exists is all 401s.
+const HIDDEN_ROUTES = new Set(["/login", "/signup", "/change-password"]);
 
 function canShowIndicator(pathname: string): boolean {
   if (HIDDEN_ROUTES.has(pathname)) return false;
@@ -281,7 +276,7 @@ export function LoadedModelsIndicator({
               onClick={() => {
                 if (!justDragged()) setCollapsed(false);
               }}
-              className="menu-soft-surface pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
+              className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
                 icon={SparkleIcon}
@@ -298,8 +293,8 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
-          <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
+        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
+          <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}
               strokeWidth={1.75}

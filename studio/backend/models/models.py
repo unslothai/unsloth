@@ -91,6 +91,15 @@ class ModelDetails(BaseModel):
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    audio_type_known: bool = Field(
+        True,
+        description = (
+            "Whether audio_type is a definitive answer. False means the repo's "
+            "tokenizer_config.json could not be read (gated, offline, upstream error), so a "
+            "null audio_type means unknown rather than 'not an audio model'. Defaults True "
+            "so callers that never set it keep the old meaning."
+        ),
+    )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     model_type: Optional[ModelType] = Field(
         None, description = "Collapsed model modality: text, vision, audio, or embeddings"
@@ -114,6 +123,15 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = (
+            "Codec of the adapter's base model ('snac', 'bicodec', 'dac', 'csm', "
+            "'whisper', 'audio_vlm') when it fine-tunes an audio model, else null. "
+            "The Audio page needs this to offer a trained checkpoint: a scan row "
+            "carries no modality otherwise, so an audio adapter reads as a text one."
+        ),
+    )
 
 
 class LoRAScanResponse(BaseModel):
@@ -134,7 +152,13 @@ class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
-    quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
+    quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field
+    # that exists only on the hub twin is dropped by pydantic without a word, and a qualified
+    # row falls back to rendering its whole relative path.
+    display_label: Optional[str] = Field(
+        None, description = "Optional user-facing label when quant is an internal key"
+    )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(

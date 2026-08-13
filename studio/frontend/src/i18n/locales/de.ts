@@ -18,7 +18,10 @@ export const de = {
     modelSourceAriaLabel: "Modellquelle",
     hubSectionAriaLabel: "Hub-Bereich",
     pickModelFile: "Modelldatei vom Datenträger auswählen",
-    ejectLoadedModel: "Geladenes Modell auswerfen",
+    modelDropped: "Nicht mehr angeboten",
+    modelDroppedByProvider: "{provider} · nicht mehr angeboten",
+    modelDisabled: "Nicht aktiviert",
+    modelDisabledByProvider: "{provider} · nicht aktiviert",
     multipleMatches:
       "Mehrere passende {noun} gefunden. Wählen Sie einen Eintrag aus der Liste aus.",
     rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",
@@ -86,6 +89,9 @@ export const de = {
       recipes: "Rezepte",
       images: "Bilder",
       video: "Video",
+      audio: "Audio",
+      trainChecking: "Dieser Rechner wird auf Trainingsunterstützung geprüft...",
+      videoChecking: "Dieser Rechner wird auf Video-Unterstützung geprüft...",
       more: "Mehr",
       customizeSidebar: "Seitenleiste anpassen",
       newBadge: "Neu",
@@ -391,6 +397,9 @@ export const de = {
         keepKv: "Chat-Kontext beim automatischen Entladen behalten",
         keepKvDescription:
           "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
+        apiOnly: "Nur über die API geladene Modelle entladen",
+        apiOnlyDescription:
+          "Das automatische Entladen bei Inaktivität lässt ein von dir in Studio geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -431,11 +440,6 @@ export const de = {
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
-      gettingStarted: "Erste Schritte",
-      startOnboarding: "Einrichtung starten",
-      startOnboardingDescription:
-        "Öffnet den Einrichtungsassistenten erneut, ohne Ihr Konto zu ändern.",
-      startOnboardingAction: "Einrichtung starten",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Upload-Limit für Trainingsdatensätze",
@@ -923,6 +927,11 @@ export const de = {
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
+      thinking: {
+        collapseByDefault: "Denken standardmäßig einklappen",
+        collapseByDefaultDescription:
+          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML-Blöcke einklappen",
@@ -931,6 +940,9 @@ export const de = {
         allowNetworkAccess: "Netzwerkzugriff für Canvas erlauben",
         allowNetworkAccessDescription:
           "Erlaubt Canvas-Vorschauen, Skripte, Stile, Schriftarten, Medien und Netzwerkressourcen von CDNs zu laden. Für vollständig offline nutzbare Vorschauen deaktiviert lassen.",
+        blockedBanner: "{count} externe Ressource von {hosts} blockiert.",
+        blockedBannerPlural: "{count} externe Ressourcen von {hosts} blockiert.",
+        blockedBannerAction: "Für dieses Canvas erlauben",
       },
       data: "Daten",
       exportHistory: "Chatverlauf exportieren",
@@ -1001,6 +1013,10 @@ export const de = {
       archivedChats: "Archivierte Chats",
       archivedChatsDescription:
         "Zeigen Sie die von Ihnen archivierten Chats an und verwalten Sie sie.",
+      archivedImages: "Archivierte Bilder",
+      archivedImagesDescription: "Bilder anzeigen und verwalten, die du archiviert hast.",
+      archivedVideos: "Archivierte Videos",
+      archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
       exportArchivedChats: "Exportieren",
       exportingArchivedChats: "Wird exportiert...",
@@ -1224,25 +1240,8 @@ export const de = {
       modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
       methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
       datasetTooltip: "Die Trainingsdaten für die Feinabstimmung des Modells.",
-      hfTokenLabel: "Hugging Face-Token",
       hfTokenDescription:
         "Erforderlich für zugriffsbeschränkte oder private Modelle und Datensätze.",
-      hfTokenGet: "Token abrufen",
-      hfTokenChecking: "Token wird überprüft…",
-      modelPickerDescription:
-        "Durchsuche Hugging Face oder wähle ein trainierbares Modell aus, das bereits auf diesem Gerät vorhanden ist.",
-      trainingMethod: "Trainingsmethode",
-      trainingMethodDescription: "Wähle aus, wie {model} feinabgestimmt wird",
-      trainingMethodTooltip:
-        "QLoRA verwendet 4-Bit-Quantisierung für den niedrigsten VRAM-Verbrauch. LoRA verwendet 16-Bit-Gewichte, während beim vollständigen Fine-Tuning alle Gewichte aktualisiert werden.",
-      datasetPickerDescription:
-        "Durchsuche Hugging Face oder wähle einen Datensatz aus, der bereits auf diesem Gerät vorhanden ist.",
-      uploadDataset: "Datensatz hochladen",
-      uploadDatasetDescription:
-        "Unterstützt CSV, JSONL, JSON und Parquet.",
-      chooseFile: "Datei auswählen",
-      format: "Format",
-      autoDetect: "Automatisch erkennen",
       uploadLocalLabel: "Oder eine lokale Datei hochladen",
       sourceBrowse: "Durchsuchen",
       releaseToUpload: "Zum Hochladen loslassen",
@@ -1410,25 +1409,8 @@ export const de = {
       history: "Verlauf",
     },
     loadingRuntime: "Trainingsumgebung wird geladen...",
+    checkingSupport: "Dieser Rechner wird auf Trainingsunterstützung geprüft...",
     backToHistory: "Zurück zum Verlauf",
-    sections: {
-      model: "Modell",
-      dataset: "Datensatz",
-      params: "Parameter",
-      training: "Training",
-      charts: "Diagramme",
-      progress: "Trainingsfortschritt",
-    },
-    configure: {
-      title: "Konfigurieren",
-      description:
-        "Wählen Sie ein Modell, einen Datensatz und Trainingseinstellungen.",
-      startTraining: "Training starten",
-      starting: "Wird gestartet...",
-      loadingModel: "Modell wird geladen...",
-      checkingDataset: "Datensatz wird geprüft...",
-      trainingConfig: "Trainingskonfiguration",
-    },
     dataset: {
       selectors: {
         subset: "Teilmenge",
@@ -1452,7 +1434,6 @@ export const de = {
         manualTooLong: "Verwende höchstens 128 Zeichen.",
         manualInvalid: "Dieser Wert enthält nicht unterstützte Zeichen.",
       },
-      source: "Datensatzquelle",
       sourceAriaLabel: "Datensatzquelle",
       localDataset: "Lokaler Datensatz",
       localDatasetRows: " / {count} Zeilen",
@@ -1469,8 +1450,6 @@ export const de = {
       fileTooLarge: "Datei ist zu groß",
       fileTooLargeDescription:
         "{file} ist {size} groß. Trainings-Uploads unterstützen bis zu {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · bis zu {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Diese Datei muss zuerst konvertiert werden",
         genericFile: "Diese Datei",
@@ -1556,7 +1535,6 @@ export const de = {
       uploadOneFileAtATime: "Laden Sie jeweils eine Datei hoch",
       uploadSingleFileDescription:
         "Der Trainingsdatensatz-Upload akzeptiert eine einzelne Datei.",
-      preview: "Datensatz-Vorschau",
       previewLoadingHuggingFace:
         "Datensatzvorschau wird von Hugging Face abgerufen...",
       previewLoading: "Vorschau wird geladen...",
@@ -1578,8 +1556,6 @@ export const de = {
         requiredDescription:
           "Weisen Sie den Spalten über die Dropdown-Menüs in den Überschriften Rollen zu. Weisen Sie mindestens {required} zu.",
       },
-      split: "Split",
-      subset: "Teilmenge",
       s3: {
         title: "S3-Konfiguration",
         description:
@@ -1590,21 +1566,11 @@ export const de = {
         regionPlaceholder: "us-east-1",
         prefix: "Pfad-Präfix",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip:
-          "Optionaler Pfad innerhalb des Buckets zu Ihren Datensatzdateien",
         accessKeyId: "Access Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Ihr AWS Secret Access Key",
         useIamRole: "IAM-Rolle verwenden",
-        useIamRoleTooltip:
-          "Verwenden Sie IAM-Rollen-Anmeldedaten statt Access Keys (empfohlen für EC2/SageMaker)",
-        testConnection: "Verbindung testen",
-        connectionSuccess: "Erfolgreich mit S3-Bucket verbunden",
-        connectionFailed: "Verbindung zum S3-Bucket fehlgeschlagen",
-        comingSoon: "S3-Integration folgt bald",
-        comingSoonDescription:
-          "Das Laden von S3-Datensätzen erfordert boto3. Diese Funktion befindet sich in Entwicklung.",
       },
     },
     params: {
@@ -1811,7 +1777,6 @@ export const de = {
         "Der Lauf wurde gelöscht, seine Dateien konnten jedoch nicht entfernt werden.",
       deleteArtifactsRetainedError:
         "Die Adapterdateien konnten nicht entfernt werden. Der Trainingslauf wurde daher im Verlauf beibehalten.",
-      emptyTitle: "Noch keine Trainingsläufe",
       emptyDescription:
         "Noch keine Trainingsläufe. Starten Sie Ihren ersten Trainingslauf im Tab „Konfigurieren“.",
       loadError: "Trainingsläufe konnten nicht geladen werden",
@@ -1825,9 +1790,6 @@ export const de = {
       deleteTitle: "Trainingslauf löschen?",
       deleteDescription:
         "Dadurch werden dieser Trainingslauf und alle seine Metriken dauerhaft gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
-      runCount: "{count} Läufe",
-      oneRun: "1 Lauf",
-      resume: "Fortsetzen",
       resumeTraining: "Training fortsetzen",
       resuming: "Wird fortgesetzt...",
       deleteRun: "Lauf löschen",
@@ -1965,9 +1927,6 @@ export const de = {
       dataset: "Datensatz",
       datasetStreaming: "Datensatz: Streaming (kein vollständiger Download)",
       modelWeights: "Modellgewichte",
-    },
-    tour: {
-      guidedTour: "Geführte Tour",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

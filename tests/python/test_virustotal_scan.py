@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the advisory VirusTotal pre-flight scan.
+"""Unit tests for the advisory VirusTotal release asset scan.
+
+The scan is a sweep of the bundles `publish-release` uploaded, run in the
+`virustotal-scan` job after it. Those bundles are attached to a draft on the
+default dispatch and to a published release otherwise, which is why neither the
+job nor the summary heading claims a publication. It is not a gate and cannot
+hold a release back; Defender in the build job is the fail-closed check.
 
 Offline by design: every test injects a fake transport, so the suite never spends
 the account's 500/day quota and never uploads a build. The two behaviours worth
@@ -16,8 +22,11 @@ protecting are the ones a release depends on:
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
+import itertools
 import pathlib
+import shlex
 import sys
 import time
 
@@ -442,7 +451,7 @@ class TestDeadlineEnforcement:
             ]
         )
         assert rc == 0
-        assert "VirusTotal pre-flight scan" in summary.read_text()
+        assert vt.SUMMARY_HEADING in summary.read_text()
 
 
 class TestRenderMarkdown:
@@ -808,13 +817,28 @@ class TestRetryBackoffRespectsTheDeadline:
 
 
 class TestWorkflowOrdering:
-    """The scan must not disclose bundles for a release that cannot be published."""
+    """The scan is a post-publish sweep, and the wiring that makes it run must hold.
 
-    def _publish_step_list(self):
+    There is no pre-publish gate here and there never was one that could block a
+    release: the scan is advisory by design (Defender in the build job is the
+    fail-closed check for Windows), and since #8194 it runs in its own
+    `virustotal-scan` job after `publish-release` rather than inline before the
+    upload. The bundles are already public by the time it runs.
+
+    What is still worth pinning is that the sweep cannot be quietly lost. A
+    deleted job, a dropped `needs`, an `if:` that never fires, a missing script
+    checkout or a `|| true` around the invocation would each leave the release
+    scanned by nothing while the workflow stayed green. The tests below assert
+    each of those against the workflow YAML.
+    """
+
+    def _workflow(self):
         yaml = pytest.importorskip("yaml")
         workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
-        data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
-        return data["jobs"]["publish-release"]["steps"]
+        return yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+
+    def _publish_step_list(self):
+        return self._workflow()["jobs"]["publish-release"]["steps"]
 
     def _publish_steps(self):
         return [step.get("name") for step in self._publish_step_list()]
@@ -822,59 +846,280 @@ class TestWorkflowOrdering:
     def _publish_step_map(self):
         return {step.get("name"): step for step in self._publish_step_list()}
 
-    def test_scan_runs_after_the_release_is_validated(self):
-        names = self._publish_steps()
-        assert names.index("Validate versioned release state") < names.index(
-            "VirusTotal pre-flight scan"
+    def _scan_job(self):
+        jobs = self._workflow()["jobs"]
+        assert "virustotal-scan" in jobs, (
+            "the virustotal-scan job is gone; the release would ship unscanned by "
+            "anything but Defender"
+        )
+        return jobs["virustotal-scan"]
+
+    def _scan_step_map(self):
+        return {step.get("name"): step for step in self._scan_job()["steps"]}
+
+    def _scan_step_names(self):
+        return [step.get("name") for step in self._scan_job()["steps"]]
+
+    @staticmethod
+    def _runner_temp(path):
+        """Normalise the three spellings of the runner temp dir to one token.
+
+        `with:` uses `${{ runner.temp }}` and `run:` uses `$RUNNER_TEMP`, so two
+        paths can name one directory and still compare unequal.
+        """
+        normalised = " ".join(str(path).split())
+        for spelling in ("${{ runner.temp }}", "${RUNNER_TEMP}", "$RUNNER_TEMP"):
+            normalised = normalised.replace(spelling, "<RUNNER_TEMP>")
+        return normalised.rstrip("/")
+
+    def _scan_script_argv(self):
+        """The argv the `VirusTotal scan` step hands to virustotal_scan.py."""
+        run = self._scan_step_map()["VirusTotal scan"]["run"]
+        command = run.replace("\\\n", " ")
+        line = next(
+            text for text in command.split("\n") if "python3 scripts/virustotal_scan.py" in text
+        )
+        argv = shlex.split(line)
+        return argv[argv.index("scripts/virustotal_scan.py") + 1 :]
+
+    def test_the_scan_is_its_own_job_gated_on_publish_release(self):
+        # Pins the post-publish ordering rather than merely tolerating it: the
+        # job must exist and must be downstream of publish-release, so dropping
+        # either the job or the `needs` turns this red.
+        job = self._scan_job()
+        assert job["needs"] == ["publish-release"]
+
+    def test_the_scan_job_is_not_conditioned_away(self):
+        # `needs:` alone carries GitHub's default `success()` gating, so whether
+        # the scan runs is decided by publish-release and nothing else. The job
+        # therefore carries no `if:` at all, and this rejects every one rather
+        # than trying to sort the safe conditions from the unsafe.
+        #
+        # Sorting them does not work. A job-level `if:` fails in both directions:
+        # `always()` or `success() || inputs.scan_anyway` sends build artifacts
+        # to a third party after a publish that failed, while `${{ false }}` or
+        # `success() && <anything falsey>` silently skips the sweep after a
+        # publish that succeeded. Any rule permissive enough to admit an
+        # arbitrary trailing predicate admits the second kind, so the contract
+        # is simply that reaching this job is `needs:`'s decision alone.
+        job = self._scan_job()
+        assert "if" not in job, (
+            f"virustotal-scan carries `if: {job.get('if')}`; a job-level condition "
+            "either runs the scan without a successful publish-release or skips it "
+            "after one, and `needs:` already gates it correctly"
         )
 
-    def test_release_creation_is_deferred_until_after_the_scan(self):
-        # `gh release create` without `--draft` publishes at once, so creating a
-        # new release before the scan would expose an empty release for its
-        # duration, and leave it empty for good if the run were cancelled.
-        names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index("Create versioned release")
-        assert names.index("Create versioned release") < names.index(
-            "Publish versioned release assets"
+        # Nor may the individual steps be skipped, except the summary, which is
+        # `if: always()` precisely so the evidence survives a failed scan.
+        for step in job["steps"]:
+            condition = step.get("if")
+            if step.get("name") == "Publish VirusTotal summary":
+                assert condition == "always()"
+            else:
+                assert condition is None, step.get("name")
+
+    def test_the_scan_scans_the_bundles_that_were_published(self):
+        # The job has no build outputs of its own, so it re-downloads the very
+        # artifacts the build matrix uploaded and publish-release shipped. A
+        # pattern that matched nothing would scan an empty directory and still
+        # report success.
+        build = self._workflow()["jobs"]["build"]
+        upload_names = {
+            step.get("with", {}).get("name")
+            for step in build["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        }
+        assert "desktop-release-${{ matrix.artifact }}" in upload_names
+
+        download = self._scan_step_map()["Download published assets"]
+        assert download["uses"].startswith("actions/download-artifact@")
+        assert download["with"]["merge-multiple"] is True
+
+        # Tie the scan's input to publish-release's own download rather than to
+        # a literal repeated in both places: if publish ever ships a different
+        # artifact set, a scan still pulling the old pattern leaves the shipped
+        # installers unscanned and still reports a clean sweep.
+        publish_download = next(
+            step
+            for step in self._publish_step_list()
+            if step.get("uses", "").startswith("actions/download-artifact@")
         )
+        for key in ("pattern", "merge-multiple"):
+            assert download["with"][key] == publish_download["with"][key], (
+                key,
+                download["with"].get(key),
+                publish_download["with"].get(key),
+            )
+        assert self._runner_temp(download["with"]["path"]) == self._runner_temp(
+            publish_download["with"]["path"]
+        ), (download["with"]["path"], publish_download["with"]["path"])
+
+        # And the scan has to be pointed at that same directory. The script takes
+        # its target as an argument, so comparing only the two download steps
+        # lets a repointed argument scan an empty directory and report clean.
+        argv = self._scan_script_argv()
+        scan_paths = list(itertools.takewhile(lambda argument: not argument.startswith("-"), argv))
+        assert scan_paths, argv
+        assert [self._runner_temp(path) for path in scan_paths] == [
+            self._runner_temp(download["with"]["path"])
+        ], (argv, download["with"]["path"])
+
+        # And that shared pattern has to match what the matrix actually uploads,
+        # or both jobs would agree on a set that does not exist.
+        template = "desktop-release-${{ matrix.artifact }}"
+        for entry in build["strategy"]["matrix"]["include"]:
+            artifact = template.replace("${{ matrix.artifact }}", entry["artifact"])
+            assert fnmatch.fnmatch(artifact, download["with"]["pattern"]), (
+                artifact,
+                download["with"]["pattern"],
+            )
+
+        names = self._scan_step_names()
+        assert names.index("Download published assets") < names.index("VirusTotal scan")
+
+    def test_the_publish_job_no_longer_runs_the_scan(self):
+        # #8194 moved the scan out wholesale. Re-inlining it would put ~9 minutes
+        # back into the critical path of every release for a check that cannot
+        # block one, and would leave two scans burning the same 4/min quota.
+        for step in self._publish_step_list():
+            assert "virustotal" not in (step.get("name") or "").lower()
+            assert "virustotal_scan.py" not in (step.get("run") or "")
+
+    def test_nothing_slow_sits_between_validation_and_the_upload(self):
+        # The v{version} release already exists and is published, so the window
+        # worth minimising is now between validating its state and the assets
+        # landing on it. Nothing slow may be inserted between the two; the scan
+        # used to sit there and is why the window existed at all.
+        names = self._publish_steps()
+        validate = names.index("Validate versioned release state")
+        assert names[validate + 1] == "Generate versioned updater metadata"
+        assert names[validate + 2] == "Publish versioned release assets"
 
     def test_release_notes_are_written_unconditionally(self):
-        # Validation writes the notes before the advisory scan; metadata and
-        # provenance consume that same file before the release is created.
+        # Validation writes the notes; the metadata step consumes that same file
+        # before the assets land on the release.
         steps = self._publish_step_map()
         assert "desktop-release-notes.md" in steps["Validate versioned release state"]["run"]
-        metadata = steps["Generate versioned updater metadata and provenance"]["run"]
+        metadata = steps["Generate versioned updater metadata"]["run"]
         assert "desktop-release-notes.md" in metadata
 
-    def test_a_failed_lookup_is_not_treated_as_a_missing_release(self):
-        # A transient GraphQL/auth failure must stop before the workflow marks
-        # the version clean and discloses its bundles to VirusTotal.
+    def test_a_missing_release_stops_the_publish(self):
+        # Nothing is created here any more, so an absent release is a dispatch
+        # mistake: say how to fix it instead of publishing into thin air.
         run = self._publish_step_map()["Validate versioned release state"]["run"]
-        assert "if ! gh release list" in run
-        failed_lookup = run.split("if ! gh release list", 1)[1].split("release_state=", 1)[0]
-        assert "Could not list releases, including drafts" in failed_lookup
-        assert "exit 1" in failed_lookup
-        assert "create=true" not in failed_lookup
+        assert "gh release create" not in run
+        missing = run.split("does not exist.", 1)[1]
+        assert "Tag main and publish it first" in missing
+        assert "exit 1" in missing
 
-    def test_release_creation_is_gated_on_the_validation_step(self):
+    def test_every_public_mutation_is_gated_on_a_real_release(self):
         yaml = pytest.importorskip("yaml")
         workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
         data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
         steps = data["jobs"]["publish-release"]["steps"]
         by_name = {step.get("name"): step for step in steps}
         assert by_name["Validate versioned release state"]["id"] == "versioned_release_state"
-        assert (
-            by_name["Create versioned release"]["if"]
-            == "steps.versioned_release_state.outputs.create == 'true'"
-        )
+        assert "Create versioned release" not in by_name
 
-    def test_scan_runs_before_the_assets_are_published(self):
-        names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index(
-            "Publish versioned release assets"
-        )
+        # Validation runs on every dispatch; only a non-draft run touches the release.
+        for name in ("Publish versioned release assets", "Publish versioned updater metadata"):
+            assert by_name[name]["if"] == "${{ !inputs.draft }}"
 
-    def test_the_scan_script_is_checked_out_first(self):
-        # publish-release otherwise has no source tree, so the script would be missing.
-        names = self._publish_steps()
-        assert names.index("Check out the scan script") < names.index("VirusTotal pre-flight scan")
+    def test_the_scan_step_does_not_swallow_its_own_failure(self):
+        # The advisory posture is a property of the job, not of the step. The job
+        # carries `continue-on-error` so a missing secret or a VirusTotal outage
+        # cannot retroactively fail a release that already published; the step
+        # must still surface its exit status, or a broken invocation reads as a
+        # clean scan.
+        step = self._scan_step_map()["VirusTotal scan"]
+        assert "continue-on-error" not in step
+
+        run = step["run"]
+        assert "set -euo pipefail" in run
+
+        invocation = run.split("python3 scripts/virustotal_scan.py", 1)[1]
+        for swallow in ("|| true", "|| :", "exit 0", "; true"):
+            assert swallow not in invocation, swallow
+
+        # The script signals a detection by returning 1 from main() once
+        # `--fail-threshold` is met (see TestThreshold), so the workflow must not
+        # pin the threshold to something the script treats as "never fail" while
+        # claiming to gate. It passes no threshold at all today, which leaves the
+        # script's advisory default in force and the verdict in the annotations.
+        assert "--fail-threshold" not in run
+
+    def test_the_advisory_escape_hatch_is_confined_to_the_scan_job(self):
+        # `continue-on-error` anywhere else would let a genuine release failure
+        # pass as success. Exactly one in the file, on virustotal-scan itself.
+        jobs = self._workflow()["jobs"]
+        assert self._scan_job()["continue-on-error"] is True
+
+        tolerant_jobs = [name for name, job in jobs.items() if "continue-on-error" in job]
+        assert tolerant_jobs == ["virustotal-scan"]
+
+        # free-capacity only asks CI to release runners and is allowed to fail;
+        # every job that touches a bundle must not be.
+        tolerant_steps = [
+            (name, step.get("name"))
+            for name, job in jobs.items()
+            if name != "free-capacity"
+            for step in job.get("steps", [])
+            if "continue-on-error" in step
+        ]
+        assert tolerant_steps == []
+
+    def test_the_scan_job_makes_the_scan_script_available(self):
+        # The job publishes nothing and so has no source tree of its own; the
+        # sparse checkout is the only thing that puts scripts/virustotal_scan.py
+        # on disk. Assert the mechanism, not a step name: a checkout that stops
+        # fetching the script leaves the scan unable to run at all.
+        checkouts = [
+            step
+            for step in self._scan_job()["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+        assert len(checkouts) == 1
+        checkout = checkouts[0]
+        assert checkout["with"]["sparse-checkout"] == "scripts/virustotal_scan.py"
+        assert checkout["with"]["persist-credentials"] is False
+
+        names = self._scan_step_names()
+        assert names.index(checkout["name"]) < names.index("VirusTotal scan")
+
+        # And if it ever does not, the scan step says so loudly and exits 1
+        # rather than reporting a clean sweep of nothing.
+        guard = self._scan_step_map()["VirusTotal scan"]["run"]
+        assert "if [ ! -f scripts/virustotal_scan.py ]; then" in guard
+        assert "exit 1" in guard.split("if [ ! -f scripts/virustotal_scan.py ]; then", 1)[1]
+
+    def test_the_scan_verdict_is_always_reported(self):
+        # continue-on-error means nobody is forced to look at the job result, so
+        # the step summary is the report. It must be written even when the scan
+        # itself failed, which is exactly the case worth reading.
+        summary = self._scan_step_map()["Publish VirusTotal summary"]
+        assert summary["if"] == "always()"
+        assert "$GITHUB_STEP_SUMMARY" in summary["run"]
+        assert "virustotal-summary.md" in summary["run"]
+
+    def test_the_placeholder_summary_matches_the_real_one(self):
+        # The placeholder stands in when the scan produced no summary, so a
+        # heading that drifts from the script's renders as a second, unrelated
+        # section instead of the report the reader came for.
+        summary = self._scan_step_map()["Publish VirusTotal summary"]
+        assert vt.SUMMARY_HEADING in summary["run"], summary["run"]
+
+    def test_the_summary_heading_holds_for_a_validation_only_run_too(self):
+        # `inputs.draft` defaults to true, and every uploading step is gated on
+        # it, so the ordinary dispatch validates and publishes nothing. A heading
+        # calling this a post-publish scan would tell a release operator the
+        # opposite of what happened, so the wording has to cover both.
+        workflow = self._workflow()
+        draft = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]["draft"]
+        assert draft["default"] is True
+
+        upload = self._publish_step_map()["Publish versioned release assets"]
+        assert upload["if"] == "${{ !inputs.draft }}"
+
+        heading = vt.SUMMARY_HEADING.lower()
+        for claim in ("post-publish", "published", "pre-flight"):
+            assert claim not in heading, (vt.SUMMARY_HEADING, claim)

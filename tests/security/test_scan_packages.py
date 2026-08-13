@@ -375,6 +375,65 @@ def test_baseline_key_line_shift_stable_but_code_specific():
     assert sp._finding_key(base) != sp._finding_key(malicious)
 
 
+def test_annotation_only_network_entries_are_digest_pinned():
+    """A baselined finding whose network evidence is only type annotations must pin the file.
+
+    RE_NETWORK matches ``httpx2.Client`` where it appears in a signature, but not a call
+    through an instance, so ``client.post(..., data=api_key)`` appended to one of these
+    files contributes no evidence: the evidence hash is unchanged and the entry would go
+    on suppressing it. Pinning the file digest is what makes any edit reopen the finding,
+    which is the property _load_baseline documents for exactly this shape.
+    """
+    import json
+    import pathlib
+
+    baseline = json.loads(
+        (
+            pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+        ).read_text(encoding = "utf-8")
+    )
+    credential_adjacent = {
+        "openai/_client.py",
+        "openai/lib/azure.py",
+        "openai/lib/bedrock.py",
+        "openai/auth/_workload.py",
+    }
+    seen = set()
+    for entry in baseline["entries"]:
+        if entry.get("package") == "openai" and entry.get("file") in credential_adjacent:
+            seen.add(entry["file"])
+            assert entry.get("file_sha256"), (
+                f"{entry['file']} is baselined on evidence that a later payload can leave "
+                f"unchanged; it has to pin the reviewed file digest"
+            )
+    assert seen == credential_adjacent, f"missing entries for {credential_adjacent - seen}"
+
+
+def test_network_check_sees_httpx2():
+    """httpx2 is a separate import name, not a submodule of httpx.
+
+    openai 3.0.0 requires httpx2 and routes every call through it. While the network
+    check matched only ``httpx.``, the SDK's own HTTP was invisible to each combined
+    check that needs a network half, so reading OPENAI_API_KEY next to an httpx2 call
+    did not register as secrets-plus-network at all.
+    """
+    for call in ("httpx2.get(u)", "httpx2.post(u)", "httpx2.Client()", "httpx2.AsyncClient()"):
+        assert sp.RE_NETWORK.search(call), call
+    # the original spelling still matches
+    for call in ("httpx.get(u)", "httpx.Client()"):
+        assert sp.RE_NETWORK.search(call), call
+    # and the widening stays anchored: no bare prefix or unrelated attribute
+    for miss in ("myhttpx.get(u)", "httpx23.get(u)", "httpx2.Timeout(5)"):
+        assert not sp.RE_NETWORK.search(miss), miss
+
+
+def test_httpx2_secrets_plus_network_is_one_finding():
+    """The combined check has to fire on a file that reads a secret and calls httpx2."""
+    src = 'import os, httpx2\nk = os.environ.get("OPENAI_API_KEY")\nhttpx2.Client().get(u)\n'
+    assert sp.RE_NETWORK.search(src)
+    assert sp.RE_ENV_HARVEST.search(src)
+
+
 def test_extract_evidence_records_all_matches():
     # The whole point of P1: a match appended after the first few must show up
     # in the evidence, so it changes the key instead of riding the earlier ones.

@@ -71,6 +71,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   DownloadSquare01Icon,
@@ -146,6 +147,7 @@ import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { videoNavHint } from "@/config/hardware-verdict";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -229,6 +231,8 @@ type NavRowDef = {
   // The capability that decides `disabled` has not been measured yet. A row in this state is
   // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
   pending?: boolean;
+  // What that spinning row says on hover; detection can take minutes on a cold host.
+  pendingTooltip?: string;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -345,6 +349,7 @@ function NavItem({
   className,
   spinner,
   tooltip,
+  alwaysTooltip,
   onIntent,
   badge,
   overlay,
@@ -365,6 +370,9 @@ function NavItem({
   testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
+  // Show that tooltip on the expanded row too, not just the collapsed rail where it
+  // stands in for the hidden label.
+  alwaysTooltip?: boolean;
   // Trailing "New" pill text.
   badge?: string;
   // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
@@ -375,6 +383,7 @@ function NavItem({
       <div className="relative">
         <SidebarMenuButton
           tooltip={tooltip ?? label}
+          alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
           disabled={disabled}
           onClick={onClick}
           onPointerEnter={disabled ? undefined : onIntent}
@@ -553,7 +562,9 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      title={disabled ? tooltip : undefined}
+      // Whenever there is one: gated on `disabled` it dropped the tooltip of a row that is
+      // still being measured, which is enabled and has something to say.
+      title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
@@ -608,8 +619,8 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
-  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -620,22 +631,21 @@ export function AppSidebar() {
   const trainDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
-      ? "Training needs MLX. Run `unsloth studio update` to enable Train."
+      ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
+        // backtrack leaves a stack that is present but unusable. Naming the package
+        // that is missing, too old, or refusing to import is what makes this
+        // actionable to someone whose `unsloth studio update` has already run.
+        chatOnlyDetail
+        ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
+        : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
-  // Video's hint is derived the same way. It used to be hardcoded to "needs an NVIDIA or AMD
-  // GPU", which is wrong on an Apple Silicon host: video has no Apple path at all, so the row
-  // says so rather than pointing at hardware the user cannot add.
-  const videoDisabledHint: string | undefined = !chatOnlyMeasured
-    ? undefined
-    : platformDeviceType === "mac"
-      ? "Video generation on macOS is coming soon."
-      : chatOnlyReason === "no_gpu"
-        ? "Video generation needs an NVIDIA or AMD GPU."
-        : undefined;
+  // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
+  const videoDisabled = videoDisabledHint !== undefined;
 
   // Two things can change the verdict after the first /api/health. The backend MLX self-heal
   // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
@@ -650,7 +660,8 @@ export function AppSidebar() {
     // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
     // and /studio would hold its loading panel for the rest of the session. This is the only
     // recovery poll in the app, and the sidebar is mounted on every route that gates on the
-    // verdict (studio-page and video-page read the same store, so they recover with it).
+    // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
+    // backend's video verdict instead and needs nothing from here).
     if (selfHealSettled && !capabilitiesUnknown) return;
     let pollingSince = 0;
     // Which read currently owns the guard. A read that outlived the stall window is replaced,
@@ -1097,6 +1108,7 @@ export function AppSidebar() {
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
+      pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (chatOnlyMeasured) return;
         navigate({ to: "/studio" });
@@ -1106,20 +1118,33 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
-    // Video is diffusers-only, so a chat-only host cannot load it: disable with a hint instead of bouncing off the root guard.
+    // A host with no video device at all is disabled with a hint instead of bouncing off the root guard.
     video: {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
-      disabled: chatOnlyMeasured,
+      disabled: videoDisabled,
       tooltip: videoDisabledHint,
       pending: capabilitiesUnknown,
+      pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
         navigate({ to: "/video" });
         closeMobileIfOpen();
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/video" }));
+      },
+    },
+    audio: {
+      icon: AudioWave01Icon,
+      label: t("shell.navigation.audio"),
+      active: pathname === "/audio" || pathname.startsWith("/audio/"),
+      onClick: () => {
+        navigate({ to: "/audio" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/audio" }));
       },
     },
     recipes: {
@@ -1212,21 +1237,32 @@ export function AppSidebar() {
     closeMobileIfOpen();
   }
 
-  async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
-    await deleteChatItem(item, activeThreadId, (view) => {
-      navigate({
-        to: "/chat",
-        search: item.projectId
-          ? { project: item.projectId }
-          : { new: view.newThreadNonce },
-      });
-    });
+  async function handleDeleteThread(
+    item: Parameters<typeof deleteChatItem>[0],
+    args: { deleteFiles?: boolean } = {},
+  ) {
+    await deleteChatItem(
+      item,
+      activeThreadId,
+      (view) => {
+        navigate({
+          to: "/chat",
+          search: item.projectId
+            ? { project: item.projectId }
+            : { new: view.newThreadNonce },
+        });
+      },
+      args,
+    );
   }
 
   // Shared chat delete: same error toast and pin cleanup with or without the confirm dialog.
-  async function deleteChatWithCleanup(item: SidebarItem) {
+  async function deleteChatWithCleanup(
+    item: SidebarItem,
+    args: { deleteFiles?: boolean } = {},
+  ) {
     try {
-      await handleDeleteThread(item);
+      await handleDeleteThread(item, args);
       unpinChat(item.id);
     } catch (err) {
       toast.error(translate("shell.toast.failedToDeleteChat"), {
@@ -1384,18 +1420,36 @@ export function AppSidebar() {
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
-  const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+
+  /** Always through here: a stale switch would delete an unrelated sandbox. */
+  function openDeleteDialog(target: DeleteTarget) {
+    setDeleteFilesOnDelete(false);
+    setConfirmingDelete(target);
+  }
+
+  /** Only where a sandbox can actually be removed. A training run has none.
+   *  A chat in a project still has one: anything it wrote before the move is in
+   *  its own folder, and deletion never touches the project workspace. */
+  function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
+    if (!target) return false;
+    return target.kind === "project" || target.kind === "chat";
+  }
 
   async function commitDelete() {
     const target = confirmingDelete;
     if (!target) return;
     const shouldDeleteProjectFiles =
-      target.kind === "project" && deleteProjectFiles;
+      target.kind === "project" && deleteFilesOnDelete;
+    const shouldDeleteChatFiles =
+      deleteTargetHasFiles(target) && target.kind === "chat" && deleteFilesOnDelete;
     setConfirmingDelete(null);
-    // Reset so the next project delete never inherits this checkbox.
-    setDeleteProjectFiles(false);
+    // Reset so the next delete never inherits this switch.
+    setDeleteFilesOnDelete(false);
     if (target.kind === "chat") {
-      await deleteChatWithCleanup(target.item);
+      await deleteChatWithCleanup(target.item, {
+        deleteFiles: shouldDeleteChatFiles,
+      });
       return;
     }
     if (target.kind === "project") {
@@ -1647,7 +1701,8 @@ export function AppSidebar() {
             )}
             aria-hidden
           >
-            <span className="size-2 rounded-full bg-[#d07a5f] dark:bg-[#df8a6f]" />
+            {/* Neutral: a finished reply is news, not a fault. */}
+            <span className="size-2 rounded-full bg-muted-foreground/60" />
           </span>
         ) : null}
         {variant === "project" && (
@@ -1791,7 +1846,7 @@ export function AppSidebar() {
               variant="destructive"
               onSelect={() =>
                 confirmDeleteChats
-                  ? setConfirmingDelete({ kind: "chat", item })
+                  ? openDeleteDialog({ kind: "chat", item })
                   : void deleteChatWithCleanup(item)
               }
             >
@@ -1857,7 +1912,7 @@ export function AppSidebar() {
                   className={cn(
                     // min-w-0 so a narrow sidebar truncates the wordmark instead of pushing the search icon over.
                     "flex min-w-0 items-center gap-[6px] select-none transition-opacity",
-                    chatDisabled && "pointer-events-none opacity-50",
+                    chatDisabled && "pointer-events-none",
                   )}
                   aria-label={t("shell.aria.home")}
                   aria-disabled={chatDisabled}
@@ -2068,6 +2123,7 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
+                    alwaysTooltip={rowState.pending}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
                     onClick={row.onClick}
@@ -2305,9 +2361,7 @@ export function AppSidebar() {
                                 variant="destructive"
                                 onSelect={() => {
                                   // Start each delete with the file toggle off: Cancel closes programmatically and skips the
-                                  // dialog onOpenChange reset.
-                                  setDeleteProjectFiles(false);
-                                  setConfirmingDelete({ kind: "project", project });
+                                  openDeleteDialog({ kind: "project", project });
                                 }}
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2467,7 +2521,7 @@ export function AppSidebar() {
                               variant="destructive"
                               disabled={run.status === "running"}
                               onSelect={() =>
-                                setConfirmingDelete({ kind: "run", run })
+                                openDeleteDialog({ kind: "run", run })
                               }
                             >
                               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2603,7 +2657,7 @@ export function AppSidebar() {
                 side="top"
                 align="center"
                 sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
+                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem
@@ -2741,7 +2795,7 @@ export function AppSidebar() {
       onOpenChange={(open) => {
         if (!open) {
           setConfirmingDelete(null);
-          setDeleteProjectFiles(false);
+          setDeleteFilesOnDelete(false);
         }
       }}
     >
@@ -2778,23 +2832,24 @@ export function AppSidebar() {
             ) : null}
           </DialogDescription>
         </DialogHeader>
-        {confirmingDelete?.kind === "project" ? (
+        {deleteTargetHasFiles(confirmingDelete) ? (
           <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
-            <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
+            <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 Delete files and sandbox folder
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
-                {confirmingDelete.project.rootPath
-                  ? confirmingDelete.project.rootPath
-                  : "The project workspace folder will be removed from disk."}
+                {confirmingDelete?.kind === "project"
+                  ? (confirmingDelete.project.rootPath ??
+                    "The project workspace folder will be removed from disk.")
+                  : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
               </span>
             </label>
             <Switch
-              id="delete-project-files"
-              checked={deleteProjectFiles}
-              onCheckedChange={setDeleteProjectFiles}
-              aria-label="Delete project files and sandbox folder"
+              id="delete-files-on-delete"
+              checked={deleteFilesOnDelete}
+              onCheckedChange={setDeleteFilesOnDelete}
+              aria-label="Delete files and sandbox folder"
             />
           </div>
         ) : null}
@@ -2811,7 +2866,7 @@ export function AppSidebar() {
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            {confirmingDelete?.kind === "project" && deleteProjectFiles
+            {deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
               ? "Delete all"
               : t("common.delete")}
           </Button>

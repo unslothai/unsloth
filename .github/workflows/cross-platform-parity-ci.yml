@@ -33,9 +33,13 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # test_installer_profile_hardening.py asserts this module directly (unconditional
+      # -NoProfile, the proxy handoff), so a change to it has to run here.
+      - 'unsloth_cli/commands/studio.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
       - 'install*.bat'
@@ -66,6 +70,8 @@ on:
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
@@ -77,9 +83,13 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # test_installer_profile_hardening.py asserts this module directly (unconditional
+      # -NoProfile, the proxy handoff), so a change to it has to run here.
+      - 'unsloth_cli/commands/studio.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
       - 'install*.bat'
@@ -110,6 +120,8 @@ on:
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
@@ -167,7 +179,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      - run: python -m pip install -U pip pytest
+      # test_installer_profile_hardening.py imports unsloth_cli.commands.studio, which pulls
+      # the CLI's import chain; without these the job dies on ModuleNotFoundError before a
+      # single test runs. rich arrives through typer today, but unsloth_cli imports it
+      # directly, so it is named rather than left to somebody else's dependency list. No
+      # torch: UNSLOTH_NO_TORCH keeps the suite off it.
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich
       # -rs: these files are full of platform-gated cases, and a case that
       # silently stopped running on the row it exists for still reports green.
       - name: Cross-platform parity tests
@@ -181,6 +198,7 @@ jobs:
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
+          tests/test_installer_profile_hardening.py
           -q -rs
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
@@ -198,6 +216,24 @@ jobs:
       - name: XPU arm64 torchaudio tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
+      # Same again: mocked filesystem reads and one `python -c` child, so no venv, no AMD GPU and
+      # no Windows needed. Read the file header before adding cases -- pwsh 7 cannot reproduce the
+      # 5.1 half of #8335, so the checks covering it are deliberately source shapes.
+      - name: AMD venv repair loop tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_venv_repair_loop.ps1
+      # The same file under Windows PowerShell 5.1, the shell the CLI actually launches setup.ps1
+      # with. Every other step here is `shell: pwsh` (PowerShell 7), and 7 answers `.Count = 1`
+      # for the single CimInstance 5.1 answers `$null` for, so only this leg fails on unfixed #8335.
+      - name: AMD venv repair loop tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1
+      # Slices the shipped $nameArchTable out of install.ps1 and setup.ps1 and resolves GPU
+      # names through PowerShell's own -match, so no venv, no AMD GPU and no Windows needed.
+      - name: AMD GPU-name arch table tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

@@ -4,6 +4,7 @@
 // One canonical name per diffusion model, its published artifacts (GGUF quants, prequant FP8 / bnb-4bit repos, official BF16 pipelines), and a deterministic router picking the best artifact for the device.
 // Pure helpers, no React/DOM deps. See model-catalog.check.ts (`npm run catalog:check`).
 
+import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
 
 export type ArtifactFormat = "gguf" | "fp8" | "bnb-4bit" | "bf16";
@@ -20,10 +21,21 @@ export interface ModelArtifact {
   label: string;
   /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
   approxSizeGb?: number;
+  /** Measured CPU-offload fit tiers. Any tier whose GPU and available-RAM floors
+   * are both met can auto-route this artifact without applying the resident 70% rule. */
+  offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
+  /** Parameter count of THIS artifact's checkpoint, for the row's size chip.
+   * Only a fallback: the Hub listing's own `expand=gguf` total wins wherever it
+   * reports one. Rows the listing never returns (a repo it does not index, a
+   * non-unsloth owner, one this account cannot see) have no other source, and
+   * ids like "MiniMax-H3-GGUF" carry no "<n>B" token to guess from. */
+  totalParams?: number;
   /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
   gated?: boolean;
+  /** Fixed quant when a specialized runtime pins one exact GGUF file. */
+  deviceQuant?: string;
 }
 
 export interface CatalogGroup {
@@ -32,11 +44,18 @@ export interface CatalogGroup {
   displayName: string;
   /** Row meta line ("Text-to-image", "Image editing", "Text-to-video with audio"). */
   description: string;
-  scope: "image" | "video";
+  scope: "image" | "video" | "audio";
+  /** Audio-only task tag driving the Audio page's Speak/Transcribe mode interlock. */
+  task?: "tts" | "stt";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
   /** Cross-owner ids that resolve to this group. Suffix stripping never merges two owners on its own. */
   aliases?: readonly string[];
+  /** What the model can do, for the row's capability glyphs. Same fallback rule as
+   * `ModelArtifact.totalParams`: the Hub listing's tags win where it returns the row.
+   * `detectCapabilities` reads tags then repo-name keywords, and a name like
+   * "MiniMax-H3-GGUF" says nothing about the audio track the model actually emits. */
+  capabilities?: Partial<ModelCapabilities>;
 }
 
 // ── artifact constructors (keep the data tables terse) ─────────────────────────
@@ -64,19 +83,6 @@ const bnb4bit = (
   ...extra,
 });
 
-const fp8Single = (
-  repoId: string,
-  filename: string,
-  approxSizeGb: number,
-): ModelArtifact => ({
-  repoId,
-  format: "fp8",
-  loadKind: "single_file",
-  filename,
-  label: "FP8",
-  approxSizeGb,
-  keywords: ["fp8", "float8"],
-});
 
 const fp8Pipeline = (
   repoId: string,
@@ -323,12 +329,60 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
+    canonicalId: "MiniMaxAI/MiniMax-H3",
+    displayName: "MiniMax H3",
+    description: "Text, image and reference to video with synchronized audio",
+    scope: "video",
+    aliases: ["Comfy-Org/MiniMax-H3"],
+    capabilities: { audio: true },
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
+        // Cluster measurements at the default 1344x768, 124-frame preset. The lower-GPU tier
+        // holds one 66 GB component at a time and keeps the full model in RAM; the higher tier
+        // retains more weights on-device.
+        //
+        // THESE ARE GiB, and the backend estimators they mirror are decimal GB, so the two sets
+        // of numbers must never be copied across. The hardware API divides MiB and bytes by
+        // 1024-based units (nvidia.py memory_total_gb, main.py available_gb) while the generation
+        // guard in video.py divides runtime bytes by 1_000_000_000. Converted, these tiers are
+        // 79.5 / 150.3 GB and 132.1 / 85.9 GB, which is exactly the estimators' 78.74 / 150 and
+        // 132 / 85 with a small margin. Raising them to the decimal figures applies the
+        // conversion twice and sends capable hosts to GGUF.
+        offloadFitTiers: [
+          { gpuGb: 74, systemRamGb: 140 },
+          { gpuGb: 123, systemRamGb: 80 },
+        ],
+      }),
+      // One official bundle for both denoiser partitions. The GGUF lister labels every variant
+      // Text & frames or References plus its build, so both stay explicit under one repo id.
+      gguf("unsloth/MiniMax-H3-GGUF", {
+        label: "GGUF",
+        keywords: [
+          "gguf",
+          "quantized",
+          "fl2va",
+          "ref2va",
+          "keyframes",
+          "references",
+        ],
+        totalParams: 20_111_438_744,
+      }),
+    ],
+  },
+  {
     // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded against the already-trusted LTX-2
     // base for the VAE / Gemma3 encoder) plus the GGUF quants. The single-file ones keep the ~50 GB encoder in bf16, so consumer GPUs route to GGUF.
-    canonicalId: "unsloth/LTX-2.3",
+    // Keyed on the artifact that exists: unsloth/LTX-2.3 was never published (404), and an
+    // `unsloth/*` id that is not an artifact clears both the picker's owner guard and the
+    // backend's, so a pick that reached the fall-through was loaded as a pipeline and only died
+    // at the Hub. Lightricks/LTX-2.3 IS an artifact below, so that fall-through cannot fire.
+    // unsloth/LTX-2.3 still resolves to this group: the GGUF artifact claims the same
+    // suffix-stripped key.
+    canonicalId: "Lightricks/LTX-2.3",
     displayName: "LTX 2.3 distilled",
     description: "Text-to-video with audio",
     scope: "video",
+    capabilities: { audio: true },
     artifacts: [
       bf16Single(
         "Lightricks/LTX-2.3",
@@ -336,7 +390,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         90,
       ),
       // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale), so a click would start a ~76 GB download that always fails.
-      gguf("unsloth/LTX-2.3-GGUF"),
+      // 21.0B is what the Hub reports for this repo; carrying it keeps the row identical when the listing is unavailable (offline, rate-limited).
+      gguf("unsloth/LTX-2.3-GGUF", { totalParams: 21_005_004_544 }),
     ],
   },
   {
@@ -344,6 +399,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     displayName: "LTX 2 (base)",
     description: "Text-to-video with audio",
     scope: "video",
+    capabilities: { audio: true },
     artifacts: [bf16Pipeline("Lightricks/LTX-2", 90)],
   },
   {
@@ -377,6 +433,121 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         keywords: ["bf16", "480p"],
       }),
     ],
+  },
+];
+
+// The Audio page's curated list. tts groups load into the main slot via /api/inference/load
+// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); stt groups map to
+// the dictation sidecar models in stt-model-catalog.ts, so their sizes are informational only.
+export const AUDIO_CATALOG: CatalogGroup[] = [
+  {
+    canonicalId: "unsloth/orpheus-3b-0.1-ft",
+    displayName: "Orpheus TTS 3B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("unsloth/orpheus-3b-0.1-ft", 7, { label: "Safetensors" }),
+      gguf("unsloth/orpheus-3b-0.1-ft-GGUF"),
+    ],
+  },
+  {
+    canonicalId: "unsloth/csm-1b",
+    displayName: "Sesame CSM 1B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    // No GGUF artifact: the llama.cpp TTS path has no csm decode, so CSM runs transformers-only.
+    artifacts: [bf16Pipeline("unsloth/csm-1b", 6, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/Spark-TTS-0.5B",
+    displayName: "Spark TTS 0.5B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [bf16Pipeline("unsloth/Spark-TTS-0.5B", 3, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/Llama-OuteTTS-1.0-1B",
+    displayName: "Oute TTS 1B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
+    ],
+  },
+  // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
+  // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
+  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
+  // picker. Re-add both rows together with an xcodec2 decoder.
+  {
+    canonicalId: "unslothai/Qwen3-ASR-0.6B-GGUF",
+    displayName: "Qwen3-ASR 0.6B",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-0.6B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
+  },
+  {
+    canonicalId: "unslothai/Qwen3-ASR-1.7B-GGUF",
+    displayName: "Qwen3-ASR 1.7B",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-1.7B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-large-v3-turbo",
+    displayName: "Whisper Large v3 Turbo",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      bf16Pipeline("unsloth/whisper-large-v3-turbo", 2, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-large-v3",
+    displayName: "Whisper Large v3",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      bf16Pipeline("unsloth/whisper-large-v3", 4, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-small",
+    displayName: "Whisper Small",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-small", 1, { label: "Safetensors" })],
+  },
+  // Both sidecars carry tiny/base (GGML_STT_REPOS, STT_MODEL_REPOS) and Voice
+  // settings lists them; only this picker was missing them.
+  {
+    canonicalId: "unsloth/whisper-base",
+    displayName: "Whisper Base",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-base", 1, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/whisper-tiny",
+    displayName: "Whisper Tiny",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
 ];
 
@@ -449,7 +620,7 @@ interface CatalogIndex {
   artifactById: Map<string, ModelArtifact>;
 }
 
-// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice twice (images + video).
+// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice once per catalog (images, video, audio).
 const indexCache = new WeakMap<CatalogGroup[], CatalogIndex>();
 
 function indexFor(catalog: CatalogGroup[]): CatalogIndex {
@@ -510,6 +681,47 @@ export function curatedSizeBytesFor(
   return gb && gb > 0 ? gb * BYTES_PER_GB : undefined;
 }
 
+/** Curated parameter count for an exact artifact id, or undefined when the catalog
+ * carries none. A FALLBACK for rows the Hub listing does not return: callers must
+ * prefer the listing's own total wherever it reports one. */
+export function curatedTotalParamsFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): number | undefined {
+  const params = artifactForRepoId(repoId, catalog)?.artifact.totalParams;
+  return params && params > 0 ? params : undefined;
+}
+
+/** Curated capabilities for any id belonging to a group that declares them, or
+ * undefined. Same fallback rule as `curatedTotalParamsFor`: the listing's tags win.
+ * Group-level, not artifact-level: every artifact of a model can do what the model
+ * can do. */
+export function curatedCapabilitiesFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): ModelCapabilities | undefined {
+  const declared = groupForRepoId(repoId, catalog)?.capabilities;
+  if (!declared) return undefined;
+  return {
+    vision: declared.vision ?? false,
+    reasoning: declared.reasoning ?? false,
+    audio: declared.audio ?? false,
+  };
+}
+
+/** Human-facing name of an exact curated artifact, including the artifact label
+ * when its model has more than one selectable representation. */
+export function curatedDisplayNameFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): string | null {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return null;
+  return hit.group.artifacts.length > 1
+    ? `${hit.group.displayName} (${hit.artifact.label})`
+    : hit.group.displayName;
+}
+
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];
@@ -517,12 +729,10 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
     for (const artifact of group.artifacts) {
       options.push({
         id: artifact.repoId,
-        name:
-          group.artifacts.length > 1
-            ? `${group.displayName} (${artifact.label})`
-            : group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
+        deviceQuant: artifact.deviceQuant,
       });
     }
   }
@@ -650,12 +860,17 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
   gguf: 3,
 };
 
-function fitsResident(artifact: ModelArtifact, gpuGb: number): boolean {
+function fitsArtifactBudget(artifact: ModelArtifact, budget: DeviceBudget): boolean {
+  if (artifact.offloadFitTiers?.length) {
+    return artifact.offloadFitTiers.some(
+      (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+    );
+  }
   if (artifact.approxSizeGb === undefined) return false;
-  return artifact.approxSizeGb <= gpuGb * 0.7;
+  return artifact.approxSizeGb <= budget.gpuGb * 0.7;
 }
 
-/** The artifact a bare group click loads. Ladder: (1) highest-quality DOWNLOADED artifact within the 0.7 * GPU budget, else a downloaded GGUF, else the smallest downloaded; (2) no budget known -> the group GGUF, else the first artifact; (3) best sized artifact that fits, descending quality (BF16, FP8, bnb-4bit), unsized never auto-picked; (4) fallback GGUF, else the smallest. */
+/** The artifact a bare group click loads. Sized artifacts normally use the 0.7 * GPU budget; measured offload tiers can override that fit check. */
 export function pickDefaultArtifact(
   group: CatalogGroup,
   input: RoutingInput,
@@ -667,7 +882,7 @@ export function pickDefaultArtifact(
   const downloaded = artifacts.filter((a) => input.isDownloaded(a.repoId));
   if (downloaded.length > 0) {
     const fitting = downloaded.find(
-      (a) => a.format !== "gguf" && fitsResident(a, input.gpuGb),
+      (a) => a.format !== "gguf" && fitsArtifactBudget(a, input),
     );
     if (fitting) return fitting;
     const downloadedGguf = downloaded.find((a) => a.format === "gguf");
@@ -681,7 +896,7 @@ export function pickDefaultArtifact(
   }
   for (const artifact of artifacts) {
     // Skip a gated, NOT-downloaded artifact: auto-routing there fails the download without license/token access, so fall through to an open one. The downloaded branch above still returns gated artifacts.
-    if (artifact.format !== "gguf" && !artifact.gated && fitsResident(artifact, input.gpuGb)) {
+    if (artifact.format !== "gguf" && !artifact.gated && fitsArtifactBudget(artifact, input)) {
       return artifact;
     }
   }
@@ -691,7 +906,7 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether the "fit on device" toggle keeps a group: it stays when one artifact can run here (on disk, a GGUF, or sized within the 0.7*GPU + 0.7*RAM budget), so a bare click on a filtered list cannot start an OOM load. An unknown budget keeps everything. */
+/** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an artifact provides them. */
 export function catalogGroupFitsDevice(
   group: CatalogGroup,
   budget: DeviceBudget,
@@ -705,6 +920,11 @@ export function catalogGroupFitsDevice(
     if (isDownloaded(a.repoId)) return true;
     // A GGUF quant ladder self-fits (llama-server offloads), so it is always a runnable fallback, matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
+    if (a.offloadFitTiers?.length) {
+      return a.offloadFitTiers.some(
+        (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+      );
+    }
     return a.approxSizeGb !== undefined && a.approxSizeGb <= budgetGb;
   });
 }
