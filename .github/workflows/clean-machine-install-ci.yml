@@ -355,7 +355,22 @@ jobs:
             HOME_DIR="$UNSLOTH_STUDIO_HOME"
           fi
 
-          if [ "${{ matrix.flags }}" != "--no-torch" ]; then
+          # `--no-torch` is only half of when the installer skips torch. The other
+          # half is an Intel Mac, where it declines on its own and says so:
+          #   PyTorch is unavailable for this platform (dropped Jan 2024).
+          # That is install.sh's MAC_INTEL (macos + x86_64, Rosetta included), fed
+          # into SKIP_TORCH alongside the flag. Asserting `import torch` on a leg
+          # the installer deliberately left torch out of only ever fails, so mirror
+          # both halves here. If install.sh's rule moves, this moves with it.
+          SKIP_TORCH=false
+          if [ "${{ matrix.flags }}" = "--no-torch" ]; then
+            SKIP_TORCH=true
+          elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
+            SKIP_TORCH=true
+            echo "Intel Mac: installer skips PyTorch here, so not asserting it loaded."
+          fi
+
+          if [ "$SKIP_TORCH" != true ]; then
             if [ "${{ matrix.delivery }}" = "tauri" ]; then
               PY="$HOME_DIR/studio/unsloth_studio/bin/python"
             else
