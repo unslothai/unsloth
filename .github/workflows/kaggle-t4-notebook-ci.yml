@@ -417,16 +417,33 @@ jobs:
       # version, not a commit, so the drift would not even be visible after
       # the fact.
       #
+      # A resolution that cannot be made stands the run DOWN. Falling back to
+      # the branch name restores exactly the behaviour the pin exists to
+      # remove -- every payload independently installing whatever main is when
+      # its own pip runs -- and a control and a canary that differ by
+      # unrecorded zoo code invalidate both the reference band and the whole
+      # attribution the pairing is for. A run that cannot be made reproducible
+      # is one that has nothing to say, which is infrastructure: a warning and
+      # a green job, exactly like the concurrency and quota stand-downs. The
+      # ls-remote is retried first, since a single blip is not a verdict.
+      #
       # Also reads the step count the committed reference was captured at, so
       # the build step below can tell whether the band check applies to this
       # run at all.
       - name: Pin the zoo revision and read the reference
         id: pins
         run: |
-          ZOO_REF="$(git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main | cut -f1)"
+          ZOO_REF=''
+          for attempt in 1 2 3; do
+            ZOO_REF="$(git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main | cut -f1)"
+            if [ -n "$ZOO_REF" ]; then break; fi
+            echo "ls-remote attempt $attempt resolved nothing"
+            sleep 10
+          done
           if [ -z "$ZOO_REF" ]; then
-            echo "::warning title=Could not resolve unsloth-zoo main::falling back to the branch name, so this run is not reproducible against a zoo commit"
-            ZOO_REF=main
+            echo "::warning title=Could not resolve unsloth-zoo main::standing down rather than installing a moving branch, so nothing was learned about the code under test"
+            echo "stand_down=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "zoo_ref=$ZOO_REF" >> "$GITHUB_OUTPUT"
           echo "testing against unslothai/unsloth-zoo@$ZOO_REF"
@@ -447,6 +464,7 @@ jobs:
       # See tests/kaggle/t4_smoke/references/README.md.
       - name: Build the kernel notebooks
         id: build
+        if: steps.pins.outputs.stand_down != 'true'
         env:
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           MAX_STEPS: ${{ inputs.max_steps || 10 }}
@@ -507,6 +525,7 @@ jobs:
       # the concurrency survey run in full.
       - name: Recheck the Kaggle account
         id: recheck
+        if: steps.pins.outputs.stand_down != 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
@@ -519,7 +538,7 @@ jobs:
       # Through the environment rather than an inline expression, so nothing
       # the Kaggle API put in that string is ever interpolated into a shell.
       - name: Report the stale approval
-        if: steps.recheck.outputs.should_run != 'true'
+        if: steps.pins.outputs.stand_down != 'true' && steps.recheck.outputs.should_run != 'true'
         env:
           REASON: ${{ steps.recheck.outputs.reason }}
         run: |

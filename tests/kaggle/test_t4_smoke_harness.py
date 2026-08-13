@@ -1843,6 +1843,29 @@ def test_every_leg_installs_one_pinned_zoo_commit():
     assert "--zoo-ref main" not in build["run"]
 
 
+def test_an_unresolvable_zoo_commit_stands_the_run_down():
+    """Falling back to the branch name is the behaviour the pin removed.
+
+    Every payload pips independently on the kernel, so `main` lets the control
+    and the canary resolve two different zoo commits within one session --
+    which invalidates the control's reference band and the version
+    attribution both. A run that cannot be made reproducible has nothing to
+    say, so it stands down green rather than continuing.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    pins = steps[names.index("Pin the zoo revision and read the reference")]
+    assert "ZOO_REF=main" not in pins["run"], "the mutable branch fallback is back"
+    assert "stand_down=true" in pins["run"]
+    # A single blip is not a verdict.
+    assert "for attempt in 1 2 3" in pins["run"]
+    # Nothing that spends a kernel runs after a stand-down.
+    for name in ("Build the kernel notebooks", "Recheck the Kaggle account"):
+        assert steps[names.index(name)]["if"] == "steps.pins.outputs.stand_down != 'true'"
+    launch_step = steps[names.index("Launch on Kaggle and collect")]
+    assert launch_step["if"] == "steps.recheck.outputs.should_run == 'true'"
+
+
 def test_the_harness_and_the_package_under_test_are_one_snapshot():
     """The default pull_request checkout is the merge ref, not the head."""
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
