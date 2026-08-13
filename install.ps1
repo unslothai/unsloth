@@ -307,6 +307,22 @@ function Install-UnslothStudio {
         throw $Message
     }
 
+    # The ARM64 fallback below sets $env:UNSLOTH_NO_DATASETS to hand the tier to
+    # `studio setup`. `irm ... | iex` runs all of this in the CALLER's PowerShell
+    # process, so without a restore that assignment outlives the installer: the
+    # recovery this very script prints -- install x64 Python, re-run in the same
+    # terminal -- would then re-enter the tier and ignore the new interpreter.
+    # Restored next to UNSLOTH_STUDIO_HOME and the other handoff variables, after
+    # the setup call that is the only thing that reads it.
+    #
+    # Taken HERE, before the flag parsing, because $script: state survives between
+    # invocations in a caller's session and Exit-InstallFailure restores from it:
+    # a second `irm ... | iex` that dies on its own arguments would otherwise put
+    # back the value the FIRST run saw, in a shell where the user has since changed
+    # it. Nothing between here and the old position touched the variable.
+    $script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS
+    $script:HadPreviousNoDatasetsEnv = ($null -ne $script:PreviousNoDatasetsEnv)
+
     # ── Parse flags ──
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
@@ -397,15 +413,6 @@ function Install-UnslothStudio {
         $script:ArmInferenceOnly = $true
         $script:ArmInferenceOnlyRequested = $true
     }
-    # The ARM64 fallback below sets $env:UNSLOTH_NO_DATASETS to hand the tier to
-    # `studio setup`. `irm ... | iex` runs all of this in the CALLER's PowerShell
-    # process, so without a restore that assignment outlives the installer: the
-    # recovery this very script prints -- install x64 Python, re-run in the same
-    # terminal -- would then re-enter the tier and ignore the new interpreter.
-    # Restored next to UNSLOTH_STUDIO_HOME and the other handoff variables, after
-    # the setup call that is the only thing that reads it.
-    $script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS
-    $script:HadPreviousNoDatasetsEnv = ($null -ne $script:PreviousNoDatasetsEnv)
     # The entry above is skipped for one reason: it cannot `import torch`. A
     # -NoTorch install never imports it, so refusing the interpreter would send a
     # locked-down GGUF-only machine into winget/python.org recovery it may not be

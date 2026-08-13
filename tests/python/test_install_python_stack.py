@@ -891,7 +891,10 @@ class TestManifestVerificationHonoursTheTier:
             encoding = "utf-8",
         )
 
-    def test_tier_install_verifies_as_complete(self, tmp_path):
+    def test_tier_install_verifies_as_complete(self, tmp_path, monkeypatch):
+        # On the machine the tier exists for: a native ARM64 Windows interpreter,
+        # where the overrides really did decide the installed versions.
+        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda: True)
         self._write_manifest(tmp_path, no_datasets = True)
         result = self.manifest.verify_install(
             root = tmp_path,
@@ -900,6 +903,35 @@ class TestManifestVerificationHonoursTheTier:
         )
         assert result["missing"] == []
         assert result["reason"] is None
+        assert result["ok"] is True
+
+    def test_an_x64_no_datasets_install_is_judged_by_the_x64_pins(self, tmp_path, monkeypatch):
+        """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install too, and there
+        pip_install never applies overrides-win-arm64.txt: the interpreter has wheels
+        for the original pins. Verification must judge it by those pins, or a
+        correctly installed PyMuPDF 1.27.2.3 is reported missing on every launch and
+        the dependency pass never stops running."""
+        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda: False)
+        self._write_manifest(tmp_path, no_datasets = True)
+        reqs = self.manifest.requirements_root(STUDIO_DIR)
+        installed = self._installed_without_tier_packages()
+        for name in self.manifest.tier_version_lifts(reqs):
+            installed.pop(name, None)
+        # The pinned versions, i.e. what an x64 tier install actually leaves behind.
+        for line in (reqs / "studio.txt").read_text(encoding = "utf-8").splitlines():
+            parsed = self.manifest._parse_requirement_line(line)
+            if parsed is None:
+                continue
+            name, _marker, specifier = parsed
+            canonical = self.manifest._canonical(name)
+            if canonical in self.manifest.tier_version_lifts(reqs):
+                installed[canonical] = _satisfying_version(specifier)
+        result = self.manifest.verify_install(
+            root = tmp_path,
+            req_root = reqs,
+            installed = installed,
+        )
+        assert result["missing"] == []
         assert result["ok"] is True
 
     def test_the_same_venv_outside_the_tier_still_reports_the_gap(self):

@@ -286,19 +286,49 @@ def test_a_manifest_from_before_a_tracked_file_existed_is_not_stale(install_root
     version would compare unequal the moment users upgraded, and every existing
     install on every platform would take a full dependency pass on its first
     `unsloth studio update`. A file the install never recorded says nothing about
-    whether that install is stale."""
+    whether that install is stale.
+
+    Named, not general: the tolerance covers LATE_TRACKED_REQUIREMENT_FILES only. A
+    manifest missing one of the long-standing keys describes something other than
+    this install and stays stale, as it was before."""
+    for name in im.LATE_TRACKED_REQUIREMENT_FILES:
+        path = req_root / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text("pymupdf>=1.28.2\n", encoding = "utf-8")
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = im.manifest_path(install_root)
     data = json.loads(path.read_text(encoding = "utf-8"))
     recorded = data["requirement_files"]
     assert recorded, "the fixture should record at least one requirement file"
-    dropped = sorted(recorded)[0]
-    del recorded[dropped]  # as if this file were added after the install
+    late = [name for name in im.LATE_TRACKED_REQUIREMENT_FILES if name in recorded]
+    assert late, "the fixture should record the late-tracked file"
+    for name in late:
+        del recorded[name]  # as if this file were added after the install
     path.write_text(json.dumps(data), encoding = "utf-8")
 
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
     assert state["reason"] != "studio_install_requirements_changed"
+
+
+def test_a_manifest_missing_a_long_standing_file_is_still_stale(install_root, req_root):
+    """The tolerance above is a named exception, not a relaxation of the check: a
+    truncated or hand-edited manifest must still send the install through repair,
+    the way it did before the ARM64 work."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    recorded = data["requirement_files"]
+    long_standing = [
+        name for name in sorted(recorded)
+        if name not in im.LATE_TRACKED_REQUIREMENT_FILES
+    ]
+    assert long_standing, "the fixture should record a file that predates the tier"
+    del recorded[long_standing[0]]
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"
 
 
 def test_a_recorded_file_that_disappeared_is_still_stale(install_root, req_root):

@@ -321,6 +321,19 @@ def test_a_failed_install_does_not_leave_the_tier_in_the_callers_shell():
     assert "$script:PreviousNoDatasetsEnv" in failure
 
 
+def test_the_env_snapshot_is_taken_before_anything_can_fail():
+    """$script: state outlives one `irm ... | iex` invocation in a caller's session,
+    and Exit-InstallFailure restores UNSLOTH_NO_DATASETS from it. Taken after the
+    flag parsing, a second run that dies on its own arguments would put back the
+    value the FIRST run saw, in a shell where the user has since changed it."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    snapshot = source.index("$script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS")
+    first_failure = source.index("return (Exit-InstallFailure")
+    assert snapshot < first_failure, (
+        "the snapshot must precede every Exit-InstallFailure call site"
+    )
+
+
 def test_install_ps1_falls_back_to_the_inference_only_tier():
     """When no x64 interpreter can be obtained, continuing into `uv pip install
     unsloth` only buys a CMake failure. The tier drops the wheel-less packages
@@ -331,6 +344,25 @@ def test_install_ps1_falls_back_to_the_inference_only_tier():
     assert "$script:ArmInferenceOnly = $true" in block
     assert 'UNSLOTH_NO_DATASETS = "1"' in block
     assert "--no-deps" in source[source.index("arm64 inference-only") :][:800]
+
+
+def test_setup_hands_the_resolved_tier_to_the_python_child():
+    """setup.ps1 resolves manifest over marker, then the dependency pass DELETES the
+    manifest before install_python_stack.py re-infers the tier for itself. Unless the
+    resolved value is exported, a completed x64 manifest saying false loses to a stale
+    marker in the child, and one saying true loses to no record at all."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    index = source.index("$_recorded = $null")
+    block = source[index : index + 2200]
+    assert '$env:UNSLOTH_NO_DATASETS = if ($_recorded) { "1" } else { "0" }' in block
+    # The marker branch too: it is the record that survives a pass which died before
+    # the manifest was written.
+    marker = block[block.index(".unsloth-no-datasets") :][:400]
+    assert 'UNSLOTH_NO_DATASETS = "1"' in marker
+    # And "0" really does mean off downstream, rather than being a truthy string.
+    stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    infer = stack[stack.index("def _infer_no_datasets") :][:1400]
+    assert "NO_TORCH_TRUTHY" in infer
 
 
 def test_setup_reads_the_tier_marker_not_just_the_env_var():
@@ -629,7 +661,7 @@ def test_setup_prefers_the_manifest_over_a_stale_marker():
     again."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
     index = source.index("$_recorded = $null")
-    block = source[index : index + 1400]
+    block = source[index : index + 2400]
     assert "unsloth_install_manifest.json" in block
     assert "if ($null -ne $_recorded) {" in block
     # The marker is the fallback, not the first answer: it still has to work alone,
