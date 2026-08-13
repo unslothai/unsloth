@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS
 from core.training.trainer import UnslothTrainer
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -371,3 +372,94 @@ def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
     trainer = UnslothTrainer()
     trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)
     assert loaded == ["tokenizer"], f"tokenizer loaded more than once: {loaded}"
+
+
+def test_transcripts_are_not_evidence_that_the_audio_column_is_empty(monkeypatch):
+    # A path-backed audio dataset has a populated transcript in every row. If the audio
+    # values in the sniff window are all null, the honest answer is "unknown", not
+    # "textual" on the strength of the text: later rows may hold real paths, and the audio
+    # preprocessors skip the leading bad ones and train on the rest.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    rows = [{"audio": None, "text": f"transcript {i}"} for i in range(_SNIFF_ROWS + 4)]
+    dataset = _TypedDataset(_text_features(), rows = rows)
+    assert _run(trainer, monkeypatch, dataset = dataset) is None
+    assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
+
+
+def test_a_populated_audio_named_column_of_prose_still_answers_textual(monkeypatch):
+    # The other half: an audio-NAMED column that really does hold prose is the false
+    # positive this veto exists for, and it must keep answering False.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    rows = [{"audio": f"a sentence {i}", "text": "hello"} for i in range(4)]
+    dataset = _TypedDataset(_text_features(), rows = rows)
+    _run(trainer, monkeypatch, dataset = dataset)
+    assert not any("tokenizer_config.json" in e for e in trainer.errors), (
+        f"a prose column named audio should not be refused: {trainer.errors}"
+    )
+
+
+def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
+    # Spark-TTS keeps its tokenizer under LLM/, and the subfolder kwarg is chosen from the
+    # audio type. An inconclusive first probe means no subfolder, so the root read raises
+    # and a retry placed only after a SUCCESSFUL load can never run for the very models
+    # whose layout the type decides.
+    import core.training.trainer as trainer_mod
+
+    answers = [(None, False), ("bicodec", True)]
+    calls = []
+
+    def fake_probe(*a, **kw):
+        calls.append(1)
+        return answers[min(len(calls) - 1, len(answers) - 1)]
+
+    monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", fake_probe)
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        trainer_mod,
+        "_spark_tts_tokenizer_kwargs",
+        lambda audio_type, name: {"subfolder": "LLM"} if audio_type == "bicodec" else {},
+    )
+
+    attempts = []
+
+    class _Tokenizer:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            attempts.append(kw.get("subfolder"))
+            if kw.get("subfolder") != "LLM":
+                raise OSError("Can't load tokenizer for 'org/spark'")
+            return object()
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
+
+    trainer = UnslothTrainer()
+    trainer.pre_detect_and_load_tokenizer("org/spark", is_dataset_audio = True)
+
+    assert attempts == [None, "LLM"], f"expected a retry under LLM/, got {attempts}"
+    assert trainer.tokenizer is not None
+    assert trainer._audio_type == "bicodec"
+
+
+def test_a_load_failure_with_a_definitive_type_is_not_swallowed(monkeypatch):
+    # The retry must not turn a genuine "this repo has no tokenizer" into a silent pass.
+    import core.training.trainer as trainer_mod
+
+    monkeypatch.setattr(
+        trainer_mod, "detect_audio_type_checked", lambda *a, **kw: ("bicodec", True)
+    )
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+
+    class _Tokenizer:
+        @classmethod
+        def from_pretrained(cls, *a, **kw):
+            raise OSError("Can't load tokenizer for 'org/broken'")
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
+
+    trainer = UnslothTrainer()
+    with pytest.raises(OSError):
+        trainer.pre_detect_and_load_tokenizer("org/broken", is_dataset_audio = True)
