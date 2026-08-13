@@ -222,9 +222,7 @@ def test_the_denylist_can_be_read_without_probing(monkeypatch):
             return {"found": True, "flags": {"--top-k": "x"}}
 
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
-    result = asyncio.run(
-        inference_route.get_llama_flags(managed_only = True, current_subject = "test")
-    )
+    result = asyncio.run(inference_route.get_llama_flags(managed_only = True, current_subject = "test"))
 
     assert probed is False
     assert "--agent" in result.managed

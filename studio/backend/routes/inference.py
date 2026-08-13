@@ -9690,8 +9690,7 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
 
 @router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
 async def get_llama_flags(
-    managed_only: bool = False,
-    current_subject: str = Depends(get_current_subject),
+    managed_only: bool = False, current_subject: str = Depends(get_current_subject)
 ):
     """Flags the installed llama-server accepts, for the extra-arguments editor.
 
