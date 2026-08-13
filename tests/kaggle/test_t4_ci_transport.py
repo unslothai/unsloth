@@ -46,7 +46,12 @@ class _Stub:
     which is where the per-payload isolation is either present or not.
     """
 
-    def __init__(self, *, gpus: int, venv_ok: bool = True):
+    def __init__(
+        self,
+        *,
+        gpus: int,
+        venv_ok: bool = True,
+    ):
         self.gpus = gpus
         self.venv_ok = venv_ok
         self.papermill: list[dict] = []
@@ -80,7 +85,13 @@ class _Stub:
         return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
 
 
-def _drive(tmp_path: Path, leg_names, *, gpus: int, venv_ok: bool = True) -> dict:
+def _drive(
+    tmp_path: Path,
+    leg_names,
+    *,
+    gpus: int,
+    venv_ok: bool = True,
+) -> dict:
     """Run the generated driver's setup and runner cells against the stub.
 
     The only edit to the generated source is the `/kaggle/working` literal,
@@ -144,9 +155,9 @@ def test_a_payload_whose_venv_failed_is_not_run_in_the_system_kernel(tmp_path):
     comparison -- and the resulting import error reads as a code regression.
     """
     driven = _drive(tmp_path, ["control", "canary"], gpus = 2, venv_ok = False)
-    assert [p["kernel"] for p in driven["papermill"]] == [], (
-        "a payload ran in the shared system kernel after its venv failed"
-    )
+    assert [
+        p["kernel"] for p in driven["papermill"]
+    ] == [], "a payload ran in the shared system kernel after its venv failed"
     assert driven["results"], "the skipped payloads left no record"
     for entry in driven["results"].values():
         assert entry["error"]
@@ -263,7 +274,9 @@ def test_a_probe_failure_is_reported_as_a_failed_payload(tmp_path, monkeypatch):
     assert reports, "the import failure produced no report at all"
     assert reports[0]["passed"] is False
     assert reports[0]["label"] == "control"
-    assert any("unsloth_module_the_broken_commit_cannot_import" in f for f in reports[0]["failures"])
+    assert any(
+        "unsloth_module_the_broken_commit_cannot_import" in f for f in reports[0]["failures"]
+    )
 
 
 # ------------------------------------------------------------------ launcher
@@ -277,8 +290,12 @@ def test_a_report_reaches_the_launcher_through_kaggles_structured_log(tmp_path, 
     the file as text finds no line that starts with the report prefix and a
     real failure is filed as `infra`.
     """
-    payload = {"label": "control", "model": "unsloth/Qwen2.5-0.5B", "passed": False,
-               "failures": ["reference band: out of band at step 3"]}
+    payload = {
+        "label": "control",
+        "model": "unsloth/Qwen2.5-0.5B",
+        "passed": False,
+        "failures": ["reference band: out of band at step 3"],
+    }
     line = launch.RESULT_PREFIX + json.dumps(payload) + "\n"
     body = (
         line
@@ -342,9 +359,7 @@ def test_every_push_attempt_gets_its_own_slug(tmp_path, monkeypatch):
         if cmd[1:3] == ["kernels", "delete"]:
             deleted.append(cmd[3])
             return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
-        metadata = json.loads(
-            (Path(cmd[cmd.index("-p") + 1]) / "kernel-metadata.json").read_text()
-        )
+        metadata = json.loads((Path(cmd[cmd.index("-p") + 1]) / "kernel-metadata.json").read_text())
         attempts[-1] = ["push", metadata["id"]]
         if len(deleted) + 1 < 3:
             return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "Connection reset")

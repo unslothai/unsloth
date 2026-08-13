@@ -1766,9 +1766,9 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
 
     worst = 2 * per_push + max_wait + deletions
     timeout_s = _workflow()["jobs"]["t4-smoke"]["timeout-minutes"] * 60
-    assert timeout_s > worst, (
-        f"the launcher can take {worst}s and the job is killed at {timeout_s}s"
-    )
+    assert (
+        timeout_s > worst
+    ), f"the launcher can take {worst}s and the job is killed at {timeout_s}s"
 
 
 def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
