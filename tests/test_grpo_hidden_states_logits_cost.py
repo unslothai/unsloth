@@ -194,7 +194,11 @@ def test_the_modern_kwarg_is_pinned_to_one():
 
 
 def test_the_legacy_kwarg_is_used_when_that_is_what_the_model_takes():
-    """transformers 4.57.6 spells it num_logits_to_keep."""
+    """Not transformers -- measured, 4.57.6 through 5.15.0 all take the modern
+    name and none takes this one. It is Unsloth's own patched forwards
+    (`models/llama.py`, `models/mistral.py`) and the VLM stacks
+    `models/vision.py` probes the old name for.
+    """
 
     def forward(input_ids = None, num_logits_to_keep = 0): ...
 
@@ -203,6 +207,23 @@ def test_the_legacy_kwarg_is_used_when_that_is_what_the_model_takes():
     assert name == "num_logits_to_keep"
     assert kwargs["num_logits_to_keep"] == 1
     assert "logits_to_keep" not in kwargs, "must not send a kwarg this forward rejects"
+
+
+def test_a_positionally_bound_width_is_not_worked_around_via_the_other_name():
+    """The dangerous shape: positional modern name, plus a `**kwargs` sink.
+
+    Falling through to the legacy name here would set a kwarg this forward does
+    not declare. `**kwargs` accepts it silently, the model ignores it, no logits
+    are saved, and the non-None return arms the absent-hidden-states re-run --
+    a second full forward bought for nothing. Give up instead.
+    """
+
+    def forward(input_ids = None, logits_to_keep = 0, **kwargs): ...
+
+    kwargs = {}
+    name = _minimise_logits_kwarg(_sig(forward), ("x", 512), kwargs)
+    assert name is None
+    assert kwargs == {}, "the caller's positional width must stand untouched"
 
 
 def test_the_modern_name_wins_when_a_forward_takes_both():

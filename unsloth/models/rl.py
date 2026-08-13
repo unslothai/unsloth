@@ -1803,7 +1803,12 @@ def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
 
     We are about to overwrite `outputs.logits` with hidden states, so every
     logit the forward computes is thrown away. transformers spells the limit
-    `logits_to_keep` (older: `num_logits_to_keep`) and reads it as
+    `logits_to_keep` -- measured on 4.57.6, 5.0.0 and 5.15.0, all three declare
+    that name and none declares `num_logits_to_keep`, so the second name is not
+    for them. It is for us: `unsloth/models/llama.py` and `mistral.py` patch in
+    forwards declaring both, and `unsloth/models/vision.py` probes for the old
+    name FIRST because some VLM stacks still carry only it. Whichever name a
+    forward takes, it reads the value as
     `slice(-value, None)`, so the DEFAULT of 0 becomes `slice(0, None)` -- the
     whole sequence. The GRPO trainer does not pass a value at all, so the
     lm_head projects every prompt and completion position over the full
@@ -1837,9 +1842,14 @@ def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
         if not declared and not accepts_var_keyword:
             continue
         # Passing it positionally already and then also by keyword is a
-        # TypeError, so leave a positional caller alone.
+        # TypeError. Give up entirely rather than moving to the next name: a
+        # caller who bound a width positionally has said what it wants, and
+        # reaching for the OTHER spelling would either fight that width or, on a
+        # forward that only understands the one it was handed and swallows the
+        # rest in `**kwargs`, be accepted and ignored -- no saving, and a
+        # non-None return arms the re-run below for nothing.
         if name in bound.arguments and name not in forward_kwargs:
-            continue
+            return None
         forward_kwargs[name] = 1
         return name
     return None
