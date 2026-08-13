@@ -2256,7 +2256,12 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
     assert seen == [False]
 
 
-def _pinned_state(b, *, policy_flags = (), device = "cuda"):
+def _pinned_state(
+    b,
+    *,
+    policy_flags = (),
+    device = "cuda",
+):
     """A resident native load whose argv carries the --backend device pin on top of `policy_flags`,
     exactly as _run_load builds it once a card has been selected."""
     from core.inference.sd_cpp_args import device_backend_flags
@@ -2326,7 +2331,9 @@ def test_the_cpu_backend_restart_drops_the_device_pin(monkeypatch):
     monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
 
     server = b._restart_server_on_cpu_backend(
-        b._state, "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort", threading.Event()
+        b._state,
+        "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort",
+        threading.Event(),
     )
     assert server is not None
     argv = [*started["offload"], *started["extra_args"]]
@@ -2345,18 +2352,24 @@ def test_the_native_engine_resolves_a_bare_gpu_selection_itself(monkeypatch):
 
     seen: dict = {}
     monkeypatch.setattr(
-        backend_module, "resolve_diffusion_device_target",
+        backend_module,
+        "resolve_diffusion_device_target",
         lambda **kw: types.SimpleNamespace(device = "cuda"),
     )
     monkeypatch.setattr(
-        backend_module, "resolve_selected_cuda_ordinal",
+        backend_module,
+        "resolve_selected_cuda_ordinal",
         lambda ids: (seen.update(ids = list(ids)), 1)[1],
     )
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(b, "_start_load_thread", lambda *a, **k: None, raising = False)
     captured: dict = {}
 
-    def _fake_thread(target = None, kwargs = None, **_):
+    def _fake_thread(
+        target = None,
+        kwargs = None,
+        **_,
+    ):
         captured.update(kwargs or {})
         return types.SimpleNamespace(start = lambda: None, join = lambda *a, **k: None)
 

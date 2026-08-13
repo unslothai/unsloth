@@ -2323,7 +2323,8 @@ def test_download_plan_ignores_a_gpu_selection_off_cuda(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     seen: dict = {}
     monkeypatch.setattr(
-        backend, "download_plan",
+        backend,
+        "download_plan",
         lambda model_path, **kwargs: (seen.update(kwargs), {"entries": [], "total_bytes": 0})[1],
         raising = False,
     )

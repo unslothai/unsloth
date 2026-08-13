@@ -1618,13 +1618,15 @@ def test_video_download_plan_sizes_its_file_set_for_the_selected_card(client, mo
     )
     ranked: list = []
     monkeypatch.setattr(
-        devmod, "resolve_selected_cuda_ordinal",
+        devmod,
+        "resolve_selected_cuda_ordinal",
         lambda ids: (ranked.append(list(ids)), 1)[1],
     )
     backend = video_module.get_video_backend()
     seen: dict = {}
     monkeypatch.setattr(
-        backend, "download_plan",
+        backend,
+        "download_plan",
         lambda model_path, **kwargs: (seen.update(kwargs), {"entries": [], "total_bytes": 0})[1],
         raising = False,
     )
@@ -1658,7 +1660,8 @@ def test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have(client,
     monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _refuse)
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
-        backend, "download_plan",
+        backend,
+        "download_plan",
         lambda *a, **k: pytest.fail("a refused GPU pick must not reach the planner"),
         raising = False,
     )
