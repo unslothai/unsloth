@@ -39,13 +39,21 @@ What it asserts
 ---------------
 1. The model loads, and the report says in what dtype and across which
    devices.
-2. Training runs for the requested number of steps and every logged loss is
-   finite. There is no committed reference band here: the run is too short
-   and the model too large for a per-step trace to be worth capturing, and a
-   band nobody can recapture cheaply is a check that gets disabled the first
-   time it is inconvenient.
-3. `torch.compile` captured at least one graph (`--require-compile`, on by
-   default).
+2. Training runs for the requested number of steps, every logged loss is
+   finite, and at least one logged `grad_norm` is finite and non-zero -- a
+   run whose every gradient was zero produces healthy numbers everywhere
+   else and trained nothing. There is no committed reference band here: the
+   run is too short and the model too large for a per-step trace to be worth
+   capturing, and a band nobody can recapture cheaply is a check that gets
+   disabled the first time it is inconvenient.
+2a. The forced-float32 path was the path taken. On a card without bf16,
+   `fp16`/`bf16` must both be off and `UNSLOTH_FORCE_FLOAT32` must be set.
+   This is the coverage the leg uniquely claims, and it was recorded on
+   every run and asserted on none.
+3. `torch.compile` captured at least one graph DURING TRAINING
+   (`--require-compile`, on by default). The Dynamo counters are
+   process-global and loading a 20B checkpoint fills them, so the assertion
+   is on the delta across `trainer.train()`, not on the total.
 4. Generation after training returns non-empty text without raising. This is
    the assertion that catches a training run which "succeeds" and leaves the
    model unusable, which on a quantised offloaded path is a real outcome.
@@ -87,7 +95,7 @@ def _log(msg: str) -> None:
     print(f"[gptoss-t4] {msg}", flush = True)
 
 
-def compile_counters() -> dict:
+def compile_counters(before: dict | None = None) -> dict:
     """What `torch.compile` actually did, from Dynamo's own bookkeeping.
 
     `unique_graphs` is the number that decides whether compilation engaged:
@@ -96,6 +104,13 @@ def compile_counters() -> dict:
     broke a hundred times is a different, and reportable, state from one
     that captured cleanly -- on a card with no bf16 a break is often the
     first visible symptom of a dtype the compiled path refused.
+
+    These counters are process-global and never reset, and loading a model
+    through Unsloth compiles plenty before `trainer.train()` is called. So
+    the absolute number cannot answer "did TRAINING compile" -- a training
+    path that fell back to eager entirely still leaves the loader's graphs
+    standing. Pass the reading taken before training as ``before`` and the
+    delta is the answer; `failures_for` asserts on the delta.
     """
     state: dict = {"available": False}
     try:
@@ -115,6 +130,12 @@ def compile_counters() -> dict:
         }
     except Exception as exc:  # noqa: BLE001
         state = {"available": False, "error": f"{type(exc).__name__}: {exc}"}
+    if before and before.get("available") and state.get("available"):
+        for key in ("unique_graphs", "calls_captured", "graph_breaks_total"):
+            state[f"{key}_delta"] = state[key] - int(before.get(key, 0))
+        state["before"] = {
+            k: before.get(k) for k in ("unique_graphs", "calls_captured", "graph_breaks_total")
+        }
     return state
 
 
@@ -301,6 +322,13 @@ def train_and_infer(args) -> dict:
     }
     _log(f"precision {json.dumps(result['precision'])}")
 
+    # The counters as they stand BEFORE training, so what training itself
+    # compiled is a subtraction rather than an inference. Loading a 20B
+    # checkpoint through Unsloth compiles a great deal, and every one of
+    # those graphs sits in the same process-global counter.
+    compile_before = compile_counters()
+    _log(f"compile counters before training: {json.dumps(compile_before)}")
+
     t0 = time.time()
     stats = trainer.train()
     result["train_seconds"] = round(time.time() - t0, 1)
@@ -310,7 +338,7 @@ def train_and_infer(args) -> dict:
         if "loss" in entry
     ]
     result["train_metrics"] = {k: v for k, v in (stats.metrics or {}).items()}
-    result["compile"] = compile_counters()
+    result["compile"] = compile_counters(before = compile_before)
     result["memory_after_train"] = memory()
     _log(
         f"trained {len(result['metrics'])} logged steps in "
@@ -361,6 +389,14 @@ def train_and_infer(args) -> dict:
     return result
 
 
+def _is_finite(value) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
+
+
 def failures_for(result: dict, args) -> list[str]:
     """The assertions, separated from the run so they can be unit-tested.
 
@@ -378,19 +414,71 @@ def failures_for(result: dict, args) -> list[str]:
     if bad:
         failures.append(f"non-finite loss: {losses}")
 
+    # Did the optimizer apply anything? Every number above stays healthy on a
+    # run whose gradients are all zero -- the loss is finite, compilation
+    # engaged, and the untrained base model still generates text -- so a leg
+    # that claims to cover LoRA training on this path has to look. Only
+    # decidable where grad_norm was logged at all, exactly as in the SFT
+    # leg: a trainer that stopped logging it says nothing either way, and
+    # inferring "nothing applied" from silence would be a failure this check
+    # invented rather than found.
+    norms = [m.get("grad_norm") for m in metrics if m.get("grad_norm") is not None]
+    applied = [g for g in norms if _is_finite(g) and float(g) != 0.0]
+    if norms and not applied:
+        failures.append(
+            f"no optimizer update was applied: every logged grad_norm is zero or "
+            f"non-finite ({norms}), so the adapter is the adapter it started with "
+            f"and this leg measured a forward pass rather than LoRA training"
+        )
+
+    # The float32 path, which is the coverage this leg uniquely claims. It is
+    # recorded on every run and was asserted on none: a run that quietly went
+    # through fp16 instead logs finite losses, compiles and generates, and
+    # reports green while the path this leg exists for was never exercised.
+    #
+    # Conditioned on the card, not hardcoded to T4. FORCE_FLOAT32 exists
+    # because this hardware has no bf16; on a card that has it, the patch not
+    # firing is correct, and a red there would be this check's own bug.
+    environment = result.get("environment") or {}
+    if environment.get("bf16_supported") is False:
+        precision = result.get("precision")
+        if not precision:
+            failures.append(
+                "the training precision was never recorded, so whether the forced "
+                "float32 path fired could not be established"
+            )
+        else:
+            if precision.get("fp16") or precision.get("bf16"):
+                failures.append(
+                    f"the run trained in reduced precision on a card without bf16: "
+                    f"{precision}. gpt-oss is in Unsloth's FORCE_FLOAT32 list because "
+                    f"fp16 autocast through these weights produces infinities, so this "
+                    f"is the patch having stopped firing, not a slow pass."
+                )
+            elif not precision.get("force_float32_env"):
+                failures.append(
+                    f"UNSLOTH_FORCE_FLOAT32 was not set: {precision}. The float32 path "
+                    f"is the only thing this leg covers that nothing else in CI does."
+                )
+
     if args.require_compile:
         compiled = result.get("compile") or {}
+        # The DELTA across training, not the process-global total. The total
+        # is nonzero the moment the loader has compiled anything, so a
+        # training path that fell back to eager entirely used to satisfy it.
+        graphs = compiled.get("unique_graphs_delta", compiled.get("unique_graphs", 0))
         if not compiled.get("available"):
             failures.append(
                 "torch._dynamo counters were unreadable, so whether "
                 "torch.compile engaged could not be established: "
                 f"{compiled.get('error')}"
             )
-        elif compiled.get("unique_graphs", 0) < 1:
+        elif graphs < 1:
             failures.append(
-                "torch.compile captured zero graphs, so this run exercised "
-                "the eager path only. That is the silent fallback this leg "
-                "exists to catch; it is a failure, not a slow pass."
+                "torch.compile captured zero graphs across training itself, so the "
+                "training path ran eager whatever was compiled at load time. That is "
+                "the silent fallback this leg exists to catch; it is a failure, not a "
+                f"slow pass. Counters: {compiled}"
             )
 
     generated = result.get("generated")
