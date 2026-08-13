@@ -703,3 +703,217 @@ test("built-in Responses tools import as tool parts rather than disappearing", (
   assert.deepEqual(calls[1].args, { type: "exec", commands: ["ls -la"] });
   assert.equal(calls[1].result, "total 0");
 });
+
+test("a multimodal turn keeps its text and image when detection routes it here", () => {
+  // Chat Completions records that carry a per-message id and timestamp satisfy
+  // isOpenWebUIRecord, and reading only string content dropped the whole turn.
+  const record = {
+    title: "vision",
+    messages: [
+      {
+        id: "1",
+        role: "user",
+        timestamp: 1_700_000_000,
+        content: [
+          { type: "text", text: "what is this" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+        ],
+      },
+      { id: "2", role: "assistant", timestamp: 1_700_000_001, content: "a cat" },
+    ],
+  };
+
+  assert.equal(isOpenWebUIRecord(record), true);
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.equal(conversation.messages.length, 2);
+  assert.equal(text(conversation, 0), "what is this");
+  assert.deepEqual(
+    parts(conversation, 0).map((part) => part.type),
+    ["text", "image"],
+  );
+  assert.equal(parts(conversation, 0)[1].image, "data:image/png;base64,AAA");
+  assert.equal(text(conversation, 1), "a cat");
+});
+
+test("hex and decimal character references in details attributes are decoded", () => {
+  // Open WebUI decodes these with a full html-entities pass, so an apostrophe
+  // arrives as &#x27; as readily as &#39; and both have to survive.
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content:
+            '<details type="tool_calls" done="true" id="c1" name="ask" ' +
+            'arguments="{&quot;q&quot;: &quot;it&#x27;s ok&quot;}" ' +
+            'result="{&quot;a&quot;: &quot;it&#39;s done&quot;}">\n' +
+            "<summary>Tool executed</summary>\n</details>\nfinished",
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const call = parts(conversation, 0).find((part) => part.type === "tool-call");
+  assert.ok(call);
+  assert.deepEqual(call.args, { q: "it's ok" });
+  assert.deepEqual(call.result, { a: "it's done" });
+});
+
+test("a doubly escaped ampersand survives one decoding pass as literal text", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content:
+            '<details type="tool_calls" done="true" id="c" name="n" ' +
+            'arguments="{&quot;raw&quot;: &quot;&amp;#39;&quot;}">\n</details>',
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const call = parts(conversation, 0).find((part) => part.type === "tool-call");
+  assert.ok(call);
+  assert.deepEqual(call.args, { raw: "&#39;" });
+});
+
+test("an out of range timestamp is discarded rather than freezing the clock", () => {
+  // Past 2^53 `previousTs + 1` stops advancing, so every later message would
+  // land on one createdAt and the depth-first order would not survive a reload.
+  for (const stamp of [1e16, 1.7e18, Number.MAX_VALUE]) {
+    const record = chatRecord({
+      history: historyOf(
+        [
+          { id: "u", parentId: null, role: "user", content: "q", timestamp: stamp },
+          { id: "a1", parentId: "u", role: "assistant", content: "one", timestamp: 0 },
+          { id: "a2", parentId: "a1", role: "user", content: "two", timestamp: 0 },
+          { id: "a3", parentId: "a2", role: "assistant", content: "three", timestamp: 0 },
+        ],
+        "a3",
+      ),
+    });
+
+    const conversation = openWebUIRecordToConversation(record, "fallback");
+    assert.ok(conversation);
+    const stamps = conversation.messages.map((message) => message.createdAt);
+    assert.equal(new Set(stamps).size, stamps.length, `duplicate stamps for ${stamp}`);
+    for (let i = 1; i < stamps.length; i++) {
+      assert.ok(stamps[i] > stamps[i - 1], `not increasing for ${stamp}`);
+    }
+    const last = stamps[stamps.length - 1];
+    assert.ok(
+      Number.isSafeInteger(last) && last <= 8.64e15,
+      `outside Date's range for ${stamp}`,
+    );
+  }
+
+  // A stamp inside the range is still honoured.
+  const ok = chatRecord({
+    history: historyOf(
+      [{ id: "u", parentId: null, role: "user", content: "q", timestamp: 1_700_000_000 }],
+      "u",
+    ),
+  });
+  const inRange = openWebUIRecordToConversation(ok, "f");
+  assert.ok(inRange);
+  assert.equal(inRange.messages[0].createdAt, 1_700_000_000_000);
+});
+
+test("a generated image given as a url is not wrapped into a broken data url", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          content: "",
+          timestamp: 1,
+          output: [
+            { type: "image_generation_call", result: "https://example.com/a.png" },
+            { type: "message", content: [{ type: "output_text", text: "there" }] },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const image = parts(conversation, 0).find((part) => part.type === "image");
+  assert.ok(image);
+  assert.equal(image.image, "https://example.com/a.png");
+});
+
+test("malformed tool arguments stay readable instead of posing as an args object", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content:
+            '<details type="tool_calls" done="true" id="c" name="n" arguments="not json">\n</details>',
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const call = parts(conversation, 0).find((part) => part.type === "tool-call");
+  assert.ok(call);
+  assert.equal(typeof call.args, "object");
+  assert.deepEqual(call.args, { arguments: "not json" });
+});
+
+test("a tool that returned only images carries no empty result body", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          content: "",
+          timestamp: 1,
+          output: [
+            { type: "function_call", call_id: "c1", name: "plot", arguments: "{}" },
+            {
+              type: "function_call_output",
+              call_id: "c1",
+              output: [{ type: "input_image", image_url: "data:image/png;base64,BBB" }],
+            },
+            { type: "message", content: [{ type: "output_text", text: "done" }] },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const call = parts(conversation, 0).find((part) => part.type === "tool-call");
+  assert.ok(call);
+  assert.equal(call.result, undefined);
+  assert.ok(parts(conversation, 0).some((part) => part.type === "image"));
+});

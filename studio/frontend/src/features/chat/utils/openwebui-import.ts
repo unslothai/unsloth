@@ -29,12 +29,20 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/** The largest instant `Date` accepts; past it every stamp renders "Invalid Date". */
+const MAX_EPOCH_MS = 8.64e15;
+
 /** Open WebUI stores seconds on the record and milliseconds on `chat.timestamp`. */
 function epochMs(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
   }
-  return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+  const ms = value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+  // An out-of-range stamp (nanoseconds mistaken for milliseconds, say) has to be
+  // discarded rather than carried: past 2^53 `previousTs + 1` stops advancing, so
+  // every later message collapses onto one createdAt and the depth-first order
+  // below no longer survives the reload it exists to survive.
+  return ms > MAX_EPOCH_MS ? null : ms;
 }
 
 /** The chat blob: under `chat` on an exported record, or the record itself on a legacy bare chat. */
@@ -92,12 +100,24 @@ const FENCED_CODE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 const DETAILS_BLOCK = /<details\b([^>]*)>([\s\S]*?)<\/details>/gi;
 const ATTRIBUTE = /([\w-]+)="([^"]*)"/g;
 
+/** `&#39;` and `&#x27;` are both an apostrophe, and exports carry either. */
+function numericEntity(digits: string, radix: number): string | null {
+  const code = Number.parseInt(digits, radix);
+  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return null;
+  // Lone surrogates are not code points `fromCodePoint` accepts.
+  if (code >= 0xd800 && code <= 0xdfff) return null;
+  return String.fromCodePoint(code);
+}
+
 function unescapeHtml(value: string): string {
   return value
+    // Numeric escapes first, and `&amp;` last, so a doubly-escaped `&amp;#39;`
+    // survives one pass as the literal text `&#39;` rather than an apostrophe.
+    .replace(/&#x([0-9a-f]+);/gi, (whole, hex: string) => numericEntity(hex, 16) ?? whole)
+    .replace(/&#(\d+);/g, (whole, dec: string) => numericEntity(dec, 10) ?? whole)
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
     .replace(/&amp;/g, "&");
 }
 
@@ -119,6 +139,18 @@ function parseJsonLoose(value: string | undefined): unknown {
   } catch {
     return value;
   }
+}
+
+/**
+ * `args` is typed as an object on a tool-call part, and the renderer indexes it.
+ * A malformed `arguments` attribute parses loosely to a bare string, so the raw
+ * text is kept where a reader can still see it instead of being passed off as
+ * a structured argument object.
+ */
+function toolArgs(value: unknown): Dict {
+  if (isDict(value)) return value;
+  if (typeof value === "string" && value) return { arguments: value };
+  return {};
 }
 
 /** Body text of a `<details>`, minus its `<summary>`. */
@@ -194,7 +226,7 @@ function contentWithDetailsToParts(content: string): unknown[] {
         type: "tool-call",
         toolCallId: attributes.id || crypto.randomUUID(),
         toolName: attributes.name || "unknown",
-        args: parseJsonLoose(attributes.arguments),
+        args: toolArgs(parseJsonLoose(attributes.arguments)),
         ...(result !== undefined ? { result } : {}),
       });
     } else if (attributes.type === "reasoning") {
@@ -258,11 +290,12 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       const encoded = str(item.result) ?? str(item.b64_json);
       if (encoded) {
         const format = str(item.output_format) ?? "png";
+        // A url is already addressable. Wrapping one in a base64 data url makes
+        // a permanently broken image out of something that might have rendered.
+        const isUrl = /^(https?:|data:)/i.test(encoded);
         parts.push({
           type: "image",
-          image: encoded.startsWith("data:")
-            ? encoded
-            : `data:image/${format};base64,${encoded}`,
+          image: isUrl ? encoded : `data:image/${format};base64,${encoded}`,
         });
       }
       continue;
@@ -274,9 +307,11 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
         type: "tool-call",
         toolCallId: callId,
         toolName: str(item.name) ?? "unknown",
-        args: parseJsonLoose(typeof item.arguments === "string" ? item.arguments : undefined),
+        args: toolArgs(
+          parseJsonLoose(typeof item.arguments === "string" ? item.arguments : undefined),
+        ),
       };
-      if (typeof item.arguments === "object" && item.arguments !== null) {
+      if (isDict(item.arguments)) {
         part.args = item.arguments;
       }
       toolCallIndex.set(callId, part);
@@ -319,7 +354,11 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       }
       const target = callId ? toolCallIndex.get(callId) : undefined;
       if (target) {
-        target.result = resultText;
+        // A tool that returned only images has no result text, and its images
+        // are pushed as their own parts below. ToolFallbackResult renders
+        // nothing at all for an undefined result but draws a "Result:" heading
+        // over an empty block for "", which reads as "it returned nothing".
+        if (resultText) target.result = resultText;
       } else if (resultText.trim()) {
         pushText(parts, resultText);
       }
@@ -364,6 +403,26 @@ function filesToParts(files: unknown): { parts: unknown[]; attachments: unknown[
   return { parts, attachments };
 }
 
+/**
+ * Chat Completions multimodal content: `[{type:"text"}, {type:"image_url"}]`.
+ * Detection cannot be perfect, so a record that lands here carrying the OpenAI
+ * array shape has to keep its turns rather than lose them: reading only string
+ * `content` dropped the whole message.
+ */
+function arrayContentToParts(raw: unknown[]): unknown[] {
+  return raw.flatMap((entry): unknown[] => {
+    if (!isDict(entry)) return [];
+    if (entry.type === "text" && typeof entry.text === "string") {
+      return entry.text.trim() ? [{ type: "text", text: entry.text }] : [];
+    }
+    if (entry.type === "image_url") {
+      const url = str((isDict(entry.image_url) ? entry.image_url.url : null));
+      return url ? [{ type: "image", image: url }] : [];
+    }
+    return [];
+  });
+}
+
 function messageParts(
   message: Dict,
   role: MessageRecord["role"],
@@ -375,6 +434,10 @@ function messageParts(
     const converted = outputItemsToParts(message.output);
     parts.push(...converted.parts);
     sawMessage = converted.sawMessage;
+  }
+
+  if (!sawMessage && Array.isArray(message.content)) {
+    parts.push(...arrayContentToParts(message.content));
   }
 
   const content = typeof message.content === "string" ? message.content : "";
