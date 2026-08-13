@@ -131,15 +131,16 @@ export async function readLastLocalModelLoad(
           typeof data.loaded_at === "number" ? data.loaded_at : null;
         if (
           legacy?.pendingSync &&
-          !sameRecord(legacy.record, record) &&
           legacy.loadedAt !== null &&
           (backendLoadedAt === null || legacy.loadedAt > backendLoadedAt)
         ) {
           // A load whose PUT was dropped at teardown, and the backend has seen
           // nothing newer from any surface since (pendingSync alone proves the
           // write was dropped, not that it is the latest load -- only the
-          // backend timestamp orders loads across surfaces). Prefer the shadow
-          // and re-sync the backend, keeping its original load time.
+          // backend timestamp orders loads across surfaces). Re-sync it with
+          // its original load time even when the model identity matches the
+          // backend record: the backend timestamp must advance, or an older
+          // dropped write on another surface would later outrank this load.
           recordLastLocalModelLoad({
             ...legacy.record,
             loadedAt: legacy.loadedAt,
@@ -147,8 +148,8 @@ export async function readLastLocalModelLoad(
           return legacy.record;
         }
         if (legacy?.pendingSync) {
-          // The backend holds this record or a newer one: the shadow lost.
-          // Adopt the backend copy and clear the marker.
+          // The backend record is at least as new: the shadow lost. Adopt the
+          // backend copy and clear the marker.
           writeLegacyRecord(record, false, backendLoadedAt ?? Date.now());
         }
         return record;
