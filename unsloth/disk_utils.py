@@ -30,6 +30,7 @@ __all__ = [
     "is_kaggle_environment",
     "is_colab_environment",
     "free_bytes",
+    "logical_numel",
     "model_16bit_bytes",
     "model_logical_numel",
     "estimate_gguf_export_bytes",
@@ -44,6 +45,7 @@ try:
         is_kaggle_environment,
         is_colab_environment,
         free_bytes,
+        logical_numel,
         model_16bit_bytes,
         model_logical_numel,
         estimate_gguf_export_bytes,
@@ -96,6 +98,16 @@ except ImportError:
             return shutil.disk_usage(probe).free
         except Exception:
             return None
+
+    def logical_numel(param, name = ""):
+        # Packed storage cannot be unpacked without the zoo's knowledge of the
+        # packing schemes, so this reports what `numel()` says, exactly as the
+        # code did before it asked. Barely reachable: `model_16bit_bytes` is 0
+        # here, and every caller returns before sizing anything.
+        try:
+            return int(param.numel())
+        except Exception:
+            return 0
 
     def model_logical_numel(model):
         return 0

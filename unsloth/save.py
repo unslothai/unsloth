@@ -116,6 +116,7 @@ from .disk_utils import (
     estimate_gguf_export_bytes,
     free_bytes,
     kaggle_tmp_redirect,
+    logical_numel,
     model_16bit_bytes,
 )
 
@@ -3075,6 +3076,21 @@ def _matches_ignore_pattern(name, module, patterns):
     return False
 
 
+def _named_parameters(module):
+    """`(name, parameter)` pairs, named where the module can say.
+
+    `logical_numel` needs the name to spot MXFP4 packing, which has no
+    `quant_state` to give it away and is only identifiable by the
+    `_blocks` / `_scales` suffix. `torch.nn.Module` always offers
+    `named_parameters`; the fall back to `parameters()` keeps any other object
+    that answers the older call working, just without the MXFP4 case.
+    """
+    try:
+        return list(module.named_parameters())
+    except Exception:
+        return [("", parameter) for parameter in module.parameters()]
+
+
 def _unquantized_parameter_bytes(model, ignore_patterns = ()):
     """Bytes a weight-only export leaves at 16 bits in the sibling checkpoint.
 
@@ -3090,6 +3106,14 @@ def _unquantized_parameter_bytes(model, ignore_patterns = ()):
     under-sizes the merge, which is the direction that loses the redirect.
     Empty for torchao, which quantizes with no ignore list of its own.
 
+    Every parameter is measured with `logical_numel`, the same helper
+    `model_16bit_bytes` sizes the merge with, and NOT with `numel()`. A model
+    loaded in 4 bits holds `Params4bit`, whose `numel()` is the packed uint8
+    count and roughly half the logical one; MXFP4 blocks are worth twice
+    theirs. Believing `numel()` would price an ignored subtree at half what
+    the export writes for it while the merge it is subtracted from was priced
+    logically, and the two have to agree.
+
     Tied embeddings are one tensor and are counted once, and a module already
     counted through an embedding getter or through an enclosing ignored module
     is not counted again. Zero when the model does not answer, which leaves
@@ -3103,7 +3127,7 @@ def _unquantized_parameter_bytes(model, ignore_patterns = ()):
             if weight is None or id(weight) in seen:
                 continue
             seen.add(id(weight))
-            total += weight.numel() * 2
+            total += logical_numel(weight) * 2
         except Exception:
             continue
     if not ignore_patterns:
@@ -3117,11 +3141,11 @@ def _unquantized_parameter_bytes(model, ignore_patterns = ()):
         try:
             if not _matches_ignore_pattern(name, module, ignore_patterns):
                 continue
-            for parameter in module.parameters():
+            for parameter_name, parameter in _named_parameters(module):
                 if id(parameter) in seen:
                     continue
                 seen.add(id(parameter))
-                total += parameter.numel() * 2
+                total += logical_numel(parameter, parameter_name) * 2
         except Exception:
             continue
     return total
@@ -3432,6 +3456,71 @@ def _on_separate_filesystems(directory, sibling):
     return left != right
 
 
+def _directory_is_writable(directory):
+    """Can a file be created here? The same probe `convert_to_gguf` makes.
+
+    `tempfile.mkstemp` is exclusive, so it never truncates an existing file
+    and never follows a symlink. Anything that goes wrong reads as "no".
+    """
+    import tempfile
+    try:
+        handle, probe = tempfile.mkstemp(prefix = ".unsloth_write_test_", dir = directory)
+        os.close(handle)
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _gguf_conversion_directory(model_directory):
+    """Where the intermediate GGUF is written, before it is moved.
+
+    `unsloth_zoo.llama_cpp.convert_to_gguf` passes a BARE filename as
+    `--outfile`, so llama.cpp resolves it against the process CWD; the only
+    fallback to the input folder fires when that CWD cannot be written to.
+    `save_to_gguf` then `shutil.move`s the finished file into the `_gguf`
+    directory, which is a copy and not a rename when the two sit on different
+    filesystems.
+
+    So on a Kaggle kernel the intermediate - two bytes per parameter, the
+    largest single staging artefact - still lands in the 20GB /kaggle/working
+    even after the export has been redirected to /tmp, and that is the one
+    filesystem the rest of this preflight never measures.
+
+    None when the CWD cannot be read, and then nothing is charged.
+    """
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        return None
+    return cwd if _directory_is_writable(cwd) else model_directory
+
+
+def _merge_reclamation_is_possible(save_directory):
+    """Will `_free_merge_if_disk_is_tight` have a merge to reclaim?
+
+    It never touches a file that was in `save_directory` before the export
+    started, because that file is the caller's, not this export's. A directory
+    already holding a checkpoint under the names a merge writes therefore
+    yields nothing, and sizing that export as though the merge would go would
+    pass one that really does peak at all three artefacts.
+
+    A directory that does not exist yet is entirely this export's own, so
+    True. One that cannot be listed is False, which is what the reclamation
+    itself does with unreadable provenance.
+    """
+    try:
+        names = os.listdir(save_directory)
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+    try:
+        return not _merge_weight_files(save_directory, names)
+    except Exception:
+        return False
+
+
 def _preflight_gguf_disk(
     model,
     save_directory,
@@ -3440,6 +3529,7 @@ def _preflight_gguf_disk(
     model_dtype = "f16",
     has_imatrix = False,
     needs_merge = True,
+    merge_is_disposable = False,
 ):
     """Refuse a GGUF export that cannot fit, before it writes a single byte.
 
@@ -3460,6 +3550,12 @@ def _preflight_gguf_disk(
     Dropping the pre-warm is tried before refusing, because it is a pure
     optimization for the NEXT export - the merge downloads what it needs
     either way - and an export that runs is worth more than a cache.
+
+    `merge_is_disposable` says the merge is this export's own throwaway, so
+    `_free_merge_if_disk_is_tight` may delete it once the intermediate GGUF
+    exists. Then the three artefacts never coexist and the peak is the larger
+    of the two phases, not their sum. Defaults off: charging the aggregate is
+    what every caller got before this argument existed.
 
     Never blocks on a guess: an unmeasurable model or an unmeasurable disk
     returns the directory untouched. Set UNSLOTH_DISK_PREFLIGHT=0 to disable.
@@ -3529,6 +3625,36 @@ def _preflight_gguf_disk(
             )
         except Exception:
             need_sibling = 0
+        # The first of the two phases a disposable merge really peaks at: the
+        # merge and the intermediate GGUF on disk together, before any quant
+        # is written. `quantization_methods = ()` still prices the
+        # intermediate, which is what the conversion has to write before it
+        # can be read. Its own try for the same reason as the sibling: an
+        # estimator that cannot answer leaves the aggregate standing.
+        try:
+            need_merge_phase = estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = (),
+                first_conversion = first_conversion,
+                needs_merge = needs_merge,
+            ) + (extra if need > 0 and needs_merge else 0)
+        except Exception:
+            need_merge_phase = 0
+        # Reclamation only helps when a quantize pass actually follows it, and
+        # `save_to_gguf` skips a method equal to the initial conversion because
+        # that file is already on disk. Same rule, same list.
+        has_quantize_pass = bool([m for m in dict.fromkeys(methods) if m != first_conversion])
+        # The intermediate conversion on its own, for the filesystem it is
+        # written to before the move. Same shape of `try` as the two above.
+        try:
+            need_conversion = estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = (),
+                first_conversion = first_conversion,
+                needs_merge = False,
+            )
+        except Exception:
+            need_conversion = 0
     except Exception:
         # Sizing is best effort. A failure here must not stop an export that
         # would otherwise have worked.
@@ -3589,6 +3715,59 @@ def _preflight_gguf_disk(
                 f"{need_sibling / 1024**3:.1f}GB there.\n"
                 f"Options: free space on that filesystem, export fewer quantization methods, or "
                 f"point `save_directory` at a path whose parent directory has the room.\n"
+                f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+            )
+    elif (
+        merge_is_disposable
+        and needs_merge
+        and has_quantize_pass
+        and need_merge_phase > 0
+        and need_sibling > 0
+        and _merge_reclamation_is_possible(save_directory)
+    ):
+        # `_free_merge_if_disk_is_tight` deletes this export's own merge once
+        # the intermediate GGUF exists and before the first quantize pass, so
+        # the three artefacts never coexist: the peak is the larger of "merge
+        # plus intermediate" and "intermediate plus every quant", not their
+        # sum. Nemotron-3-Nano-30B-A3B is the case in front of it - 63GB merge,
+        # 60GB BF16 intermediate, 18GB Q4_K_M - which peaks at 123GB on a 132GB
+        # disk and which the aggregate 141GB refuses.
+        #
+        # Only in the single-filesystem branch, because the reclamation itself
+        # declines when the merge and the GGUF output are on different devices:
+        # freeing bytes on one filesystem does nothing for a quantize pass
+        # writing to another.
+        peak = max(need_merge_phase, need_sibling)
+        if peak < need:
+            # Can only ever lower the figure, so no input that head allowed is
+            # refused here. The cache copy is not what gets reclaimed, so it
+            # rides on top of the peak exactly as it rode on top of the sum.
+            need_here = peak
+            need_here_with_cache = peak + max(0, need_with_cache - need)
+
+    # The intermediate conversion is written to the process CWD, not into
+    # `save_directory` and not into the `_gguf` sibling, and only afterwards
+    # moved. When that CWD is on its own filesystem, nothing above has measured
+    # the disk the largest staging artefact actually lands on: on Kaggle it is
+    # the 20GB working directory the redirect just moved the export away from.
+    conversion_directory = _gguf_conversion_directory(save_directory)
+    if (
+        need_conversion > 0
+        and conversion_directory is not None
+        and _on_separate_filesystems(conversion_directory, gguf_directory)
+    ):
+        conversion_free = free_bytes(conversion_directory)
+        if conversion_free is not None and conversion_free < need_conversion:
+            raise RuntimeError(
+                f"Unsloth: Not enough disk space to convert to GGUF.\n"
+                f"The intermediate `{first_conversion}` conversion is written to the current "
+                f"working directory `{conversion_directory}` before it is moved to "
+                f"`{gguf_directory}`, and that filesystem has "
+                f"{conversion_free / 1024**3:.1f}GB free; the conversion needs about "
+                f"{need_conversion / 1024**3:.1f}GB there.\n"
+                f"Options: free space on that filesystem, `os.chdir(...)` to a directory on "
+                f"the same filesystem as the export, or push straight to Hugging Face with "
+                f"`.push_to_hub_gguf(...)`.\n"
                 f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
             )
 
@@ -3822,6 +4001,11 @@ def unsloth_save_pretrained_gguf(
             first_conversion = first_conversion,
             has_imatrix = _imatrix_is_enabled(imatrix_file),
             needs_merge = _gguf_writes_16bit_checkpoint(self),
+            # The same flag `save_to_gguf` reclaims on. Where a non-PEFT model
+            # reuses its own checkpoint the flag is cleared below, and there
+            # `_gguf_writes_16bit_checkpoint` is already False on the same
+            # condition, so the two cannot disagree.
+            merge_is_disposable = merge_is_disposable,
         )
 
     # Step 2: Prepare arguments for model saving
