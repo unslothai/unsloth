@@ -2928,16 +2928,17 @@ exit 0
         }
     }
 
-    function Test-UvExecutable {
-        # Can this specific file run here at all, regardless of which version it reports?
-        # Start-Process rather than the call operator so the wait has a ceiling and stdin is
-        # not this console's: a binary that endpoint protection stalls, or one that decides to
-        # prompt, must not hold an unattended install open. `uv --version` answers in
-        # milliseconds, so only a binary we would refuse anyway ever reaches the timeout.
+    function Get-UvExecutableVerdict {
+        # "ok", "failed" or "unknown". Only the binary itself answering non-zero is "failed".
+        # A launch that throws or a wait that times out is "unknown", because the probe got no
+        # verdict: Start-Process -NoNewWindow with redirected streams does not behave in a
+        # Windows container or on the arm64 image the way it does in a desktop session, and
+        # treating that as a broken binary turned three clean-machine CI legs into hard install
+        # failures. The digest already proved these bytes are astral's pinned release, so no
+        # verdict publishes, as the pre-pin code did. Every path says why.
         param([string]$Path)
-        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
-        # Redirected, not swallowed by the console: uv's version line is not part of this
-        # installer's output, and the files are removed either way.
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
+        # Redirected: uv's version line is not part of this installer's output.
         $outFile = [System.IO.Path]::GetTempFileName()
         $errFile = [System.IO.Path]::GetTempFileName()
         try {
@@ -2945,11 +2946,31 @@ exit 0
                 -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
             if (-not $proc.WaitForExit(20000)) {
                 try { $proc.Kill() } catch {}
-                return $false
+                substep "uv did not answer --version within 20s; installing it unprobed." "Yellow"
+                return "unknown"
             }
-            return ($proc.ExitCode -eq 0)
+            # The timed overload can return before the exit code is cached, which is how
+            # arm64 and the Windows containers reported an EMPTY code and had a working uv
+            # read as broken. The parameterless wait settles it and returns at once, since
+            # the process has already exited. No code at all is still no verdict.
+            try { $proc.WaitForExit() } catch {}
+            $code = $null
+            try { $code = $proc.ExitCode } catch {}
+            if ($null -eq $code -or "$code" -eq "") {
+                substep "uv --version gave no exit code; installing it unprobed." "Yellow"
+                return "unknown"
+            }
+            if ($code -eq 0) { return "ok" }
+            $detail = ""
+            try {
+                $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+            } catch {}
+            if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+            substep "uv --version exited $code.$detail" "Yellow"
+            return "failed"
         } catch {
-            return $false
+            substep "could not probe uv: $($_.Exception.Message); installing it unprobed." "Yellow"
+            return "unknown"
         } finally {
             Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
@@ -3015,10 +3036,9 @@ exit 0
         $zip  = Join-Path $work $asset
         try {
             [System.IO.Directory]::CreateDirectory($work) | Out-Null
-            # The digest is checked per mirror, not once after the loop. A captive portal or a
-            # proxy answering 200 with its own body is a successful download by every measure
-            # Invoke-WebRequest has, and checking afterwards would spend the one attempt on it
-            # and never reach the second mirror that would have served the real archive.
+            # Digest per mirror, not once after the loop: a proxy answering 200 with its own
+            # body is a successful download by every measure Invoke-WebRequest has, and checking
+            # afterwards spends the only attempt on it.
             $downloaded = $false
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
@@ -3049,21 +3069,18 @@ exit 0
                 substep "uv.exe was not present in $asset." "Yellow"
                 return $false
             }
-            # Run it where it landed, before anything at the destination is touched. A host can
-            # have a working older uv while AppLocker, WDAC or endpoint protection refuses this
-            # one, and copying first would destroy the incumbent and leave the user with neither.
-            # Staging under the destination instead would answer a policy that is scoped by path,
-            # but it also means writing into a directory that is on PATH, so the probe stays here
-            # and the incumbent is preserved and restored below for the path-scoped case.
-            if (-not (Test-UvExecutable -Path $stagedUv)) {
+            # Run it where it landed, before the destination is touched. A host can have a
+            # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
+            # copying first would leave the user with neither. A policy scoped by path is covered
+            # by the second probe and the restore below.
+            if ((Get-UvExecutableVerdict -Path $stagedUv) -eq "failed") {
                 substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
             }
 
-            # Windows has no atomic replace for a file that may be open, so the incumbent is
-            # copied aside and put back if the published copy turns out not to run. uvw.exe is
-            # not probed: it is the windowless launcher, it has no console to answer on, and it
-            # ships from the same verified archive as the uv.exe that just did.
+            # No atomic replace on Windows for a file that may be open, so the incumbent is
+            # copied aside and put back if the published copy will not run. uvw.exe is not
+            # probed: it is the windowless launcher, with no console to answer on.
             $backups = @{}
             $published = @()
             $ok = $true
@@ -3073,18 +3090,35 @@ exit 0
                 $dst = Join-Path $destDir $exe
                 if (Test-Path -LiteralPath $dst) {
                     $backup = "$dst.unsloth-old"
+                if (Test-Path -LiteralPath $backup) {
+                    # A previous run failed to restore and kept this as the only copy of a
+                    # working uv, and told the user where it is. Take a distinct name rather
+                    # than overwriting it with whatever is at the destination now.
+                    $backup = "$dst.unsloth-old." + [guid]::NewGuid().ToString('N').Substring(0, 8)
+                }
                     try {
                         Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
                         $backups[$dst] = $backup
                     } catch {
-                        # No backup means no safe replace: leave the incumbent alone rather than
-                        # overwrite something we could not first put a copy of somewhere.
-                        if ($exe -eq "uv.exe") { $ok = $false; break }
-                        continue
+                        # No backup, no safe replace. A companion fails the placement too:
+                        # skipping it leaves a stale uvx beside the new uv, the mismatched
+                        # set the rollback exists to prevent.
+                        $ok = $false
+                        break
                     }
                 }
-                Copy-Item -LiteralPath $src -Destination $dst -Force
+                # -ErrorAction Stop inside a try: a bare call throws past the rollback under the
+                # Stop preference, and silently keeps a stale companion under Continue. A locked
+                # or ACL-denied destination has to unwind like any other failure.
+                # Recorded before the copy, not after: a copy that throws part way has already
+                # truncated $dst, and a rollback that skipped it would then delete its backup.
                 $published += $dst
+                try {
+                    Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                } catch {
+                    $ok = $false
+                    break
+                }
                 if ($exe -eq "uv.exe") {
                     # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
                     # a locked or ACL-denied destination leaves whatever was already there and
@@ -3098,14 +3132,27 @@ exit 0
                     } catch { $copied = $false }
                     # Probe again at the destination: a policy scoped to a path can allow the
                     # temp copy and refuse this one.
-                    if (-not ($copied -and (Test-UvExecutable -Path $dst))) { $ok = $false; break }
+                    if (-not $copied -or (Get-UvExecutableVerdict -Path $dst) -eq "failed") {
+                        $ok = $false
+                        break
+                    }
                 }
             }
 
             if (-not $ok) {
                 foreach ($dst in $published) {
                     if ($backups.ContainsKey($dst)) {
-                        Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction SilentlyContinue
+                        try {
+                            Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction Stop
+                        } catch {
+                            # The restore fails for the same two reasons the replace was risky:
+                            # an open incumbent, or a denied ACL. Every other failure here leaves
+                            # the host with what it started with, so keep the backup and name it
+                            # rather than deleting the only working copy below.
+                            $keptPath = $backups[$dst]
+                            $backups.Remove($dst)
+                            substep "could not restore $dst; the previous copy is kept at $keptPath." "Yellow"
+                        }
                     } else {
                         # Nothing was there before this run, so removing ours leaves the
                         # destination exactly as it was found.

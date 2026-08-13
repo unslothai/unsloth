@@ -1550,8 +1550,8 @@ _setup_uv_sha256() {
     fi
 }
 
-# Bounded liveness probe for a freshly downloaded binary. No stdin, so a build that decides
-# to prompt reads EOF, and a hard ceiling where `timeout` exists (stock macOS has none).
+# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
+# `timeout` exists (stock macOS has none).
 _setup_uv_probe_exec() {
     if command -v timeout >/dev/null 2>&1; then
         timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
@@ -1559,6 +1559,46 @@ _setup_uv_probe_exec() {
         "$1" --version >/dev/null 2>&1 </dev/null
     fi
 }
+
+# The function's own cleanup only runs when it returns, so an interrupt left the unpacked
+# archive behind plus a staging file inside a directory on PATH. No trap is active here (the
+# gitignore EXIT trap is cleared well above), so the pinned install owns these four for its
+# duration and hands them back on the way out.
+_setup_uv_cleanup_temporaries() {
+    [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
+    [ -n "${_SIUP_STAGE2:-}" ] && rm -f "$_SIUP_STAGE2" 2>/dev/null || true
+    # Restored, not deleted: a signal between the two renames leaves this copy as the only
+    # reference to the incumbent. _SIUP_DEST is set only while the renames are in flight.
+    if [ -n "${_SIUP_UNDO_UV:-}" ]; then
+        [ -n "${_SIUP_DEST:-}" ] && mv -f "$_SIUP_UNDO_UV" "$_SIUP_DEST/uv" 2>/dev/null
+        rm -f "$_SIUP_UNDO_UV" 2>/dev/null || true
+    fi
+    if [ -n "${_SIUP_UNDO_UVX:-}" ]; then
+        [ -n "${_SIUP_DEST:-}" ] && mv -f "$_SIUP_UNDO_UVX" "$_SIUP_DEST/uvx" 2>/dev/null
+        rm -f "$_SIUP_UNDO_UVX" 2>/dev/null || true
+    fi
+    _SIUP_WORK=""
+    _SIUP_STAGE=""
+    _SIUP_STAGE2=""
+    _SIUP_UNDO_UV=""
+    _SIUP_UNDO_UVX=""
+}
+
+_setup_uv_on_signal() {
+    trap - EXIT HUP INT TERM
+    _setup_uv_cleanup_temporaries
+    exit "$1"
+}
+
+# The PATH a new shell inherits, captured before the uv destination can be prepended to it.
+_SETUP_LOGIN_PATH="$PATH"
+_SIUP_WORK=""
+_SIUP_STAGE=""
+_SIUP_STAGE2=""
+_SIUP_UNDO_UV=""
+_SIUP_UNDO_UVX=""
+_SIUP_DEST=""
 
 _setup_install_uv_pinned() {
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
@@ -1577,6 +1617,11 @@ _setup_install_uv_pinned() {
     [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
     # 2>/dev/null, as install.sh does: a speculative attempt whose failure falls back.
     _siup_work=$(mktemp -d 2>/dev/null) || return 1
+    _SIUP_WORK="$_siup_work"
+    trap _setup_uv_cleanup_temporaries EXIT
+    trap '_setup_uv_on_signal 129' HUP
+    trap '_setup_uv_on_signal 130' INT
+    trap '_setup_uv_on_signal 143' TERM
     _siup_rc=1
     # A configured mirror is EXCLUSIVE, matching astral's installer and the PowerShell side: a
     # restricted network sets one because the public hosts are unreachable, so trying those first
@@ -1599,69 +1644,189 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
         tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
         mkdir -p "$_siup_dest" 2>/dev/null || break
-        # uv first, and its failure aborts the placement: the two binaries ship as a set, and
-        # a pinned uvx published next to the host's older uv is a pair we never tested.
+        # Stage both, publish both, as install.sh does: the rename is the only step that can
+        # destroy an incumbent, so the two sit next to each other with the previous binaries
+        # saved aside.
+        _siup_ready=1
         for _siup_exe in uv uvx; do
-            _siup_ok=0
-            while : ; do
-                _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
-                if [ -z "$_siup_src" ]; then break; fi
-                # Stage then rename, as install.sh does: cp onto a symlinked destination writes
-                # through the link and would rewrite whatever it points at. The staging name is
-                # per-process, so two installers racing on one destination cannot publish each
-                # other's half-written file.
-                _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || break
-                if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then
-                    rm -f "$_siup_stage" 2>/dev/null || true
-                    break
-                fi
-                # 0755, not +x: cp gives the staging file the umask default, and +x
-                # then adds execute only where the umask allowed read. astral ships
-                # these 0755, and a umask of 077 would otherwise leave uv unusable
-                # for every other account on a shared machine.
-                chmod 0755 "$_siup_stage" 2>/dev/null || true
-                # Validate before publishing, as install.sh does: the rename destroys whatever is
-                # at the destination, so a binary that cannot run here must never replace one that
-                # could. No stdin and a ceiling where `timeout` exists, so the probe cannot hang.
-                if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then
-                    rm -f "$_siup_stage" 2>/dev/null || true
-                    break
-                fi
-                if ! mv -f "$_siup_stage" "$_siup_dest/$_siup_exe" 2>/dev/null; then
-                    rm -f "$_siup_stage" 2>/dev/null || true
-                    break
-                fi
-                _siup_ok=1
-                break
-            done
-            if [ "$_siup_ok" != "1" ]; then
-                if [ "$_siup_exe" = "uv" ]; then break; fi
-                continue
-            fi
-            [ "$_siup_exe" = "uv" ] && _siup_rc=0
+            _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
+            if [ -z "$_siup_src" ]; then _siup_ready=0; break; fi
+            # cp writes through a symlinked destination, and a per-process staging name keeps
+            # two racing installers from publishing each other's half-written file.
+            _siup_stage=$(mktemp "$_siup_dest/.$_siup_exe.XXXXXX" 2>/dev/null) || { _siup_ready=0; break; }
+            if [ "$_siup_exe" = "uv" ]; then _SIUP_STAGE="$_siup_stage"; else _SIUP_STAGE2="$_siup_stage"; fi
+            if ! cp -f "$_siup_src" "$_siup_stage" 2>/dev/null; then _siup_ready=0; break; fi
+            # 0755, not +x: the staging file carries the umask default and +x only adds execute
+            # where read was allowed, so umask 077 would leave uv unusable for every other
+            # account. astral ships these 0755.
+            chmod 0755 "$_siup_stage" 2>/dev/null || true
+            # Validate before publishing: the rename destroys the incumbent, so a binary that
+            # cannot run here must never replace one that could.
+            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
         done
+        if [ "$_siup_ready" = "1" ]; then
+            # Save the incumbents so a failure between the two renames can be undone, as
+            # install.sh does. A hard link keeps the old inode reachable after the rename takes
+            # the name; cp is the fallback for a filesystem that refuses one.
+            _SIUP_UNDO_UV=""
+            _SIUP_UNDO_UVX=""
+            if [ -e "$_siup_dest/uv" ]; then
+                # An incumbent that cannot be saved cannot be restored, so publishing over it
+                # would be a one-way move. Decline instead and let the fallback decide.
+                if _siup_save=$(mktemp "$_siup_dest/.uv.old.XXXXXX" 2>/dev/null); then
+                    if ln -f "$_siup_dest/uv" "$_siup_save" 2>/dev/null || cp -p "$_siup_dest/uv" "$_siup_save" 2>/dev/null; then
+                        _SIUP_UNDO_UV="$_siup_save"
+                    else
+                        rm -f "$_siup_save" 2>/dev/null || true
+                        _siup_ready=0
+                    fi
+                else
+                    _siup_ready=0
+                fi
+            fi
+            if [ -e "$_siup_dest/uvx" ]; then
+                # An incumbent that cannot be saved cannot be restored, so publishing over it
+                # would be a one-way move. Decline instead and let the fallback decide.
+                if _siup_save=$(mktemp "$_siup_dest/.uvx.old.XXXXXX" 2>/dev/null); then
+                    if ln -f "$_siup_dest/uvx" "$_siup_save" 2>/dev/null || cp -p "$_siup_dest/uvx" "$_siup_save" 2>/dev/null; then
+                        _SIUP_UNDO_UVX="$_siup_save"
+                    else
+                        rm -f "$_siup_save" 2>/dev/null || true
+                        _siup_ready=0
+                    fi
+                else
+                    _siup_ready=0
+                fi
+            fi
+            # Published under the trap's eye: a signal between the two renames has to be able
+            # to find the destination to put the incumbents back.
+            _SIUP_DEST="$_siup_dest"
+            if [ "$_siup_ready" != "1" ]; then
+                # Nothing was published, so there is nothing to undo and the incumbents are
+                # exactly as they were found.
+                :
+            elif mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
+                 mv -f "$_SIUP_STAGE2" "$_siup_dest/uvx" 2>/dev/null; then
+                _siup_rc=0
+            else
+                # Half published: put back what was there.
+                # With no predecessor there is nothing to put back, so ours comes off: half a
+                # pair the host never had is worse than the empty destination it started with.
+                if [ -n "$_SIUP_UNDO_UV" ]; then
+                    mv -f "$_SIUP_UNDO_UV" "$_siup_dest/uv" 2>/dev/null || true
+                else
+                    rm -f "$_siup_dest/uv" 2>/dev/null || true
+                fi
+                if [ -n "$_SIUP_UNDO_UVX" ]; then
+                    mv -f "$_SIUP_UNDO_UVX" "$_siup_dest/uvx" 2>/dev/null || true
+                else
+                    rm -f "$_siup_dest/uvx" 2>/dev/null || true
+                fi
+            fi
+            rm -f "$_SIUP_UNDO_UV" "$_SIUP_UNDO_UVX" 2>/dev/null || true
+            _SIUP_UNDO_UV=""
+            _SIUP_UNDO_UVX=""
+            _SIUP_DEST=""
+        fi
+        rm -f "$_SIUP_STAGE" "$_SIUP_STAGE2" 2>/dev/null || true
+        _SIUP_STAGE=""
+        _SIUP_STAGE2=""
         break
     done
     rm -rf "$_siup_work"
+    _SIUP_WORK=""
+    _SIUP_STAGE=""
+    _SIUP_STAGE2=""
+    trap - EXIT HUP INT TERM
     # The staged binary already answered --version above, before it replaced anything.
     [ -x "$_siup_dest/uv" ] || _siup_rc=1
-    [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
+    if [ "$_siup_rc" = "0" ]; then
+        export PATH="$_siup_dest:$PATH"
+        _setup_persist_uv_path "$_siup_dest"
+    fi
     return "$_siup_rc"
+}
+
+# astral's installer wrote a profile line for whichever destination it chose. This replaces that
+# installer, so setup.sh run directly (local or Colab) has to do the same or the export above
+# dies with this shell and every later run reinstalls uv. Both of astral's opt-outs apply, and
+# fish is handled on its own terms since it reads none of the POSIX rc files.
+# Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
+# expansion is off for the walk and restored afterwards.
+_setup_path_has_dir() {
+    _sphd_glob=on
+    case $- in *f*) _sphd_glob=off ;; esac
+    set -f
+    _sphd_found=1
+    _sphd_old_ifs="$IFS"
+    IFS=:
+    for _sphd_entry in $1; do
+        if [ "$_sphd_entry" = "$2" ]; then _sphd_found=0; break; fi
+    done
+    IFS="$_sphd_old_ifs"
+    [ "$_sphd_glob" = on ] && set +f
+    return "$_sphd_found"
+}
+
+_setup_persist_uv_path() {
+    _supp_dir="$1"
+    [ -n "$_supp_dir" ] || return 0
+    [ -n "${HOME:-}" ] || return 0
+    [ -z "${UV_NO_MODIFY_PATH:-}" ] || return 0
+    [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
+    # The PATH a new shell inherits, not the one this process has already prepended to, and
+    # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
+    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    if [ "$(basename "${SHELL:-}")" = "fish" ]; then
+        _supp_fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
+        mkdir -p "$_supp_fish_dir" 2>/dev/null || return 0
+        _supp_fish="$_supp_fish_dir/unsloth.fish"
+        if ! grep -qF "$_supp_dir" "$_supp_fish" 2>/dev/null; then
+            # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
+            _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+            echo "# Added by Unsloth setup" >> "$_supp_fish"
+            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+        fi
+        return 0
+    fi
+    _supp_profile=""
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+        _supp_profile="${ZDOTDIR:-$HOME}/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        _supp_profile="$HOME/.bashrc"
+    elif [ -f "$HOME/.profile" ]; then
+        _supp_profile="$HOME/.profile"
+    elif [ -w "$HOME" ]; then
+        _supp_profile="$HOME/.profile"
+    fi
+    [ -n "$_supp_profile" ] || return 0
+    if ! grep -qF "$_supp_dir" "$_supp_profile" 2>/dev/null; then
+        # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
+        # terminated by the shell that reads it.
+        _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+        echo '' >> "$_supp_profile"
+        echo '# Added by Unsloth setup' >> "$_supp_profile"
+        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+    fi
 }
 
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
+    _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned; then
-        true
+        _SETUP_UV_PINNED_OK=true
     elif _is_verbose; then
         _setup_http_get https://astral.sh/uv/install.sh | sh
     else
         _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
-    export PATH="$HOME/.local/bin:$PATH"
+    # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
+    # own destination first, and prepending here would let a stale ~/.local/bin/uv shadow the
+    # 0.12.1 we just verified, so the rest of setup would run the wrong one.
+    [ "$_SETUP_UV_PINNED_OK" = true ] || export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
 fi
 

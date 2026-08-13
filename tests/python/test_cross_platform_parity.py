@@ -694,8 +694,8 @@ class TestPinnedIndexClearsUvEnvParity:
         run the extracted uv.exe where it landed BEFORE anything at the destination is
         touched, and must restore the incumbent if the published copy will not run."""
         for path, probe in (
-            (INSTALL_PS1, "Test-UvExecutable"),
-            (SETUP_PS1, "Test-SetupUvExecutable"),
+            (INSTALL_PS1, "Get-UvExecutableVerdict"),
+            (SETUP_PS1, "Get-SetupUvExecutableVerdict"),
         ):
             text = path.read_text(encoding = "utf-8")
             assert f"function {probe}" in text, f"{path.name} must define {probe}"
@@ -703,6 +703,31 @@ class TestPinnedIndexClearsUvEnvParity:
             # binary is exactly how an unattended install hangs.
             assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
             probe_at = text.index(f"({probe} -Path $stagedUv)")
+            # Tri-state, not a boolean. A launch that throws or a wait that times out got no
+            # verdict, and treating that as a broken binary turned three clean-machine CI legs
+            # into hard install failures: Start-Process -NoNewWindow with redirected streams
+            # does not behave in a Windows container or on arm64 as it does on a desktop. Only
+            # the binary answering non-zero may block the install.
+            body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
+            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
+            # code is cached, which is how arm64 and the Windows containers reported "exited ."
+            # and had a working uv read as broken.
+            assert (
+                "try { $proc.WaitForExit() } catch {}" in body
+            ), f"{path.name} must settle the exit code before reading it"
+            assert (
+                '$null -eq $code -or "$code" -eq ""' in body
+            ), f"{path.name} must treat a missing exit code as inconclusive"
+            assert (
+                body.count('return "unknown"') == 3
+            ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
+            assert (
+                'return "failed"' in body and 'return "ok"' in body
+            ), f"{path.name}'s probe must report a real answer as well"
+            for call in (f"({probe} -Path $stagedUv)", f"({probe} -Path $dst)"):
+                assert (
+                    f'{call} -eq "failed"' in text
+                ), f"{path.name} must gate only on a failed verdict at {call}"
             copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
             assert probe_at < copy_at, (
                 f"{path.name} must probe the extracted uv.exe before copying over the "
@@ -711,6 +736,27 @@ class TestPinnedIndexClearsUvEnvParity:
             assert (
                 "$dst.unsloth-old" in text
             ), f"{path.name} must copy the incumbent aside before replacing it"
+            # The publish itself is a transaction: a locked or ACL-denied companion must
+            # unwind like any other failure rather than throwing past the rollback (Stop
+            # preference) or being silently skipped (Continue preference).
+            assert (
+                "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
+            ), f"{path.name} must copy each executable under -ErrorAction Stop"
+            # And a restore that fails must keep its backup: that failure has the same two
+            # causes as the risky replace, so deleting it is the one path that can leave the
+            # host with less than it started with.
+            restore = text.split("foreach ($dst in $published)", 1)[1]
+            restore = restore.split("foreach ($backup in $backups.Values)", 1)[0]
+            assert (
+                "$backups.Remove($dst)" in restore
+            ), f"{path.name} must keep a backup whose restore failed"
+            # A companion that cannot be backed up fails the placement too: skipping it
+            # would leave a stale uvx beside the new uv.
+            backup_catch = text.split("$dst.unsloth-old", 1)[1]
+            backup_catch = backup_catch.split("Copy-Item -LiteralPath $src", 1)[0]
+            assert (
+                "continue" not in backup_catch
+            ), f"{path.name} must not skip a companion it could not back up"
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
