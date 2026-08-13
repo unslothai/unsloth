@@ -89,6 +89,7 @@ class TestEverywhereElse:
 def test_the_emission_guard_is_still_in_place():
     """Pins the existing contract the floor sits in front of."""
     import inspect
+
     src = inspect.getsource(LlamaCppBackend.load_model)
     zero = src.find('cmd.extend(["-c", "0"])')
     assert zero != -1
