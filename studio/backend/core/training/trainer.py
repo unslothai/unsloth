@@ -2453,7 +2453,10 @@ class UnslothTrainer:
         # audio dataset raised `datasets`' own "please install 'torchcodec'" from inside
         # the load. A False here means neither backend works, which the audio branches
         # further down still report with the message that names FFmpeg.
-        ensure_audio_decoding()
+        try:
+            ensure_audio_decoding()
+        except Exception:  # noqa: BLE001 - never let a broken librosa stop a text run
+            pass
 
         s3_download = None
         try:
