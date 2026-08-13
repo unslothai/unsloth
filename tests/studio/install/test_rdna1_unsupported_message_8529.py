@@ -636,6 +636,45 @@ class TestSetupShKfdOnlyHost:
             assert "lspci" not in rhs, f"_setup_mkt fed from lspci: {rhs!r}"
 
 
+# ── The new variable has to outlive the block that sets it ───────────────────
+
+
+def test_the_unsupported_arch_variable_is_declared_outside_the_amd_block():
+    """install.ps1 reads it on paths an NVIDIA host takes.
+
+    `$ROCmUnsupportedGfxArch` is set inside `if (-not $HasNvidiaSmi)`, but the arms
+    that read it sit outside that gate, so on an NVIDIA host the read is of a variable
+    that was never assigned. `Set-StrictMode -Version Latest` turns that into a hard
+    stop. Install-UnslothStudio runs with strict mode off, which is why this has not
+    bitten, but its five neighbours (HasROCm, HipSdkInstalled, ROCmGpuLabel,
+    ROCmVersion, ROCmGfxArch) are all declared above the gate and this one has to be
+    too. studio/setup.ps1 already hoists its copy.
+    """
+    src = _normalised(_INSTALL_PS1)
+    m = re.search(
+        r"^    \$ROCmGfxArch = \$null\n(?P<between>(?:.*\n)*?)    if \(-not \$HasNvidiaSmi\) \{",
+        src,
+        re.MULTILINE,
+    )
+    assert m, "install.ps1: the AMD declaration block was restructured; re-check this test"
+    assert "$ROCmUnsupportedGfxArch = $null" in m.group("between"), (
+        "install.ps1: $ROCmUnsupportedGfxArch is declared inside the -not $HasNvidiaSmi "
+        "block, so an NVIDIA host reaches its readers with the variable unset"
+    )
+
+
+def test_setup_ps1_hoists_the_unsupported_arch_variable_too():
+    """Same property, expressed as setup.ps1 writes it: at script scope, column 0,
+    so no block can gate the declaration away from the summary that reads it."""
+    src = _normalised(_SETUP_PS1)
+    decl = "$script:ROCmUnsupportedGfxArch = $null"
+    assert decl in src, "setup.ps1: the unsupported-arch declaration is gone"
+    assert any(line == decl for line in src.split("\n")), (
+        "setup.ps1: the unsupported-arch declaration is indented, so it now sits "
+        "inside a block an NVIDIA host skips"
+    )
+
+
 # ── Scope: these sentences speak for one card, not for the host ───────────
 
 

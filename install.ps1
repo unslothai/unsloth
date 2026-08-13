@@ -3158,6 +3158,9 @@ exit 0
     $ROCmGpuLabel = $null
     $ROCmVersion = $null
     $ROCmGfxArch = $null
+    # Declared with its neighbours, not inside the block below: the arms that read
+    # it are outside that gate, so an NVIDIA host would leave it undefined.
+    $ROCmUnsupportedGfxArch = $null
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
@@ -3359,7 +3362,6 @@ exit 0
             @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
-        $ROCmUnsupportedGfxArch = $null
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the probe can't confirm a runtime ($HasROCm false): the
         # WMI-name gfx arch drives both ROCm llama.cpp and torch. repo.amd.com
