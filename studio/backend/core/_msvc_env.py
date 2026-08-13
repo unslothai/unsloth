@@ -42,6 +42,10 @@ _VS_EDITIONS = ("BuildTools", "Community", "Professional", "Enterprise", "Previe
 _VS_YEAR_DIRS = ("18", "2026", "2022", "2019", "2017")
 # Env keys vcvarsall establishes that Triton's clang-cl needs.
 _CARRY = ("INCLUDE", "LIB", "LIBPATH", "PATH")
+# cmd and vswhere emit in the console (OEM) codepage. Decoding that as UTF-8
+# turns a non-ASCII path (C:\Users\José\...) into U+FFFD, and since we overwrite
+# PATH wholesale that silently breaks every later subprocess in this worker.
+_CONSOLE_ENCODING = "oem" if sys.platform == "win32" else "utf-8"
 
 
 def _have_crt_headers() -> bool:
@@ -50,6 +54,18 @@ def _have_crt_headers() -> bool:
         if d and os.path.isfile(os.path.join(d, "stdlib.h")):
             return True
     return False
+
+
+def _vs_sort_key(path: str) -> tuple[int, str]:
+    """Rank a globbed candidate by _VS_YEAR_DIRS order, unknown layouts last.
+
+    Plain reverse-lexicographic would put VS 2026 ("18") behind "2022".
+    """
+    parts = {p.lower() for p in path.split(os.sep)}
+    for i, year in enumerate(_VS_YEAR_DIRS):
+        if year.lower() in parts:
+            return (i, path)
+    return (len(_VS_YEAR_DIRS), path)
 
 
 def _find_vcvarsall() -> str | None:
@@ -72,7 +88,7 @@ def _find_vcvarsall() -> str | None:
                 ],
                 capture_output = True,
                 text = True,
-                encoding = "utf-8",
+                encoding = _CONSOLE_ENCODING,
                 errors = "replace",
                 timeout = 30,
             ).stdout.strip()
@@ -114,7 +130,7 @@ def _find_vcvarsall() -> str | None:
                     "vcvarsall.bat",
                 )
             ),
-            reverse = True,
+            key = _vs_sort_key,
         ):
             if os.path.isfile(cand):
                 return cand
@@ -125,13 +141,18 @@ def _import_vcvars_env(vcvarsall: str, arch: str = "x64") -> bool:
     """Run vcvarsall and copy the toolchain env keys into os.environ."""
     try:
         # `set` after the call dumps the fully-populated developer environment.
-        # errors="replace": cmd emits in the console codepage, and a mangled byte
-        # in some unrelated variable must not take down the whole probe.
+        # vcvarsall's own output is kept (not >nul'd) so a failure has a reason:
+        # "VS present but no C++ workload" is the likeliest one users hit.
+        #
+        # MUST be a string with shell = True, never a list: list2cmdline escapes
+        # the quotes around the path as \" and cmd then can't find vcvarsall,
+        # which every real install trips because VS lives under "Program Files".
         proc = subprocess.run(
-            ["cmd", "/c", f'call "{vcvarsall}" {arch} >nul 2>&1 && set'],
+            f'call "{vcvarsall}" {arch} && set',
+            shell = True,
             capture_output = True,
             text = True,
-            encoding = "utf-8",
+            encoding = _CONSOLE_ENCODING,
             errors = "replace",
             timeout = 120,
         )
@@ -139,6 +160,13 @@ def _import_vcvars_env(vcvarsall: str, arch: str = "x64") -> bool:
         logger.warning("vcvarsall invocation failed: %s", e)
         return False
     if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        logger.warning(
+            "vcvarsall %s exited %d: %s",
+            arch,
+            proc.returncode,
+            detail[-1] if detail else "no output",
+        )
         return False
 
     for line in proc.stdout.splitlines():
