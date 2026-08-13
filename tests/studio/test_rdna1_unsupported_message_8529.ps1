@@ -310,6 +310,31 @@ $peerAssign = @($installAst.FindAll({
 }, $true))
 Check "the WMI scan fills the peer list from every adapter" ($peerAssign.Count -eq 1)
 
+# ...and it must not be gated on $HasROCm. amd-smi can report GPUs with no gfx token and
+# only the first market name, which sets $HasROCm with no arch: gated that way the scan
+# was skipped and the guard above saw an empty peer list on exactly the multi-GPU host it
+# is for. The enclosing if must test the ARCH, which is what decides whether the lookup
+# below can run at all.
+$peerScanGate = $null
+foreach ($assign in $peerAssign) {
+    # Walk PAST the inner `if ($wmiGpu)`: the gate under test is the outer one, the only
+    # condition on this path that mentions either signal.
+    $node = $assign.Parent
+    while ($node) {
+        if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
+            $cond = $node.Clauses[0].Item1.Extent.Text
+            if ($cond.Contains('$ROCmGfxArch') -or $cond.Contains('$HasROCm')) {
+                $peerScanGate = $cond
+                break
+            }
+        }
+        $node = $node.Parent
+    }
+}
+Check "the peer scan is not gated on `$HasROCm" (
+    $peerScanGate -and $peerScanGate.Contains('$ROCmGfxArch') -and -not $peerScanGate.Contains('$HasROCm')
+)
+
 Invoke-Expression (Get-AssignmentSource $installPath '$nameArchTable')
 Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable')
 

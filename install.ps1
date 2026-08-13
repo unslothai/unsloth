@@ -3315,7 +3315,11 @@ exit 0
         # Set outside the scan: only the WMI arm fills it, but the lookup further down reads
         # it on every AMD path, including the amd-smi ones that never enter the block.
         $wmiAmdNames = @()
-        if (-not $HasROCm) {
+        # Keyed on the ARCH, not on $HasROCm: amd-smi can report GPUs with no gfx token and
+        # only the first market name, which sets $HasROCm and used to skip this scan, leaving
+        # the peer guard below blind on exactly the multi-GPU host it exists for. A host that
+        # already has an arch never reaches that lookup, so it still does no WMI work here.
+        if (-not $ROCmGfxArch) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
                 # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
@@ -3332,7 +3336,8 @@ exit 0
                 $wmiAdapters = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })
                 $wmiGpu = $wmiAdapters[0]
                 if ($wmiGpu) {
-                    $ROCmGpuLabel = $wmiGpu.Name
+                    # amd-smi's label wins when it had one; this scan is here for the peers.
+                    if (-not $HasROCm) { $ROCmGpuLabel = $wmiGpu.Name }
                     # Every adapter's name, not just the chosen one: only the peer list tells
                     # "this host has no ROCm-capable GPU" apart from "this host's FIRST adapter
                     # is not the ROCm-capable one". Read by the unsupported lookup below;

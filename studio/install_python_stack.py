@@ -63,6 +63,22 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     or IS_MAC_INTEL
 )
 
+def _is_windows_arm64() -> bool:
+    """Windows on ARM, machine arch rather than process arch: platform.machine() reports
+    AMD64 under an emulated x64 Python, and PROCESSOR_ARCHITEW6432 is ARM64 in exactly
+    that case. Mirrors Get-HostMachineArch in install.ps1 / setup.ps1."""
+    if not IS_WINDOWS:
+        return False
+    return any(
+        (value or "").strip().lower() in {"arm64", "aarch64"}
+        for value in (
+            os.environ.get("PROCESSOR_ARCHITEW6432"),
+            os.environ.get("PROCESSOR_ARCHITECTURE"),
+            platform.machine(),
+        )
+    )
+
+
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Detected ROCm (major, minor) -> best PyTorch wheel tag on
 # download.pytorch.org. Checked newest-first (>=).
@@ -989,13 +1005,21 @@ def _detect_windows_gfx_arch() -> str | None:
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
                     # (#8458 ran an RX 580 through it). PowerShell syntax because this
                     # branch is Windows-only: a pasted VAR=value parses there as a
-                    # command name and sets nothing.
-                    _safe_print(
-                        "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
-                        '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
-                        "It selects the llama.cpp bundle at install time, so setting it "
-                        "afterwards has no effect until you install or update again."
-                    )
+                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
+                    # that variable there, so this would abort the next update.
+                    if _is_windows_arm64():
+                        _safe_print(
+                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
+                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
+                            "from source, or run this on x64."
+                        )
+                    else:
+                        _safe_print(
+                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                            "It selects the llama.cpp bundle at install time, so setting it "
+                            "afterwards has no effect until you install or update again."
+                        )
                 else:
                     _safe_print(
                         f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "

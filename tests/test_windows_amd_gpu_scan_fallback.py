@@ -438,10 +438,12 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
 
 
 def _installer_scan_block() -> str:
-    """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds."""
+    """install.ps1's own WMI fallback plus the name table it feeds. Gated on the ARCH,
+    not on $HasROCm: amd-smi can set the latter with no arch, and the peer list this
+    block builds has to exist on that path too."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = src.index(
-        "        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode"
+        "        if (-not $ROCmGfxArch) {\n            try {\n                # ConfigManagerErrorCode"
     )
     end = src.index("        # Capture ROCm version for wheel selection", start)
     return src[start:end]

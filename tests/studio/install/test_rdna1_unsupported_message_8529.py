@@ -273,6 +273,51 @@ class TestWindowsArm64GetsNoVulkanAdvice:
             )
 
 
+class TestPythonStackWindowsArm64:
+    """The Windows WMI path prints the same Vulkan advice as install.ps1, and the same
+    ARM64 throw applies to it: setup.ps1 rejects the variable there."""
+
+    def test_arm64_gets_a_source_build_note_instead_of_the_setter(self):
+        with patch.object(stack_mod, "_is_windows_arm64", return_value = True):
+            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert "gfx1010" in out, "the card is still named"
+        assert "UNSLOTH_LLAMA_CPP_BACKEND" not in out, (
+            f"ARM64 is still told to set the variable setup.ps1 throws on:\n{out}"
+        )
+        assert "ARM64" in out and "source" in out
+
+    def test_x64_still_gets_the_setter(self):
+        """Positive control: the guard must not silence the advice everywhere."""
+        with patch.object(stack_mod, "_is_windows_arm64", return_value = False):
+            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert "UNSLOTH_LLAMA_CPP_BACKEND" in out
+
+    @pytest.mark.parametrize(
+        "env,expected",
+        [
+            ({"PROCESSOR_ARCHITECTURE": "ARM64"}, True),
+            ({"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": "ARM64"}, True),
+            ({"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": ""}, False),
+        ],
+        ids = ["native-arm64", "emulated-x64-on-arm64", "real-x64"],
+    )
+    def test_the_arch_probe_reads_the_machine_not_the_process(self, env, expected):
+        """PROCESSOR_ARCHITECTURE describes the PROCESS, so an emulated x64 Python on an
+        ARM64 box reports AMD64; ARCHITEW6432 is ARM64 in exactly that case."""
+        with patch.object(stack_mod, "IS_WINDOWS", True):
+            with patch.object(stack_mod.platform, "machine", return_value = "AMD64"):
+                with patch.dict(os.environ, env, clear = False):
+                    for _k in ("PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"):
+                        if _k not in env:
+                            os.environ.pop(_k, None)
+                    assert stack_mod._is_windows_arm64() is expected
+
+    def test_it_is_false_off_windows(self):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            with patch.dict(os.environ, {"PROCESSOR_ARCHITECTURE": "ARM64"}):
+                assert stack_mod._is_windows_arm64() is False
+
+
 class TestWindowsWmiMessage:
     def test_rdna1_adapter_still_yields_no_arch(self):
         """CPU fallback unchanged. This is the assertion that keeps the fix honest."""
@@ -698,8 +743,15 @@ class TestSetupShKfdOnlyHost:
         """rocminfo/amd-smi named the card; lspci is not consulted behind their back."""
         assert _run_setup_kfd_lookup("AMD Radeon RX 5500 XT", _KFD_NAVI10, tmp_path) == "gfx1012"
 
-    def test_a_reported_name_we_do_not_know_claims_nothing(self, tmp_path):
-        assert _run_setup_kfd_lookup("AMD Radeon Graphics", _KFD_NAVI10, tmp_path) == ""
+    def test_an_unmapped_reported_name_falls_through_to_lspci(self, tmp_path):
+        """A name that maps ENDS the lookup (above); one that does not must not, or a
+        generic "AMD Radeon Graphics" from rocminfo hides a card lspci names outright.
+        Only reachable with no gfx from the tools, so a covered compute card cannot be
+        talked over here: rocminfo reports its arch and the supported arm wins first."""
+        assert _run_setup_kfd_lookup("AMD Radeon Graphics", _KFD_NAVI10, tmp_path) == "gfx1010"
+
+    def test_an_unmapped_name_over_a_covered_card_still_claims_nothing(self, tmp_path):
+        assert _run_setup_kfd_lookup("AMD Radeon Graphics", _KFD_NAVI31, tmp_path) == ""
 
     def test_the_report_site_uses_the_lspci_aware_lookup(self):
         src = _normalised(_SETUP_SH)

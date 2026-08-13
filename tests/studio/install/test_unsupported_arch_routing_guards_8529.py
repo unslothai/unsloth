@@ -688,7 +688,7 @@ _SETUP_SH_FUNCS = (
 )
 
 
-def _run_setup_report(tmp_path, lspci_lines: "list[str]") -> str:
+def _run_setup_report(tmp_path, lspci_lines: "list[str]", mkt: str = "") -> str:
     """setup.sh's lookup on the KFD path, where no market name is available and the
     lookup falls back to lspci. Same fixtures as the install.sh summary above."""
     source = _SETUP_SH.read_text(encoding = "utf-8")
@@ -701,7 +701,7 @@ def _run_setup_report(tmp_path, lspci_lines: "list[str]") -> str:
     lspci.write_text(f'#!/bin/sh\ncat "{fixture}"\n', encoding = "utf-8")
     lspci.chmod(0o755)
     script = (
-        f'{funcs}\nif _g=$(_setup_unsupported_gfx_any ""); then echo "UNCOVERED $_g"; '
+        f'{funcs}\nif _g=$(_setup_unsupported_gfx_any "{mkt}"); then echo "UNCOVERED $_g"; '
         "else echo GENERIC; fi\n"
     )
     out = subprocess.run(
@@ -737,6 +737,41 @@ class TestSetupShReportBlamesTheRightCard:
             _run_setup_report(tmp_path, lines) == "GENERIC"
         ), "setup.sh named an uncovered card on a host that also carries a covered one"
 
+    @pytest.mark.parametrize(
+        "mkt",
+        ["", "AMD Radeon Graphics", "Advanced Micro Devices, Inc. [AMD/ATI]"],
+        ids = ["kfd-no-name", "generic-name", "vendor-only"],
+    )
+    def test_an_unmapped_market_name_still_reaches_the_lspci_scan(self, tmp_path, mkt):
+        """rocminfo can hand back a nonempty name that maps to nothing. Returning that
+        failure ended the lookup, so the lspci scan never ran and the report fell back to
+        the plain "AMD ROCm" line this change exists to replace."""
+        assert _run_setup_report(tmp_path, [_RX_5700], mkt).startswith("UNCOVERED"), (
+            f"an unmapped market name ({mkt!r}) hides an uncovered card lspci can see"
+        )
+
+    def test_a_mapped_market_name_short_circuits(self):
+        """The name still wins when it maps: no lspci call is needed or made."""
+        source = _SETUP_SH.read_text(encoding = "utf-8")
+        funcs = "\n".join(
+            textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS
+        )
+        out = subprocess.run(
+            ["sh", "-c", f'{funcs}\n_setup_unsupported_gfx_any "AMD Radeon RX 580"\n'],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 30,
+            # sh itself still has to be found; the point is that lspci is not on PATH,
+            # so a fallback that ran would come back empty and fail this.
+            env = {"PATH": os.path.dirname(shutil.which("sh") or "/bin")},
+        )
+        assert out.stdout.strip() == "gfx803"
+
+    def test_an_unmapped_name_beside_a_covered_peer_stays_quiet(self, tmp_path):
+        verdict = _run_setup_report(tmp_path, [_RX_5700, _RX_7900], "AMD Radeon Graphics")
+        assert verdict == "GENERIC"
+
     def test_the_supported_matcher_still_answers(self, tmp_path):
         """Positive control on the extracted table: without it the guard above would be
         vacuous, since a matcher that never matches also keeps the report quiet."""
@@ -747,3 +782,42 @@ class TestSetupShReportBlamesTheRightCard:
         )
         out = subprocess.run(["sh", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30)
         assert out.stdout.strip() == "gfx1100"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this host")
+@pytest.mark.parametrize(
+    "url,family,pinned",
+    [
+        ("", "", False),
+        ("   ", "", False),
+        ("\t\n ", " ", False),
+        ("https://example/gfx1010", "", True),
+        ("", "rocm7.2", True),
+    ],
+    ids = ["unset", "spaces", "mixed-blank", "url", "family"],
+)
+def test_setup_sh_treats_a_blank_index_pin_as_unset(url, family, pinned):
+    """get_torch_index_url trims both variables and treats a blank one as unset, so a
+    blank value here must not suppress the CPU-only warning. The two lines that decide
+    it are taken from setup.sh rather than retyped."""
+    src = _SETUP_SH.read_text(encoding = "utf-8").replace("\r\n", "\n")
+    start = src.index('_setup_unsup_pin="${UNSLOTH_TORCH_INDEX_URL')
+    end = src.index('if [ -n "$_setup_unsup_pin" ]', start)
+    snippet = textwrap.dedent(src[start:end])
+    out = subprocess.run(
+        ["sh", "-c", f'{snippet}\nif [ -n "$_setup_unsup_pin" ]; then echo PINNED; else echo UNSET; fi\n'],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 30,
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "UNSLOTH_TORCH_INDEX_URL": url,
+            "UNSLOTH_TORCH_INDEX_FAMILY": family,
+        },
+    )
+    assert out.stdout.strip() == ("PINNED" if pinned else "UNSET"), (
+        f"setup.sh read UNSLOTH_TORCH_INDEX_URL={url!r} / _FAMILY={family!r} as "
+        f"{out.stdout.strip()}"
+    )

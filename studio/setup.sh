@@ -1903,9 +1903,12 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
-        if [ -n "$1" ]; then
-            _setup_unsupported_gfx_from_name "$1"
-            return
+        # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
+        # from rocminfo) used to end the lookup here, so the lspci scan below never ran
+        # and the report fell through to the plain "AMD ROCm" line this change replaces.
+        if [ -n "$1" ] && _setup_unsup_named=$(_setup_unsupported_gfx_from_name "$1"); then
+            echo "$_setup_unsup_named"
+            return 0
         fi
         command -v lspci >/dev/null 2>&1 || return 1
         _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
@@ -1940,7 +1943,12 @@ EOF
         # NotImplementedError at import (unsloth/device_type.py).
         # Both lines are false under an explicit index pin, which install_python_stack.py
         # honours for any arch, so a pinned run says what it is doing instead.
-        if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+        # Whitespace-trimmed, as get_torch_index_url trims them: a blank value is unset
+        # there, so treating it as a pin would drop the CPU warning for nothing.
+        # Distinct name: _setup_pin is the XPU block's, and these are globals in POSIX sh.
+        _setup_unsup_pin="${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+        _setup_unsup_pin=$(printf '%s' "$_setup_unsup_pin" | tr -d '[:space:]')
+        if [ -n "$_setup_unsup_pin" ]; then
             substep "The torch index you pinned is used as given, so torch is whatever it publishes."
         else
             substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
