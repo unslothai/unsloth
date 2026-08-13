@@ -37,7 +37,12 @@ def read_install_marker(
     log_message: str,
 ) -> Optional[dict]:
     """Walk up from binary_path to find the install marker JSON.
-    None = no marker (source build / custom path) or invalid JSON."""
+    None = no marker (source build / custom path) or unusable JSON.
+
+    "Unusable" includes JSON that parses but is not an object. A marker holding ``[]``
+    or ``123`` reaches every caller as something without ``.get``, and each of them --
+    the update planner, the backend picker, crash recovery -- then raises AttributeError
+    on what is only a corrupt file. Treat it exactly like unparseable JSON: no marker."""
     if not binary_path:
         return None
     cached = cache.get(binary_path)
@@ -54,6 +59,14 @@ def read_install_marker(
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug(log_message, path = str(candidate), error = str(exc))
                 marker = None
+            else:
+                if not isinstance(marker, dict):
+                    logger.debug(
+                        log_message,
+                        path = str(candidate),
+                        error = f"marker is {type(marker).__name__}, not an object",
+                    )
+                    marker = None
             break
     cache[binary_path] = marker
     return marker
