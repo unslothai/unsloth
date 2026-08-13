@@ -24,7 +24,11 @@ def _home() -> Path:
     return Path(os.environ["UNSLOTH_STUDIO_HOME"])
 
 
-def _seed(family_dir: str, name: str, body: str = "hello\n") -> Path:
+def _seed(
+    family_dir: str,
+    name: str,
+    body: str = "hello\n",
+) -> Path:
     directory = _home() / "logs" / family_dir
     directory.mkdir(parents = True, exist_ok = True)
     path = directory / name

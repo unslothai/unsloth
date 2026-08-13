@@ -56,12 +56,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 # key = value / "key": "value" / --api-key value
-_KV_RE = re.compile(
-    r"(?i)\b(" + _SECRET_KEYS + r")\b([\"']?\s*[:=]\s*[\"']?)([^\"'\s,}\]]{6,})"
-)
-_FLAG_RE = re.compile(
-    r"(?i)(--(?:" + _SECRET_KEYS + r"))(\s+)([^\s\"']{6,})"
-)
+_KV_RE = re.compile(r"(?i)\b(" + _SECRET_KEYS + r")\b([\"']?\s*[:=]\s*[\"']?)([^\"'\s,}\]]{6,})")
+_FLAG_RE = re.compile(r"(?i)(--(?:" + _SECRET_KEYS + r"))(\s+)([^\s\"']{6,})")
 
 
 def _redact_kv(match: re.Match[str]) -> str:
@@ -82,7 +78,6 @@ def redact_log_text(text: str) -> str:
     text = _FLAG_RE.sub(_redact_kv, text)
     try:
         from utils.native_path_leases import redact_native_paths
-
         text = redact_native_paths(text)
     except Exception:
         pass

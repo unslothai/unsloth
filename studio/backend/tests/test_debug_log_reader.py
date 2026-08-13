@@ -22,7 +22,11 @@ from utils.debug_log_reader import (
 )
 
 
-def _write(path: Path, count: int, prefix: str = "line") -> None:
+def _write(
+    path: Path,
+    count: int,
+    prefix: str = "line",
+) -> None:
     path.write_text("".join(f"{prefix}{i}\n" for i in range(count)), encoding = "utf-8")
 
 
@@ -84,7 +88,12 @@ def test_a_huge_file_is_read_in_a_bounded_window(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return self._handle.__exit__(*exc)
 
-    def _counting_open(file, mode = "r", *args, **kwargs):
+    def _counting_open(
+        file,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
         handle = real_open(file, mode, *args, **kwargs)
         return _Counting(handle) if "b" in mode else handle
 

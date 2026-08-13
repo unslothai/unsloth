@@ -68,7 +68,6 @@ def candidate_roots() -> list[Path]:
 
     try:
         from utils.paths import studio_root
-
         _add(studio_root())
     except Exception:
         pass
@@ -76,7 +75,9 @@ def candidate_roots() -> list[Path]:
     # Mirror _swa_cache_path exactly: env override if set, otherwise the legacy
     # home, never both. Adding the legacy home while an override is active would
     # pull a DIFFERENT installation's logs into this one's viewer.
-    env_home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    env_home = (
+        os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+    ).strip()
     if env_home:
         try:
             _add(Path(env_home).expanduser())

@@ -20,12 +20,18 @@ from utils.log_redaction import redact_log_text
 
 # (line, the substring that must be gone)
 SECRETS = [
-    ("Downloading with token hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345", "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345"),
+    (
+        "Downloading with token hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+    ),
     (
         'GET /v1/chat -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg"',
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg",
     ),
-    ("llama-server --api-key sk-proj-AbCdEf0123456789AbCdEf --port 8080", "sk-proj-AbCdEf0123456789AbCdEf"),
+    (
+        "llama-server --api-key sk-proj-AbCdEf0123456789AbCdEf --port 8080",
+        "sk-proj-AbCdEf0123456789AbCdEf",
+    ),
     ("HF_TOKEN=hf_zzzzzzzzzzzzzzzzzzzzzzzzzzz", "hf_zzzzzzzzzzzzzzzzzzzzzzzzzzz"),
     ('{"event":"auth","api_key":"abcdef123456","model":"gpt-4o"}', "abcdef123456"),
     ("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
@@ -33,7 +39,10 @@ SECRETS = [
         "https://cdn.example.com/m.gguf?X-Amz-Signature=deadbeef0123456789&X-Amz-Expires=900",
         "deadbeef0123456789",
     ),
-    ("git clone https://dan:ghp_ABCDEFGHIJKLMNOPQRST0123@github.com/x/y", "ghp_ABCDEFGHIJKLMNOPQRST0123"),
+    (
+        "git clone https://dan:ghp_ABCDEFGHIJKLMNOPQRST0123@github.com/x/y",
+        "ghp_ABCDEFGHIJKLMNOPQRST0123",
+    ),
     ("password: hunter2hunter2", "hunter2hunter2"),
 ]
 

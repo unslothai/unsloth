@@ -67,7 +67,7 @@ def decode_cursor(cursor: Optional[str]) -> Optional[tuple[str, int]]:
     tail, never an error, so a poll loop cannot flash failures."""
     if not cursor or not isinstance(cursor, str) or not cursor.startswith(_CURSOR_PREFIX):
         return None
-    body = cursor[len(_CURSOR_PREFIX):]
+    body = cursor[len(_CURSOR_PREFIX) :]
     try:
         padded = body + "=" * (-len(body) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
@@ -86,7 +86,7 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
         first = data.find(b"\n")
         if first == -1:
             return [], True
-        data = data[first + 1:]
+        data = data[first + 1 :]
         truncated_head = True
     text = data.decode("utf-8", errors = "replace")
     raw = text.split("\n")
@@ -144,7 +144,11 @@ def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
     return result
 
 
-def read_since(path: Path, cursor: Optional[str], max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
+def read_since(
+    path: Path,
+    cursor: Optional[str],
+    max_lines: int = DEFAULT_TAIL_LINES,
+) -> ReadResult:
     """Appended lines only, or a fresh tail when the cursor cannot apply."""
     decoded = decode_cursor(cursor)
     if decoded is None:

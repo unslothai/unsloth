@@ -2158,7 +2158,6 @@ def get_debug_log(
     except (OSError, PermissionError) as exc:
         # The message embeds the path, so it goes through redaction too.
         from utils.log_redaction import redact_log_text
-
         return DebugLogResponse(
             status = "unreadable",
             reason = redact_log_text(str(exc)),
