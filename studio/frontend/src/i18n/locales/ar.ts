@@ -959,12 +959,14 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
+        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
         "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
+      importingChats: "جارٍ استيراد المحادثات: {count} حتى الآن ({percent}%)...",
+      importedChatCountPartial: "تم استيراد {count} محادثة إلى الأخيرة؛ تعذّر حفظ {failed} منها.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",

@@ -993,12 +993,14 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in „Zuletzt verwendet“.",
+        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
       importedChatCount:
         "{count} Konversationen in „Zuletzt verwendet“ importiert.",
+      importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
+      importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",
