@@ -84,7 +84,7 @@ def extract_video_id(url: str) -> Optional[str]:
     else:
         for prefix in _ID_PATH_PREFIXES:
             if parsed.path.startswith(prefix):
-                candidate = parsed.path[len(prefix):].split("/", 1)[0]
+                candidate = parsed.path[len(prefix) :].split("/", 1)[0]
                 break
     return candidate if _VIDEO_ID_RE.fullmatch(candidate) else None
 
@@ -172,9 +172,7 @@ async def _fetch_player(client: httpx.AsyncClient, video_id: str) -> dict[str, A
 
 
 def _select_track(
-    tracks: list[dict[str, Any]],
-    tracklist: dict[str, Any],
-    languages: Sequence[str],
+    tracks: list[dict[str, Any]], tracklist: dict[str, Any], languages: Sequence[str]
 ) -> dict[str, Any]:
     for language in languages:
         wanted = str(language).strip().lower()
@@ -259,9 +257,7 @@ def _track_label(track: dict[str, Any]) -> str:
             return simple
         runs = name.get("runs")
         if isinstance(runs, list):
-            label = "".join(
-                str(run.get("text") or "") for run in runs if isinstance(run, dict)
-            )
+            label = "".join(str(run.get("text") or "") for run in runs if isinstance(run, dict))
             if label:
                 return label
     return str(track.get("languageCode") or "")

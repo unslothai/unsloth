@@ -49,8 +49,7 @@ class TranscriptResponse(BaseModel):
 
 @router.post("/transcript", response_model = TranscriptResponse)
 async def get_transcript(
-    request: TranscriptRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: TranscriptRequest, current_subject: str = Depends(get_current_subject)
 ) -> TranscriptResponse:
     video_id = extract_video_id(request.url)
     if video_id is None:
