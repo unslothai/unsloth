@@ -236,10 +236,47 @@ def test_install_ps1_rechecks_a_migrated_venv():
     clear $_Migrated so the fresh-install path (not the migrated-upgrade path) runs."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     index = source.index("migrated environment is")
-    block = source[index - 1200 : index + 1200]
+    block = source[index - 2400 : index + 1200]
     assert "Get-PythonPlatformTag $VenvPython" in block
     assert "Start-StudioVenvRollback" in block
     assert "$_Migrated = $false" in block
+
+
+def test_an_unreadable_arch_tag_never_rebuilds_a_migrated_venv():
+    """The probe returns "" for a broken interpreter, a one-shot an antivirus
+    blocked, or a base install that moved. Treating that as a wrong architecture
+    sends a working environment -- and whatever the user keeps inside it -- through
+    a rollback whose SUCCESS deletes the original tree. Only a tag we can read and
+    that disagrees is evidence."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    index = source.index("migrated environment is")
+    condition = source[source.index("$migratedTag = Get-PythonPlatformTag") : index]
+    assert "if ($migratedTag -and $migratedTag -ne $wantedTag)" in condition
+
+
+def test_a_migrated_x64_venv_is_kept_even_when_the_tier_is_on():
+    """The tier turns on when no x64 interpreter can be FOUND. If the migrated venv
+    then turns out to have one, rebuilding would delete a training-capable
+    environment and replace it with the reduced one."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    index = source.index("$migratedTag = Get-PythonPlatformTag")
+    block = source[index : source.index("migrated environment is", index)]
+    assert '$script:ArmInferenceOnly -and $migratedTag -eq "win-amd64"' in block
+    assert "$script:ArmInferenceOnly = $false" in block
+    # And the handoff variable goes back with it, or setup.ps1 would still be told
+    # to install the tier into the x64 environment we just decided to keep.
+    assert "Remove-Item Env:UNSLOTH_NO_DATASETS" in block
+
+
+def test_a_failed_install_does_not_leave_the_tier_in_the_callers_shell():
+    """`irm ... | iex` runs this in the caller's PowerShell. The restore beside the
+    other handoff variables happens after the setup call, and every failure before
+    that skips it -- including the one whose message tells the user to install x64
+    Python and re-run in the same terminal."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    failure = source[source.index("function Exit-InstallFailure") :][:1400]
+    assert "UNSLOTH_NO_DATASETS" in failure
+    assert "$script:PreviousNoDatasetsEnv" in failure
 
 
 def test_install_ps1_falls_back_to_the_inference_only_tier():

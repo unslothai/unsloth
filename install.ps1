@@ -290,6 +290,17 @@ function Install-UnslothStudio {
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
+        # The tier handoff is restored after the setup call, which every failure
+        # before it skips. `irm ... | iex` runs this in the CALLER's shell, so a
+        # leak here pins that session to the inference-only tier -- including the
+        # x64 retry this very message asks for.
+        if ($null -ne $script:HadPreviousNoDatasetsEnv) {
+            if ($script:HadPreviousNoDatasetsEnv) {
+                $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
+            } else {
+                Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
+            }
+        }
         if ($TauriMode) {
             exit $Code
         }
@@ -3085,9 +3096,28 @@ exit 0
     # branch below rebuilds from $DetectedPython and a failed reinstall is restorable.
     if ($_Migrated -and (Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython)) {
         $migratedTag = Get-PythonPlatformTag $VenvPython
+        # An x64 environment is never the wrong answer on this host: it can install
+        # everything the tier gives up. So if the tier is only on because no x64
+        # interpreter could be FOUND, and the migrated venv turns out to have one,
+        # keep it and leave the tier -- rebuilding here would delete a working
+        # training-capable environment to replace it with a reduced one.
+        if ($script:ArmInferenceOnly -and $migratedTag -eq "win-amd64") {
+            substep "migrated environment already runs x64 Python -- keeping it, full install." "Yellow"
+            $script:ArmInferenceOnly = $false
+            if ($script:HadPreviousNoDatasetsEnv) {
+                $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
+            } else {
+                Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
+            }
+        }
         $wantedTag = if ($script:ArmInferenceOnly) { "win-arm64" } else { "win-amd64" }
-        if ($migratedTag -ne $wantedTag) {
-            $migratedTagLabel = if ($migratedTag) { $migratedTag } else { "unreadable" }
+        # A tag we could not read is not evidence of the wrong architecture. The probe
+        # returns "" for a broken interpreter, an antivirus-blocked one-shot, or a
+        # relocated base install, and treating that as a mismatch sends a working
+        # environment -- with whatever the user keeps inside it -- through a rollback
+        # whose success deletes the original tree. Only rebuild on a KNOWN mismatch.
+        if ($migratedTag -and $migratedTag -ne $wantedTag) {
+            $migratedTagLabel = $migratedTag
             substep "migrated environment is $migratedTagLabel, this install needs $wantedTag -- rebuilding" "Yellow"
             try {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
@@ -4288,7 +4318,8 @@ exit 0
     # `from unsloth import FastLanguageModel` fail in a tier that advertises chat.
     $script:ArmInferenceSkipPackages = @(
         "datasets", "sqlite-vec", "tiktoken", "openai-whisper", "hf-transfer", "ddgs",
-        "pandas", "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard"
+        "pandas", "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard",
+        "torch-stoi", "librosa"
     )
 
     # Pins that predate their package's first win_arm64 wheel, rewritten in place.

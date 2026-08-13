@@ -1112,6 +1112,15 @@ class TestArm64SkipListParity:
             "torch-c-dlpack-ext",
             "mecab",
             "tensorboard",
+            # Pure Python, but it declares torchaudio, which the PyTorch CPU index
+            # publishes no win_arm64 build of -- the same reason install.ps1 installs
+            # torch and torchvision without it there. extras.txt resolves WITH
+            # dependencies, so this one line failed the entire tier resolution.
+            "torch-stoi",
+            # Pure Python, but requires numba, and numba and llvmlite publish no
+            # win_arm64 wheel at any version. Already optional at the one runtime
+            # caller, which says so.
+            "librosa",
         }
         assert self._python_set() == expected
 
