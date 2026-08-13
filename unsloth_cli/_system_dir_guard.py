@@ -135,8 +135,17 @@ def _is_fully_qualified(path, pathmod):
     current directory, so moving to a profile on another drive silently moves it
     too. Windows calls these drive-relative and root-relative; both have to be
     resolved before the process leaves.
+
+    Spelled out rather than deferred to isabs(), which answered True for a
+    leading separator until Python 3.13 and False after it: the folder a value
+    names cannot depend on the interpreter running the guard.
     """
-    return pathmod.isabs(_strip_extended_prefix(path))
+    stripped = _strip_extended_prefix(path)
+    if stripped.startswith(("\\\\", "//")):
+        # A UNC share names its own root.
+        return True
+    drive, rest = pathmod.splitdrive(stripped)
+    return bool(drive) and rest.startswith(("\\", "/"))
 
 
 def _outside_windows(candidate, windirs, pathmod, sep):

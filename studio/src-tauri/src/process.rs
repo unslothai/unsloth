@@ -1175,10 +1175,11 @@ fn is_fully_qualified(value: &str) -> bool {
     if value.starts_with("\\\\") || value.starts_with("//") {
         return true;
     }
-    let bytes = value.as_bytes();
-    let drive_rooted = matches!(bytes, [drive, b':', sep, ..]
-        if drive.is_ascii_alphabetic() && (*sep == b'\\' || *sep == b'/'));
-    drive_rooted || std::path::Path::new(value).is_absolute()
+    // Spelled out rather than deferred to Path::is_absolute, so the answer is
+    // the same on the Linux runner that tests it as on the Windows machine that
+    // runs it, and the same as _is_fully_qualified in the CLI guard.
+    matches!(value.as_bytes(), [drive, b':', sep, ..]
+        if drive.is_ascii_alphabetic() && (*sep == b'\\' || *sep == b'/'))
 }
 
 /// Whether the value depends on process state `join` cannot see: the current

@@ -884,6 +884,29 @@ def test_cli_guard_pins_the_local_checkout_update_reads():
     assert environ_out["STUDIO_LOCAL_REPO"] == r"C:\Windows\System32\..\src\unsloth"
 
 
+@pytest.mark.parametrize(
+    ("value", "qualified"),
+    [
+        (r"C:\cache", True),
+        ("C:/cache", True),
+        (r"\\server\share\cache", True),
+        (r"\\?\C:\cache", True),
+        (r"\\?\unc\server\share", True),
+        # Rooted, but only to the drive of the current directory.
+        (r"\cache", False),
+        ("/cache", False),
+        # Relative to the current directory on drive D.
+        ("D:cache", False),
+        ("cache", False),
+        (r".\cache", False),
+    ],
+)
+def test_only_a_value_naming_one_folder_counts_as_fully_qualified(value: str, qualified: bool):
+    """isabs() answered True for a leading separator until Python 3.13 and False
+    after it, so the folder a value names must not be decided by it."""
+    assert _system_dir_guard._is_fully_qualified(value, ntpath) is qualified
+
+
 def test_cli_guard_resolves_a_root_relative_override_through_the_os():
     r"""A single leading separator takes the drive of the current directory, so
     moving to a profile on another drive would move the folder with it."""
