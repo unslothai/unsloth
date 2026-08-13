@@ -109,9 +109,7 @@ def test_paste_only_turn_is_not_empty_text():
     body = "Fix the retry backoff\ndetail"
     message = {
         "content": [],
-        "attachments": [
-            {"content": [{"type": "text", "text": _pasted("Fix.txt", body, 28)}]}
-        ],
+        "attachments": [{"content": [{"type": "text", "text": _pasted("Fix.txt", body, 28)}]}],
     }
     # Deep research rejects a message whose text is empty, and a long paste
     # carries all of its text in the attachment.
@@ -122,9 +120,7 @@ def test_typed_text_keeps_the_paste_after_it():
     mc = _load_message_content()
     message = {
         "content": [{"type": "text", "text": "summarise this"}],
-        "attachments": [
-            {"content": [{"type": "text", "text": _pasted("Log.txt", "line", 4)}]}
-        ],
+        "attachments": [{"content": [{"type": "text", "text": _pasted("Log.txt", "line", 4)}]}],
     }
     assert mc.message_text_with_pastes(message) == "summarise this\n\nline"
 
