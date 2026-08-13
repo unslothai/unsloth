@@ -202,3 +202,78 @@ def test_posix_identity_stays_case_sensitive():
     assert debug_log_sources._identity("/a/Server.log") != debug_log_sources._identity(
         "/a/server.log"
     )
+
+
+DESKTOP_FIXTURES = [
+    ("desktop-backend", "logs", "backend-backend-1786344247254-2-s01.log"),
+    ("desktop-install", "logs", "install-1786344247254-2-s01.log"),
+    ("desktop-update", "logs", "update-1786344247254-2-s01.log"),
+    ("desktop-repair", "logs", "repair-repair-1-2-update-update-3-s01.log"),
+    ("desktop-shell", "", "tauri.log"),
+    ("desktop-shell", "", "tauri.log.1"),
+]
+
+
+@pytest.mark.parametrize("family,subdir,name", DESKTOP_FIXTURES, ids = [f[2] for f in DESKTOP_FIXTURES])
+def test_the_desktop_shell_logs_are_offered(family, subdir, name):
+    """The Tauri shell writes these beside the Python logs, and backend-*.log is
+    the ONLY record when the backend dies before its own file logging starts.
+    Without them a user whose app failed to start is told nothing was logged."""
+    directory = _home() / subdir if subdir else _home()
+    directory.mkdir(parents = True, exist_ok = True)
+    (directory / name).write_text("desktop output\n", encoding = "utf-8")
+    sources = debug_log_sources.list_sources()
+    assert any(s.label == name and s.family == family for s in sources), (
+        f"{name} not offered; got {[(s.family, s.label) for s in sources]}"
+    )
+
+
+def test_a_desktop_log_resolves_and_reads_back():
+    directory = _home() / "logs"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "backend-backend-1786344247254-2-s01.log"
+    path.write_text("the backend died before it could open its own log\n", encoding = "utf-8")
+    source = next(s for s in debug_log_sources.list_sources() if s.label == path.name)
+    assert debug_log_sources.resolve_source_id(source.id) == Path(os.path.realpath(path))
+
+
+def test_a_python_log_is_not_claimed_by_a_desktop_family():
+    """logs/ now has both flat desktop files and the per-family subdirectories,
+    so the globs must not overlap."""
+    _seed("server", f"server-20260813-101015-pid{os.getpid()}.log")
+    (_home() / "logs").mkdir(parents = True, exist_ok = True)
+    (_home() / "logs" / "backend-backend-1-2-s01.log").write_text("x\n", encoding = "utf-8")
+    by_family = {}
+    for source in debug_log_sources.list_sources():
+        by_family.setdefault(source.family, []).append(source.label)
+    assert all(label.startswith("server-") for label in by_family.get("server", []))
+    assert all(label.startswith("backend-") for label in by_family.get("desktop-backend", []))
+
+
+def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
+    """logs/llama-server is never pruned and reaches five figures on a real
+    install, while this endpoint is polled once a second."""
+    directory = _home() / "logs" / "llama-server"
+    directory.mkdir(parents = True, exist_ok = True)
+    for i in range(400):
+        (directory / f"llama-17660000{i:03d}-port-8080.log").write_text("x\n", encoding = "utf-8")
+
+    real_stat = Path.stat
+    calls = {"n": 0}
+
+    def _counting_stat(self, *args, **kwargs):
+        calls["n"] += 1
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _counting_stat)
+    files = debug_log_sources._family_files("llama-server")
+    assert len(files) == debug_log_sources.MAX_SOURCES_PER_FAMILY
+    # The cost must track the presort slice, not the directory. The slice is
+    # MAX * 3 candidates and each costs an is_file plus a stat, so the ceiling
+    # is that times two with room to spare; what matters is that it does not
+    # scale with the 400 files present.
+    ceiling = debug_log_sources.MAX_SOURCES_PER_FAMILY * 3 * 2 + 8
+    assert calls["n"] <= ceiling, (
+        f"stat called {calls['n']} times for 400 files; the presort is not working"
+    )
+    assert calls["n"] < 400, "cost still scales with the directory"

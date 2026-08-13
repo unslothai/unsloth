@@ -17,13 +17,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# (subdirectory under a studio home, filename glob). The three writers:
-# run.py:_setup_server_disk_logging, and the llama / diffusion runners in
-# core/inference/llama_cpp.py.
+# (subdirectory under a studio home, filename glob).
+#
+# The Python writers are run.py:_setup_server_disk_logging and the llama /
+# diffusion runners in core/inference/llama_cpp.py.
+#
+# The desktop families below are written by the Tauri shell
+# (src-tauri/src/diagnostics/phase_log.rs) into the logs directory ITSELF, not a
+# subdirectory. They matter more than their position here suggests: backend-*
+# is the shell's capture of the backend's own stdout, and it is the only record
+# that exists when the backend dies BEFORE _setup_server_disk_logging runs. In
+# that case logs/server is empty, so without these the viewer would tell a user
+# whose app failed to start that nothing has been logged, which is the exact
+# dead end this tab was built to remove. tauri.log sits at the home root and
+# rotates to tauri.log.1.
 FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
     "diffusion-server": ("logs/diffusion-server", "diffusion-*.log"),
+    "desktop-backend": ("logs", "backend-*.log"),
+    "desktop-install": ("logs", "install-*.log"),
+    "desktop-update": ("logs", "update-*.log"),
+    "desktop-repair": ("logs", "repair-*.log"),
+    "desktop-shell": ("", "tauri.log*"),
 }
 
 # Per family, so a busy host cannot make the picker unusable. The llama runner
@@ -144,6 +160,17 @@ def _family_files(family: str) -> list[Path]:
             entries = list(directory.glob(pattern))
         except OSError:
             continue
+        # Nothing prunes logs/llama-server, and one file is written per load
+        # ATTEMPT, so a real install reaches five figures: this host has 11,794.
+        # Calling realpath + stat on every one cost ~356ms, and this endpoint is
+        # polled once a second. Every family's filename embeds its creation time
+        # (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>, and the
+        # desktop ones a millisecond epoch), so name order tracks time order and
+        # a cheap presort leaves only a handful to interrogate. The survivors are
+        # still ordered by real mtime below, and the slice is wide enough that a
+        # file whose mtime moved after it was written is still considered.
+        entries.sort(key = lambda entry: entry.name, reverse = True)
+        entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
