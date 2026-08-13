@@ -1045,3 +1045,51 @@ def test_cli_callback_exits_only_on_a_fatal_outcome():
     source = CLI_INIT.read_text(encoding = "utf-8")
     assert "_message, _colour, _fatal = _guard" in source
     assert "if _fatal:\n        raise typer.Exit(code = 1)" in source
+
+
+def test_cli_guard_leaves_values_the_working_directory_does_not_resolve():
+    r"""Three readers in the tree treat these as something other than a path, so
+    anchoring one would change its meaning instead of preserving it: MLX_HOSTFILE
+    holds either a filename or the host list itself, huggingface_hub expands
+    %VAR% in HF_HOME after the guard is gone, and a bare on/off token is ignored
+    by the pre-quant allowlist precisely so there is no "allow all" mode."""
+    environ_out: dict[str, str] = {}
+    values = {
+        "MLX_HOSTFILE": '[{"ssh": "node0"}]',
+        "HF_HOME": r"%LOCALAPPDATA%\hf",
+        "SENTENCE_TRANSFORMERS_HOME": "$MY_CACHE",
+        "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH": "1",
+    }
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = dict(values),
+        environ_out = environ_out,
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+    for name, value in values.items():
+        assert environ_out[name] == value, f"{name} was rewritten to {environ_out[name]}"
+
+
+def test_cli_guard_refuses_a_path_attached_to_its_own_option():
+    r"""`--frontend=.\dist` carries a path inside the option token, so a marked
+    grandchild running it must be refused rather than moved: relocating would
+    silently rebase that path under the profile."""
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", r"--frontend=.\dist"],
+        environ_extra = {_system_dir_guard.DESKTOP_MANAGED_ENV: "1"},
+    )
+    assert (colour, chdir_calls) == ("red", [])
+
+
+def test_cli_guard_refuses_a_root_relative_system_profile():
+    r"""SYSTEM's profile spelled without a drive still names SYSTEM's profile, and
+    it compares equal to no drive-qualified Windows root, so a rooted-only test
+    would send the caller back into the folder it is leaving."""
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        userprofile = r"\Windows\System32\config\systemprofile",
+    )
+    assert (colour, chdir_calls) == ("red", [])

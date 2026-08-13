@@ -154,8 +154,16 @@ def _outside_windows(candidate, windirs, pathmod, sep):
     norm = _normalize(candidate, pathmod)
     for windir in windirs:
         windir_norm = _normalize(windir, pathmod)
-        if norm == windir_norm or norm.startswith(windir_norm + sep):
-            return False
+        # A root-relative candidate carries no drive, so it compares equal to no
+        # drive-qualified root: "\Windows\System32\config\systemprofile" is
+        # SYSTEM's profile whichever drive it lands on, and handing that back is
+        # exactly what this function exists to prevent. So the drive-less
+        # spelling of each Windows root is compared as well.
+        for form in (windir_norm, pathmod.splitdrive(windir_norm)[1]):
+            if not form:
+                continue
+            if norm == form or norm.startswith(form + sep):
+                return False
     return True
 
 
@@ -252,7 +260,12 @@ def _takes_a_path(rest):
         return False
     if rest[0] in _PATH_TAKING_STUDIO_COMMANDS:
         return tuple(rest) not in _STUDIO_COMMANDS
-    return any(not arg.startswith("-") for arg in rest[1:])
+    # rest[0] is the subcommand name, so it is skipped -- unless it is a flag, in
+    # which case there is no subcommand and nothing to skip. An attached value
+    # hides inside its own token, so a leading dash does not clear it:
+    # `studio --frontend=.\dist` carries a path that a relocation would rebase.
+    tail = rest if rest[0].startswith("-") else rest[1:]
+    return any(not arg.startswith("-") or "=" in arg for arg in tail)
 
 
 def is_relocatable_invocation(argv, environ):
@@ -385,6 +398,34 @@ def pin_relative_overrides(
     return pinned
 
 
+# Values a consumer deliberately does not read as a plain path. Anchoring one
+# does not move a folder, it changes what the value means.
+_TOGGLE_TOKENS = frozenset(("1", "true", "yes", "on", "0", "false", "no", "off"))
+
+
+def _names_a_path(value):
+    r"""Whether this value is a path the working directory resolves.
+
+    Three kinds are not, and each has a reader in the tree that proves it:
+
+    - inline JSON. MLX_HOSTFILE holds either a filename or the host list itself
+      (`unsloth_cli/_inference.py`, `_json_rank_count_from_env`), and
+      `C:\Windows\System32\[{...}]` is neither.
+    - a value still holding %VAR% or $VAR. huggingface_hub expands HF_HOME,
+      HF_HUB_CACHE and HF_ASSETS_CACHE itself (constants.py), as does Studio for
+      SENTENCE_TRANSFORMERS_HOME, so the folder is decided after we are gone.
+    - a bare on/off token. UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH skips those exactly
+      so there is no "allow all" mode (`diffusion_prequant.py`,
+      `_allowed_prequant_roots`); anchoring one would turn it into a real
+      allowlisted directory.
+    """
+    if value.startswith(("[", "{")):
+        return False
+    if "%" in value or "$" in value:
+        return False
+    return value.lower() not in _TOGGLE_TOKENS
+
+
 def _anchor(
     value,
     cwd,
@@ -398,6 +439,8 @@ def _anchor(
     """
     value = (value or "").strip()
     if not value or value.startswith("~") or _is_fully_qualified(value, pathmod):
+        return None
+    if not _names_a_path(value):
         return None
     if pathmod.splitdrive(value)[0] or value.startswith(("\\", "/")):
         # "D:cache" is the current directory on drive D and "\cache" is the root

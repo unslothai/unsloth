@@ -1191,73 +1191,99 @@ fn needs_os_resolution(value: &str) -> bool {
     matches!(value.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())
 }
 
+/// Whether the working directory is what resolves this value.
+///
+/// The twin of `_names_a_path` in `unsloth_cli/_system_dir_guard.py`, and for the
+/// same three readers: MLX_HOSTFILE holds either a filename or the host list
+/// itself, huggingface_hub expands %VAR% / $VAR in HF_HOME and its neighbours
+/// after we are gone, and UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH ignores a bare on/off
+/// token precisely so that there is no "allow all" mode. Anchoring any of those
+/// does not move a folder, it changes what the value means.
+fn names_a_path(value: &str) -> bool {
+    if value.starts_with('[') || value.starts_with('{') {
+        return false;
+    }
+    if value.contains('%') || value.contains('$') {
+        return false;
+    }
+    !matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off"
+    )
+}
+
 fn relative_override_pins_from(
     cwd: Option<std::path::PathBuf>,
     work_dir: &std::path::Path,
     lookup: impl Fn(&str) -> Option<String>,
     absolute: impl Fn(&str) -> Option<std::path::PathBuf>,
-) -> Vec<(&'static str, std::path::PathBuf)> {
+) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     let Some(cwd) = cwd else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     // The usual case: the child keeps the directory it inherited, so every
     // relative value still means what it did and nothing is rewritten.
     if cwd == work_dir {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    RELATIVE_PATH_ENV
-        .iter()
-        .filter_map(|name| {
-            let value = lookup(name)?;
-            let value = value.trim();
-            // A `~` value does not consult the working directory.
-            if value.is_empty() || value.starts_with('~') {
-                return None;
+    // A value the OS declines to resolve is refused rather than dropped: moving
+    // the child with that override still relative would retarget it silently,
+    // which is what the pinning exists to prevent. The CLI guard refuses the
+    // same case.
+    let anchor = |value: &str| -> Result<std::path::PathBuf, String> {
+        if needs_os_resolution(value) {
+            // "D:cache" is drive D's own current directory and "\\cache" the
+            // root of the current drive, neither of which join() knows.
+            absolute(value).ok_or_else(|| format!("Could not resolve the path in {value}"))
+        } else {
+            Ok(cwd.join(value))
+        }
+    };
+    let mut pins = Vec::new();
+    for name in RELATIVE_PATH_ENV {
+        let Some(value) = lookup(name) else { continue };
+        let value = value.trim();
+        // A `~` value does not consult the working directory.
+        if value.is_empty() || value.starts_with('~') {
+            continue;
+        }
+        if is_fully_qualified(value) || !names_a_path(value) {
+            continue;
+        }
+        pins.push((*name, anchor(value)?));
+    }
+    for name in PATH_LIST_ENV {
+        let Some(raw) = lookup(name) else { continue };
+        if raw.trim().is_empty() {
+            continue;
+        }
+        // Only reached on Windows, where the separator is ';'.
+        let mut entries: Vec<String> = Vec::new();
+        for entry in raw.split(';') {
+            let entry = entry.trim();
+            if entry.is_empty()
+                || entry.starts_with('~')
+                || is_fully_qualified(entry)
+                || !names_a_path(entry)
+            {
+                entries.push(entry.to_string());
+                continue;
             }
-            if is_fully_qualified(value) {
-                return None;
-            }
-            if needs_os_resolution(value) {
-                // "D:cache" is drive D's own current directory and "\\cache" the
-                // root of the current drive, neither of which join() knows.
-                return Some((*name, absolute(value)?));
-            }
-            Some((*name, cwd.join(value)))
-        })
-        .chain(PATH_LIST_ENV.iter().filter_map(|name| {
-            let raw = lookup(name)?;
-            if raw.trim().is_empty() {
-                return None;
-            }
-            // Only reached on Windows, where the separator is ';'.
-            let entries: Vec<String> = raw
-                .split(';')
-                .map(|entry| {
-                    let entry = entry.trim();
-                    if entry.is_empty() || entry.starts_with('~') || is_fully_qualified(entry) {
-                        return entry.to_string();
-                    }
-                    let anchored = if needs_os_resolution(entry) {
-                        absolute(entry)
-                    } else {
-                        Some(cwd.join(entry))
-                    };
-                    anchored
-                        .map(|path| path.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| entry.to_string())
-                })
-                .collect();
-            let joined = entries.join(";");
-            if joined == raw {
-                return None;
-            }
-            Some((*name, std::path::PathBuf::from(joined)))
-        }))
-        .collect()
+            entries.push(anchor(entry)?.to_string_lossy().into_owned());
+        }
+        let joined = entries.join(";");
+        if joined == raw {
+            continue;
+        }
+        pins.push((*name, std::path::PathBuf::from(joined)));
+    }
+    Ok(pins)
 }
 
 /// Relative overrides, anchored to the directory the child is being moved out of.
-fn relative_override_pins(work_dir: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
+fn relative_override_pins(
+    work_dir: &std::path::Path,
+) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     relative_override_pins_from(
         std::env::current_dir().ok(),
         work_dir,
@@ -1268,29 +1294,48 @@ fn relative_override_pins(work_dir: &std::path::Path) -> Vec<(&'static str, std:
     )
 }
 
+/// Whether the child has to be told where to run.
+///
+/// It does not when that is already where the parent is: reopening the inherited
+/// directory by name can fail (an ancestor turned unreadable after launch) where
+/// simply inheriting the open handle would have worked, so the no-move case is
+/// left exactly as it was before this file learned about working directories.
+fn needs_explicit_cwd(work_dir: &std::path::Path) -> bool {
+    std::env::current_dir()
+        .map(|cwd| cwd != work_dir)
+        .unwrap_or(true)
+}
+
 /// Pin the working directory and mark the child as desktop-managed. Env
 /// scrubbing, creation flags and the ownership handshake stay with the caller.
 pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String> {
-    apply_managed_cli_context_at(cmd, &managed_cli_working_dir()?);
-    Ok(())
+    apply_managed_cli_context_at(cmd, &managed_cli_working_dir()?)
 }
 
-pub(crate) fn apply_managed_cli_context_at(cmd: &mut Command, work_dir: &std::path::Path) {
-    for (name, pinned) in relative_override_pins(work_dir) {
+pub(crate) fn apply_managed_cli_context_at(
+    cmd: &mut Command,
+    work_dir: &std::path::Path,
+) -> Result<(), String> {
+    for (name, pinned) in relative_override_pins(work_dir)? {
         cmd.env(name, pinned);
     }
-    cmd.current_dir(work_dir);
+    if needs_explicit_cwd(work_dir) {
+        cmd.current_dir(work_dir);
+    }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
+    Ok(())
 }
 
 pub(crate) fn apply_managed_cli_context_tokio(
     cmd: &mut tokio::process::Command,
 ) -> Result<(), String> {
     let work_dir = managed_cli_working_dir()?;
-    for (name, pinned) in relative_override_pins(&work_dir) {
+    for (name, pinned) in relative_override_pins(&work_dir)? {
         cmd.env(name, pinned);
     }
-    cmd.current_dir(work_dir);
+    if needs_explicit_cwd(&work_dir) {
+        cmd.current_dir(&work_dir);
+    }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
 }
@@ -1537,7 +1582,7 @@ pub fn start_backend(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    apply_managed_cli_context_at(&mut cmd, &work_dir);
+    apply_managed_cli_context_at(&mut cmd, &work_dir).unwrap();
 
     #[cfg(windows)]
     cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
@@ -2694,7 +2739,8 @@ mod managed_cli_working_dir_tests {
             other => panic!("unexpected value needing the OS: {other}"),
         };
 
-        let pins = relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute);
+        let pins =
+            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute).unwrap();
         assert_eq!(
             pins,
             vec![
@@ -2714,19 +2760,21 @@ mod managed_cli_working_dir_tests {
             "only values that name no directory on their own are rewritten"
         );
 
-        // An unresolvable drive-relative value is left alone, not rewritten.
-        assert!(
-            !relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None)
-                .iter()
-                .any(|(name, _)| *name == "HF_DATASETS_CACHE")
-        );
+        // An unresolvable drive-relative value refuses the whole move rather
+        // than being dropped: a child moved with that override still relative
+        // would read and write somewhere else than the caller named.
+        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None).is_err());
 
         // Staying put is the common case: nothing is rewritten, so a desktop
         // started from a project folder keeps every override as it was.
         assert!(
-            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute).is_empty()
+            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute)
+                .unwrap()
+                .is_empty()
         );
-        assert!(relative_override_pins_from(None, &work_dir, env, absolute).is_empty());
+        assert!(relative_override_pins_from(None, &work_dir, env, absolute)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2929,10 +2977,15 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_configured_command_carries_the_directory_and_the_marker() {
+        // relative_override_pins reads the ambient environment, which another
+        // test may be swapping, so this takes the crate-wide env lock.
+        let _env = crate::native_path_policy::PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let work_dir = scratch("cwd-command-shape");
 
         let mut cmd = Command::new("unsloth");
-        apply_managed_cli_context_at(&mut cmd, &work_dir);
+        apply_managed_cli_context_at(&mut cmd, &work_dir).unwrap();
         assert_eq!(cmd.get_current_dir(), Some(work_dir.as_path()));
         assert!(
             cmd.get_envs()
@@ -2984,6 +3037,30 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_value_the_working_directory_does_not_resolve_is_left_alone() {
+        // Three readers in the tree treat these as something other than a path,
+        // so anchoring one would change its meaning rather than preserve it.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd),
+            &work_dir,
+            |name| match name {
+                // MLX_HOSTFILE holds either a filename or the host list itself.
+                "MLX_HOSTFILE" => Some("[{\"ssh\": \"node0\"}]".to_string()),
+                // huggingface_hub expands this itself, after we are gone.
+                "HF_HOME" => Some("%LOCALAPPDATA%\\hf".to_string()),
+                // A bare toggle is ignored on purpose: there is no "allow all".
+                "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1".to_string()),
+                _ => None,
+            },
+            |_| None,
+        )
+        .unwrap();
+        assert!(pins.is_empty(), "a non-path value was rewritten: {pins:?}");
+    }
+
+    #[test]
     fn each_entry_of_a_path_list_is_anchored_on_its_own() {
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
@@ -2997,7 +3074,8 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |_| None,
-        );
+        )
+        .unwrap();
         let expected = format!("{};D:\\shared;~\\mine", cwd.join("trusted").to_string_lossy());
         assert_eq!(
             pins,
@@ -3011,13 +3089,18 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn configuring_a_command_twice_changes_nothing() {
+        // relative_override_pins reads the ambient environment, which another
+        // test may be swapping, so this takes the crate-wide env lock.
+        let _env = crate::native_path_policy::PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let work_dir = scratch("cwd-command-twice");
 
         let mut once = Command::new("unsloth");
-        apply_managed_cli_context_at(&mut once, &work_dir);
+        apply_managed_cli_context_at(&mut once, &work_dir).unwrap();
         let mut twice = Command::new("unsloth");
-        apply_managed_cli_context_at(&mut twice, &work_dir);
-        apply_managed_cli_context_at(&mut twice, &work_dir);
+        apply_managed_cli_context_at(&mut twice, &work_dir).unwrap();
+        apply_managed_cli_context_at(&mut twice, &work_dir).unwrap();
 
         let envs = |cmd: &Command| {
             let mut pairs: Vec<(String, Option<String>)> = cmd
@@ -3062,7 +3145,8 @@ mod managed_cli_working_dir_tests {
                         .map(|(_, value)| value.clone())
                 },
                 absolute,
-            );
+            )
+            .unwrap();
             if round == 0 {
                 assert_eq!(pins.len(), 2, "the first pass rewrites both values");
             } else {
@@ -3082,13 +3166,21 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_configured_tokio_command_carries_the_directory_and_the_marker() {
+        // relative_override_pins reads the ambient environment, which another
+        // test may be swapping, so this takes the crate-wide env lock.
+        let _env = crate::native_path_policy::PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let expected = managed_cli_working_dir().expect("home must resolve");
         let mut tokio_cmd = tokio::process::Command::new("unsloth");
         apply_managed_cli_context_tokio(&mut tokio_cmd).expect("context must apply");
-        assert_eq!(
-            tokio_cmd.as_std().get_current_dir(),
-            Some(expected.as_path())
-        );
+        // Under test the resolver keeps this process's own directory, and the
+        // child inherits it rather than reopening it by name.
+        let configured = tokio_cmd.as_std().get_current_dir();
+        match std::env::current_dir() {
+            Ok(cwd) if cwd == expected => assert_eq!(configured, None),
+            _ => assert_eq!(configured, Some(expected.as_path())),
+        }
         assert!(
             tokio_cmd
                 .as_std()
@@ -3119,7 +3211,7 @@ mod managed_cli_working_dir_tests {
         let before = std::env::current_dir().unwrap();
         let work_dir = scratch("cwd-parent-untouched");
         let mut cmd = Command::new("unsloth");
-        apply_managed_cli_context_at(&mut cmd, &work_dir);
+        apply_managed_cli_context_at(&mut cmd, &work_dir).unwrap();
         assert_eq!(std::env::current_dir().unwrap(), before);
         fs::remove_dir_all(&work_dir).ok();
     }
@@ -3141,7 +3233,7 @@ mod managed_cli_working_dir_tests {
 
         let mut cmd = Command::new("cmd.exe");
         cmd.args(["/C", "cd"]).stdout(Stdio::piped());
-        apply_managed_cli_context_at(&mut cmd, &expected);
+        apply_managed_cli_context_at(&mut cmd, &expected).unwrap();
         let output = cmd.output().expect("spawn test child");
         let reported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
@@ -3161,7 +3253,7 @@ mod managed_cli_working_dir_tests {
 
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "pwd -P"]).stdout(Stdio::piped());
-        apply_managed_cli_context_at(&mut cmd, &expected);
+        apply_managed_cli_context_at(&mut cmd, &expected).unwrap();
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(ProcessGroup::leader());
         let mut child = wrap.spawn().expect("spawn test child");
