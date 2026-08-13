@@ -711,6 +711,21 @@ class TestPinnedIndexClearsUvEnvParity:
             assert (
                 "$dst.unsloth-old" in text
             ), f"{path.name} must copy the incumbent aside before replacing it"
+            # The publish itself is a transaction: a locked or ACL-denied companion must
+            # unwind like any other failure rather than throwing past the rollback (Stop
+            # preference) or being silently skipped (Continue preference).
+            assert (
+                "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop"
+                in text
+            ), f"{path.name} must copy each executable under -ErrorAction Stop"
+            # And a restore that fails must keep its backup: that failure has the same two
+            # causes as the risky replace, so deleting it is the one path that can leave the
+            # host with less than it started with.
+            restore = text.split("foreach ($dst in $published)", 1)[1]
+            restore = restore.split("foreach ($backup in $backups.Values)", 1)[0]
+            assert "$backups.Remove($dst)" in restore, (
+                f"{path.name} must keep a backup whose restore failed"
+            )
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin

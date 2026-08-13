@@ -2671,7 +2671,17 @@ exit 0
                         continue
                     }
                 }
-                Copy-Item -LiteralPath $src -Destination $dst -Force
+                # -ErrorAction Stop inside a try, not a bare call: under Install-UnslothStudio's
+                # Stop preference this throws past the rollback below and leaves a mismatched
+                # set plus the .unsloth-old copies, and under setup.ps1's Continue preference it
+                # silently keeps a stale companion. A locked or ACL-denied destination is the
+                # case that reaches here, and it has to unwind like any other failure.
+                try {
+                    Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                } catch {
+                    $ok = $false
+                    break
+                }
                 $published += $dst
                 if ($exe -eq "uv.exe") {
                     # Copy-Item is non-terminating under the caller's ErrorActionPreference, so
@@ -2693,7 +2703,18 @@ exit 0
             if (-not $ok) {
                 foreach ($dst in $published) {
                     if ($backups.ContainsKey($dst)) {
-                        Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction SilentlyContinue
+                        try {
+                            Copy-Item -LiteralPath $backups[$dst] -Destination $dst -Force -ErrorAction Stop
+                        } catch {
+                            # The restore failed for the same two reasons the replace was risky:
+                            # the incumbent is open, or the ACL denies the write. Every other
+                            # failure in this block leaves the host with what it started with, and
+                            # deleting this backup below would make it the one that does not. Keep
+                            # it and say where it is.
+                            $keptPath = $backups[$dst]
+                            $backups.Remove($dst)
+                            substep "could not restore $dst; the previous copy is kept at $keptPath." "Yellow"
+                        }
                     } else {
                         # Nothing was there before this run, so removing ours leaves the
                         # destination exactly as it was found.

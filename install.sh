@@ -5368,8 +5368,12 @@ _persist_login_path_dir() {
         mkdir -p "$_plp_fish_dir" 2>/dev/null || return 0
         _plp_fish="$_plp_fish_dir/unsloth.fish"
         if ! grep -qF "$_plp_dir" "$_plp_fish" 2>/dev/null; then
+            # Single-quoted, because an unquoted path with a space is two arguments to
+            # fish_add_path and neither of them exists. Inside fish single quotes only \\ and
+            # \' carry meaning, so escaping those two is the whole job.
+            _plp_quoted=$(printf '%s' "$_plp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
             echo "# Added by Unsloth installer" >> "$_plp_fish"
-            echo "fish_add_path $_plp_dir" >> "$_plp_fish"
+            echo "fish_add_path '$_plp_quoted'" >> "$_plp_fish"
             step "path" "added $_plp_label to PATH in $_plp_fish"
         fi
         return 0
@@ -5420,7 +5424,11 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] && [ "$_UNSLOTH_UV_BIN_DIR" != "$_LOCAL_BIN
     case ":$_UNSLOTH_LOGIN_PATH:" in
         *":$_UNSLOTH_UV_BIN_DIR:"*) ;;  # already on the PATH a new shell will inherit
         *)
-            _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_UNSLOTH_UV_BIN_DIR" \
+            # The rc line is written inside double quotes, so a path holding $, ` or " would
+            # otherwise be expanded or terminated by the shell that reads it. The default
+            # ~/.local/bin literal is exempt: its $HOME is meant to stay unexpanded.
+            _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+            _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_rc_literal" \
                 "$_UNSLOTH_UV_BIN_DIR" "$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')"
             ;;
     esac

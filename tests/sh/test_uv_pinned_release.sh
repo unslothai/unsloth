@@ -661,6 +661,54 @@ else
     ok "UV_NO_MODIFY_PATH still suppresses the uv directory write"
 fi
 
+# A path with a space is two arguments to fish_add_path and neither of them exists, so the
+# drop-in has to quote. The home directory alone is enough to hit this.
+mkdir -p "$WORK/fish sp home/.local/bin"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/fish sp home"; export HOME
+    SHELL="/usr/bin/fish"; export SHELL
+    unset ZSH_VERSION XDG_CONFIG_HOME
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+_fish_line=$(grep 'fish_add_path' "$WORK/fish sp home/.config/fish/conf.d/unsloth.fish" 2>/dev/null)
+if [ "$_fish_line" = "fish_add_path '$WORK/fish sp home/.local/bin'" ]; then
+    ok "a fish path with a space is written as one quoted argument"
+else
+    bad "a fish path with a space is written as one quoted argument ($_fish_line)"
+fi
+
+# The rc line is written inside double quotes, so a custom uv directory holding $ or a backtick
+# would be expanded by the shell that reads it rather than treated as a path.
+mkdir -p "$WORK/uvmeta_home/.local/bin" "$WORK/uvmeta_home/opt/a\$b/bin"
+: > "$WORK/uvmeta_home/.bashrc"
+(
+    set +e
+    step() { :; }
+    HOME="$WORK/uvmeta_home"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION UV_NO_MODIFY_PATH
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    _UNSLOTH_UV_BIN_DIR="$HOME/opt/a\$b/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+# Read it back the way a login shell would: source the file and ask what PATH holds.
+_uvmeta_path=$(HOME="$WORK/uvmeta_home"; PATH="/usr/bin:/bin"; . "$WORK/uvmeta_home/.bashrc" 2>/dev/null; printf '%s' "$PATH")
+case ":$_uvmeta_path:" in
+    *":$WORK/uvmeta_home/opt/a\$b/bin:"*)
+        ok "a uv directory holding shell metacharacters survives the rc round trip" ;;
+    *)
+        bad "a uv directory holding shell metacharacters survives the rc round trip" ;;
+esac
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
