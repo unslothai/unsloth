@@ -37,11 +37,10 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
-#                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
-#                           selects Vulkan even when CUDA or ROCm is detected.
-#                           "hip"/"rocm" keeps the detected HIP backend and opts
-#                           out of automatic Vulkan fallback.
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
+#                           "hip", or "rocm". Concrete values select and persist a
+#                           backend across updates; "auto" restores detection.
+#                           Overrides Studio's Settings > System selection.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -2049,6 +2048,30 @@ if [ "$_setup_torch_is_xpu" = true ]; then
     run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
 fi
+# The supported name table, as a matcher so the report below can ask it about a PEER adapter
+# without disturbing $_setup_gfx. Kept in sync with install.sh (and the PS nameArchTable).
+# gfx1102 before gfx1100 so the spaceless "RX 7700S" lands on gfx1102 (case has no lookahead).
+_setup_supported_gfx_from_name() {
+    _sup_gfx_in="$1"
+    _sup_gfx_out=""
+    case "$_sup_gfx_in" in
+        *9070*|*9080*|*"R9700"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
+        *9060*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
+        *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _sup_gfx_out="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
+        *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
+        *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
+        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+    esac
+    [ -n "$_sup_gfx_out" ] || return 1
+    printf '%s\n' "$_sup_gfx_out"
+}
+
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -2077,8 +2100,9 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
         # missing but the kernel exposes the GPU, so the source-build gate
-        # below does not drop them to a CPU llama.cpp build. No gfx arch is
-        # available from this path; name-based inference handles it.
+        # below does not drop them to a CPU llama.cpp build. Neither a gfx arch
+        # nor a marketing name is available from this path, so the report below
+        # reads lspci rather than _setup_mkt when it needs to name the card.
         _setup_amd_detected=true
     fi
 fi
@@ -2100,23 +2124,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
-        # Kept in sync with the table in install.sh (and the PS nameArchTable).
-        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
-        # gfx1102 (bash case has no negative lookahead like the PS tables).
-        case "$_setup_mkt" in
-            *9070*|*9080*|*"R9700"*)                                                                       _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
-            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
-            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
-            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
-            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
-            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _setup_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
-        esac
+        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -2131,8 +2139,88 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
+    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+    # and Polaris 10/20/30 (unslothai#8529). Kept apart from the inference table above on
+    # purpose: it only words the report below, never selects a wheel index or prebuilt.
+    # AMD's TheRock ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here,
+    # and never gfx803. Order is load-bearing: `case` has no negative lookahead, so the
+    # RDNA 1 arms must precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
+    # Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
+    # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 is left out.
+    # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi, lspci)
+    # spells these names as pci.ids does.
+    _setup_unsupported_gfx_from_name() {
+        case "$1" in
+            *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
+            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro 5700"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
+            *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
+            *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*|*"Radeon Pro WX 7100"*|*"Radeon Pro WX 5100"*) echo gfx803 ;;  # Polaris 10/20/30
+            *) return 1 ;;
+        esac
+    }
+    # The KFD sysfs fallback above detects the GPU with neither rocminfo nor amd-smi, so it
+    # leaves _setup_mkt empty -- and a runtime-less host is precisely the one this report
+    # exists for. lspci still names the card there, the source install.sh already reads.
+    # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
+    # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
+    _setup_unsupported_gfx_any() {
+        # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
+        # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
+        # Only when lspci can answer: with no adapter list there is no peer to find, and
+        # suppressing there would silence the single-card host this report exists for.
+        _setup_unsup_pci=""
+        if command -v lspci >/dev/null 2>&1; then
+            _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            while IFS= read -r _setup_unsup_ln; do
+                [ -n "$_setup_unsup_ln" ] || continue
+                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                    return 1
+                fi
+            done <<EOF
+$_setup_unsup_pci
+EOF
+        fi
+        # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
+        # from rocminfo) used to end the lookup here, so the lspci scan below never ran
+        # and the report fell through to the plain "AMD ROCm" line this change replaces.
+        if [ -n "$1" ] && _setup_unsup_named=$(_setup_unsupported_gfx_from_name "$1"); then
+            echo "$_setup_unsup_named"
+            return 0
+        fi
+        [ -n "$_setup_unsup_pci" ] || return 1
+        while IFS= read -r _setup_unsup_ln; do
+            [ -n "$_setup_unsup_ln" ] || continue
+            if _setup_unsup_hit=$(_setup_unsupported_gfx_from_name "$_setup_unsup_ln"); then
+                echo "$_setup_unsup_hit"
+                return 0
+            fi
+        done <<EOF
+$_setup_unsup_pci
+EOF
+        return 1
+    }
     if [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
+    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
+        step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
+        # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+        # NotImplementedError at import (unsloth/device_type.py).
+        # Both lines are false under an explicit index pin, which install_python_stack.py
+        # honours for any arch, so a pinned run says what it is doing instead.
+        # Whitespace-trimmed, as get_torch_index_url trims them: a blank value is unset
+        # there, so treating it as a pin would drop the CPU warning for nothing.
+        # Distinct name: _setup_pin is the XPU block's, and these are globals in POSIX sh.
+        _setup_unsup_pin="${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+        _setup_unsup_pin=$(printf '%s' "$_setup_unsup_pin" | tr -d '[:space:]')
+        if [ -n "$_setup_unsup_pin" ]; then
+            substep "The torch index you pinned is used as given, so torch is whatever it publishes."
+        else
+            substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
+            substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
+        fi
+        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+        substep "it afterwards has no effect until you install or update again."
     else
         step "gpu" "AMD ROCm"
     fi
@@ -2178,16 +2266,17 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
-_explicit_vulkan_source_build=false
+_explicit_llama_source_backend=""
 if [ "$_HOST_SYSTEM" != "Darwin" ]; then
     case "$_source_backend_choice" in
-        vulkan) _explicit_vulkan_source_build=true ;;
-        cpu|hip|rocm) ;;
+        hip) _explicit_llama_source_backend="rocm" ;;
+        cpu|cuda|rocm|vulkan) _explicit_llama_source_backend="$_source_backend_choice" ;;
+        auto) ;;
         *)
             case "$_source_legacy_force_vulkan" in
-                1|true|yes|on) _explicit_vulkan_source_build=true ;;
+                1|true|yes|on) _explicit_llama_source_backend="vulkan" ;;
             esac
             ;;
     esac
@@ -2361,10 +2450,10 @@ fi
 
 if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
     : # local directory linked above; skip prebuilt install
-elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
-    setup_fail 1 "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+elif [ -n "$_explicit_llama_source_backend" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    step "llama.cpp" "$_explicit_llama_source_backend was explicitly requested, but this installation requires a source build" "$C_ERR"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND"
+    setup_fail 1 "$_explicit_llama_source_backend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
@@ -2410,40 +2499,26 @@ else
         # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
-    # The normalized override affects llama.cpp only, not the training backend.
-    _llama_backend="$_source_backend_choice"
-    _legacy_force_vulkan="$_source_legacy_force_vulkan"
-    _explicit_vulkan_backend=false
-    case "$_llama_backend" in
+    # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself, and it
+    # is also the only side that can see a choice recorded in the install marker,
+    # so forwarding a second copy from here could only ever disagree with it. The
+    # override affects llama.cpp alone, not the training backend.
+    case "$_source_backend_choice" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
-            else
-                _PREBUILT_CMD+=(--force-cpu)
             fi
             ;;
         vulkan)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
-                _PREBUILT_CMD+=(--llama-backend vulkan)
-                _explicit_vulkan_backend=true
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
-        ""|auto|hip|rocm) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+        ""|auto|cuda|hip|rocm) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_source_backend_choice' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
-    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
-        case "$_llama_backend" in
-            cpu|vulkan|hip|rocm) ;;
-            *)
-                case "$_legacy_force_vulkan" in
-                    1|true|yes|on) _explicit_vulkan_backend=true ;;
-                esac
-                ;;
-        esac
-    fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
@@ -2483,13 +2558,22 @@ else
         substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
         _LLAMA_CPP_NO_SPACE=true
         _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
-        # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-        # request, and it leaves _LLAMA_CPP_DEGRADED false, so without this the
-        # run reports success on the backend the user asked to replace.
-        if [ "$_explicit_vulkan_backend" = true ]; then
-            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
-            setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+        # A preserved server may not satisfy an explicit backend request, and it
+        # leaves _LLAMA_CPP_DEGRADED false. Never report success on an unverified
+        # backend after the requested replacement ran out of space.
+        if [ -n "$_explicit_llama_source_backend" ]; then
+            step "llama.cpp" "$_explicit_llama_source_backend was explicitly requested, so the installer will not keep an unverified existing backend" "$C_ERR"
+            setup_fail 1 "$_explicit_llama_source_backend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
         fi
+    elif [ "$_PREBUILT_STATUS" -eq 5 ]; then
+        step "llama.cpp" "selected backend could not be installed" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "prebuilt update failed; existing install restored"
+        fi
+        substep "check the error above, choose another backend, or retry"
+        setup_fail 1 "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -2497,14 +2581,11 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        if [ "$_explicit_vulkan_backend" = true ]; then
-            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
-            substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
-            setup_fail 1 "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
-        else
-            substep "falling back to source build"
-            _NEED_LLAMA_SOURCE_BUILD=true
-        fi
+        # Exit 2 means no concrete backend was in play: a request the installer
+        # could not honour -- named here or recorded in the install marker, which
+        # this script cannot see -- exits 5 above instead.
+        substep "falling back to source build"
+        _NEED_LLAMA_SOURCE_BUILD=true
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"
