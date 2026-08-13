@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject
-from core.inference.message_content import content_to_text
+from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
@@ -309,7 +309,7 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    if not content_to_text(user_message.get("content")).strip():
+    if not message_text_with_pastes(user_message).strip():
         raise HTTPException(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
