@@ -87,8 +87,9 @@ def test_warning_handler_gated_on_module_flag():
     assert try_node is not None
     # #8603 widened this from ImportError deliberately: a half-built unsloth_zoo raises
     # RuntimeError or AttributeError, and the pin is an optimisation that must not fail an
-    # export. Reverting to ImportError alone would abort those exports again, so the handler
-    # has to catch Exception, or name the non-import cases explicitly.
+    # export. Reverting to ImportError alone would abort those exports again, so the handler has
+    # to catch Exception, or name all three: dropping ImportError from an explicit tuple loses
+    # the missing-module case this pin started out handling.
     def _caught_names(handler) -> set[str]:
         if isinstance(handler.type, ast.Name):
             return {handler.type.id}
@@ -100,7 +101,7 @@ def test_warning_handler_gated_on_module_flag():
         h
         for h in try_node.handlers
         if "Exception" in _caught_names(h)
-        or {"RuntimeError", "AttributeError"} <= _caught_names(h)
+        or {"ImportError", "RuntimeError", "AttributeError"} <= _caught_names(h)
     ]
     assert covering, (
         "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
