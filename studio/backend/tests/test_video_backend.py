@@ -2107,6 +2107,64 @@ def test_base_download_files_skips_the_partition_the_prequant_checkpoint_replace
     )
 
 
+def _h3_pipeline_load_is_attemptable(fam) -> bool:
+    """Whether validate_load_request can even reach a pick's own checks for an H3 pipeline here.
+
+    Two of its refusals are about the machine, not the request: Metal cannot place the modular
+    workflow at all (torch.mps exposes no mem_get_info for the auto CPU offload), and a diffusers
+    without the bundled revision has no transformer class to build. Both raise the same ValueError
+    a genuine refusal does, so a caller that reads any ValueError as "this pick was rejected"
+    reports a regression on hosts where the pick was never in question.
+
+    No diffusers at all is the third such host, and it is a supported one: studio.txt does not
+    install diffusers (it arrives with the torch-bound ML stack), and the native sd.cpp engine
+    serves H3 without it. assert_pipeline_class_available answers only "is the installed
+    diffusers new enough", so under its default non-strict mode an unimportable one returns
+    rather than raising -- which means it cannot be the guard for this, and the probe below has
+    to carry its own."""
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    if resolve_diffusion_device_target().device == "mps":
+        return False
+    try:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+    except Exception:  # noqa: BLE001 -- an unavailable pipeline class is a host fact, not a verdict
+        return False
+    if fam.modular_workflow:
+        try:
+            import diffusers
+
+            # hasattr, not the import, is what pulls in the lazy submodule, so a partially
+            # installed diffusers raises here rather than at the import statement.
+            return hasattr(diffusers, fam.transformer_class)
+        except Exception:  # noqa: BLE001 -- no importable diffusers is a host fact too
+            return False
+    return True
+
+
+def test_the_h3_attemptability_probe_survives_a_host_without_diffusers(monkeypatch):
+    """The probe exists to turn host limitations into "not attemptable" instead of a red test, so
+    it must not itself raise on the most ordinary limitation of all. studio.txt installs no
+    diffusers, and assert_pipeline_class_available does NOT stand in for the check: non-strict is
+    its default and an unimportable diffusers makes it return, not raise, so control reaches the
+    modular-workflow probe below it. Unguarded, that probe raised ModuleNotFoundError straight out
+    of the helper and failed the caller before its own `except Exception` could see it."""
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    # H3 is modular, so the probe really does reach the import this guards.
+    assert fam.modular_workflow
+
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers_import)
+    assert _h3_pipeline_load_is_attemptable(fam) is False
+
+
 def test_a_quantized_reference_load_resolves_the_reference_denoiser():
     # This pairing used to be refused outright: the only hosted checkpoints were fl2va denoisers,
     # and one seeded into the reference workflow would have installed cleanly, passed every
@@ -2117,23 +2175,27 @@ def test_a_quantized_reference_load_resolves_the_reference_denoiser():
 
     backend = VideoBackend()
     fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    # The resolution below is a registry lookup and holds on every host; only the refusal check
+    # needs a host that can attempt the load at all.
+    check_refusal = _h3_pipeline_load_is_attemptable(fam)
     for scheme, expected in (
         ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
         ("fp8", "MiniMax-H3-Ref2VA-FP8.pt"),
     ):
-        try:
-            backend.validate_load_request(
-                "MiniMaxAI/MiniMax-H3",
-                family_override = "minimax-h3",
-                model_kind = "pipeline",
-                transformer_quant = scheme,
-                h3_task = "ref2va",
-            )
-        except ValueError as exc:  # pragma: no cover - only on a regression
-            pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
-        except Exception:
-            # Anything past the quant check (the diffusers probe) is not this test's business.
-            pass
+        if check_refusal:
+            try:
+                backend.validate_load_request(
+                    "MiniMaxAI/MiniMax-H3",
+                    family_override = "minimax-h3",
+                    model_kind = "pipeline",
+                    transformer_quant = scheme,
+                    h3_task = "ref2va",
+                )
+            except ValueError as exc:  # pragma: no cover - only on a regression
+                pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
+            except Exception:
+                # Anything past the quant check (the diffusers probe) is not this test's business.
+                pass
         source = resolve_prequant_source(fam, scheme, task = "ref2va")
         assert source.filename == expected
 
