@@ -2869,6 +2869,77 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn configuring_a_command_twice_changes_nothing() {
+        let work_dir = scratch("cwd-command-twice");
+
+        let mut once = Command::new("unsloth");
+        apply_managed_cli_context_at(&mut once, &work_dir);
+        let mut twice = Command::new("unsloth");
+        apply_managed_cli_context_at(&mut twice, &work_dir);
+        apply_managed_cli_context_at(&mut twice, &work_dir);
+
+        let envs = |cmd: &Command| {
+            let mut pairs: Vec<(String, Option<String>)> = cmd
+                .get_envs()
+                .map(|(key, value)| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.map(|v| v.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+            pairs.sort();
+            pairs.dedup();
+            pairs
+        };
+        assert_eq!(envs(&once), envs(&twice));
+        assert_eq!(twice.get_current_dir(), Some(work_dir.as_path()));
+        fs::remove_dir_all(&work_dir).ok();
+    }
+
+    #[test]
+    fn pinning_an_already_pinned_value_is_a_no_op() {
+        // The child's environment reaches grandchildren, and the desktop
+        // resolves the directory again on every spawn, so the rewrite has to
+        // land on the same value however many times it runs.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let absolute = |_: &str| Some(PathBuf::from("D:\\work\\datasets"));
+
+        let mut values = vec![
+            ("HF_HOME", "cache".to_string()),
+            ("HF_DATASETS_CACHE", "D:datasets".to_string()),
+        ];
+        for round in 0..3 {
+            let pins = relative_override_pins_from(
+                Some(cwd.clone()),
+                &work_dir,
+                |name| {
+                    values
+                        .iter()
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| value.clone())
+                },
+                absolute,
+            );
+            if round == 0 {
+                assert_eq!(pins.len(), 2, "the first pass rewrites both values");
+            } else {
+                assert!(pins.is_empty(), "pass {round} rewrote an anchored value");
+            }
+            for (name, pinned) in pins {
+                let slot = values.iter_mut().find(|(key, _)| *key == name).unwrap();
+                slot.1 = pinned.to_string_lossy().into_owned();
+            }
+        }
+        // The separator is whatever this platform's join produces; the point is
+        // that the value stopped moving after the first pass.
+        assert_eq!(values[0].1, cwd.join("cache").to_string_lossy());
+        assert_eq!(values[1].1, "D:\\work\\datasets");
+        assert!(is_rooted(&values[0].1) && is_rooted(&values[1].1));
+    }
+
+    #[test]
     fn a_configured_tokio_command_carries_the_directory_and_the_marker() {
         let expected = managed_cli_working_dir().expect("home must resolve");
         let mut tokio_cmd = tokio::process::Command::new("unsloth");
