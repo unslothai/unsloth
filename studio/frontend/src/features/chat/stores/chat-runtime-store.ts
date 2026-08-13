@@ -1866,6 +1866,16 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
+    // A load sets this from the model's own capability, and only a load sets
+    // reasoningAlwaysOn, so a stored false would ask a model that cannot stop
+    // thinking to stop thinking.
+    if (
+      key === "reasoningEnabled" &&
+      value === false &&
+      state.reasoningAlwaysOn
+    ) {
+      continue;
+    }
     // Only a local model or an openai_codex provider can run deep research, so a
     // stored true must not arm the pill for any other external checkpoint.
     if (
