@@ -4177,10 +4177,10 @@ class LlamaCppBackend:
         elif not _tensor_parallel_matches_loaded(
             extra_args, intent.tensor_parallel, self._tensor_parallel
         ):
-            # A mode the arch gate normalised away is this request normalized, not a
-            # different one -- the same rule the dropped ratio below follows. One
-            # direction only, and guarded on a RECORDED drop: a launch that dropped
-            # nothing must not excuse a live tensor server against a layer request.
+            # A mode the gate normalised away is this request normalized, not a
+            # different one (the rule the dropped ratio below follows). One direction,
+            # guarded on a RECORDED drop, so a launch that dropped nothing cannot
+            # excuse a live tensor server against a layer request.
             if not (self._arch_gate_dropped_tensor_parallel and not self._tensor_parallel):
                 return False
         if (
@@ -11774,14 +11774,13 @@ class LlamaCppBackend:
                         and self._host_torch_is_rocm()
                     ):
                         _ungated = self._get_gpu_memory(binary)
-                        # Re-derive the gate's own verdict rather than inferring it
-                        # from the empty result. _get_gpu_memory turns any probe error
-                        # into [], so "gated empty, ungated not" also describes a
-                        # one-shot failure of the FIRST probe on a host the gate never
-                        # filters -- and masking that launch onto the CPU would be a
-                        # silent, permanent performance cliff. Same rule the filter
-                        # uses: unknown coverage keeps every device, and so does a
-                        # device whose arch we cannot read.
+                        # Re-derive the gate's verdict rather than infer it from the
+                        # empty result: _get_gpu_memory turns any probe error into [],
+                        # so "gated empty, ungated not" also describes a one-shot
+                        # failure of the FIRST probe on a host the gate never filters,
+                        # and masking that onto CPU is a silent, permanent cliff. Same
+                        # rule the filter uses -- unknown coverage keeps every device,
+                        # and so does an unreadable arch.
                         _coverage = self._installed_llama_gfx_archs(binary)
                         _arch_by_id = self._rocm_arch_by_physical_id() if _ungated else {}
                         _all_uncovered = (
@@ -13750,12 +13749,12 @@ class LlamaCppBackend:
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
                 )
-                # The gate masks every device away, so the child runs entirely from
-                # host RAM whatever the request asked for. _weights_in_host_memory
-                # answered for the ORIGINAL placement (a manual full offload onto
-                # discrete cards reads as not host-resident), so without this the
-                # page-lock the user asked for is skipped and _memory_mlock_applicable
-                # records the missing lock as deliberate -- which no relaunch undoes.
+                # The gate masks every device away, so the child runs from host RAM
+                # whatever was asked for, while _weights_in_host_memory answered for the
+                # ORIGINAL placement (a manual full offload onto discrete cards reads as
+                # not host-resident). Without this the page-lock is skipped and
+                # _memory_mlock_applicable records that as deliberate, which no relaunch
+                # undoes.
                 if _arch_gate_forced_cpu:
                     _mem_host_resident = True
                 _mem_managed, _mem_extras = apply_model_memory_policy(
@@ -14016,9 +14015,8 @@ class LlamaCppBackend:
                             "flags, which abort a server with no visible device."
                         )
                         cmd = _cpu_cmd
-                        # Recorded, or the next Apply re-sends the same request, reads
-                        # the normalized server as a different one, and tears down and
-                        # rebuilds a multi-GB model every time.
+                        # Recorded, or the next Apply reads the normalized server as a
+                        # different one and rebuilds a multi-GB model every time.
                         if self._tensor_parallel:
                             self._arch_gate_dropped_tensor_parallel = True
                         if self._tensor_split:
@@ -14590,11 +14588,10 @@ class LlamaCppBackend:
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
-                            # No _arch_gate_dropped_tensor_split record here, unlike the
-                            # proactive gate: _tensor_split is non-None only in manual
-                            # mode, which empties the pool to bypass the planner and so
-                            # leaves gpu_indices None -- and this arm needs it truthy.
-                            # A ratio can never be live where this runs.
+                            # No ratio record here, unlike the proactive gate:
+                            # _tensor_split is non-None only in manual mode, which
+                            # empties the pool and so leaves gpu_indices None, and this
+                            # arm needs it truthy. No ratio can be live where this runs.
                             self._tensor_split = None
                         # A tensor split needs two devices, so narrowing to one makes
                         # --split-mode tensor a no-op still REPORTED as active

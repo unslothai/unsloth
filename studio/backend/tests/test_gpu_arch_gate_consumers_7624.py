@@ -1025,9 +1025,9 @@ class TestGatedSplitStillDeduplicates:
 
 
 class TestGatedTensorModeStillDeduplicates:
-    """The same rule for the split MODE. ``_tensor_parallel_matches_loaded`` compares
+    """The same rule for the split MODE: ``_tensor_parallel_matches_loaded`` compares
     the unchanged request against the layer-split server the gate left behind, so
-    without the recorded drop an identical Apply reloads the same normalized model."""
+    without the record an identical Apply reloads the same normalized model."""
 
     def _backend(self, dropped_mode):
         backend = _post_gate_backend((0.5, 0.5))

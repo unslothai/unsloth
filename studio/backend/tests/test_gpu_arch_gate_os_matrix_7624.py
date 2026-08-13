@@ -1334,10 +1334,10 @@ class TestManualSplitLaunchesRespectTheGate:
         assert backend._arch_gate_dropped_tensor_split is None
 
     def test_the_dropped_tensor_mode_is_recorded_too(self, tmp_path, monkeypatch, probe_env):
-        """The ratio is only half the normalization. Narrowing to one survivor also
-        drops --split-mode tensor, and ``_tensor_parallel_matches_loaded`` compares the
-        unchanged request against the layer-split server -- so without a record of the
-        drop every identical Apply reloads the same multi-GB model."""
+        """The ratio is half the normalization: narrowing to one survivor also drops
+        --split-mode tensor, and ``_tensor_parallel_matches_loaded`` compares the
+        unchanged request against the layer-split server, so an unrecorded drop reloads
+        the same multi-GB model on every Apply."""
         capture: dict = {}
         self._manual_split(
             monkeypatch,
@@ -1374,9 +1374,9 @@ class TestManualSplitLaunchesRespectTheGate:
         assert capture["backend"]._arch_gate_dropped_tensor_parallel is False
 
     def test_a_forced_cpu_launch_records_both_drops(self, tmp_path, monkeypatch, probe_env):
-        """The forced-CPU arm strips the mode AND the ratio, so it has to record both:
-        it is the one arm that normalizes a manual tensor request all the way down to a
-        server with no visible device."""
+        """The forced-CPU arm strips the mode AND the ratio, so it records both: it is
+        the one arm that normalizes a manual tensor request all the way down to a server
+        with no visible device."""
         capture: dict = {}
         self._manual_split(
             monkeypatch,
@@ -1826,9 +1826,9 @@ class TestArchCrashRetryDropsDeadTensorMode:
             assert "tensor" not in _modes, f"the narrowed respawn kept tensor mode: {cmd}"
 
     def test_the_retry_records_what_it_normalized(self, tmp_path, monkeypatch, probe_env):
-        """The reactive path has to keep the same record the proactive gate keeps. A
-        markerless build only ever reaches the gate reactively, so without it every
-        identical Apply reads the normalized server as new and reloads it."""
+        """The reactive path keeps the same record the proactive gate does: a markerless
+        build only ever reaches the gate reactively, so without it every identical Apply
+        reads the normalized server as new."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
@@ -2286,11 +2286,10 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
 
 
 class TestTheForcedCpuLaunchAppliesThePageLock:
-    """The gate masks every device away, so the child runs from host RAM -- but
-    ``_weights_in_host_memory`` already answered for the ORIGINAL placement, where a
-    manual full offload onto discrete cards reads as not host-resident. Left alone the
-    page-lock the user asked for is skipped AND ``_memory_mlock_applicable`` records
-    the missing lock as deliberate, which no relaunch undoes."""
+    """The gate masks every device away, so the child runs from host RAM, but
+    ``_weights_in_host_memory`` answered for the ORIGINAL placement, where a manual full
+    offload onto discrete cards reads as not host-resident. Left alone the page-lock is
+    skipped AND recorded as deliberate, which no relaunch undoes."""
 
     def _run(self, tmp_path, monkeypatch, *, targets):
         _apply_os(monkeypatch, "linux", is_rocm = True)
@@ -2303,8 +2302,8 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
         capture: dict = {}
         backend = LlamaCppBackend()
         # A known block count is what lets _offloads_every_layer answer True for the
-        # manual maximum below; without it every launch reads as host-resident anyway
-        # and the skip this test is about could never happen.
+        # manual maximum below; without it every launch reads as host-resident and the
+        # skip this test is about could never happen.
         backend._n_layers = 32
         launches = _run_auto_load(
             monkeypatch,
@@ -2349,8 +2348,8 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
 class TestForcedCpuNeedsRealArchEvidence:
     """``_get_gpu_memory`` turns any probe error into [], so "gated empty, ungated not"
     also describes a one-shot failure of the FIRST probe on a host the gate never
-    filters. Masking that launch onto the CPU is a silent, permanent performance
-    cliff, so the branch re-derives the gate's verdict instead of inferring it."""
+    filters. Masking that onto the CPU is a silent, permanent cliff, so the branch
+    re-derives the gate's verdict instead of inferring it."""
 
     def _run(self, tmp_path, monkeypatch, *, targets, flaky):
         _apply_os(monkeypatch, "linux", is_rocm = True)
