@@ -202,9 +202,9 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     findings = sp.scan_archive(str(bad), "broken_fixture")
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
-    assert corrupted, (
-        f"no archive_corrupted finding; got {[(f.severity, f.check) for f in findings]}"
-    )
+    assert (
+        corrupted
+    ), f"no archive_corrupted finding; got {[(f.severity, f.check) for f in findings]}"
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 
     # Same for a corrupted tarball.
@@ -646,9 +646,9 @@ def test_the_receiver_walk_does_not_rescan_the_whole_call_chain():
 
     small = best_of(chain(1_600))
     large = best_of(chain(3_200))
-    assert large < 3.0 * small, (
-        f"the receiver walk grows faster than the input: {small:.2f}s -> {large:.2f}s"
-    )
+    assert (
+        large < 3.0 * small
+    ), f"the receiver walk grows faster than the input: {small:.2f}s -> {large:.2f}s"
 
 
 def test_a_loader_call_receiver_is_the_builtins_module_whatever_it_is_handed():
@@ -703,16 +703,16 @@ def test_evidence_extraction_does_not_rescan_every_alias_per_line():
             start = time.monotonic()
             findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
             out.append(time.monotonic() - start)
-        assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)], (
-            "the aliased call must still be flagged"
-        )
+        assert [
+            f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)
+        ], "the aliased call must still be flagged"
         return min(out)
 
     small = best_of(hostile(2_000))
     large = best_of(hostile(4_000))
-    assert large < 3.0 * small, (
-        f"alias pre-filtering grows faster than the input: {small:.2f}s -> {large:.2f}s"
-    )
+    assert (
+        large < 3.0 * small
+    ), f"alias pre-filtering grows faster than the input: {small:.2f}s -> {large:.2f}s"
 
 
 def test_alias_matching_stays_linear_on_hostile_source():
@@ -754,16 +754,16 @@ def test_closing_a_rebinding_block_does_not_walk_every_alias():
             out.append(time.monotonic() - start)
         # The rebindings sit in a block the call is below, so the alias is live
         # again by the time it is called and the payload must still be flagged.
-        assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)], (
-            "the call below the closed block must still be flagged"
-        )
+        assert [
+            f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)
+        ], "the call below the closed block must still be flagged"
         return min(out)
 
     small = best_of(hostile(3_000))
     large = best_of(hostile(6_000))
-    assert large < 2.6 * small, (
-        f"closing rebindings grows faster than the input: {small:.2f}s -> {large:.2f}s"
-    )
+    assert (
+        large < 2.6 * small
+    ), f"closing rebindings grows faster than the input: {small:.2f}s -> {large:.2f}s"
 
 
 def test_the_real_exec_builtin_is_still_flagged():
@@ -1146,9 +1146,9 @@ def test_an_fstring_call_above_its_aliases_rebinding_is_still_flagged():
     tok = sp.tokenize.TokenInfo(sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line)
     out: list = []
     sp._fstring_spans(tok, aliases, sp._Offsets(line), out, True, 0)
-    assert [line[s.start() : s.end()] for s in out] == ["run("], (
-        f"a call above the rebinding must still match: {out}"
-    )
+    assert [line[s.start() : s.end()] for s in out] == [
+        "run("
+    ], f"a call above the rebinding must still match: {out}"
 
     # And below the rebinding the name is the model again, so the false positive
     # the cutoff exists for does not come back through the f-string.
@@ -3199,9 +3199,9 @@ def test_a_function_that_assigns_an_alias_shadows_it_over_the_whole_body():
         "from builtins import exec as run\nimport marshal\n"
         "def f():\n    run(marshal.loads(BLOB))\n    run = model\n"
     )
-    assert _high(payload, "pkg/_infer.py") == [], (
-        f"the call is unbound, not the builtin:\n{payload}"
-    )
+    assert (
+        _high(payload, "pkg/_infer.py") == []
+    ), f"the call is unbound, not the builtin:\n{payload}"
     nested = (
         "from builtins import exec as run\nimport marshal\n"
         "def f():\n    run(marshal.loads(BLOB))\n    if x:\n        run = model\n"
