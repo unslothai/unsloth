@@ -512,14 +512,15 @@ class TestMergeSizing:
     def test_a_plain_merge_is_two_bytes_per_parameter(self, sized):
         S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit")
         # Not the GGUF estimate, which would add an intermediate conversion
-        # this export never writes.
-        assert sized == [_with_merge_headroom(10 * GB)]
+        # this export never writes. No headroom either: `_FakeModel` has no
+        # adapter, so nothing here reaches `merge_and_overwrite_lora`.
+        assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     @pytest.mark.parametrize("save_method", ["merged 16bit", "MERGED_16BIT", " merged-16bit "])
     def test_supported_spellings_are_measured_too(self, sized, save_method):
         """`unsloth_save_model` normalizes spaces, so these are the same export."""
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
-        assert sized == [_with_merge_headroom(10 * GB)]
+        assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     @pytest.mark.parametrize(
         "save_method,expected_gb",
@@ -1154,7 +1155,14 @@ class TestMergeHeadroomMatchesTheZooGuard:
     `merge_and_overwrite_lora` compares the save against `int(free * 0.95)`,
     so a 30GB merge with 31GB free was left in /kaggle/working by the redirect
     and then refused outright by the merge itself.
+
+    An adapter merged by `unsloth_generic_save`, because that is the only
+    writer here that calls the guarded function at all.
     """
+
+    @pytest.fixture(autouse = True)
+    def adapter(self, monkeypatch):
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
 
     @pytest.fixture
     def kaggle(self, monkeypatch):
@@ -1174,9 +1182,13 @@ class TestMergeHeadroomMatchesTheZooGuard:
         monkeypatch.setattr(S, "kaggle_tmp_redirect", fake_redirect)
 
     def test_a_merge_that_only_just_fits_is_still_redirected(self, kaggle):
-        assert S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit") == (
-            "/tmp/unsloth_saves/model"
-        )
+        assert S._preflight_merge_disk(
+            _FakeAdapterModel(),
+            "model",
+            "merged_16bit",
+            forwards_state_dict = True,
+            writer_runs_merge_guard = True,
+        ) == ("/tmp/unsloth_saves/model")
 
     def test_the_ask_clears_the_guard_that_comes_next(self, monkeypatch):
         asked = []
@@ -1188,7 +1200,13 @@ class TestMergeHeadroomMatchesTheZooGuard:
                 asked.append(need_bytes) or (save_directory, None)
             ),
         )
-        S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit")
+        S._preflight_merge_disk(
+            _FakeAdapterModel(),
+            "model",
+            "merged_16bit",
+            forwards_state_dict = True,
+            writer_runs_merge_guard = True,
+        )
         # Free space that satisfies this preflight also satisfies the 5% the
         # merge reserves; 31GB satisfies neither.
         assert int(asked[0] * 0.95) >= 30 * GB
@@ -1510,7 +1528,10 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             forwards_state_dict = True,
         )
         assert expected == 8 * GB
-        assert sized == [_merge_preflight_ask(expected, expected)]
+        # No adapter, so `unsloth_generic_save` casts this dictionary and
+        # writes it with a bare `save_pretrained`. There is no
+        # `merge_and_overwrite_lora` behind that and so nothing to reserve.
+        assert sized == [_merge_preflight_ask(expected, 0)]
 
     def test_an_empty_dict_writes_nothing(self, sized):
         """`{}` reaches `save_pretrained` and no model tensor is written."""
@@ -1535,7 +1556,8 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             state_dict = None,
             forwards_state_dict = True,
         )
-        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+        # Still a bare `save_pretrained`, so still no reserve.
+        assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     def test_an_adapter_merge_ignores_the_dict(self, sized, monkeypatch):
         """A PeftModel goes to `merge_and_overwrite_lora`, which takes none."""
@@ -1546,7 +1568,9 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             "merged_16bit",
             state_dict = self._dict(),
             forwards_state_dict = True,
+            writer_runs_merge_guard = True,
         )
+        # And that is the one writer whose guard is real, so this keeps its 5%.
         assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
 
     def test_the_other_writer_rebuilds_the_dict(self, sized):
@@ -1557,7 +1581,9 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             "merged_16bit",
             state_dict = self._dict(),
         )
-        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+        # It writes the merged shards itself and runs no zoo guard, so the
+        # model is sized at two bytes a parameter and reserved against nothing.
+        assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     def test_each_call_site_says_what_its_writer_does_with_the_dict(self, monkeypatch):
         """Driven rather than read, so a body that never wires it in fails.
@@ -1576,6 +1602,7 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
                     (
                         kwargs.get("forwards_state_dict", False),
                         kwargs.get("writes_model_verbatim", False),
+                        kwargs.get("writer_runs_merge_guard", False),
                     )
                 )
                 or args[1]
@@ -1593,7 +1620,9 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
                     save_method = "merged_16bit",
                     state_dict = {"weight": torch.zeros(4)},
                 )
-        assert seen == [(False, False), (True, False)]
+        # The third flag is the merge guard: only `unsloth_generic_save` runs
+        # `merge_and_overwrite_lora`, and only for an adapter.
+        assert seen == [(False, False, False), (True, False, True)]
 
     def test_the_writers_really_differ(self):
         """The split above is only right while these two stay as they are."""
@@ -2909,7 +2938,11 @@ class TestTheGenericFallbackCopiesWhatItHolds:
             forwards_state_dict = True,
             writes_model_verbatim = True,
         )
-        assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
+        # Sized from the model rather than the dictionary, and unreserved: the
+        # writer these two flags describe is `unsloth_save_model`, which merges
+        # and writes the shards itself with no `merge_and_overwrite_lora`
+        # anywhere behind it.
+        assert sized == [_merge_preflight_ask(10 * GB, 0)]
         assert S._merge_writer_disposition(_FakeAdapterModel(), "merged_16bit") == (False, False)
 
     def test_the_writer_really_still_forwards_it(self):
@@ -2965,7 +2998,10 @@ class TestASpecialExportStagesFromTheSuppliedDict:
             state_dict = self._dict(8),
             forwards_state_dict = True,
         )
-        assert sized == [_merge_preflight_ask(8 * GB + 4 * GB, 8 * GB)]
+        # Unreserved: with no adapter, `unsloth_generic_save` casts the dict
+        # and writes it, and the sibling is a quarter of the merge at worst,
+        # so the 5% band never showed up in this figure anyway.
+        assert sized == [_merge_preflight_ask(8 * GB + 4 * GB, 0)]
 
     def test_a_torchao_export_measures_the_dict(self, sized):
         """The staging merge is the dict; only the 8-bit sibling lands here."""
@@ -2997,6 +3033,122 @@ class TestASpecialExportStagesFromTheSuppliedDict:
             assert "merge_kwargs" in source
         entrypoint = inspect.getsource(S.unsloth_save_pretrained_merged)
         assert entrypoint.count("state_dict = state_dict,") >= 2
+
+
+class TestOnlyTheGuardedWriterIsCharged:
+    """The 5% reserve belongs to `merge_and_overwrite_lora` and to nothing else.
+
+    One function in this module calls it: `unsloth_generic_save`, and only on
+    its adapter branch. Every other writer that lands a 16-bit checkpoint at
+    `save_directory` is a bare `save_pretrained` that reserves nothing, so
+    charging it `1 / 0.95` moves an export off persistent Kaggle storage that
+    its writer would have accepted.
+
+    The reserve is decided apart from the sizing on purpose: a compressed
+    export IS cast to two bytes by that writer and keeps that sizing, adapter
+    or not.
+    """
+
+    MERGE = 10 * GB
+
+    @pytest.fixture
+    def sized(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: self.MERGE)
+        monkeypatch.setattr(S, "_unquantized_parameter_bytes", lambda model, patterns = (): 0)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        return asked
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
+        return _FakeAdapterModel()
+
+    def test_a_generic_sixteen_bit_save_with_no_adapter_reserves_nothing(self, sized):
+        """`unsloth_generic_save` casts the dict and writes it, with no merge.
+
+        The reserve here redirected a checkpoint that fits in the 5% band.
+        """
+        S._preflight_merge_disk(
+            _FakeModel(),
+            "model",
+            "merged_16bit",
+            forwards_state_dict = True,
+            writer_runs_merge_guard = True,
+        )
+        assert sized == [self.MERGE]
+        assert sized != [_with_merge_headroom(self.MERGE)]
+
+    @pytest.mark.parametrize("save_method", ["torchao_fp8", "torchao_int8"])
+    def test_a_torchao_export_reserves_nothing_here(self, sized, adapter, save_method):
+        """It merges into a temp dir, so no guard runs against THIS filesystem.
+
+        True with an adapter as well, which is the case that has a guard at
+        all; it just runs somewhere else.
+        """
+        S._preflight_merge_disk(
+            adapter,
+            "model",
+            save_method,
+            forwards_state_dict = True,
+            writer_runs_merge_guard = True,
+        )
+        assert sized == [self.MERGE // 2], "the sibling alone, at face value"
+
+    def test_a_compressed_export_with_no_adapter_reserves_nothing(self, sized):
+        """Sized as a cast 16-bit merge, because it is one, and still unguarded."""
+        S._preflight_merge_disk(_FakeModel(), "model", "fp8", forwards_state_dict = True)
+        assert sized == [self.MERGE + self.MERGE // 2]
+
+    def test_an_adapter_merged_by_the_generic_writer_keeps_its_reserve(self, sized, adapter):
+        """The one case the guard is real: it must survive all of the above."""
+        S._preflight_merge_disk(
+            adapter,
+            "model",
+            "merged_16bit",
+            forwards_state_dict = True,
+            writer_runs_merge_guard = True,
+        )
+        assert sized == [_with_merge_headroom(self.MERGE)]
+
+    def test_a_compressed_export_of_an_adapter_keeps_its_reserve(self, sized, adapter):
+        """Both entrypoints route a compressed export through the same writer.
+
+        So the method alone settles it and the flag is not needed.
+        """
+        S._preflight_merge_disk(adapter, "model", "fp8", forwards_state_dict = True)
+        # The sibling is half the merge, well past the 5%, so the aggregate is
+        # the binding figure. What matters is that the reserve is still there.
+        assert sized == [max(self.MERGE + self.MERGE // 2, _with_merge_headroom(self.MERGE))]
+
+    def test_the_plain_entrypoint_runs_no_guard_at_all(self, sized, adapter):
+        """`unsloth_save_pretrained_merged` merges in `unsloth_save_model`.
+
+        Which writes the merged shards itself and never calls the guarded
+        function, adapter or not.
+        """
+        S._preflight_merge_disk(adapter, "model", "merged_16bit")
+        assert sized == [self.MERGE]
+
+    def test_the_guarded_writer_is_the_only_one_in_the_module(self):
+        """The split above holds only while that stays true."""
+        import inspect
+
+        source = inspect.getsource(S)
+        assert source.count("merge_and_overwrite_lora(\n") == 1
+        generic = inspect.getsource(S.unsloth_generic_save)
+        before, _, after = generic.partition("merge_and_overwrite_lora(")
+        # The call sits on the adapter branch, and the no-adapter branch above
+        # it writes with `save_pretrained`.
+        assert "if not _is_peft:" in before
+        assert "model.save_pretrained(save_directory, **_save_kwargs)" in before
+        assert after.strip(), "the call takes arguments"
 
 
 class TestTheGgufPreflightIsToldTheModelDtype:

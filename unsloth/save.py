@@ -2406,6 +2406,11 @@ def unsloth_save_pretrained_merged(
         state_dict = state_dict,
         forwards_state_dict = _forwards_state_dict,
         writes_model_verbatim = _writes_model_verbatim,
+        # No `writer_runs_merge_guard`: this entrypoint's writer for a plain
+        # merge is `unsloth_save_model`, which merges and writes the shards
+        # itself and never reaches `merge_and_overwrite_lora`. A compressed
+        # export from here does go through `unsloth_generic_save`, and the
+        # preflight recognises that from the method alone.
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
@@ -3423,6 +3428,7 @@ def _preflight_merge_disk(
     state_dict = None,
     forwards_state_dict = False,
     writes_model_verbatim = False,
+    writer_runs_merge_guard = False,
 ):
     """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
 
@@ -3450,6 +3456,14 @@ def _preflight_merge_disk(
     bytes, at its own dtypes, or the resident parameters' own bytes when no
     dictionary was supplied, and never two bytes per logical parameter.
     `_merge_writer_disposition` decides both for the public entrypoint.
+
+    `writer_runs_merge_guard` says the writer behind this call is
+    `unsloth_generic_save`, whose PEFT branch is the one and only caller of
+    `merge_and_overwrite_lora` here and therefore the only writer that brings
+    its `free * 0.95` guard with it. It is deliberately separate from the two
+    flags above, which decide SIZING: a compressed export is cast to two bytes
+    by that same writer and is sized accordingly, yet it reserves nothing
+    unless there is an adapter for the guard to merge.
     """
     if push_to_hub:
         return save_directory
@@ -3524,10 +3538,22 @@ def _preflight_merge_disk(
         # because the reserve belongs on this and on nothing else: charging it
         # around the whole estimate relocates an export that fits, and on
         # Kaggle that means moving it to a /tmp the kernel does not keep.
-        # The generic fallback is a bare `save_pretrained` with no merge and no
-        # guard behind it, exactly like the full-model `lora` fallback, so it
-        # reserves nothing either.
-        merge_here = 0 if (full_model_lora or verbatim) else need
+        # The guard belongs to `merge_and_overwrite_lora` and to nothing else,
+        # and only `unsloth_generic_save`'s PEFT branch calls it. Every other
+        # writer that lands a 16-bit checkpoint here is a bare
+        # `save_pretrained`: the generic architecture fallback, the full-model
+        # `lora` fallback, `unsloth_save_model`'s own merge, and
+        # `unsloth_generic_save`'s no-adapter branch, which casts the dict and
+        # writes it directly. None of them reserves anything, so charging them
+        # 1/0.95 refuses a filesystem their writer would have accepted.
+        #
+        # Sizing is decided separately, above: a compressed export really is
+        # cast to two bytes by `unsloth_generic_save`, so it keeps that sizing
+        # whether or not there is an adapter to merge.
+        guard_runs_here = is_peft and (
+            compressed is not None or bool(writer_runs_merge_guard)
+        )
+        merge_here = need if guard_runs_here else 0
         if torchao is not None:
             # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
             # directory rather than `save_directory`, so the only thing landing
@@ -6359,6 +6385,9 @@ def unsloth_generic_save_pretrained_merged(
         # `unsloth_generic_save` writes a supplied dictionary rather than the
         # resident model when there is no adapter to merge.
         forwards_state_dict = True,
+        # And it is the writer that runs `merge_and_overwrite_lora` when there
+        # IS one, which no other entrypoint here does.
+        writer_runs_merge_guard = True,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
