@@ -44,7 +44,6 @@ class _FakeModel:
     """Not a PeftModel; the preflight is called with an explicit needs_merge."""
 
 
-
 @pytest.fixture
 def stub_sizing(monkeypatch):
     """Replace the size and free-space calls with numbers a test dictates.
@@ -387,7 +386,6 @@ class TestCallsBindToTheZooApi:
 
     def test_reference_signatures_match_the_installed_zoo(self):
         import inspect
-
         disk_utils = pytest.importorskip("unsloth_zoo.disk_utils")
         for reference, name in (
             (_zoo_estimate_gguf_export_bytes, "estimate_gguf_export_bytes"),
@@ -502,7 +500,8 @@ class TestKaggleNeverPricesACacheCopy:
         monkeypatch.setattr(
             S,
             "estimate_gguf_export_bytes",
-            lambda **kwargs: seen.append(kwargs) or (44 * GB if kwargs.get("base_cache_copy") else 30 * GB),
+            lambda **kwargs: seen.append(kwargs)
+            or (44 * GB if kwargs.get("base_cache_copy") else 30 * GB),
         )
         monkeypatch.setattr(S, "free_bytes", lambda path: 1000 * GB)
         monkeypatch.setattr(
