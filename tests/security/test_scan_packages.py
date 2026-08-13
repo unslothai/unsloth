@@ -2844,3 +2844,140 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps({"version": 1, "entries": entries}))
     assert len(sp._load_baseline(str(path))) == 1
+
+
+def _high(payload: str, filename: str = "pkg/_loader.py") -> list:
+    findings = sp.check_py_file(payload, filename, "pkg")
+    return [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_the_first_statement_of_a_one_line_suite_is_a_statement():
+    # `def f(): import builtins as b; b.exec(BLOB)` is valid Python. The
+    # semicolon splits the call off, but the import stays glued to the header,
+    # so every collector that keys off the head token saw `def` and recorded no
+    # alias at all - which downgraded the executed builtin from HIGH to MEDIUM.
+    for header in ("def f():", "if x:", "for i in y:", "while x:", "with a as c:"):
+        payload = (
+            "import marshal\n"
+            "mod = __import__('os')\n"
+            f"{header} import builtins as b; b.exec(marshal.loads(BLOB))\n"
+        )
+        assert _high(payload), f"one-line {header!r} suite must be flagged:\n{payload}"
+
+    # The tail is read as its own statement, not merely appended to the header.
+    stmt = list(sp._statements("def f(): import builtins as b\n", []))
+    assert [t.string for t in stmt[-1]] == ["import", "builtins", "as", "b"]
+    assert stmt[0][0].string == "def", "the unsplit statement is still yielded"
+
+    # An annotated assignment named for a soft keyword is not a suite.
+    assert len(list(sp._statements("match: int = 5\n", []))) == 1
+
+
+def test_a_rebinding_cancels_only_after_its_own_right_hand_side():
+    # Python evaluates the value before it binds the target, so
+    # `b = b.exec(marshal.loads(BLOB))` runs the builtin and only then stops `b`
+    # being the module. Starting the cancellation at the statement's first token
+    # suppressed the call the same statement makes.
+    for stmt in ("b = b.exec(marshal.loads(BLOB))", "b += b.exec(marshal.loads(BLOB))"):
+        payload = f"import builtins as b\nimport marshal\nmod = __import__('os')\n{stmt}\n"
+        assert _high(payload), f"{stmt} must be flagged"
+
+    # And the rebinding still silences what comes after it.
+    after = (
+        "import builtins as b\nimport marshal\n"
+        "mod = __import__('os')\nb = load()\nb.eval(x)\n"
+    )
+    assert _high(after, "pkg/_infer.py") == [], "a call past the rebinding is not the builtin"
+
+
+def test_a_global_declaration_outranks_an_enclosing_local():
+    # `global b` in a nested function resolves `b` at module level, whatever the
+    # enclosing function did to its own local of that name. Retaining the outer
+    # cancellation at the nested indent suppressed the real builtin call.
+    payload = (
+        "import builtins as b\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "def outer():\n"
+        "    b = model\n"
+        "    def inner():\n"
+        "        global b\n"
+        "        b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload), "a call under `global b` must be flagged"
+
+    # The declaration governs the whole scope, including the lines above it.
+    above = payload.replace(
+        "        global b\n        b.exec(marshal.loads(BLOB))\n",
+        "        b.exec(marshal.loads(BLOB))\n        global b\n",
+    )
+    assert _high(above), "`global` applies to the body written above it too"
+
+    # Without the declaration the enclosing local still cancels.
+    plain = payload.replace("        global b\n", "").replace(
+        "b.exec(marshal.loads(BLOB))", "b.eval(x)"
+    )
+    assert _high(plain, "pkg/_infer.py") == [], "the enclosing local still cancels"
+
+
+def test_import_module_is_a_loader_only_where_it_is_the_standard_one():
+    # `import_module` is not a builtin. Trusting the bare name in every file made
+    # any unrelated function of that name a builtins-module receiver, so ordinary
+    # `import_module(name).eval(x)` inference code scored HIGH.
+    for binding in ("from registry import import_module\n", "def import_module(n): return REG[n]\n"):
+        payload = f"{binding}import marshal\nmod = __import__('os')\nimport_module(name).eval(x)\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"not a loader:\n{payload}"
+
+    # Imported from importlib, or reached through it, it is the standard loader.
+    for call in (
+        "from importlib import import_module\nimport_module('builtins').exec(marshal.loads(BLOB))",
+        "import importlib\nimportlib.import_module('builtins').exec(marshal.loads(BLOB))",
+        "import importlib\n(importlib.import_module)('builtins').exec(marshal.loads(BLOB))",
+    ):
+        payload = f"import marshal\nmod = __import__('os')\n{call}\n"
+        assert _high(payload), f"the standard loader must be flagged:\n{payload}"
+
+
+def test_closed_rebinding_spans_do_not_cost_a_call_site_each():
+    # One rebinding inside each of N sibling functions leaves N closed spans on
+    # the name, and a linear frontier walk re-read all of them at every call
+    # below - quadratic in N on source an archive member chooses.
+    import time
+
+    def build(n: int) -> str:
+        lines = ["import builtins as b", "import marshal", "mod = __import__('os')"]
+        for i in range(n):
+            lines.append(f"def f{i}():")
+            lines.append("    b = model")
+        for i in range(n):
+            lines.append(f"b.exec(marshal.loads(P{i}))")
+        return "\n".join(lines) + "\n"
+
+    source = build(2000)
+    aliases = sp.RE_EXEC_EVAL.for_text(source).aliases
+    groups = aliases.cancel["b"]
+    # All 2000 rebindings sit at one indent, so they are one group. What a call
+    # site walks is the number of groups, and a bisection inside the one it
+    # lands in - not the 2000 spans the file retains.
+    assert [col for col, _ in groups] == [4]
+    assert len(groups[0][1][0]) == 2000, "every span is still recorded"
+
+    # Spans at one indent are disjoint and in source order, which is what makes
+    # the bisection sound: only the last one starting at or before an offset can
+    # contain it.
+    entries = groups[0][1][1]
+    assert all(
+        entries[i][2] is not None and entries[i][2] <= entries[i + 1][0]
+        for i in range(len(entries) - 1)
+    ), "spans at one indent must not overlap"
+
+    start = time.perf_counter()
+    findings = sp.check_py_file(build(4000), "pkg/_loader.py", "pkg")
+    elapsed = time.perf_counter() - start
+    # Generous, because this is a floor test on shared hardware: the quadratic
+    # walk took 1.2s here and grew fourfold per doubling, so anything under this
+    # cannot be quadratic at this size.
+    assert elapsed < 30, f"scanning 217 KB took {elapsed:.1f}s"
+
+    # And the detection survives: every call is past its rebinding's block.
+    assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]

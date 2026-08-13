@@ -152,7 +152,12 @@ _EXEC_NAMES = frozenset(("exec", "eval"))
 _BUILTINS_NAMES = frozenset(("builtins", "__builtins__"))
 # The loader calls a receiver can be: `__import__(...)` is a builtin and
 # `import_module(...)` needs only `from importlib import import_module`.
-_DEFAULT_LOADER_FUNCS = frozenset(("__import__", "import_module"))
+# `__import__` is a builtin, so it means the loader in any file without being
+# imported. `import_module` is not: it is the standard loader only when the file
+# actually imported it, and `_collect_import_bindings` adds it when it did.
+# Trusting the bare name made `import_module(name).eval(x)` HIGH in any file that
+# defines or imports an unrelated function of that name.
+_DEFAULT_LOADER_FUNCS = frozenset(("__import__",))
 _OPENERS = frozenset(("(", "[", "{"))
 _CLOSERS = frozenset((")", "]", "}"))
 _COMPARISON_OPS = frozenset(("==", "!=", "<=", ">="))
@@ -301,19 +306,60 @@ def _statements(text: str, failed: list):
                 tok = tok._replace(string = unicodedata.normalize("NFKC", tok.string))
             if ttype == tokenize.NEWLINE or ttype == tokenize.ENDMARKER:
                 if stmt:
-                    yield stmt
+                    yield from _with_suite_tail(stmt)
                     stmt = []
                 continue
             if ttype == tokenize.OP and tok.string == ";":
                 if stmt:
-                    yield stmt
+                    yield from _with_suite_tail(stmt)
                     stmt = []
                 continue
             stmt.append(tok)
     except (tokenize.TokenError, IndentationError, SyntaxError, ValueError, MemoryError):
         failed.append(True)
     if stmt:
-        yield stmt
+        yield from _with_suite_tail(stmt)
+
+
+_SUITE_HEADS = frozenset((
+    "if", "elif", "else", "for", "while", "with", "try", "except", "finally",
+    "def", "class", "async", "match", "case",
+))
+
+
+def _with_suite_tail(stmt: list):
+    """`stmt`, plus the first simple statement of a one-line suite it heads.
+
+    A semicolon splits the later statements of `def f(): import builtins as b;
+    b.exec(BLOB)`, but the first one stays glued to the header, so every pass
+    that keys off the head token sees `def` and the import binding is never
+    recorded. Yielding the tail as its own statement is what puts that head
+    back in view.
+
+    The original is yielded too, unsplit. Every consumer either collects
+    bindings or reports call spans, so an extra statement can only add to what
+    is found - and the first depth-0 colon is the header's for real code, but
+    not for every oddity Python's grammar admits (`if lambda: 1: pass`), and a
+    split that lands in the wrong place must not be able to lose a detection.
+    """
+    yield stmt
+    head = stmt[0]
+    if head.type != tokenize.NAME or head.string not in _SUITE_HEADS:
+        return
+    if len(stmt) > 1 and stmt[1].type == tokenize.OP and stmt[1].string in (":", "="):
+        return  # `match: int = 5` is an annotated assignment, not a suite
+    depth = 0
+    for i, tok in enumerate(stmt):
+        if tok.type != tokenize.OP:
+            continue
+        if tok.string in _OPENERS:
+            depth += 1
+        elif tok.string in _CLOSERS:
+            depth -= 1
+        elif tok.string == ":" and depth == 0:
+            if i + 1 < len(stmt):
+                yield stmt[i + 1 :]
+            return
 
 
 def _split_top(toks: list, sep: str = ",") -> list:
@@ -458,15 +504,31 @@ def _collect_import_bindings(
 class _Loaders:
     """The local names one file binds to the module loaders, plus their defaults.
 
-    `importlib` and `import_module` are the spellings that need no import of
-    their own to be meaningful in the source; an alias adds to them.
+    `importlib` is the one spelling that needs no import of its own to be
+    meaningful in the source, because a file cannot reach the module without
+    naming it. `import_module` is an ordinary function name until the file
+    imports it from `importlib`, so it starts empty and the import collector
+    fills it in.
     """
 
     __slots__ = ("modules", "funcs")
 
     def __init__(self):
         self.modules = {"importlib"}
-        self.funcs = {"import_module"}
+        self.funcs = set()
+
+
+def _is_loader_name(owner: str, name: str, loaders, loader_modules) -> bool:
+    """Whether `owner.name` (or bare `name`, with `owner` empty) is a module loader.
+
+    `import_module` is the standard loader only when it is reached through
+    `importlib` or was imported from it. Treating the bare name as a loader in
+    any file made `import_module(x).eval(y)` a builtins call wherever an
+    unrelated function happened to carry that name.
+    """
+    if owner:
+        return name == "import_module" and owner in loader_modules
+    return name in loaders
 
 
 def _strip_parens(toks: list) -> list:
@@ -791,6 +853,7 @@ def _receiver_start(
     receivers: frozenset,
     loaders: frozenset = frozenset(),
     memo: "dict | None" = None,
+    loader_modules: frozenset = frozenset(("importlib",)),
 ) -> "tuple":
     """Where the receiver of `stmt[dot_at]` starts, and the alias that made it one.
 
@@ -874,7 +937,18 @@ def _receiver_start(
                     # does not change what it returns, so the group is a loader
                     # call whenever its contents name one.
                     callee = _strip_parens(stmt[k : close_at + 1])
-                    if callee and callee[-1].type == tokenize.NAME and callee[-1].string in loaders:
+                    if (
+                        callee
+                        and callee[-1].type == tokenize.NAME
+                        and _is_loader_name(
+                            callee[-3].string
+                            if len(callee) >= 3 and callee[-2].string == "."
+                            else "",
+                            callee[-1].string,
+                            loaders,
+                            loader_modules,
+                        )
+                    ):
                         found = True
                         hard = True
                 start = k
@@ -895,10 +969,22 @@ def _receiver_start(
                     else:
                         alias = tok.string
                 elif (
-                    tok.string in loaders
-                    and k + 1 < len(stmt)
+                    k + 1 < len(stmt)
                     and stmt[k + 1].type == tokenize.OP
                     and stmt[k + 1].string == "("
+                    and _is_loader_name(
+                        stmt[k - 2].string
+                        if (
+                            k >= 2
+                            and stmt[k - 1].type == tokenize.OP
+                            and stmt[k - 1].string == "."
+                            and stmt[k - 2].type == tokenize.NAME
+                        )
+                        else "",
+                        tok.string,
+                        loaders,
+                        loader_modules,
+                    )
                 ):
                     found = True  # `__import__(name).exec(...)`: the receiver is the call
                     hard = True
@@ -935,6 +1021,8 @@ class _Aliases:
         "live_receivers",
         "live_funcs",
         "cancel",
+        "declared_global",
+        "loader_modules",
         "safe_receivers",
         "safe_funcs",
         "loaders",
@@ -946,15 +1034,21 @@ class _Aliases:
         funcs: set,
         cancel: dict,
         loader_funcs: "set | None" = None,
+        declared_global: "dict | None" = None,
+        loader_modules: "set | None" = None,
     ):
         self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
         self.live_funcs = frozenset(funcs)
-        self.cancel = cancel
+        self.cancel = _index_cancellations(cancel)
+        self.declared_global = declared_global or {}
         self.safe_receivers = frozenset(self.live_receivers - set(cancel))
         self.safe_funcs = frozenset(self.live_funcs - set(cancel))
-        # `__import__` is a builtin and `import_module` needs no alias of its
-        # own, so both are meaningful in any file; a local alias adds to them.
+        # `__import__` is a builtin, so it means the loader in any file; the
+        # names the file binds to a loader itself are added to it.
         self.loaders = frozenset(_DEFAULT_LOADER_FUNCS | (loader_funcs or set()))
+        # `importlib` needs no import of its own to name the module, so it is a
+        # default here where `import_module` is not; an alias adds to it.
+        self.loader_modules = frozenset({"importlib"} | (loader_modules or set()))
 
 
 def _opens_scope(stmt: list) -> "str | None":
@@ -1027,9 +1121,70 @@ def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
                     del opened[name]
 
 
-def _is_cancelled(frontier: list, start: int, col: int) -> bool:
-    for at, at_col, end in frontier:
-        if at <= start and at_col <= col and (end is None or start < end):
+def _close_scope(scope: list, declared_global: dict, end: int) -> None:
+    """Record the offsets of a `def` or `class` body that declared names global.
+
+    The scope is what the declaration governs, not the statement: `global b`
+    applies to the whole function, including the lines written above it. So the
+    span runs from the header to wherever the body ends.
+    """
+    names = scope[3]
+    if not names:
+        return
+    for name in names:
+        declared_global.setdefault(name, []).append((scope[2], end))
+
+
+def _declares_global(spans: list, start: int) -> bool:
+    """Whether offset `start` sits in a scope that declared the name global.
+
+    Walked rather than bisected: the spans nest, so containment is not the
+    rightmost-match test a bisection answers, and a file declares a builtins
+    alias global in approximately no scopes at all.
+    """
+    for at, end in spans:
+        if at <= start < end:
+            return True
+    return False
+
+
+def _index_cancellations(cancel: dict) -> dict:
+    """`cancel`, regrouped so a call site tests one span per indent, not all of them.
+
+    A file with one rebinding inside each of N sibling functions leaves N closed
+    spans on the name, and a linear walk re-read every one of them at every call
+    below - quadratic in N, on source a hostile archive member chooses. At a
+    fixed indent the spans for one name cannot overlap (`_cancel_add` refuses to
+    open a second while one is open), so within an indent group they are
+    disjoint and already in source order: the only span that can contain an
+    offset is the last one starting at or before it, and a bisection finds it.
+    Indent groups are bounded by nesting depth, not by file size.
+    """
+    indexed: dict = {}
+    for name, frontier in cancel.items():
+        groups: dict = {}
+        for entry in frontier:
+            ats, entries = groups.setdefault(entry[1], ([], []))
+            ats.append(entry[0])
+            entries.append(entry)
+        indexed[name] = sorted(groups.items())
+    return indexed
+
+
+def _is_cancelled(indexed: list, start: int, col: int, declared_global: bool = False) -> bool:
+    for at_col, (ats, entries) in indexed:
+        if at_col > col:
+            break  # sorted by indent, so nothing deeper can reach this call
+        if declared_global and at_col > 0:
+            # The call is in a scope that declared the name `global`, so it
+            # resolves at module level whatever any enclosing function did to
+            # its own local of that name.
+            continue
+        i = bisect.bisect_right(ats, start)
+        if not i:
+            continue
+        end = entries[i - 1][2]
+        if end is None or start < end:
             return True
     return False
 
@@ -1145,9 +1300,17 @@ def _fstring_spans(
 
         def live(name: str, at: int) -> bool:
             frontier = cancel.get(name)
-            return frontier is None or not _is_cancelled(frontier, base + at, col)
+            if frontier is None:
+                return True
+            start = base + at
+            spans = aliases.declared_global.get(name)
+            return not _is_cancelled(
+                frontier, start, col, bool(spans) and _declares_global(spans, start)
+            )
 
-    for span in _regex_spans(code, receivers, funcs, live, aliases.loaders):
+    for span in _regex_spans(
+        code, receivers, funcs, live, aliases.loaders, aliases.loader_modules
+    ):
         out.append(_Span(base + span.start(), base + span.end()))
 
 
@@ -1182,7 +1345,9 @@ def _statement_spans(
             # way; `run` aliases the function, so `obj.run(...)` is not it.
             if not direct:
                 continue
-            at, alias = _receiver_start(stmt, j - 1, receivers, aliases.loaders, walked)
+            at, alias = _receiver_start(
+                stmt, j - 1, receivers, aliases.loaders, walked, aliases.loader_modules
+            )
             if at is None:
                 continue
         elif prev is not None and prev.type == tokenize.NAME and prev.string in ("def", "class"):
@@ -1203,8 +1368,15 @@ def _statement_spans(
             # module. A rebinding indented deeper than the call does not reach
             # it, so a local `m = model` in some function above cannot silence a
             # module-level call.
-            if frontier is not None and _is_cancelled(frontier, start, stmt[0].start[1]):
-                continue
+            if frontier is not None:
+                spans = aliases.declared_global.get(alias)
+                if _is_cancelled(
+                    frontier,
+                    start,
+                    stmt[0].start[1],
+                    bool(spans) and _declares_global(spans, start),
+                ):
+                    continue
         out.append(_Span(start, offsets.of(*nxt.end)))
 
 
@@ -1304,6 +1476,7 @@ def _regex_spans(
     funcs: frozenset,
     live = None,
     loaders: frozenset = _DEFAULT_LOADER_FUNCS,
+    loader_modules: frozenset = frozenset(("importlib",)),
 ) -> list:
     """Spans of every call this text reaches the builtin through.
 
@@ -1326,7 +1499,8 @@ def _regex_spans(
     for m in RE_FALLBACK_LOADER_RECEIVER.finditer(text):
         # `importlib.import_module(n)` names the loader in the second group;
         # a bare `load(n)` names it in the first.
-        if _ident(m.group(2) or m.group(1)) in loaders:
+        owner = _ident(m.group(1)) if m.group(2) else ""
+        if _is_loader_name(owner, _ident(m.group(2) or m.group(1)), loaders, loader_modules):
             out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_BARE.finditer(text):
         if not _preceded_by_dot(text, m.start()):
@@ -1378,8 +1552,12 @@ class _ExecEvalMatcher:
         cancel: "dict | None" = None,
         bound = None,
         loader_funcs: "set | None" = None,
+        declared_global: "dict | None" = None,
+        loader_modules: "set | None" = None,
     ):
-        self.aliases = _Aliases(modules, funcs, cancel or {}, loader_funcs)
+        self.aliases = _Aliases(
+            modules, funcs, cancel or {}, loader_funcs, declared_global, loader_modules
+        )
         self.receivers = self.aliases.live_receivers
         self.funcs = self.aliases.live_funcs
         self.pattern = _EXEC_EVAL_PATTERN_TEXT
@@ -1436,6 +1614,7 @@ class _ExecEvalMatcher:
                 self.aliases.safe_funcs,
                 None,
                 self.aliases.loaders,
+                self.aliases.loader_modules,
             ):
                 if span.start() not in seen:
                     out.append(span)
@@ -1523,12 +1702,24 @@ class _ExecEvalPattern:
         modules: set = set()
         funcs: set = set()
         cancel: dict = {}
+        # Where each name is declared `global`, as the offset range of the scope
+        # that declared it. A call in there resolves at module level, so no
+        # enclosing function's local of that name can silence it.
+        declared_global: dict = {}
         loaders = _Loaders()
         # An escaped literal spells the module without the word appearing, so
         # that file has to be read too - but only when it also holds a call to
         # reach through the alias, since `_scan` returns nothing without one.
-        if "builtins" in content or (
-            ("exec" in content or "eval" in content) and _RE_STRING_ESCAPE.search(content)
+        if (
+            "builtins" in content
+            # A file that imports `import_module` binds a loader, and
+            # `import_module(n).exec(...)` reaches the builtin without the word
+            # `builtins` appearing anywhere.
+            or "import_module" in content
+            or (
+                ("exec" in content or "eval" in content)
+                and _RE_STRING_ESCAPE.search(content)
+            )
         ):
             failed: list = []
             for stmt in _statements(content, failed):
@@ -1565,17 +1756,19 @@ class _ExecEvalPattern:
                 # nothing costs one comparison however many names are open.
                 levels: list = []
                 # The `def` and `class` headers the statement sits under, as
-                # (indent, is a class). Only those two open a scope, so this is
-                # what says whether a binding is a class attribute.
+                # [indent, is a class, header offset, names declared global].
+                # Only those two open a scope, so this is what says whether a
+                # binding is a class attribute.
                 scopes: list = []
                 failed = []
                 for stmt in _statements(content, failed):
                     head = stmt[0]
                     col = head.start[1]
+                    at = offsets.of(*head.start)
                     if levels:
-                        _cancel_close(opened, levels, offsets.of(*head.start), col)
+                        _cancel_close(opened, levels, at, col)
                     while scopes and scopes[-1][0] >= col:
-                        scopes.pop()
+                        _close_scope(scopes.pop(), declared_global, at)
                     opens = _opens_scope(stmt)
                     # A class body is the one scope a name does not cross: the
                     # methods written in it do not see its bindings. Read before
@@ -1583,7 +1776,21 @@ class _ExecEvalPattern:
                     # header itself so a one-line `class C: b = model` counts.
                     in_class = (scopes and scopes[-1][1]) or opens == "class"
                     if opens is not None:
-                        scopes.append((col, opens == "class"))
+                        scopes.append([col, opens == "class", at, None])
+                    if head.type == tokenize.NAME and head.string == "global":
+                        # `global b` in a nested function makes its `b` the
+                        # module-level one, whatever the enclosing function did
+                        # to its own local of that name. Recorded against the
+                        # whole scope, because the declaration governs the body
+                        # written above it as well as below.
+                        if scopes:
+                            names = scopes[-1][3]
+                            if names is None:
+                                names = scopes[-1][3] = set()
+                            for tok in stmt[1:]:
+                                if tok.type == tokenize.NAME:
+                                    names.add(tok.string)
+                        continue
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
                         if cancel:
                             # Only once something is cancelled can an import
@@ -1623,12 +1830,19 @@ class _ExecEvalPattern:
                         # suppressed the real `b.exec(...)` in every one of them.
                         rebound.clear()
                         continue
-                    at = offsets.of(*head.start)
+                    # Measured from the END of the statement, not its start:
+                    # Python evaluates the right-hand side before it rebinds the
+                    # target, so `b = b.exec(marshal.loads(BLOB))` runs the
+                    # builtin and only then stops `b` being the module. Starting
+                    # the span at the first token suppressed that call.
+                    ends = offsets.of(*stmt[-1].end)
                     for name in rebound:
                         # Statements arrive in source order, so the first
                         # rebinding seen at a given indent is the earliest one.
-                        _cancel_add(cancel, opened, levels, name, at, col)
+                        _cancel_add(cancel, opened, levels, name, ends, col)
                     rebound.clear()
+                for scope in reversed(scopes):
+                    _close_scope(scope, declared_global, len(content))
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or
                     # indent to compare against; cancel from the top of the file
@@ -1636,7 +1850,11 @@ class _ExecEvalPattern:
                     # always did.
                     for name in _regex_rebindings(content) & candidates:
                         cancel[name] = [[0, 0, None]]
-        matcher = _ExecEvalMatcher(modules, funcs, cancel, content, loaders.funcs)
+                for spans in declared_global.values():
+                    spans.sort()
+        matcher = _ExecEvalMatcher(
+            modules, funcs, cancel, content, loaders.funcs, declared_global, loaders.modules
+        )
         self._cached = (content, matcher)
         return matcher
 
