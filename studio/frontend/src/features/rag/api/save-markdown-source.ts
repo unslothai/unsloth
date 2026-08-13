@@ -12,13 +12,17 @@ export async function saveMarkdownAsProjectSource(
   const name =
     title.replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 80) || "chat";
   const file = new File([markdown], `${name}.md`, { type: "text/markdown" });
+  // Invalidate the sources probe before and after the upload: a chat sent
+  // mid-upload must not cache "no sources" for the probe's TTL.
+  invalidateProjectSources(projectId);
   try {
     await uploadProjectDocument(projectId, file);
-    invalidateProjectSources(projectId);
     toast.success("Saved to project sources.");
   } catch (error) {
     toast.error("Failed to save to project sources.", {
       description: error instanceof Error ? error.message : undefined,
     });
+  } finally {
+    invalidateProjectSources(projectId);
   }
 }
