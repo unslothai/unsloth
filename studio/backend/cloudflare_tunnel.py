@@ -1426,6 +1426,17 @@ def canonical_hostname(raw: str) -> str:
             ascii_label = label if label.isascii() else label.encode("idna").decode("ascii")
         except UnicodeError:
             raise invalid from None
+        if not label.isascii():
+            # The stdlib codec is IDNA 2003, which maps some characters away
+            # instead of encoding them: "faß" becomes "fass", a separate
+            # registration. Refusing beats provisioning a domain nobody entered,
+            # and the A-label can be pasted directly.
+            try:
+                round_trip = ascii_label.encode("ascii").decode("idna")
+            except UnicodeError:
+                raise invalid from None
+            if round_trip != label.lower():
+                raise invalid
         ascii_label = ascii_label.lower()
         if not _HOSTNAME_LABEL_RE.match(ascii_label):
             raise invalid
@@ -1971,15 +1982,23 @@ def _provision(
     on_login_url: Optional[Callable[[str], None]],
     cancelled: Optional[Callable[[], bool]],
 ) -> None:
+    def _stop_if_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise ProvisioningError("cancelled", "Cloudflare setup was cancelled.")
+
     if origin_cert_path().exists():
         raise ProvisioningError("certificate_exists", str(origin_cert_path()))
     _run_login(record, binary, on_login_url, cancelled)
-    if cancelled is not None and cancelled():
-        raise ProvisioningError("cancelled", "Cloudflare setup was cancelled.")
+    # Each step below creates something in the user's Cloudflare account, and the
+    # CLI calls between them run long enough for a cancel to arrive mid-flight.
+    # The caller's settle removes whatever was created before the raise.
+    _stop_if_cancelled()
     name, tunnel_id, credentials = _create_tunnel(record, binary)
     record["credentials"] = str(_secure_credentials(credentials, tunnel_id))
     _write(_RECORD, record)
+    _stop_if_cancelled()
     _route_hostname(record, binary, name, hostname)
+    _stop_if_cancelled()
     _write(
         _IDENTITY,
         {

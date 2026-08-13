@@ -1910,7 +1910,17 @@ def test_a_record_created_outside_the_requested_zone_is_refused(cf):
     "raw",
     # Anything urlsplit would treat as a delimiter returns a shorter name than
     # the one typed, and provisioning that name is worse than refusing it.
-    ["studio@example.com", "example.com:bad", "a b.example.com", "st#p.example.com", "example", ""],
+    [
+        "studio@example.com",
+        "example.com:bad",
+        "a b.example.com",
+        "st#p.example.com",
+        "example",
+        "",
+        # The stdlib IDNA codec maps this to "fass.de", a separate registration,
+        # rather than encoding it. The A-label form below is the way in.
+        "studio.faß.de",
+    ],
 )
 def test_a_hostname_that_would_be_truncated_is_refused(raw):
     with pytest.raises(ct.ProvisioningError) as excinfo:
@@ -1925,6 +1935,9 @@ def test_a_hostname_that_would_be_truncated_is_refused(raw):
         ("https://studio.example.com/path", "studio.example.com"),
         ("  example.com  ", "example.com"),
         ("bücher.example.com", "xn--bcher-kva.example.com"),
+        ("日本.example.com", "xn--wgv71a.example.com"),
+        # The escape hatch for a name the codec would map away.
+        ("studio.xn--fa-hia.de", "studio.xn--fa-hia.de"),
         ("a-b.example.co.uk", "a-b.example.co.uk"),
     ],
 )
@@ -2033,6 +2046,43 @@ def test_a_login_ended_early_leaves_no_certificate_behind(cf, monkeypatch, endin
     assert cf.child.returncode == -15
     assert not _cert(cf).exists()
     assert ct._read(ct._RECORD) is None
+
+
+@pytest.mark.parametrize("cancel_after", ["login", "create", "route"])
+def test_a_cancel_arriving_mid_setup_leaves_nothing_owned(cf, monkeypatch, cancel_after):
+    # Cancel used to be read once, after login, so one arriving during either of
+    # the CLI calls that follow still created a tunnel and a DNS record.
+    # Each case cancels as one step returns, so it lands on the gate guarding the
+    # next one and no two cases exercise the same gate.
+    done = []
+    for step, target in (
+        ("login", "_run_login"),
+        ("create", "_create_tunnel"),
+        ("route", "_route_hostname"),
+    ):
+        original = getattr(ct, target)
+
+        def wrapped(
+            *args,
+            _step = step,
+            _original = original,
+            **kwargs,
+        ):
+            result = _original(*args, **kwargs)
+            done.append(_step)
+            return result
+
+        monkeypatch.setattr(ct, target, wrapped)
+
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision(cancelled = lambda: cancel_after in done)
+    assert excinfo.value.code == "cancelled"
+    assert ct.read_identity() is None
+    assert ct._read(ct._RECORD) is None
+    # Whatever the run got as far as creating is deleted, and a DNS record it
+    # created cannot be, so that name is recorded instead of being forgotten.
+    assert cf.deleted == ([] if cancel_after == "login" else _created(cf))
+    assert ct.orphaned_hostnames() == ([_HOST] if cancel_after == "route" else [])
 
 
 def test_a_certificate_that_changed_since_it_was_recorded_is_left_alone(cf):
