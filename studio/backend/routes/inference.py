@@ -2206,6 +2206,8 @@ from models.inference import (
     ValidateModelRequest,
     ValidateModelResponse,
     TransformersUpgradeInfo,
+    TransformersUpgradeCheckRequest,
+    TransformersUpgradeCheckResponse,
     InstallLatestTransformersRequest,
     InstallLatestTransformersResponse,
     TextContentPart,
@@ -9067,6 +9069,113 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+
+
+# studio_router only: a Studio preflight, kept off the OpenAI-compatible /v1 mount.
+@studio_router.post(
+    "/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse
+)
+async def check_transformers_upgrade_route(
+    request: TransformersUpgradeCheckRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Does loading this model need a newer transformers than any installed overlay?
+
+    /validate answers this for a chat load, but only as one field of a check that also
+    resolves a ModelConfig, picks a GPU placement and runs the coexistence guard -- none
+    of which apply to a training start, and several of which refuse while a run is
+    active. Training therefore asks the question on its own here, before it spawns a
+    worker that would otherwise die at model load with an unrecognized-architecture
+    error and no way for the user to act on it.
+
+    Answers the same way /validate does: check_upgrade_for_model across [adapter, base],
+    inside the same forced-offline window, on a worker thread. Also reports whether the
+    run would load 16-bit instead of bnb 4-bit, which is what the latest sidecar means
+    for training. Never raises: an unreadable model reports "no upgrade needed" and the
+    caller proceeds exactly as it did before.
+    """
+    from utils.transformers_version import latest_tier_active_for
+
+    model_name = request.model_name
+    targets = [model_name]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # The worker activates transformers for the BASE model, so a local or remote
+        # adapter has to be judged by what it is an adapter for.
+        base = await asyncio.to_thread(
+            _offline_guarded,
+            model_name,
+            get_base_model_from_lora_identifier,
+            model_name,
+            request.hf_token,
+        )
+        if base:
+            targets.append(base)
+    except Exception:
+        pass
+    targets = list(dict.fromkeys(targets))
+
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+    try:
+        from utils.transformers_latest import check_upgrade_for_model
+
+        for target in targets:
+            upgrade = await asyncio.to_thread(
+                _offline_guarded,
+                target,
+                check_upgrade_for_model,
+                target,
+                request.hf_token,
+            )
+            if upgrade is not None:
+                transformers_upgrade = TransformersUpgradeInfo(**upgrade)
+                break
+    except Exception as exc:
+        logger.debug("Transformers upgrade check failed for '%s': %s", model_name, exc)
+
+    requires_trust_remote_code = False
+    try:
+        requires_trust_remote_code = await asyncio.to_thread(
+            _offline_guarded,
+            targets,
+            lambda: any(
+                _requires_trust_remote_code_for_model(target, request.hf_token)
+                for target in targets
+            ),
+        )
+    except Exception as exc:
+        logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
+
+    latest_tier_active = False
+    try:
+        latest_tier_active = await asyncio.to_thread(
+            _offline_guarded,
+            targets,
+            latest_tier_active_for,
+            model_name,
+            request.hf_token,
+        )
+    except Exception as exc:
+        logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+
+    # An offered install lands the model on the latest sidecar, and that sidecar forces
+    # 16-bit (bnb 4-bit feeds quantized experts into unvalidated paths for brand-new
+    # architectures). A dev-only upgrade is never installed, so it changes nothing here.
+    installable_upgrade = bool(
+        transformers_upgrade is not None
+        and transformers_upgrade.supported_in_pypi
+        and transformers_upgrade.pypi_version
+    )
+    return TransformersUpgradeCheckResponse(
+        model_name = model_name,
+        requires_transformers_upgrade = transformers_upgrade is not None,
+        transformers_upgrade = transformers_upgrade,
+        requires_trust_remote_code = bool(requires_trust_remote_code),
+        latest_tier_active = bool(latest_tier_active),
+        forces_16bit = bool(latest_tier_active) or installable_upgrade,
+    )
 
 
 # studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.

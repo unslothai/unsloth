@@ -1338,6 +1338,10 @@ export const fr = {
         "Ce jeu de données n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
       noticeDatasetPartial:
         "L'entraînement terminera le téléchargement partiel du jeu de données avant de le lire.",
+      noticeTransformersUpgrade:
+        "Aucune version installée de transformers ne prend encore en charge cette architecture. Au démarrage, l'installation de transformers {version} sera proposée d'abord.",
+      noticeSixteenBitOnly:
+        "Cette architecture s'entraîne en LoRA 16 bits : le 4 bits n'est pas disponible, donc l'exécution demande beaucoup plus de VRAM que QLoRA.",
       advancedSettings: "Paramètres avancés",
       defaultAdvancedSettings: "Valeurs par défaut",
       nonDefaultAdvancedSettings: "{count} non standard",

@@ -1338,6 +1338,10 @@ export const de = {
         "Dieser Datensatz befindet sich noch nicht auf dem Gerät. Beim Start des Trainings wird er automatisch heruntergeladen.",
       noticeDatasetPartial:
         "Vor dem Einlesen wird der unvollständige Datensatz-Download abgeschlossen.",
+      noticeTransformersUpgrade:
+        "Keine installierte transformers-Version unterstützt diese Architektur bereits. Beim Start wird zuerst die Installation von transformers {version} angeboten.",
+      noticeSixteenBitOnly:
+        "Diese Architektur trainiert als 16-Bit-LoRA: 4 Bit ist dafür nicht verfügbar, der Lauf braucht also deutlich mehr VRAM als QLoRA.",
       advancedSettings: "Erweiterte Einstellungen",
       defaultAdvancedSettings: "Standardwerte",
       nonDefaultAdvancedSettings: "{count} abweichend",

@@ -1255,6 +1255,10 @@ export const zhCN = {
         "此数据集尚未存储在本设备上。训练时会自动下载。",
       noticeDatasetPartial:
         "训练会先继续并完成数据集下载，然后再读取数据集。",
+      noticeTransformersUpgrade:
+        "已安装的 transformers 均不支持该架构。启动运行时会先提示安装 transformers {version}。",
+      noticeSixteenBitOnly:
+        "该架构以 16 位 LoRA 训练：无法使用 4 位，因此显存需求远高于 QLoRA。",
       advancedSettings: "高级设置",
       defaultAdvancedSettings: "默认值",
       nonDefaultAdvancedSettings: "{count} 项非默认设置",

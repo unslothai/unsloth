@@ -14,3 +14,15 @@ export interface TransformersUpgradeInfo {
 }
 
 export type TransformersUpgradePhase = "consent" | "installing" | "error";
+
+/** What `/api/inference/transformers-upgrade-check` says about one model. */
+export interface TransformersUpgradeCheck {
+  /** Set when no installed transformers ships the architecture but a newer one does. */
+  upgrade: TransformersUpgradeInfo | null;
+  /** The model ships its own modeling code, so a declined install still has a path. */
+  requiresTrustRemoteCode: boolean;
+  /** The latest sidecar already routes this model. */
+  latestTierActive: boolean;
+  /** A run started now loads 16-bit, not bnb 4-bit: the latest sidecar forces it. */
+  forces16Bit: boolean;
+}

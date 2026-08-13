@@ -33,6 +33,7 @@ import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
+import { confirmTrainingTransformersUpgrade } from "./training-transformers-upgrade";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
   type TrainingStartLease,
@@ -277,6 +278,16 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     if (useTrainingRuntimeStore.getState().stopRequested) {
       return attempt.cancel();
     }
+    // Upgrade consent first, then the custom-code gate: the same order chat loads use,
+    // because installing a newer transformers changes what the load would even run.
+    if (
+      !(await confirmSelectedModelTransformersUpgrade(
+        attempt,
+        tokenResult.token,
+      ))
+    ) {
+      return false;
+    }
     if (!(await confirmSelectedModelRemoteCode(attempt, tokenResult.token))) {
       return false;
     }
@@ -426,6 +437,24 @@ function openManualMapping(
   attempt.cancel();
   useDatasetPreviewDialogStore.getState().openMapping(check);
   return false;
+}
+
+async function confirmSelectedModelTransformersUpgrade(
+  attempt: FreshTrainingStartAttempt,
+  hfToken: string | null,
+): Promise<boolean> {
+  const modelName = attempt.config.selectedModel;
+  if (!modelName) {
+    return true;
+  }
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName,
+    hfToken,
+  });
+  if (attempt.abortIfInputsChanged()) {
+    return false;
+  }
+  return outcome.proceed || attempt.cancel(outcome.error);
 }
 
 async function confirmSelectedModelRemoteCode(

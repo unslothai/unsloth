@@ -1310,6 +1310,10 @@ export const ru = {
         "Этого датасета пока нет на устройстве. При запуске обучения он будет загружен автоматически.",
       noticeDatasetPartial:
         "Перед чтением датасета обучение завершит скачивание недостающих файлов.",
+      noticeTransformersUpgrade:
+        "Ни одна установленная версия transformers пока не поддерживает эту архитектуру. При запуске сначала будет предложено установить transformers {version}.",
+      noticeSixteenBitOnly:
+        "Эта архитектура обучается в 16-битном LoRA: 4-битный режим недоступен, поэтому запуску нужно значительно больше VRAM, чем QLoRA.",
       advancedSettings: "Расширенные настройки",
       defaultAdvancedSettings: "По умолчанию",
       nonDefaultAdvancedSettings: "Нестандартных: {count}",

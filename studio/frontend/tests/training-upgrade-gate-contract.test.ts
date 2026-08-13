@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// The gap this closes: `confirmTransformersUpgradeIfNeeded` had exactly two callers,
+// both in chat, so a Train-tab run on a model whose architecture no installed
+// transformers ships was accepted and then died at model load with
+//   "... is not supported yet in transformers==5.3.0"
+// and no prompt. Reading the start paths (rather than driving them) keeps this a cheap
+// guard against the gate being dropped from either one.
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+const START_PATHS = [
+  "../src/features/training/lib/start-fresh-training-run.ts",
+  "../src/features/training/lib/resume-training-run.ts",
+] as const;
+
+function read(relative: string): string {
+  return readFileSync(new URL(relative, import.meta.url), "utf8");
+}
+
+test("both training start paths consult the transformers-upgrade gate", () => {
+  for (const file of START_PATHS) {
+    assert.ok(
+      read(file).includes("confirmTrainingTransformersUpgrade"),
+      `${file} must consult the transformers-upgrade gate: without it a model whose ` +
+        "architecture no installed transformers ships is accepted and then dies at " +
+        "model load, with no prompt and no way for the user to act on it",
+    );
+  }
+});
+
+test("the upgrade dialog is raised before the custom-code dialog", () => {
+  // Chat's order, and for the same reason: installing a newer transformers changes
+  // what the load would even run, so consenting to the install has to come first.
+  for (const file of START_PATHS) {
+    const source = read(file);
+    const upgradeAt = source.indexOf("confirmTrainingTransformersUpgrade(");
+    const remoteCodeAt = source.indexOf("confirmRemoteCodeIfNeeded(");
+    // Both must be present: a missing call indexes to -1, which would otherwise
+    // satisfy the ordering assertion without either gate existing.
+    assert.ok(upgradeAt >= 0 && remoteCodeAt >= 0, `${file} must run both gates`);
+    assert.ok(
+      upgradeAt < remoteCodeAt,
+      `${file} must raise the upgrade dialog before the custom-code dialog`,
+    );
+  }
+});
+
+test("the gate reaches the install through the shared consent dialog", () => {
+  // Not a second implementation of the flow chat already owns.
+  const gate = read("../src/features/training/lib/training-transformers-upgrade.ts");
+  assert.ok(gate.includes("confirmTransformersUpgradeIfNeeded"));
+  assert.ok(gate.includes("checkTransformersUpgrade"));
+});

@@ -1311,6 +1311,10 @@ export const ptBR = {
         "Este dataset ainda não está no dispositivo. Ele será baixado automaticamente quando o treinamento começar.",
       noticeDatasetPartial:
         "O download incompleto do dataset será concluído antes da leitura.",
+      noticeTransformersUpgrade:
+        "Nenhuma versão instalada do transformers suporta esta arquitetura ainda. Ao iniciar a execução, será oferecida a instalação do transformers {version} antes.",
+      noticeSixteenBitOnly:
+        "Esta arquitetura treina em LoRA de 16 bits: 4 bits não está disponível, então a execução precisa de muito mais VRAM que QLoRA.",
       advancedSettings: "Configurações avançadas",
       defaultAdvancedSettings: "Padrões",
       nonDefaultAdvancedSettings: "{count} fora do padrão",

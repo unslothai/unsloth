@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// A Train-tab run on a model whose architecture no installed transformers ships was
+// accepted, spawned, and killed minutes later at model load:
+//   "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit is not supported yet in transformers==5.3.0"
+// Studio already had the fix -- the consent dialog that provisions .venv_t5_latest --
+// but it was wired only into chat, so Train never asked. These pin the gate: the start
+// path consults the check, pauses on the dialog, and abandons the start when declined
+// instead of spawning a worker that cannot load the model.
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import test from "node:test";
+
+register("./helpers/transformers-upgrade-resolver.mjs", import.meta.url);
+
+const stub = await import("./helpers/transformers-upgrade-stub.mjs");
+const { confirmTrainingTransformersUpgrade } = await import(
+  "../src/features/training/lib/training-transformers-upgrade.ts"
+);
+
+const MODEL = "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit";
+const UPGRADE = {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  model_type: "muse_glimmer",
+  // biome-ignore lint/style/useNamingConvention: API schema
+  pypi_version: "5.15.0",
+  // biome-ignore lint/style/useNamingConvention: API schema
+  supported_in_pypi: true,
+  // biome-ignore lint/style/useNamingConvention: API schema
+  supported_in_main: true,
+};
+
+test("a model no installed transformers ships pauses the start on the dialog", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: UPGRADE,
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: true,
+  };
+  stub.state.consentResult = true;
+  stub.state.installRan = true;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+    hfToken: "hf_token",
+  });
+
+  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
+  assert.deepEqual(stub.calls[0], {
+    name: "checkTransformersUpgrade",
+    args: [MODEL, "hf_token"],
+  });
+  assert.equal(stub.calls[1]?.name, "confirmTransformersUpgradeIfNeeded");
+  assert.equal(stub.calls[1]?.args[0].modelName, MODEL);
+  assert.equal(stub.calls[1]?.args[0].upgrade, UPGRADE);
+});
+
+test("declining the install abandons the start instead of spawning a doomed run", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: UPGRADE,
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: true,
+  };
+  stub.state.consentResult = false;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+    hfToken: null,
+  });
+
+  assert.equal(outcome.proceed, false);
+  assert.equal(outcome.forces16Bit, false);
+  // The worker's own wording, so the message names the real cause.
+  assert.match(String(outcome.error), /is not supported yet/);
+  assert.match(String(outcome.error), new RegExp(MODEL.replace(/\//g, "\\/")));
+});
+
+test("a model shipping its own code keeps the custom-code way out", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: { ...UPGRADE, supported_in_pypi: false },
+    requiresTrustRemoteCode: true,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+
+  await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+
+  assert.equal(
+    stub.calls[1]?.args[0].trustRemoteCodeFallback,
+    true,
+    "the dialog must offer the trust_remote_code fallback, like chat does",
+  );
+  // Training raises no "stop N chats" prompt, so it carries no answer to one: the
+  // install must never cancel someone else's stream on this tab's behalf.
+  assert.equal(stub.calls[1]?.args[0].forceCancelActive, undefined);
+});
+
+test("a resolved custom-code fallback still loads 4-bit", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: { ...UPGRADE, supported_in_pypi: false },
+    requiresTrustRemoteCode: true,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+  // The fallback resolves true WITHOUT installing, so the sidecar never activates.
+  stub.state.consentResult = true;
+  stub.state.installRan = false;
+
+  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+
+  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
+});
+
+test("an already-routed model reports 16-bit without a dialog", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: null,
+    requiresTrustRemoteCode: false,
+    latestTierActive: true,
+    forces16Bit: true,
+  };
+
+  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+
+  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
+  assert.equal(
+    stub.calls.length,
+    1,
+    "nothing to install, so nothing to consent to",
+  );
+});
+
+test("a backend without the check leaves the start exactly as it was", async () => {
+  stub.resetStub();
+  stub.state.checkResult = new Error("404 Not Found");
+
+  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+
+  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
+  assert.equal(stub.calls.length, 1);
+});

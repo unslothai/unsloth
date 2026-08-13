@@ -16,6 +16,7 @@ import {
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import { resolveResumeRemoteCodeCache } from "./resume-remote-code-cache";
+import { confirmTrainingTransformersUpgrade } from "./training-transformers-upgrade";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
@@ -55,6 +56,11 @@ export async function resumeTrainingRun(runId: string): Promise<boolean> {
         payload.project_name ?? "",
       );
 
+    // Upgrade consent first, then the custom-code gate, like a fresh start: a resume
+    // after a reinstall can face the same unknown architecture the first run installed for.
+    if (!(await confirmResumeTransformersUpgrade(payload, attempt))) {
+      return false;
+    }
     if (!(await confirmResumeRemoteCode(payload, attempt))) {
       return false;
     }
@@ -234,6 +240,23 @@ async function prepareResumeHfToken(
   }
   payload.hf_token = preparedToken.token;
   return true;
+}
+
+async function confirmResumeTransformersUpgrade(
+  payload: TrainingStartRequest,
+  attempt: ResumeTrainingStartAttempt,
+): Promise<boolean> {
+  if (!payload.model_name) {
+    return attempt.isPreflightActive();
+  }
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: payload.model_name,
+    hfToken: payload.hf_token ?? null,
+  });
+  if (!attempt.isPreflightActive()) {
+    return false;
+  }
+  return outcome.proceed || attempt.cancel(outcome.error);
 }
 
 async function confirmResumeRemoteCode(

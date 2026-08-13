@@ -1294,6 +1294,10 @@ export const ar = {
         "مجموعة البيانات هذه غير موجودة على الجهاز بعد. سيُنزّلها التدريب تلقائيًا.",
       noticeDatasetPartial:
         "سيُكمل التدريب التنزيل غير المكتمل لمجموعة البيانات قبل قراءتها.",
+      noticeTransformersUpgrade:
+        "لا يدعم أي إصدار مثبَّت من transformers هذه البنية بعد. عند بدء التشغيل سيُعرض تثبيت transformers {version} أولاً.",
+      noticeSixteenBitOnly:
+        "تتدرَّب هذه البنية بـ LoRA بدقة 16 بت: خيار 4 بت غير متاح لها، لذا يحتاج التشغيل ذاكرة VRAM أكبر بكثير من QLoRA.",
       advancedSettings: "الإعدادات المتقدمة",
       defaultAdvancedSettings: "الإعدادات الافتراضية",
       nonDefaultAdvancedSettings: "{count} غير افتراضي",

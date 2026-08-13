@@ -3,6 +3,48 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import type { TransformersUpgradeCheck, TransformersUpgradeInfo } from "../types";
+
+interface TransformersUpgradeCheckResponse {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requires_transformers_upgrade?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  transformers_upgrade?: TransformersUpgradeInfo | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requires_trust_remote_code?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  latest_tier_active?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  forces_16bit?: boolean;
+}
+
+/** Ask whether loading `modelName` needs a newer transformers than any installed sidecar.
+ *
+ * The pre-load half of the consent gate for callers that do not run chat's `/validate`
+ * (the Train tab). The token rides in the POST body, never the URL, like the scan route. */
+export async function checkTransformersUpgrade(
+  modelName: string,
+  hfToken?: string | null,
+): Promise<TransformersUpgradeCheck> {
+  const response = await authFetch("/api/inference/transformers-upgrade-check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_name: modelName, hf_token: hfToken ?? null }),
+  });
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  const data = (await response.json()) as TransformersUpgradeCheckResponse;
+  const upgrade = data.requires_transformers_upgrade
+    ? (data.transformers_upgrade ?? null)
+    : null;
+  return {
+    upgrade,
+    requiresTrustRemoteCode: Boolean(data.requires_trust_remote_code),
+    latestTierActive: Boolean(data.latest_tier_active),
+    forces16Bit: Boolean(data.forces_16bit),
+  };
+}
 
 interface InstallLatestTransformersResponse {
   success: boolean;
