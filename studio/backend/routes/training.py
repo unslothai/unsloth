@@ -4208,13 +4208,9 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     return written
 
 
-# _materialize_hf_dataset() below runs `from datasets import load_dataset`, so without
-# the gate an import into an empty destination surfaces the missing library as a 502
-# from the generic handler instead of this tier's stated 503.
 @router.post(
     "/diffusion/dataset/import-example",
     response_model = DiffusionDatasetImportResponse,
-    dependencies = [Depends(require_datasets_http)],
 )
 async def import_diffusion_dataset_example(
     body: DiffusionDatasetImportRequest,
@@ -4226,6 +4222,12 @@ async def import_diffusion_dataset_example(
     as-is rather than re-downloaded."""
     _require_diffusion_dataset_mutable()
     entry = _example_by_id(body.id)
+    # After resolving the example, and only for the loader that needs it:
+    # _materialize_hf_dataset() runs `from datasets import load_dataset`, which without
+    # this surfaces as a 502 from the generic handler rather than the tier's 503. The
+    # imagefolder_jsonl loader uses huggingface_hub and file copies, so it still works.
+    if entry.get("loader") == "hf_dataset":
+        await require_datasets_http()
     folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
 
     def do_import() -> DiffusionDatasetImportResponse:

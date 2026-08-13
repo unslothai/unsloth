@@ -894,7 +894,7 @@ class TestManifestVerificationHonoursTheTier:
     def test_tier_install_verifies_as_complete(self, tmp_path, monkeypatch):
         # On the machine the tier exists for: a native ARM64 Windows interpreter,
         # where the overrides really did decide the installed versions.
-        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda: True)
+        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda manifest = None: True)
         self._write_manifest(tmp_path, no_datasets = True)
         result = self.manifest.verify_install(
             root = tmp_path,
@@ -909,7 +909,7 @@ class TestManifestVerificationHonoursTheTier:
         """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install too, where
         pip_install never applies overrides-win-arm64.txt. Judged by the lifted pins,
         a correctly installed PyMuPDF 1.27.2.3 reads as missing on every launch."""
-        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda: False)
+        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda manifest = None: False)
         self._write_manifest(tmp_path, no_datasets = True)
         reqs = self.manifest.requirements_root(STUDIO_DIR)
         installed = self._installed_without_tier_packages()

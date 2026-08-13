@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import sys
+import sysconfig
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -172,6 +173,10 @@ def write_manifest(
         "package_version": _installed_version(package_name),
         "python": platform.python_version(),
         "platform": f"{sys.platform}-{platform.machine()}",
+        # The wheel tag, not the machine: an emulated x64 interpreter on ARM64 Windows
+        # reports arm64 for the machine, and the tag is what decides which wheels this
+        # venv could install. Read back when verifying a venv other than our own.
+        "platform_tag": sysconfig.get_platform(),
         "prefix": str(venv_root()),
         "steps_total": steps_total,
         "requirement_files": requirement_digests(req_root),
@@ -359,15 +364,22 @@ def _version_satisfies(version: str, specifier: str) -> bool:
         return False
 
 
-def _is_windows_arm64_python() -> bool:
+def _is_windows_arm64_python(manifest: Optional[Dict[str, object]] = None) -> bool:
     """Is the interpreter being verified a native ARM64 Windows build?
+
+    The manifest answers first when it carries a tag, because verify_install() also
+    checks OTHER venvs (install_state(root=..., installed=...)): asked about a foreign
+    tier install, the running interpreter is the wrong thing to look at, in both
+    directions. Manifests written before the key existed fall back to this process.
 
     sysconfig, not platform.machine(): an emulated x64 interpreter reports arm64 for
     the machine and win-amd64 for the tag, and the tag decides which wheels exist.
     Same expression as install_python_stack.IS_WINDOWS_ARM64_PYTHON, repeated because
     this module is loaded alone by setup.ps1 and the desktop preflight.
     """
-    import sysconfig
+    recorded = (manifest or {}).get("platform_tag")
+    if isinstance(recorded, str) and recorded:
+        return recorded.lower() == "win-arm64"
     return os.name == "nt" and sysconfig.get_platform().lower() == "win-arm64"
 
 
@@ -530,7 +542,7 @@ def verify_install(
     # Gated on the interpreter too, as the install side is: UNSLOTH_NO_DATASETS=1
     # turns the tier on for an x64 install, where the overrides never ran and the
     # original pins are what is installed.
-    lifts = tier_version_lifts(reqs) if (tier and _is_windows_arm64_python()) else None
+    lifts = tier_version_lifts(reqs) if (tier and _is_windows_arm64_python(manifest)) else None
     missing = missing_requirements(
         reqs / BOOT_REQUIREMENT_FILE,
         installed = installed,

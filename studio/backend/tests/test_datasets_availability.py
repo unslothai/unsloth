@@ -363,12 +363,13 @@ class TestCompatibilityRoutersAreGated:
     def test_legacy_router_carries_the_dependency(self, router):
         assert "Depends(require_datasets_http)" in self._mount(router)
 
-    def test_import_example_route_is_gated(self):
-        """_materialize_hf_dataset() runs `from datasets import load_dataset`, so
-        an ungated import surfaces as a 502 rather than the tier's 503."""
+    def test_import_example_reaches_the_gate(self):
+        """_materialize_hf_dataset() runs `from datasets import load_dataset`, so an
+        ungated import surfaces as a 502 rather than the tier's 503. Inside the
+        handler now, per loader: see TestGatesFollowTheLoader."""
         source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
         index = source.index('"/diffusion/dataset/import-example"')
-        assert "require_datasets_http" in source[index : index + 300]
+        assert "require_datasets_http" in source[index : index + 2000]
 
     def test_mcp_start_training_enforces_the_gate(self):
         """mcp_server calls start_training() directly, so FastAPI never runs the
@@ -493,3 +494,42 @@ class TestOnlyDatasetRoutesAreGated:
             line_end = source.index("\n", index)
             assert "needs_datasets" not in source[index:line_end], path
             break
+
+
+class TestGatesFollowTheLoader:
+    """A gate on a route that does not need the library is a feature removed for
+    nothing. The curated diffusion examples are two loaders, and only one of them
+    reaches datasets."""
+
+    def test_the_example_import_gates_inside_not_on_the_route(self):
+        source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
+        index = source.index('"/diffusion/dataset/import-example"')
+        decorator = source[index : index + 220]
+        assert "require_datasets_http" not in decorator
+        body = source[index : index + 2000]
+        assert 'entry.get("loader") == "hf_dataset"' in body
+        assert "await require_datasets_http()" in body
+
+    def test_the_imagefolder_example_is_not_gated(self):
+        """tarot-1920 materializes through huggingface_hub and file copies."""
+        source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
+        assert '"loader": "imagefolder_jsonl"' in source
+
+
+class TestVerificationAsksTheTargetVenv:
+    """verify_install() also checks OTHER venvs, so the lifts follow the manifest's
+    recorded interpreter tag rather than the one doing the checking."""
+
+    def test_the_recorded_tag_wins(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "im_gate", _BACKEND.parent / "install_manifest.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module._is_windows_arm64_python({"platform_tag": "win-arm64"}) is True
+        assert module._is_windows_arm64_python({"platform_tag": "win-amd64"}) is False
+        # No key: an older manifest, so fall back to this interpreter (Linux here).
+        assert module._is_windows_arm64_python({}) is False
+        assert "platform_tag" in (_BACKEND.parent / "install_manifest.py").read_text(
+            encoding = "utf-8")

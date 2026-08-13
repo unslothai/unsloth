@@ -3121,7 +3121,12 @@ exit 0
                 Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
             }
         }
-        $wantedTag = if ($script:ArmInferenceOnly) { "win-arm64" } else { "win-amd64" }
+        # From the interpreter this run selected, not from the tier: UNSLOTH_NO_DATASETS
+        # picks a dependency set, not an architecture, and the selector answers x64
+        # whenever an x64 build exists. Hardcoded to win-arm64, an explicit tier on a
+        # machine with a working migrated x64 venv rebuilt it for no reason.
+        $wantedTag = Get-PythonPlatformTag $DetectedPython.Path
+        if (-not $wantedTag) { $wantedTag = if ($script:ArmInferenceOnly) { "win-arm64" } else { "win-amd64" } }
         # A tag we could not read is not evidence of the wrong architecture. The probe
         # returns "" for a broken interpreter, an antivirus-blocked one-shot, or a
         # relocated base install, and treating that as a mismatch sends a working
