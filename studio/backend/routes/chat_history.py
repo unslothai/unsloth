@@ -61,6 +61,51 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+class ChatRagThreadSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["thread"]
+
+
+class ChatRagKnowledgeBaseSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["kb"]
+    kbId: str = Field(min_length = 1, max_length = 256)
+
+
+class ChatThreadSettings(BaseModel):
+    """The chat settings captured per thread; a thread storing none uses the global ones."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    reasoningEnabled: Optional[bool] = None
+    reasoningEffort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    artifactsEnabled: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    # "full" (Full access) is session-only and never persisted, per thread or globally.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragEnabled: Optional[bool] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+
+
 class ChatThread(BaseModel):
     id: str
     title: str = "New Chat"
@@ -75,6 +120,7 @@ class ChatThread(BaseModel):
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
+    settings: Optional[ChatThreadSettings] = None
 
 
 class ChatThreadPatch(BaseModel):
@@ -92,6 +138,7 @@ class ChatThreadPatch(BaseModel):
     updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    settings: Optional[ChatThreadSettings] = None
 
 
 class ChatMessage(BaseModel):
@@ -234,19 +281,6 @@ class ChatPreset(BaseModel):
     name: str
     params: ChatInferenceSettings
     loadConfig: Optional[ChatPresetLoadConfig] = None
-
-
-class ChatRagThreadSource(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-
-    type: Literal["thread"]
-
-
-class ChatRagKnowledgeBaseSource(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-
-    type: Literal["kb"]
-    kbId: str = Field(min_length = 1, max_length = 256)
 
 
 class ChatResearchWebsitePolicy(BaseModel):

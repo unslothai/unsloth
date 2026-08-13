@@ -66,6 +66,10 @@ export interface ThreadRecord {
    */
   forkedFromThreadId?: string | null;
   forkedFromMessageId?: string | null;
+  /** this chat's own settings, applied when it is opened; absent means the global ones. */
+  settings?:
+    | import("./utils/thread-scoped-settings").ThreadScopedSettings
+    | null;
 }
 
 export interface MessageRecord {

@@ -41,7 +41,9 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
+import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import {
   ingestResearchUpdate,
   useResearchRunStore,
@@ -96,6 +98,7 @@ import {
   ensureStoredChatThread,
   getStoredChatMessage,
   getStoredChatThread,
+  getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -1688,6 +1691,61 @@ function ActiveThreadSync({
   return null;
 }
 
+// gated on hydration, or the initial /api/chat/settings response lands after a thread's own values.
+function ThreadScopedSettingsSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const settingsHydrated = useChatRuntimeStore(
+    (state) => state.settingsHydrated,
+  );
+
+  useEffect(() => {
+    if (!enabled || !settingsHydrated) return;
+    const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
+    if (activeThreadId === null) {
+      applyThreadScopedSettings(null, null);
+      return;
+    }
+    let cancelled = false;
+    let paired = false;
+    let unpaired = false;
+
+    const sync = () => {
+      if (cancelled || paired) return;
+      void getStoredChatThreadReadResult(activeThreadId)
+        .then(({ thread, cacheable }) => {
+          if (cancelled || paired) return;
+          // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
+          if (!thread || !cacheable) {
+            // a new chat's runtime-made id has no row yet, so it stays on the global settings.
+            if (unpaired) return;
+            unpaired = true;
+            applyThreadScopedSettings(null, null);
+            return;
+          }
+          paired = true;
+          // the response spells every omitted field as null, which is not a value to apply.
+          applyThreadScopedSettings(
+            activeThreadId,
+            thread.settings ? sanitizeThreadScopedSettings(thread.settings) : null,
+          );
+        })
+        // a failed read keeps the current values: the defaults would be the wrong chat's modes.
+        .catch(() => undefined);
+    };
+
+    sync();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
+    };
+  }, [activeThreadId, enabled, settingsHydrated]);
+
+  return null;
+}
+
 // Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
 // none, and a retried thread's newest stored leaf is not what the runtime would send.
 function ActiveBranchRegistrar({
@@ -1977,6 +2035,7 @@ export function ChatRuntimeProvider({
             !initialThreadId
           }
         />
+        <ThreadScopedSettingsSync enabled={modelType === "base" && !pairId} />
         <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
         <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />

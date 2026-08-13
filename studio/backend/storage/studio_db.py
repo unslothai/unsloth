@@ -351,6 +351,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             anthropic_code_exec_container_id TEXT,
             forked_from_thread_id TEXT,
             forked_from_message_id TEXT,
+            settings_json TEXT,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
@@ -358,6 +359,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     chat_thread_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
     }
+    if "settings_json" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
@@ -1603,9 +1606,9 @@ def _json_loads(value: str | None, fallback):
         return fallback
 
 
-def _chat_thread_from_row(row: sqlite3.Row) -> dict:
+def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> dict:
     data = dict(row)
-    return {
+    thread = {
         "id": data["id"],
         "title": data["title"],
         "modelType": data["model_type"],
@@ -1622,6 +1625,9 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "forkedFromThreadId": data.get("forked_from_thread_id"),
         "forkedFromMessageId": data.get("forked_from_message_id"),
     }
+    if include_settings:
+        thread["settings"] = _json_loads(data.get("settings_json"), None)
+    return thread
 
 
 def _chat_project_from_row(row: sqlite3.Row) -> dict:
@@ -1679,8 +1685,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -1693,7 +1699,9 @@ def upsert_chat_thread(thread: dict) -> dict:
                 openai_code_exec_container_id = excluded.openai_code_exec_container_id,
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
-                forked_from_message_id = excluded.forked_from_message_id
+                forked_from_message_id = excluded.forked_from_message_id,
+                -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
+                settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
             """,
             (
                 thread["id"],
@@ -1709,6 +1717,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
                 thread.get("forkedFromMessageId"),
+                json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
             ),
         )
         conn.commit()
@@ -1766,6 +1775,10 @@ def update_chat_thread(
         "forkedFromMessageId": (
             "forked_from_message_id",
             patch.get("forkedFromMessageId"),
+        ),
+        "settings": (
+            "settings_json",
+            json.dumps(patch["settings"]) if patch.get("settings") is not None else None,
         ),
     }
     assignments = []
@@ -1841,7 +1854,8 @@ def list_chat_threads(
             "ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC",
             values,
         ).fetchall()
-        return [_chat_thread_from_row(row) for row in rows]
+        # the snapshot is only read when a thread is opened, so it is left out of the listing.
+        return [_chat_thread_from_row(row, include_settings = False) for row in rows]
     finally:
         conn.close()
 
@@ -3097,8 +3111,8 @@ def fork_chat_thread(
             INSERT INTO chat_threads
                 (id, title, model_type, model_id, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
-                 forked_from_thread_id, forked_from_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?)
+                 forked_from_thread_id, forked_from_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 new_thread_id,
@@ -3110,6 +3124,7 @@ def fork_chat_thread(
                 int(created_at),
                 source_thread_id,
                 branch_message_id,
+                src_dict.get("settings_json"),
             ),
         )
         fork_messages = []

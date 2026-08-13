@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import {
   cachedPinnableGpuIndexKind,
@@ -40,9 +41,18 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import {
+  THREAD_SCOPED_SETTING_KEYS,
+  type ThreadScopedSettingKey,
+  type ThreadScopedSettings,
+  hasThreadScopedSettings,
+  isThreadOwnedSettingKey,
+  sanitizeThreadScopedSettings,
+} from "../utils/thread-scoped-settings";
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
@@ -389,6 +399,8 @@ function saveSettingsPatch(patch: SettingsPatch): void {
 // the user's last slider drag is dropped.
 function flushSettingsOnPageHidden(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
+  // a captured edit lives only in the debounce, so send it before the tab goes.
+  flushThreadScopedSettingsWrite(true);
   // An edit still waiting on hydration is a user edit like any other, and the
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
@@ -636,6 +648,8 @@ function flushPreHydrationSettings(): void {
  * cache; the backend copy is what a second browser or a remote session reads.
  */
 function persistSetting(key: string, raw: string): void {
+  const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
+  if (mirrored && captureThreadScopedEdit(mirrored.field)) return;
   // Before hydration the cache says nothing about the server's value, so an
   // explicit write is recorded even where it changes nothing locally. A
   // constraint write (deep research turning the tool pills off) has to reach
@@ -644,6 +658,156 @@ function persistSetting(key: string, raw: string): void {
     mirrorSettingToBackend(key, raw);
   }
   writeStorageValue(key, raw);
+}
+
+const THREAD_SETTINGS_DEBOUNCE_MS = 400;
+
+/** the thread whose snapshot the store shows, or null on a new chat. */
+let threadScopedSettingsThreadId: string | null = null;
+/** that thread's stored values, for the load paths that read a setting outside the store. */
+let activeThreadScopedSettings: ThreadScopedSettings | null = null;
+// captured on the way into a thread: edits made with a chat open must not move the defaults.
+let globalThreadScopedDefaults: ThreadScopedSettings | null = null;
+let threadSettingsWriteTimer: ReturnType<typeof setTimeout> | null = null;
+let threadSettingsWriteThreadId: string | null = null;
+// set only when pinning: the values applied on open, not whatever a model-capability effect
+// leaves in the store by the time the debounce fires.
+let threadSettingsWriteSnapshot: ThreadScopedSettings | null = null;
+
+function readThreadScopedSettings(
+  state: ChatRuntimeStore,
+): ThreadScopedSettings {
+  const source: Record<string, unknown> = {};
+  for (const key of THREAD_SCOPED_SETTING_KEYS) {
+    source[key] = state[key];
+  }
+  // drops "full" with it: a stored bypass would come back without the warning dialog.
+  return sanitizeThreadScopedSettings(source);
+}
+
+// keeps a model load from re-applying the global default over the pills the chat is running with.
+export function threadScopedOverride<K extends ThreadScopedSettingKey>(
+  key: K,
+): ThreadScopedSettings[K] | undefined {
+  return activeThreadScopedSettings?.[key];
+}
+
+function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
+  if (Object.is(next, current)) return true;
+  // ragSource is the only object among these, and its variants carry at most a kb id.
+  if (isPlainObject(next) && isPlainObject(current)) {
+    return next.type === current.type && next.kbId === current.kbId;
+  }
+  return false;
+}
+
+function buildThreadScopedSnapshot(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): ThreadScopedSettings {
+  const settings =
+    snapshot ?? readThreadScopedSettings(useChatRuntimeStore.getState());
+  // the write replaces the row, and the sanitizer drops a live "full", so without this the
+  // level the chat had stored would be erased by any pill toggled under Full access.
+  if (
+    settings.permissionMode === undefined &&
+    threadId === threadScopedSettingsThreadId &&
+    activeThreadScopedSettings?.permissionMode !== undefined
+  ) {
+    settings.permissionMode = activeThreadScopedSettings.permissionMode;
+  }
+  if (threadId === threadScopedSettingsThreadId) {
+    activeThreadScopedSettings = settings;
+  }
+  return settings;
+}
+
+/**
+ * Send the snapshot on tab close. The ensure-then-update chain cannot finish during unload, so
+ * the row write goes straight out with keepalive; a thread with no row answers 404 and writes
+ * nothing, which is the same outcome the chain would have reached.
+ */
+function sendThreadScopedSettingsBeacon(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): void {
+  const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings }),
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
+async function writeThreadScopedSettings(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): Promise<void> {
+  const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  try {
+    const { updateStoredChatThread } = await import(
+      "../utils/chat-history-storage"
+    );
+    await updateStoredChatThread(threadId, { settings });
+  } catch {
+    // the chat still behaves as edited; only the snapshot for the next visit is lost.
+    warnSettingsPersistenceFailure();
+  }
+}
+
+function flushThreadScopedSettingsWrite(keepalive = false): void {
+  if (threadSettingsWriteTimer !== null) {
+    clearTimeout(threadSettingsWriteTimer);
+    threadSettingsWriteTimer = null;
+  }
+  const threadId = threadSettingsWriteThreadId;
+  const snapshot = threadSettingsWriteSnapshot;
+  threadSettingsWriteThreadId = null;
+  threadSettingsWriteSnapshot = null;
+  if (threadId === null) return;
+  if (keepalive) {
+    sendThreadScopedSettingsBeacon(threadId, snapshot);
+    return;
+  }
+  void writeThreadScopedSettings(threadId, snapshot);
+}
+
+function scheduleThreadScopedSettingsWrite(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null = null,
+): void {
+  if (
+    threadSettingsWriteThreadId !== null &&
+    threadSettingsWriteThreadId !== threadId
+  ) {
+    flushThreadScopedSettingsWrite();
+  }
+  threadSettingsWriteThreadId = threadId;
+  threadSettingsWriteSnapshot = snapshot;
+  if (threadSettingsWriteTimer !== null) clearTimeout(threadSettingsWriteTimer);
+  threadSettingsWriteTimer = setTimeout(() => {
+    threadSettingsWriteTimer = null;
+    const pendingThreadId = threadSettingsWriteThreadId;
+    const pendingSnapshot = threadSettingsWriteSnapshot;
+    threadSettingsWriteThreadId = null;
+    threadSettingsWriteSnapshot = null;
+    if (pendingThreadId !== null) {
+      void writeThreadScopedSettings(pendingThreadId, pendingSnapshot);
+    }
+  }, THREAD_SETTINGS_DEBOUNCE_MS);
+}
+
+// reports whether the edit was taken; with no chat open the caller persists globally as before.
+function captureThreadScopedEdit(field: string): boolean {
+  if (!isThreadOwnedSettingKey(field)) return false;
+  const threadId = useChatRuntimeStore.getState().activeThreadId;
+  // both ids: between a switch and its snapshot arriving the store still holds the old values.
+  if (threadId === null || threadId !== threadScopedSettingsThreadId) {
+    return false;
+  }
+  scheduleThreadScopedSettingsWrite(threadId);
+  return true;
 }
 
 /**
@@ -686,9 +850,9 @@ export function loadOptionalBool(key: string): boolean | null {
  * Resolve the web-search / code-execution pill state to apply when a model
  * loads. Honors the user's persisted preference so a tool-capable model never
  * re-enables a pill the user turned off, and never re-disables one they turned
- * on. When no preference has been expressed the pills stay off: tool execution
- * is opt-in, so the person enables it with a click rather than a tool-capable
- * model turning it on for them.
+ * on, and the open chat's own state wins over the installation default. When no
+ * preference has been expressed the pills stay off: tool execution is opt-in, so
+ * the person enables it with a click rather than a model turning it on for them.
  */
 export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   toolsEnabled: boolean;
@@ -696,8 +860,14 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 } {
   if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
   return {
-    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? false,
-    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? false,
+    toolsEnabled:
+      threadScopedOverride("toolsEnabled") ??
+      loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ??
+      false,
+    codeToolsEnabled:
+      threadScopedOverride("codeToolsEnabled") ??
+      loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ??
+      false,
   };
 }
 
@@ -731,11 +901,10 @@ function loadShowCanvasMenuItem(): boolean {
  * off -> "off", i.e. no prompts); fresh installs default to "auto".
  */
 function loadPermissionMode(): PermissionMode {
-  const raw = readStorageValue(CHAT_PERMISSION_MODE_KEY);
-  if (raw === "ask" || raw === "auto" || raw === "off") return raw;
-  const legacyConfirm = loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY);
-  if (legacyConfirm === null) return "auto";
-  return legacyConfirm ? "ask" : "off";
+  return normalizeStoredPermissionMode(
+    readStorageValue(CHAT_PERMISSION_MODE_KEY),
+    loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY),
+  );
 }
 
 function savePermissionMode(mode: PermissionMode): void {
@@ -1513,6 +1682,11 @@ type ChatRuntimeStore = {
     options?: { trackQueuedSettings?: boolean },
   ) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  /** show `threadId`'s own settings; a null threadId or snapshot restores the global ones. */
+  applyThreadScopedSettings: (
+    threadId: string | null,
+    settings: ThreadScopedSettings | null,
+  ) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
@@ -1949,6 +2123,7 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   if (Object.is(value, currentValue)) {
     return;
   }
+  if (captureThreadScopedEdit(key)) return;
   scalarSettingMutationVersions[key] += 1;
   saveSettingsPatch({ [key]: value });
 }
@@ -2478,6 +2653,62 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null,
     })),
+  applyThreadScopedSettings: (threadId, settings) =>
+    set((state) => {
+      // the pending write belongs to the outgoing thread, so it goes out before the swap.
+      flushThreadScopedSettingsWrite();
+      // nothing was overridden while unpaired, so there is nothing to restore.
+      if (threadScopedSettingsThreadId === null && threadId === null) {
+        return state;
+      }
+      if (threadScopedSettingsThreadId === null) {
+        globalThreadScopedDefaults = readThreadScopedSettings(state);
+      }
+      threadScopedSettingsThreadId = threadId;
+      const stored = hasThreadScopedSettings(settings)
+        ? (settings as ThreadScopedSettings)
+        : null;
+      activeThreadScopedSettings = stored;
+      const nextState: Partial<ChatRuntimeStore> = {};
+      const target = nextState as Record<string, unknown>;
+      const applied: Record<string, unknown> = {};
+      for (const key of THREAD_SCOPED_SETTING_KEYS) {
+        // full access was accepted through a warning dialog: a switch must not drop it.
+        if (key === "permissionMode" && state.permissionMode === "full") {
+          continue;
+        }
+        // setCheckpoint clears deep research for external models in the store only, so a
+        // stored true would come back and fail every send in that chat.
+        if (
+          key === "deepResearchEnabled" &&
+          (isExternalModelId(state.params.checkpoint) || state.incognito)
+        ) {
+          continue;
+        }
+        // a key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
+        const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
+        if (value === undefined) continue;
+        applied[key] = value;
+        if (!isSameThreadScopedValue(value, state[key])) target[key] = value;
+      }
+      // pin what the chat shows now, or changing the defaults later would rewrite its modes.
+      if (threadId !== null && stored === null) {
+        scheduleThreadScopedSettingsWrite(
+          threadId,
+          sanitizeThreadScopedSettings(applied),
+        );
+      }
+      if (!hasKeys(nextState)) return state;
+      if (nextState.permissionMode !== undefined) {
+        nextState.confirmToolCalls =
+          nextState.permissionMode === "ask" ||
+          nextState.permissionMode === "auto";
+      }
+      return {
+        ...nextState,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -2666,7 +2897,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
-      const permissionMode = loadPermissionMode();
+      // the level this chat carries, or the global one when it carries none.
+      const permissionMode =
+        threadScopedOverride("permissionMode") ?? loadPermissionMode();
       if (deepResearchEnabled) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
@@ -2810,7 +3043,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
-      const permissionMode = loadPermissionMode();
+      // back to the level this chat carries, or the global one when it carries none.
+      const permissionMode =
+        threadScopedOverride("permissionMode") ?? loadPermissionMode();
       return {
         bypassPermissions,
         permissionMode,
@@ -2858,10 +3093,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setRagEnabled: (ragEnabled) =>
-    set((state) => ({
-      ragEnabled,
-      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-    })),
+    set((state) => {
+      // the only thread-scoped setting with no global slot, so no persist helper reaches it.
+      if (ragEnabled !== state.ragEnabled) captureThreadScopedEdit("ragEnabled");
+      return {
+        ragEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setRagSource: (ragSource) =>
     set((state) => {
       saveRagSource(ragSource);

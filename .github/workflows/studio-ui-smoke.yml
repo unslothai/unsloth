@@ -259,6 +259,15 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: Per-chat settings persistence (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_thread_settings
+        run: |
+          mkdir -p logs/playwright_thread_settings
+          python tests/studio/playwright_thread_scoped_settings.py
+
       - name: UI font size scaling regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
@@ -432,6 +441,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner
             logs/playwright_image_footprint
