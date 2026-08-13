@@ -17,7 +17,6 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
-    pickModelFile: "Escolher um arquivo de modelo no disco",
     modelDropped: "Não é mais oferecido",
     modelDroppedByProvider: "{provider} · não é mais oferecido",
     modelDisabled: "Não ativado",

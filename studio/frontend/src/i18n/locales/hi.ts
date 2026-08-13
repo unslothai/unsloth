@@ -17,7 +17,6 @@ export const hi = {
     searchAriaLabel: "{noun} खोजें",
     modelSourceAriaLabel: "मॉडल स्रोत",
     hubSectionAriaLabel: "Hub सेक्शन",
-    pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
     modelDropped: "अब उपलब्ध नहीं",
     modelDroppedByProvider: "{provider} · अब उपलब्ध नहीं",
     modelDisabled: "सक्षम नहीं",

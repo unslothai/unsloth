@@ -17,7 +17,6 @@ export const ar = {
     searchAriaLabel: "البحث في {noun}",
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
-    pickModelFile: "اختيار ملف نموذج من القرص",
     modelDropped: "لم يعد متاحًا",
     modelDroppedByProvider: "{provider} · لم يعد متاحًا",
     modelDisabled: "غير مُفعَّل",
