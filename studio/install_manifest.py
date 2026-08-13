@@ -94,18 +94,34 @@ def _canonical(name: str) -> str:
 
 
 def _metadata_scan_paths() -> List[str]:
-    """This interpreter's site-packages roots, excluding inherited sys.path entries."""
+    """This interpreter's site-packages roots, excluding inherited sys.path entries.
+
+    Deduplicated by real path, not by string. purelib hardcodes `lib` while
+    platlib follows sys.platlibdir, so on a lib64 build (Fedora, SuSE) the two
+    are different strings for one directory -- venv creates lib64 as a symlink
+    to lib. Scanning both would report every installed package twice and turn a
+    healthy environment into a metadata conflict.
+    """
     import sysconfig
 
     paths: List[str] = []
+    seen: set = set()
     try:
         configured = sysconfig.get_paths()
     except Exception:
         return paths
     for key in ("purelib", "platlib"):
         path = configured.get(key)
-        if path and path not in paths and os.path.isdir(path):
-            paths.append(path)
+        if not path or not os.path.isdir(path):
+            continue
+        try:
+            key_path = os.path.realpath(path)
+        except OSError:
+            key_path = path
+        if key_path in seen:
+            continue
+        seen.add(key_path)
+        paths.append(path)
     return paths
 
 

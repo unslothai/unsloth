@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import sysconfig
 
 import pytest
 
@@ -420,3 +421,38 @@ def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
 
     # Absent directory: must degrade quietly, it runs mid-install.
     im.set_no_torch_marker(True, root = install_root / "does" / "not" / "exist")
+
+
+def test_scan_paths_dedupes_a_lib64_symlink(tmp_path, monkeypatch):
+    """purelib hardcodes `lib`, platlib follows sys.platlibdir.
+
+    On a lib64 build (Fedora, SuSE) venv creates lib64 as a symlink to lib, so
+    the two schemes name ONE directory by two paths. Scanning both reported
+    every installed package twice, which made metadata_conflict() true for a
+    perfectly healthy environment and sent the installer into a repair it could
+    never finish.
+    """
+    real = tmp_path / "lib" / "python3.13" / "site-packages"
+    real.mkdir(parents = True)
+    (tmp_path / "lib64").symlink_to("lib")
+    alias = tmp_path / "lib64" / "python3.13" / "site-packages"
+
+    # install_manifest imports sysconfig inside the function, so patch the module.
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(real), "platlib": str(alias)}
+    )
+
+    assert im._metadata_scan_paths() == [str(real)]
+
+
+def test_scan_paths_keeps_genuinely_separate_roots(tmp_path, monkeypatch):
+    pure = tmp_path / "purelib"
+    plat = tmp_path / "platlib"
+    pure.mkdir()
+    plat.mkdir()
+
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(pure), "platlib": str(plat)}
+    )
+
+    assert im._metadata_scan_paths() == [str(pure), str(plat)]
