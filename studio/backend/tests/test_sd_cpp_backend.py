@@ -1089,6 +1089,26 @@ def test_h3_binary_gate_never_offers_to_delete_the_in_tree_developer_build(monke
     assert own.exists()
 
 
+def test_h3_binary_gate_logs_the_real_fault_for_a_managed_non_sd_cpp_binary(
+    monkeypatch, tmp_path, capsys
+):
+    # A managed tree holding something that is not sd.cpp is still replaced, but the log line has to
+    # say why. Calling that fault "does not advertise MiniMax-H3" is the same wrong diagnosis #8507
+    # was reported as, just written to the log instead of to the user.
+    own = tmp_path / "sd-cli"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: True)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: "sd 1.0.0\nFind & replace CLI\n")
+
+    assert bk.ensure_h3_sd_cpp_binary(allow_install = False) is None
+    # capsys, not caplog: the backend logs through structlog, which writes to stdout.
+    logged = capsys.readouterr().out
+    assert "is not stable-diffusion.cpp" in logged
+    assert "MiniMax-H3" not in logged
+    assert own.exists()
+
+
 def test_h3_binary_gate_names_a_binary_that_is_not_sd_cpp_at_all(monkeypatch, tmp_path):
     # #8507: SD_CLI_PATH pointed at Debian/Ubuntu's `sd` find-and-replace tool, and the gate
     # reported it as a stable-diffusion.cpp build predating MiniMax-H3. Every program that is not

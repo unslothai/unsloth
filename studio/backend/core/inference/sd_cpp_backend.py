@@ -406,8 +406,9 @@ def ensure_h3_sd_cpp_binary(
         # from EVERY program that is not stable-diffusion.cpp, so reporting the capability verdict
         # here sent users hunting for a newer build of something they never installed (#8507, where
         # the binary was Debian/Ubuntu's `sd` find-and-replace tool). Discovery already skips an
-        # unrelated PATH `sd`, so what reaches this line is a deliberate SD_CLI_PATH /
-        # UNSLOTH_SD_CPP_PATH override, which is never overwritten either way.
+        # unrelated PATH `sd`, so what reaches this line came from somewhere the identity gate does
+        # not cover -- an SD_CLI_PATH / UNSLOTH_SD_CPP_PATH override, an in-tree developer build, or
+        # a PATH `sd-cli`. None of them is ours to overwrite, so all four say so and stop.
         if not identified:
             raise RuntimeError(
                 f"The executable at {binary} is not stable-diffusion.cpp: its --help output does "
