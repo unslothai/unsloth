@@ -114,6 +114,33 @@ describe("platformRequest", () => {
     await expect(request("/empty")).resolves.toBeUndefined();
   });
 
+  it("accepts successful mutation envelopes without a data field", async () => {
+    platformTestServer.use(
+      http.put("http://platform.test/api/v1/providers", () =>
+        HttpResponse.json({ code: 0 }),
+      ),
+    );
+
+    await expect(
+      request("/providers", {
+        method: "PUT",
+        json: { provider_name: "OpenAI" },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still rejects successful JSON that has no envelope code", async () => {
+    platformTestServer.use(
+      http.get("http://platform.test/api/v1/not-an-envelope", () =>
+        HttpResponse.json({ data: true }),
+      ),
+    );
+
+    await expect(request("/not-an-envelope")).rejects.toMatchObject({
+      code: "INVALID_RESPONSE",
+    });
+  });
+
   it("supports external abort and timeout as distinct errors", async () => {
     platformTestServer.use(
       http.get("http://platform.test/api/v1/slow", async () => {

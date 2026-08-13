@@ -3,7 +3,7 @@ export type PlatformCode = number | string;
 export interface PlatformEnvelope<TData> {
   code: PlatformCode;
   message?: string;
-  data: TData;
+  data?: TData;
 }
 
 export type PlatformQueryValue =

@@ -101,6 +101,18 @@ const specificityOverrides = [...pythonOverrides.values()].sort(
     a.path.localeCompare(b.path),
 );
 
+// The pinned v0.26.4 Go model-status handler updates only one historical row
+// when the same logical model exists once per capability. Its Python peer
+// updates the full name group. Keep this explicit until the next owned image
+// includes the Go AlterModel group-status fix from the backend source tree.
+const runtimeOverrides = [
+  {
+    method: "PATCH",
+    path: "/api/v1/providers/:provider/instances/:instance/models/*model",
+    port: 9380,
+  },
+].map((route) => ({ ...route, regex: routeRegex(route.path) }));
+
 const lines = [
   "####################################################################",
   "# GENERATED FILE. Do not edit by hand.",
@@ -122,6 +134,13 @@ const lines = [
 
 for (const route of specificityOverrides) {
   lines.push(`    # rag-platform-route ${route.method} ${route.regex} ${route.port}`);
+  lines.push(`    ~^${route.method}${route.regex.slice(1)} ${route.port};`);
+}
+
+for (const route of runtimeOverrides) {
+  lines.push(
+    `    # rag-platform-runtime-override ${route.method} ${route.regex} ${route.port}`,
+  );
   lines.push(`    ~^${route.method}${route.regex.slice(1)} ${route.port};`);
 }
 

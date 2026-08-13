@@ -1,6 +1,3 @@
-
-
-
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
@@ -21,6 +18,11 @@ import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import {
+  getPlatformModelReadiness,
+  isPlatformModelToolsEnabled,
+} from "@/integrations/platform-backend";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
@@ -59,12 +61,14 @@ export function NewProjectDialog({
   // Uploads outlive this component, so a slow one must not yank the user to the
   // new project after they have navigated away.
   const mounted = useRef(true);
+  const readinessAbortRef = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
     // Set on setup, not just cleared on cleanup: StrictMode replays
     // setup/cleanup/setup, which would otherwise leave this false forever.
     mounted.current = true;
     return () => {
       mounted.current = false;
+      readinessAbortRef.current?.abort();
     };
   }, []);
 
@@ -90,6 +94,24 @@ export function NewProjectDialog({
     // cannot tell whether the user has moved on during a slow upload.
     const origin = currentRoute();
     try {
+      if (isPlatformModelToolsEnabled()) {
+        const readinessController = new AbortController();
+        readinessAbortRef.current = readinessController;
+        const readiness = await getPlatformModelReadiness(
+          "chat",
+          readinessController.signal,
+        );
+        readinessAbortRef.current = undefined;
+        if (!mounted.current) return;
+        if (!readiness.ready) {
+          toast.error("Rag Platform chat modeli hazır değil", {
+            description:
+              "Sohbet oluşturmak için etkin bir chat modeli ve doğrulanmış varsayılan seçin.",
+          });
+          useSettingsDialogStore.getState().openDialog("connections");
+          return;
+        }
+      }
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
       await uploadStagedSources(project.id, staged);
@@ -111,6 +133,7 @@ export function NewProjectDialog({
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
+      readinessAbortRef.current = undefined;
       setBusy(false);
     }
   }

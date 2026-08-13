@@ -1,7 +1,3 @@
-
-
-
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Delete02Icon,
   Edit03Icon,
@@ -9,6 +5,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronLeftIcon, UploadIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -34,6 +31,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
 
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import {
+  getPlatformModelReadiness,
+  isPlatformModelToolsEnabled,
+} from "@/integrations/platform-backend";
 import {
   createKnowledgeBase,
   deleteKnowledgeBase,
@@ -42,8 +44,9 @@ import {
   updateKnowledgeBase,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import { RAG_UPLOAD_ACCEPT, type KnowledgeBase } from "../types/rag";
+import { type KnowledgeBase, RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
+import { PlatformPipelineSelect } from "./platform-pipeline-select";
 import { useRagDocuments } from "./use-rag-documents";
 
 type View =
@@ -66,10 +69,11 @@ export function KnowledgeBaseDialog({
   const [view, setView] = useState<View>({ kind: "list" });
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [pipelineId, setPipelineId] = useState("");
   const [saving, setSaving] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
-    null,
-  );
+  const readinessAbortRef = useRef<AbortController | undefined>(undefined);
+  const [confirmingDelete, setConfirmingDelete] =
+    useState<KnowledgeBase | null>(null);
   // Measured only: while the answer is unknown this stays false and the dialog renders
   // exactly as it always has. See api/rag-availability.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
@@ -94,7 +98,10 @@ export function KnowledgeBaseDialog({
   }, []);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      readinessAbortRef.current?.abort();
+      return;
+    }
     setView({ kind: "list" });
     void refresh();
   }, [open, refresh]);
@@ -102,12 +109,14 @@ export function KnowledgeBaseDialog({
   function startCreate() {
     setName("");
     setDescription("");
+    setPipelineId("");
     setView({ kind: "create" });
   }
 
   function startEdit(kb: KnowledgeBase) {
     setName(kb.name);
     setDescription(kb.description ?? "");
+    setPipelineId("");
     setView({ kind: "edit", kb });
   }
 
@@ -138,6 +147,23 @@ export function KnowledgeBaseDialog({
         });
         toast.success("Knowledge base updated");
       } else {
+        if (isPlatformModelToolsEnabled()) {
+          const readinessController = new AbortController();
+          readinessAbortRef.current = readinessController;
+          const readiness = await getPlatformModelReadiness(
+            "embedding",
+            readinessController.signal,
+          );
+          readinessAbortRef.current = undefined;
+          if (!readiness.ready) {
+            toast.error("Rag Platform embedding modeli hazır değil", {
+              description:
+                "Dataset oluşturmak için etkin bir embedding modeli ve doğrulanmış varsayılan seçin.",
+            });
+            useSettingsDialogStore.getState().openDialog("connections");
+            return;
+          }
+        }
         await createKnowledgeBase({
           name: trimmed,
           description: description.trim() || undefined,
@@ -151,6 +177,7 @@ export function KnowledgeBaseDialog({
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      readinessAbortRef.current = undefined;
       setSaving(false);
     }
   }
@@ -173,9 +200,7 @@ export function KnowledgeBaseDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {view.kind === "documents"
-              ? view.kb.name
-              : "Knowledge bases"}
+            {view.kind === "documents" ? view.kb.name : "Knowledge bases"}
           </DialogTitle>
           <DialogDescription>
             {view.kind === "documents"
@@ -197,6 +222,13 @@ export function KnowledgeBaseDialog({
                 placeholder="e.g. Product docs"
               />
             </div>
+            {isPlatformModelToolsEnabled() && (
+              <PlatformPipelineSelect
+                value={pipelineId}
+                disabled={saving}
+                onChange={setPipelineId}
+              />
+            )}
             <div className="grid gap-2">
               <Label htmlFor="kb-description">Description</Label>
               <Textarea
@@ -332,10 +364,7 @@ function KnowledgeBaseDocuments({
   kb: KnowledgeBase;
   onBack: () => void;
 }) {
-  const lister = useCallback(
-    () => listKnowledgeBaseDocuments(kb.id),
-    [kb.id],
-  );
+  const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
   const { documents, loading, uploading, upload, remove } = useRagDocuments(
     { type: "kb", kbId: kb.id },
     lister,
@@ -360,7 +389,7 @@ function KnowledgeBaseDocuments({
         <input
           ref={fileInputRef}
           type="file"
-          multiple
+          multiple={true}
           accept={RAG_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {

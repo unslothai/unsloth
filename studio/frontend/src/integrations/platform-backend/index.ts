@@ -1,5 +1,4 @@
 export * from "./client";
-export * from "./backend-connection-status";
 export * from "./config";
 export * from "./connection-store";
 export * from "./envelope";
@@ -11,3 +10,6 @@ export * from "./auth-crypto";
 export * from "./auth-session";
 export * from "./auth-types";
 export * from "./types";
+export * from "./model-api";
+export * from "./model-types";
+export * from "./model-readiness";

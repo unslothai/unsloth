@@ -158,7 +158,7 @@ function parseNginxLocations(nginxPath) {
   const owned = [];
   for (const line of text.split("\n")) {
     let marker = line.match(
-      /^\s*#\s*rag-platform-route\s+(\w+)\s+(\S+)\s+(\d+)\s*$/,
+      /^\s*#\s*rag-platform-(?:route|runtime-override)\s+(\w+)\s+(\S+)\s+(\d+)\s*$/,
     );
     if (marker) {
       owned.push({
@@ -765,6 +765,73 @@ function scanForwardAuthSourceOnly() {
 const forwardAuthSource = scanForwardAuthSourceOnly();
 
 /**
+ * Pipeline catalog handlers are implemented in the normative backend worktree,
+ * but do not exist in the pinned v0.26.4 runtime source. Keep those routes in
+ * the inventory as an explicit runtime gap instead of silently omitting them.
+ */
+function scanForwardPipelineSourceOnly() {
+  if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
+  const routerPath = join(BACKEND_REPO_ROOT, "internal", "router", "router.go");
+  const handlerPath = join(BACKEND_REPO_ROOT, "internal", "handler", "pipeline.go");
+  if (!existsSync(routerPath) || !existsSync(handlerPath)) {
+    return { commit: "unavailable", routes: [] };
+  }
+  const commit = execFileSync(
+    "git",
+    ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
+  const known = new Set(rawRoutes.map((route) => `${route.method} ${route.path}`));
+  const handlerText = readFileSync(handlerPath, "utf8");
+  const routes = [];
+  readFileSync(routerPath, "utf8")
+    .split("\n")
+    .forEach((line, index) => {
+      const match = line.match(
+        /apiNoAuth\.(GET)\("(\/pipelines(?:\/:id)?)",\s*r\.pipelineHandler\.(ListPipelines|GetPipeline)\)/,
+      );
+      if (!match) return;
+      const method = match[1];
+      const path = `/api/v1${match[2]}`;
+      if (known.has(`${method} ${path}`)) return;
+      const handler = match[3];
+      if (!new RegExp(`func \\(h \\*PipelineHandler\\) ${handler}\\(`).test(handlerText)) {
+        throw new Error(`forward pipeline handler ${handler} was not found`);
+      }
+      const base = {
+        method,
+        path,
+        service: "go-api",
+        auth: "public",
+        source: `internal/router/router.go:${index + 1}`,
+        notes:
+          `backend worktree-only implemented pipeline catalog at ${commit.slice(0, 12)}; ` +
+          `${handler} is implemented in internal/handler/pipeline.go`,
+      };
+      routes.push({
+        ...base,
+        service_port: SERVICES[base.service].port,
+        service_started: serviceStarted(base.service),
+        ...resolveProxy(base),
+        runtime_enabled: false,
+        runtime_disabled_reason:
+          `implemented only in backend worktree ${commit.slice(0, 12)}; absent from deployed ` +
+          `${BACKEND_REF} (${BACKEND_COMMIT.slice(0, 12)}); live hybrid proxy probe returns HTTP 404`,
+        source_scope: "backend-worktree-only",
+        source_commit: commit,
+        alternates: [],
+      });
+    });
+  return { commit, routes };
+}
+
+const forwardPipelineSource = scanForwardPipelineSourceOnly();
+const forwardSourceRoutes = [
+  ...forwardAuthSource.routes,
+  ...forwardPipelineSource.routes,
+];
+
+/**
  * Collapse by method+path. Multiple services implementing the same method+path
  * are NOT overwritten: the implementation the active proxy actually reaches wins
  * the primary record, the others are listed in `alternates`.
@@ -793,7 +860,7 @@ for (const route of rawRoutes) {
   }
 }
 
-const routes = [...byKey.values(), ...forwardAuthSource.routes].sort((a, b) =>
+const routes = [...byKey.values(), ...forwardSourceRoutes].sort((a, b) =>
   a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path),
 );
 
@@ -891,7 +958,7 @@ const inventory = {
     by_service: byService,
     runtime_enabled: routes.filter((r) => r.runtime_enabled === true).length,
     runtime_disabled: disabledRoutes.length,
-    source_only_runtime_disabled: forwardAuthSource.routes.length,
+    source_only_runtime_disabled: forwardSourceRoutes.length,
     not_proxied: routes.filter((r) => r.runtime_enabled === null).length,
     with_alternates: routes.filter((r) => r.alternates.length > 0).length,
     runtime_disabled_breakdown: {
@@ -933,7 +1000,7 @@ function renderMarkdown(data) {
   }
   lines.push(`| runtime-enabled | ${data.totals.runtime_enabled} |`);
   lines.push(`| runtime-disabled | ${data.totals.runtime_disabled} |`);
-  lines.push(`| — source-only forward auth declarations | ${data.totals.source_only_runtime_disabled} |`);
+  lines.push(`| — source-only forward declarations | ${data.totals.source_only_runtime_disabled} |`);
   lines.push(`| not proxied by nginx | ${data.totals.not_proxied} |`);
   lines.push(`| method+path with alternate implementations | ${data.totals.with_alternates} |`);
   lines.push("");
@@ -1042,12 +1109,13 @@ function renderRuntimeDisabled(data) {
   if (data.totals.source_only_runtime_disabled > 0) {
     lines.push("");
     lines.push(
-      `${data.totals.source_only_runtime_disabled} auth route(s) are a separate forward-source case: ` +
+      `${data.totals.source_only_runtime_disabled} route(s) are separate forward-source cases: ` +
         `they are declared only at backend worktree \`${data.backend.forward_source_commit}\`, ` +
-        `are absent from deployed \`${data.backend.source_ref}\`, and their worktree handlers return ` +
-        "`CodeNotImplemented`. Live hybrid smoke returns HTTP 404 for seven concrete paths; " +
+        `and are absent from deployed \`${data.backend.source_ref}\`. Nine auth handlers return ` +
+        "`CodeNotImplemented`; the two pipeline catalog handlers are implemented but absent from the pinned runtime. " +
+        "Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; " +
         "GitHub and Lark callback URLs return 302 through the active parameterised callback. " +
-        "The UI therefore uses live channels and exposes direct registration without a false captcha/OTP step.",
+        "The auth UI uses live channels without a false captcha/OTP step, while the pipeline selector shows an explicit runtime-disabled reason.",
     );
   }
   lines.push("");

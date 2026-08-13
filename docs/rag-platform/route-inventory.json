@@ -70,6 +70,10 @@
         "upstream": "127.0.0.1:9380"
       },
       {
+        "match": "PATCH ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/[^/]+/models/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -270,6 +274,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "GET ~ ^/api/v1/auth/oauth/github/callback/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/metadata/summary/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -334,6 +342,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "GET ~ ^/api/v1/auth/oauth/lark/callback/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -343,6 +355,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/auth/register/otp/verify/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -439,6 +455,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/auth/register/captcha/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -618,7 +638,15 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "GET ~ ^/api/v1/auth/azure/callback/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/auth/login/channels/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/auth/oauth/callback/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -692,6 +720,10 @@
       {
         "match": "GET ~ ^/api/v1/admin/users/[^/]+/quota/?$",
         "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "GET ~ ^/api/v1/auth/icbc/callback/?$",
+        "upstream": "127.0.0.1:9384"
       },
       {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$",
@@ -810,6 +842,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "POST ~ ^/api/v1/auth/register/otp/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "POST ~ ^/api/v1/datasets/[^/]+/commits/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -871,6 +907,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/agents/templates/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/auth/azure/login/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -1346,6 +1386,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/pipelines/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/providers/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -1395,6 +1439,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/memories/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/pipelines/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -1535,22 +1583,22 @@
     }
   },
   "totals": {
-    "routes": 709,
+    "routes": 711,
     "by_service": {
       "go-admin": 114,
       "python-admin": 34,
       "python-api": 304,
-      "go-api": 252,
+      "go-api": 254,
       "mcp": 5
     },
     "runtime_enabled": 516,
-    "runtime_disabled": 188,
-    "source_only_runtime_disabled": 9,
+    "runtime_disabled": 190,
+    "source_only_runtime_disabled": 11,
     "not_proxied": 5,
     "with_alternates": 110,
     "runtime_disabled_breakdown": {
       "with_reachable_equivalent": 181,
-      "no_reachable_equivalent": 7
+      "no_reachable_equivalent": 9
     }
   },
   "routes": [
@@ -6220,11 +6268,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler AzureAuthCallback returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/azure/callback/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6240,11 +6288,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler AzureAuthLogin returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/azure/login/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6260,11 +6308,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler ICBCAuthCallback returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/icbc/callback/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6460,11 +6508,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler OAuthCallback returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/oauth/callback/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6484,7 +6532,7 @@
       "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler GitHubAuthCallback returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/api/v1/auth/oauth/[^/]+/callback/?$",
+      "proxy_match": "location ~ ^/api/v1/auth/oauth/github/callback/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6508,7 +6556,7 @@
       "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler LarkAuthCallback returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/api/v1/auth/oauth/[^/]+/callback/?$",
+      "proxy_match": "location ~ ^/api/v1/auth/oauth/lark/callback/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6664,11 +6712,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler Captcha returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/register/captcha/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6684,11 +6732,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler SendOTP returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/register/otp/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -6704,11 +6752,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler VerifyOTP returns CodeNotImplemented",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/auth/register/otp/verify/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -13148,6 +13196,46 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/pipelines",
+      "service": "go-api",
+      "auth": "public",
+      "source": "internal/router/router.go:170",
+      "notes": "backend worktree-only implemented pipeline catalog at a0e091e75051; ListPipelines is implemented in internal/handler/pipeline.go",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "implemented only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); live hybrid proxy probe returns HTTP 404",
+      "proxy_match": "location ~ ^/api/v1/pipelines/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pipelines/:id",
+      "service": "go-api",
+      "auth": "public",
+      "source": "internal/router/router.go:171",
+      "notes": "backend worktree-only implemented pipeline catalog at a0e091e75051; GetPipeline is implemented in internal/handler/pipeline.go",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "implemented only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); live hybrid proxy probe returns HTTP 404",
+      "proxy_match": "location ~ ^/api/v1/pipelines/[^/]+/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": null
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/plugin/tools",
       "service": "python-api",
       "auth": "login_required",
@@ -13479,12 +13567,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "PATCH",
+        "path": "/api/v1/providers/<provider_id_or_name>/instances/<instance_id_or_name>/models/<path:model_name>",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -13779,17 +13872,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "PATCH",
-        "path": "/api/v1/providers/:provider_name/instances/:instance_name/models/*model_name",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "POST",

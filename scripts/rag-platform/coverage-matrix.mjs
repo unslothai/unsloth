@@ -38,7 +38,13 @@
  *             one artifact but not the other (CI gate, plan §4 + §15).
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,7 +79,10 @@ function canonicalPath(path) {
     .replace(/:[^/]+/g, "{p}")
     .replace(/\*[^/]+/g, "{p}")
     .replace(/\/[0-9a-f]{32}(?=\/|$)/g, "/{p}")
-    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\/|$)/g, "/{p}");
+    .replace(
+      /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\/|$)/g,
+      "/{p}",
+    );
 }
 
 function familyOf(route) {
@@ -83,7 +92,9 @@ function familyOf(route) {
   if (route.service === "mcp") return "mcp";
   const segments = route.path.split("/").filter(Boolean);
   const versionIndex = segments.indexOf("v1");
-  return (versionIndex >= 0 ? segments[versionIndex + 1] : segments[0]) || "(root)";
+  return (
+    (versionIndex >= 0 ? segments[versionIndex + 1] : segments[0]) || "(root)"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -104,12 +115,12 @@ const FAMILY_PHASE = {
   user: 2,
   providers: 3,
   models: 3,
-  "all-models": 3,
+  "all-models": 14,
   pipelines: 3,
   embeddings: 3,
   rerank: 3,
   audio: 3,
-  components: 3,
+  components: 11,
   datasets: 4,
   documents: 5,
   document: 5,
@@ -158,6 +169,10 @@ const FAMILY_PHASE = {
 
 /** Ordered; first match wins. Tested against the canonical path. */
 const PHASE_OVERRIDES = [
+  // Provider/model first-run flows explicitly owned by phase 3.
+  [/^\/api\/v1\/users\/me\/models$/, 3],
+  [/^\/api\/v1\/chat\/to_model$/, 3],
+  [/^\/api\/v1\/file\/(ocr|parse)$/, 3],
   // system: tokens and stats are the phase 9 observability/API-key surfaces,
   // while the public auth-capability config belongs to phase 2. The raw plural
   // configs surface is backend/admin plumbing and is reviewed in phase 14.
@@ -171,7 +186,7 @@ const PHASE_OVERRIDES = [
   // datasets is split across five phases by the plan §4 rows.
   [/^\/api\/v1\/datasets\/\{p\}\/documents/, 5],
   [/^\/api\/v1\/datasets\/\{p\}\/(chunks|search)/, 6],
-  [/^\/api\/v1\/datasets\/\{p\}\/embedding\/check$/, 3],
+  [/^\/api\/v1\/datasets\/\{p\}\/embedding\/check$/, 10],
   [/^\/api\/v1\/datasets\/(\{p\}\/)?(metadata|tags)/, 10],
   [
     /^\/api\/v1\/datasets\/\{p\}\/(artifacts|graph|knowledge_graph|navigation|skills|index|ingestion|run_graphrag|run_raptor|trace_graphrag|trace_raptor|compilation)/,
@@ -273,7 +288,8 @@ const AUTH_ROLE = {
   public: "anonymous",
   session: "tenant-user",
   login_required: "tenant-user",
-  "login_required(AUTH_JWT,AUTH_API,AUTH_BETA)": "tenant-user / api-key / embed-token",
+  "login_required(AUTH_JWT,AUTH_API,AUTH_BETA)":
+    "tenant-user / api-key / embed-token",
   "beta-token": "embed-token",
   "admin-session": "platform-admin",
   "mcp-api-key": "mcp-api-key",
@@ -345,8 +361,22 @@ const CLASS_RULES = [
 
   // -- 1. Records the deployment cannot serve -------------------------------
   {
+    id: "source-only-runtime-gap",
+    when: {
+      notes: /backend worktree-only implemented pipeline catalog/,
+      runtimeEnabled: false,
+    },
+    class: UNSUPPORTED,
+    consumer: "none (implemented source is newer than the deployed runtime)",
+    justification:
+      "The normative backend worktree implements the public pipeline catalog, but the pinned v0.26.4 runtime source and active hybrid proxy do not register it. Source, generated proxy target and live HTTP 404 evidence are recorded in runtime-disabled.md; the UI renders an explicit disabled reason and never invents catalog entries.",
+  },
+  {
     id: "source-only-stub",
-    when: { notes: /backend worktree-only/, runtimeEnabled: false },
+    when: {
+      notes: /backend worktree-only.*CodeNotImplemented/,
+      runtimeEnabled: false,
+    },
     class: UNSUPPORTED,
     consumer: "none (route absent from deployed source and handler is a stub)",
     justification:
@@ -461,12 +491,55 @@ const CLASS_RULES = [
       "Login, logout, login-channel discovery and password recovery are actions invoked from the auth screens (plan §4, phase 2).",
   },
   {
-    id: "tenant-model-selection-placement-deferred",
-    when: { path: /^\/api\/v1\/users\/me\/models$/ },
-    class: API_ONLY,
-    consumer: "future workspace/model placement",
+    id: "tenant-model-selection-read",
+    when: { method: /^GET$/, path: /^\/api\/v1\/users\/me\/models$/ },
+    class: ACTION,
+    consumer: FRONTEND,
     justification:
-      "Typed tenant-model selection contract retained without a current UI consumer. The product owner explicitly accepted deferring its visual placement after removing it from Profile; contract and negative Profile-render tests prevent accidental loss or reintroduction.",
+      "Settings > Connections reads tenant role and model selections for permission state and first-run readiness. The response is normalized by the auth domain adapter and never exposes provider credentials.",
+  },
+  {
+    id: "tenant-model-selection-bulk-alias",
+    when: { method: /^PATCH$/, path: /^\/api\/v1\/users\/me\/models$/ },
+    class: API_ONLY,
+    consumer: "legacy bulk model-selection client",
+    justification:
+      "Bulk tenant-field compatibility contract. Rag Platform UI updates one capability at a time through PATCH /models/default so server confirmation and the embedding destructive warning remain atomic; contract tests retain this bulk alias without a second UI state machine.",
+  },
+  {
+    id: "phase3-default-model-bulk-alias",
+    when: {
+      service: /^go-api$/,
+      path: /^\/api\/v1\/models$/,
+      method: /^PATCH$/,
+    },
+    class: API_ONLY,
+    consumer: "legacy/batch provider-model client",
+    justification:
+      "Bulk default-model compatibility form. The UI uses PATCH /models/default per capability so server confirmation and the embedding destructive warning remain atomic; contract tests retain this alias without a second UI state machine.",
+  },
+  {
+    id: "phase3-python-provider-model-aliases",
+    when: {
+      service: /^python-api$/,
+      path: /^\/api\/v1\/providers\/\{p\}\/instances\/\{p\}\/models(\/\{p\})?$/,
+      method: /^(PUT|POST)$/,
+    },
+    class: API_ONLY,
+    consumer: "legacy/batch provider-model client",
+    justification:
+      "Compatibility or batch form of a capability exposed atomically by the canonical Phase 3 model/default actions. Contract tests verify the exact body while the UI uses POST/PATCH instance-model actions and PATCH /models/default to avoid duplicate state machines.",
+  },
+  {
+    id: "phase3-provider-telemetry-api-only",
+    when: {
+      path: /^\/api\/v1\/providers\/\{p\}\/instances\/\{p\}\/(balance|tasks)(\/\{p\})?$/,
+      method: /^GET$/,
+    },
+    class: API_ONLY,
+    consumer: "provider operations client",
+    justification:
+      "Balance and asynchronous task telemetry are operational provider contracts, not connection or model configuration steps. The focused Connections UI omits them; exact typed contracts and response adapters remain covered without adding secondary dashboard controls to the setup flow.",
   },
   {
     id: "user-self",
@@ -506,7 +579,8 @@ const CLASS_RULES = [
     },
     class: SCREEN,
     consumer: FRONTEND,
-    justification: "Primary entity list or detail read; a dedicated Rag Platform route renders it.",
+    justification:
+      "Primary entity list or detail read; a dedicated Rag Platform route renders it.",
   },
   {
     id: "nested-screen",
@@ -571,7 +645,8 @@ const CLASS_RULES = [
     },
     class: SCREEN,
     consumer: FRONTEND,
-    justification: "Platform-admin read rendered by a dedicated operations screen (plan §4, phase 14).",
+    justification:
+      "Platform-admin read rendered by a dedicated operations screen (plan §4, phase 14).",
   },
 
   // -- 9. Everything else the UI calls -------------------------------------
@@ -622,7 +697,8 @@ function classifyRecord(route, canonical) {
     class: "unclassified",
     rule: null,
     consumer: "unknown",
-    justification: "No classification rule matched — the matrix generator must be extended.",
+    justification:
+      "No classification rule matched — the matrix generator must be extended.",
   };
 }
 
@@ -826,7 +902,7 @@ const VERIFIED_REPLACEMENTS = {
   "GET /health": {
     replacement: "GET /api/v1/system/ping",
     evidence:
-      "Go `internal/router/router.go:154` -> `internal/handler/system.go:52`, a static `{\"status\":\"ok\"}` with no dependency check; Python's unauthenticated static liveness probe is `api/apps/restful_apis/system_api.py:36`, which returns `\"pong\"`. Same capability, different body — probe configs must not assert on the payload",
+      'Go `internal/router/router.go:154` -> `internal/handler/system.go:52`, a static `{"status":"ok"}` with no dependency check; Python\'s unauthenticated static liveness probe is `api/apps/restful_apis/system_api.py:36`, which returns `"pong"`. Same capability, different body — probe configs must not assert on the payload',
   },
   "POST /v1/user/setting/password": {
     replacement: "PATCH /api/v1/users/me",
@@ -866,7 +942,11 @@ for (const [suffix, method, pyLine, goFolders, goWorkspace] of [
   const replacement = `${method} /api/v1/workspaces/{p}${suffix}`;
   for (const [prefix, goLine, kind] of [
     ["folders", goFolders, "takes folder_id directly"],
-    ["workspace", goWorkspace, "alias for /folders/, workspace_id == folder_id"],
+    [
+      "workspace",
+      goWorkspace,
+      "alias for /folders/, workspace_id == folder_id",
+    ],
   ]) {
     VERIFIED_REPLACEMENTS[`${method} /api/v1/${prefix}/{p}${suffix}`] = {
       replacement,
@@ -901,8 +981,10 @@ const GO_NOT_IMPLEMENTED = new Map();
 // ---------------------------------------------------------------------------
 
 const SMOKE_EVIDENCE = {
-  "GET /api/v1/system/ping": "smoke: 127.0.0.1:9380 -> 200 (`runtime-disabled.md`)",
-  "GET /api/v1/admin/ping": "smoke: 127.0.0.1:9381 -> 200 (`runtime-disabled.md`)",
+  "GET /api/v1/system/ping":
+    "smoke: 127.0.0.1:9380 -> 200 (`runtime-disabled.md`)",
+  "GET /api/v1/admin/ping":
+    "smoke: 127.0.0.1:9381 -> 200 (`runtime-disabled.md`)",
 };
 
 const PHASE_IMPLEMENTATION_EVIDENCE = {
@@ -919,7 +1001,8 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
   "python-api|POST /api/v1/auth/login": {
     status: "implemented",
     uiPath: "Login → email and password → Giriş yap",
-    typedService: "`src/integrations/platform-backend/auth-api.ts#loginPlatformUser`",
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#loginPlatformUser`",
     evidence: [
       "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
       "`src/integrations/platform-backend/__tests__/auth-crypto.test.ts`",
@@ -929,29 +1012,38 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
   "python-api|POST /api/v1/auth/logout": {
     status: "implemented",
     uiPath: "Account menu → Logout",
-    typedService: "`src/integrations/platform-backend/auth-api.ts#logoutPlatformUser`",
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+    typedService:
+      "`src/integrations/platform-backend/auth-api.ts#logoutPlatformUser`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+    ],
   },
   "python-api|POST /api/v1/auth/password/forgot/captcha": {
     status: "implemented",
     uiPath: "Login → Parolamı unuttum → Güvenlik kodunu getir",
     typedService:
       "`src/integrations/platform-backend/auth-api.ts#requestForgotPasswordCaptcha`",
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+    ],
   },
   "python-api|POST /api/v1/auth/password/forgot/otp": {
     status: "implemented",
     uiPath: "Login → Parolamı unuttum → Doğrulama kodu gönder",
     typedService:
       "`src/integrations/platform-backend/auth-api.ts#sendForgotPasswordOtp`",
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+    ],
   },
   "python-api|POST /api/v1/auth/password/forgot/otp/verify": {
     status: "implemented",
     uiPath: "Login → Parolamı unuttum → Kodu doğrula",
     typedService:
       "`src/integrations/platform-backend/auth-api.ts#verifyForgotPasswordOtp`",
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts`"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts`",
+    ],
   },
   "python-api|POST /api/v1/auth/password/reset": {
     status: "implemented",
@@ -985,7 +1077,8 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
   },
   "go-api|GET /api/v1/auth/oauth/{p}/callback": {
     status: "implemented",
-    uiPath: "OAuth provider → backend callback → fixed app root → /chat or /login",
+    uiPath:
+      "OAuth provider → backend callback → fixed app root → /chat or /login",
     typedService:
       "`src/integrations/platform-backend/auth-api.ts#consumePlatformOAuthRedirect`",
     evidence: ["`src/integrations/platform-backend/__tests__/oauth.test.ts`"],
@@ -1003,7 +1096,8 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
   },
   "python-api|GET /api/v1/users/me": {
     status: "implemented",
-    uiPath: "Protected route hydration and Settings → Profile → profile identity",
+    uiPath:
+      "Protected route hydration and Settings → Profile → profile identity",
     typedService:
       "`src/integrations/platform-backend/auth-api.ts#getCurrentPlatformUser`",
     evidence: [
@@ -1016,7 +1110,8 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
   },
   "python-api|PATCH /api/v1/users/me": {
     status: "implemented",
-    uiPath: "Settings → Profile → profile identity / Settings → General → Change password",
+    uiPath:
+      "Settings → Profile → profile identity / Settings → General → Change password",
     typedService:
       "`src/integrations/platform-backend/auth-api.ts#updatePlatformProfile,changePlatformPassword`",
     evidence: [
@@ -1050,69 +1145,78 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
     status: "contract-verified",
     uiPath: "—",
     typedService: null,
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)",
+    ],
   },
   "go-api|GET /v1/user/logout": {
     status: "contract-verified",
     uiPath: "—",
     typedService: null,
-    evidence: ["`docs/rag-platform/phase-2-auth-contract.md` (legacy compatibility classification)"],
+    evidence: [
+      "`docs/rag-platform/phase-2-auth-contract.md` (legacy compatibility classification)",
+    ],
   },
   "go-api|POST /v1/user/setting": {
     status: "contract-verified",
     uiPath: "—",
     typedService: null,
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)",
+    ],
   },
   "go-api|POST /v1/user/setting/password": {
     status: "contract-verified",
     uiPath: "—",
     typedService: null,
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)",
+    ],
   },
   "go-api|GET /v1/user/tenant_info": {
     status: "contract-verified",
     uiPath: "—",
     typedService: null,
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)",
+    ],
   },
   "go-api|POST /v1/user/set_tenant_info": {
     status: "contract-verified",
     uiPath: "—",
     typedService: null,
-    evidence: ["`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)"],
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/auth-api.test.ts` (canonical equivalent)",
+    ],
   },
   "python-api|GET /api/v1/system/ping": {
-    status: "implemented",
-    uiPath: "Settings → Connections → Rag Platform backend connection card",
+    status: "contract-verified",
+    uiPath: "—",
     typedService:
       "`src/integrations/platform-backend/system-api.ts#getSystemPing`",
     evidence: [
       "`src/integrations/platform-backend/__tests__/system-api.test.ts`",
       "`src/integrations/platform-backend/__tests__/connection-store.test.ts`",
-      "`src/integrations/platform-backend/__tests__/backend-connection-status.test.tsx`",
     ],
   },
   "python-api|GET /api/v1/system/version": {
-    status: "implemented",
-    uiPath: "Settings → Connections → Rag Platform backend connection card",
+    status: "contract-verified",
+    uiPath: "—",
     typedService:
       "`src/integrations/platform-backend/system-api.ts#getSystemVersion`",
     evidence: [
       "`src/integrations/platform-backend/__tests__/system-api.test.ts`",
       "`src/integrations/platform-backend/__tests__/connection-store.test.ts`",
-      "`src/integrations/platform-backend/__tests__/backend-connection-status.test.tsx`",
     ],
   },
   "python-api|GET /api/v1/system/healthz": {
-    status: "implemented",
-    uiPath: "Settings → Connections → Rag Platform backend connection card",
+    status: "contract-verified",
+    uiPath: "—",
     typedService:
       "`src/integrations/platform-backend/system-api.ts#getSystemHealth`",
     evidence: [
       "`src/integrations/platform-backend/__tests__/system-api.test.ts`",
       "`src/integrations/platform-backend/__tests__/connection-store.test.ts`",
-      "`src/integrations/platform-backend/__tests__/backend-connection-status.test.tsx`",
     ],
   },
   "go-api|GET /health": {
@@ -1149,6 +1253,215 @@ const PHASE_IMPLEMENTATION_EVIDENCE = {
     ],
   },
 };
+
+const PHASE3_TEST_EVIDENCE = [
+  "`src/integrations/platform-backend/__tests__/model-api.test.ts`",
+  "`src/integrations/platform-backend/__tests__/model-readiness.test.ts`",
+  "`src/features/chat/chat-providers-dialog.test.tsx`",
+  "`src/features/settings/tabs/connections-tab.test.tsx`",
+  "`src/features/settings/components/platform-model-tools.test.tsx`",
+  "`src/features/chat/components/platform-chat-model-selector.test.tsx`",
+];
+
+const PHASE3_IMPLEMENTATION = {
+  "GET /api/v1/users/me/models": [
+    "implemented",
+    "Settings → Connections → permission/readiness; Chat → Select model → current chat default",
+    "auth-api.ts#getCurrentPlatformTenantModels",
+  ],
+  "PATCH /api/v1/users/me/models": [
+    "contract-verified",
+    "—",
+    "auth-api.ts#updateCurrentPlatformTenantModels",
+  ],
+  "GET /api/v1/providers": [
+    "implemented",
+    "Settings → Connections → connection list / Add connection provider selector",
+    "model-api.ts#listAvailableProviders,listConfiguredProviders",
+  ],
+  "PUT /api/v1/providers": [
+    "implemented",
+    "Settings → Connections → Add connection → provider instance ekle",
+    "model-api.ts#addProvider",
+  ],
+  "GET /api/v1/providers/{p}": [
+    "implemented",
+    "Settings → Connections → configured provider → detail",
+    "model-api.ts#getProvider",
+  ],
+  "DELETE /api/v1/providers/{p}": [
+    "implemented",
+    "Settings → Connections → configured provider → delete",
+    "model-api.ts#deleteProvider",
+  ],
+  "GET /api/v1/providers/{p}/models": [
+    "implemented",
+    "Settings → Connections → configured provider → Models → provider catalog",
+    "model-api.ts#listProviderModels",
+  ],
+  "GET /api/v1/providers/{p}/models/{p}": [
+    "implemented",
+    "Settings → Connections → configured provider → Models → catalog model detail",
+    "model-api.ts#getProviderModel",
+  ],
+  "POST /api/v1/providers/{p}/connection": [
+    "implemented",
+    "Settings → Connections → Add connection → test before save",
+    "model-api.ts#testProviderConnection",
+  ],
+  "GET /api/v1/providers/{p}/instances": [
+    "implemented",
+    "Settings → Connections → configured provider rows",
+    "model-api.ts#listProviderInstances",
+  ],
+  "POST /api/v1/providers/{p}/instances": [
+    "implemented",
+    "Settings → Connections → Add connection → provider instance ekle",
+    "model-api.ts#createProviderInstance",
+  ],
+  "DELETE /api/v1/providers/{p}/instances": [
+    "implemented",
+    "Settings → Connections → configured provider → delete",
+    "model-api.ts#deleteProviderInstances",
+  ],
+  "GET /api/v1/providers/{p}/instances/{p}": [
+    "implemented",
+    "Settings → Connections → configured provider → detail",
+    "model-api.ts#getProviderInstance",
+  ],
+  "PUT /api/v1/providers/{p}/instances/{p}": [
+    "implemented",
+    "Settings → Connections → configured provider → edit",
+    "model-api.ts#updateProviderInstance",
+  ],
+  "GET /api/v1/providers/{p}/instances/{p}/connection": [
+    "implemented",
+    "Settings → Connections → configured provider → test connection",
+    "model-api.ts#testProviderInstanceConnection",
+  ],
+  "GET /api/v1/providers/{p}/instances/{p}/balance": [
+    "contract-verified",
+    "—",
+    "model-api.ts#getProviderInstanceBalance",
+  ],
+  "GET /api/v1/providers/{p}/instances/{p}/tasks": [
+    "contract-verified",
+    "—",
+    "model-api.ts#listProviderTasks",
+  ],
+  "GET /api/v1/providers/{p}/instances/{p}/tasks/{p}": [
+    "contract-verified",
+    "—",
+    "model-api.ts#getProviderTask",
+  ],
+  "GET /api/v1/providers/{p}/instances/{p}/models": [
+    "implemented",
+    "Settings → Connections → configured provider → Models → saved + live supported catalog",
+    "model-api.ts#listInstanceModels,listSupportedInstanceModels",
+  ],
+  "POST /api/v1/providers/{p}/instances/{p}/models": [
+    "implemented",
+    "Settings → Connections → configured provider → Models → add",
+    "model-api.ts#addInstanceModel",
+  ],
+  "PATCH /api/v1/providers/{p}/instances/{p}/models/{p}": [
+    "implemented",
+    "Settings → Connections → configured provider → Models → enable/disable",
+    "model-api.ts#updateInstanceModel",
+  ],
+  "DELETE /api/v1/providers/{p}/instances/{p}/models": [
+    "implemented",
+    "Settings → Connections → configured provider → Models → delete",
+    "model-api.ts#deleteInstanceModels",
+  ],
+  "PUT /api/v1/providers/{p}/instances/{p}/models": [
+    "contract-verified",
+    "—",
+    "model-api.ts#updateInstanceModel (atomic canonical equivalent)",
+  ],
+  "POST /api/v1/providers/{p}/instances/{p}/models/{p}": [
+    "contract-verified",
+    "—",
+    "model-api.ts#chatToModel (canonical utility equivalent)",
+  ],
+  "GET /api/v1/models": [
+    "implemented",
+    "Settings → Connections → configured provider → Models; Chat → Select model → active chat models",
+    "model-api.ts#listTenantModels",
+  ],
+  "PATCH /api/v1/models": [
+    "contract-verified",
+    "—",
+    "model-api.ts#setDefaultModel (atomic canonical equivalent)",
+  ],
+  "GET /api/v1/models/default": [
+    "implemented",
+    "Settings → Connections → configured provider → Model defaults; Chat → Select model → current chat default",
+    "model-api.ts#getDefaultModels",
+  ],
+  "PATCH /api/v1/models/default": [
+    "implemented",
+    "Settings → Connections → capability default; Chat → Select model → choose chat default",
+    "model-api.ts#setDefaultModel",
+  ],
+  "POST /api/v1/chat/to_model": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → Chat to model",
+    "model-api.ts#chatToModel",
+  ],
+  "POST /api/v1/embeddings": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → Embedding",
+    "model-api.ts#createEmbeddings",
+  ],
+  "POST /api/v1/rerank": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → Rerank",
+    "model-api.ts#rerankDocuments",
+  ],
+  "POST /api/v1/audio/transcriptions": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → Audio transcription",
+    "model-api.ts#transcribeAudio",
+  ],
+  "POST /api/v1/audio/speech": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → Audio speech",
+    "model-api.ts#synthesizeSpeech",
+  ],
+  "POST /api/v1/file/ocr": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → OCR",
+    "model-api.ts#ocrFile",
+  ],
+  "POST /api/v1/file/parse": [
+    "implemented",
+    "Settings → Connections → configured provider → Yetkili model araçları → File parse",
+    "model-api.ts#parseFile",
+  ],
+};
+
+for (const [key, [status, uiPath, service]] of Object.entries(
+  PHASE3_IMPLEMENTATION,
+)) {
+  for (const backendService of ["python-api", "go-api"]) {
+    const inventoryRoute = inventory.routes
+      .flatMap((route) => [route, ...(route.alternates ?? [])])
+      .find(
+        (route) =>
+          route.service === backendService &&
+          `${route.method} ${canonicalPath(route.path)}` === key &&
+          route.runtime_enabled === true,
+      );
+    if (!inventoryRoute) continue;
+    PHASE_IMPLEMENTATION_EVIDENCE[`${backendService}|${key}`] = {
+      status,
+      uiPath,
+      typedService: `\`src/integrations/platform-backend/${service}\``,
+      evidence: PHASE3_TEST_EVIDENCE,
+    };
+  }
+}
 
 /**
  * Per-route findings verified against the running backend that a reader of the
@@ -1213,7 +1526,10 @@ const reachableByMountAgnosticKey = new Map();
 for (const route of inventory.routes) {
   for (const candidate of [route, ...(route.alternates ?? [])]) {
     if (candidate.runtime_enabled !== true) continue;
-    const key = mountAgnosticKey(candidate.method, canonicalPath(candidate.path));
+    const key = mountAgnosticKey(
+      candidate.method,
+      canonicalPath(candidate.path),
+    );
     if (!reachableByMountAgnosticKey.has(key)) {
       reachableByMountAgnosticKey.set(key, candidate);
     }
@@ -1256,11 +1572,13 @@ function buildRecord(route, parent) {
     evidence.push(phase === null ? "none" : `pending (Faz ${phase})`);
   }
 
-  const isFrontend = classification.class === SCREEN || classification.class === ACTION;
+  const isFrontend =
+    classification.class === SCREEN || classification.class === ACTION;
   const uiPath =
     route.runtime_enabled === false
       ? "—"
-      : implementation?.uiPath ?? (isFrontend ? `pending (Faz ${phase})` : "—");
+      : (implementation?.uiPath ??
+        (isFrontend ? `pending (Faz ${phase})` : "—"));
   const typedService = implementation?.typedService ?? null;
 
   // A closed route is only a lost capability if nothing reachable serves the
@@ -1269,10 +1587,14 @@ function buildRecord(route, parent) {
   // both, a live route under a different mount prefix still serves it.
   const mountEquivalent =
     route.runtime_enabled === false
-      ? reachableByMountAgnosticKey.get(mountAgnosticKey(route.method, canonical))
+      ? reachableByMountAgnosticKey.get(
+          mountAgnosticKey(route.method, canonical),
+        )
       : undefined;
-  const renamed = route.runtime_enabled === false ? VERIFIED_REPLACEMENTS[key] : undefined;
-  const goInternalOnly = route.runtime_enabled === false && GO_INTERNAL_ONLY.has(key);
+  const renamed =
+    route.runtime_enabled === false ? VERIFIED_REPLACEMENTS[key] : undefined;
+  const goInternalOnly =
+    route.runtime_enabled === false && GO_INTERNAL_ONLY.has(key);
   const notImplemented =
     route.runtime_enabled === false ? GO_NOT_IMPLEMENTED.get(key) : undefined;
   const equivalent =
@@ -1353,7 +1675,10 @@ function buildRecord(route, parent) {
     go_internal_only: goInternalOnly,
     go_not_implemented: Boolean(notImplemented),
     capability_lost:
-      route.runtime_enabled === false && !equivalent && !goInternalOnly && !notImplemented,
+      route.runtime_enabled === false &&
+      !equivalent &&
+      !goInternalOnly &&
+      !notImplemented,
   };
 }
 
@@ -1374,21 +1699,31 @@ const problems = [];
 
 for (const record of records) {
   if (record.class === "unclassified") {
-    problems.push(`unclassified: ${record.method} ${record.path} (${record.service})`);
+    problems.push(
+      `unclassified: ${record.method} ${record.path} (${record.service})`,
+    );
   }
   if (record.target_phase === null) {
-    problems.push(`no target phase: ${record.method} ${record.path} (family ${record.family})`);
+    problems.push(
+      `no target phase: ${record.method} ${record.path} (family ${record.family})`,
+    );
   }
   if (record.auth_role === "unmapped") {
-    problems.push(`unmapped auth role "${record.auth}": ${record.method} ${record.path}`);
+    problems.push(
+      `unmapped auth role "${record.auth}": ${record.method} ${record.path}`,
+    );
   }
   if (record.owner === "unassigned") {
-    problems.push(`no owner for family "${record.family}": ${record.method} ${record.path}`);
+    problems.push(
+      `no owner for family "${record.family}": ${record.method} ${record.path}`,
+    );
   }
   if (
     record.status === "implemented" &&
     (record.class === SCREEN || record.class === ACTION) &&
-    (!record.typed_service || record.ui_path === "—" || record.ui_path.startsWith("pending"))
+    (!record.typed_service ||
+      record.ui_path === "—" ||
+      record.ui_path.startsWith("pending"))
   ) {
     problems.push(
       `implemented frontend route lacks typed service/UI path: ${record.method} ${record.path} (${record.service})`,
@@ -1419,7 +1754,9 @@ for (const record of records) {
       if (candidate.runtime_enabled === false) closedKeys.add(key);
     }
   }
-  for (const [closed, { replacement }] of Object.entries(VERIFIED_REPLACEMENTS)) {
+  for (const [closed, { replacement }] of Object.entries(
+    VERIFIED_REPLACEMENTS,
+  )) {
     if (!allKeys.has(closed)) {
       problems.push(`verified replacement source route disappeared: ${closed}`);
     } else if (
@@ -1427,7 +1764,9 @@ for (const record of records) {
       !reachableKeys.has(closed) &&
       !reachableKeys.has(replacement)
     ) {
-      problems.push(`verified replacement target is not reachable: ${closed} -> ${replacement}`);
+      problems.push(
+        `verified replacement target is not reachable: ${closed} -> ${replacement}`,
+      );
     }
   }
   for (const internal of GO_INTERNAL_ONLY) {
@@ -1445,7 +1784,9 @@ for (const record of records) {
 // Inventory <-> matrix parity, both directions.
 const inventoryKeys = new Set();
 for (const route of inventory.routes) {
-  inventoryKeys.add(`${route.service}|${route.method}|${route.path}|${route.source}`);
+  inventoryKeys.add(
+    `${route.service}|${route.method}|${route.path}|${route.source}`,
+  );
   for (const alternate of route.alternates ?? []) {
     inventoryKeys.add(
       `${alternate.service}|${alternate.method}|${alternate.path}|${alternate.source}`,
@@ -1456,7 +1797,8 @@ for (const key of inventoryKeys) {
   if (!seen.has(key)) problems.push(`missing from matrix: ${key}`);
 }
 for (const key of seen.keys()) {
-  if (!inventoryKeys.has(key)) problems.push(`matrix record not in inventory: ${key}`);
+  if (!inventoryKeys.has(key))
+    problems.push(`matrix record not in inventory: ${key}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,7 +1814,15 @@ function tally(list, pick) {
   return counts;
 }
 
-const CLASS_ORDER = [SCREEN, ACTION, API_ONLY, CALLBACK, INTERNAL, UNSUPPORTED, "unclassified"];
+const CLASS_ORDER = [
+  SCREEN,
+  ACTION,
+  API_ONLY,
+  CALLBACK,
+  INTERNAL,
+  UNSUPPORTED,
+  "unclassified",
+];
 const STATUS_ORDER = [
   "implemented",
   "contract-verified",
@@ -1499,10 +1849,16 @@ const totals = {
     CLASS_ORDER.filter((c) => byClass.has(c)).map((c) => [c, byClass.get(c)]),
   ),
   by_class_reachable: Object.fromEntries(
-    CLASS_ORDER.filter((c) => byClassReachable.has(c)).map((c) => [c, byClassReachable.get(c)]),
+    CLASS_ORDER.filter((c) => byClassReachable.has(c)).map((c) => [
+      c,
+      byClassReachable.get(c),
+    ]),
   ),
   by_status: Object.fromEntries(
-    STATUS_ORDER.filter((s) => byStatus.has(s)).map((s) => [s, byStatus.get(s)]),
+    STATUS_ORDER.filter((s) => byStatus.has(s)).map((s) => [
+      s,
+      byStatus.get(s),
+    ]),
   ),
   by_target_phase: Object.fromEntries(
     [...byPhase.entries()]
@@ -1521,7 +1877,9 @@ function renderMarkdown() {
   lines.push("");
   lines.push("<!-- GENERATED FILE. Do not edit by hand.");
   lines.push("     Regenerate: node scripts/rag-platform/coverage-matrix.mjs");
-  lines.push("     CI gate:    node scripts/rag-platform/coverage-matrix.mjs --check -->");
+  lines.push(
+    "     CI gate:    node scripts/rag-platform/coverage-matrix.mjs --check -->",
+  );
   lines.push("");
   lines.push(
     "Every backend record in `route-inventory.json` — top-level routes and the",
@@ -1582,12 +1940,20 @@ function renderMarkdown() {
   lines.push("");
   lines.push("| Status | Meaning |");
   lines.push("| --- | --- |");
-  lines.push("| `implemented` | UI path + typed service + automated test in place |");
-  lines.push("| `contract-verified` | A scrubbed fixture records the live request/response pair |");
+  lines.push(
+    "| `implemented` | UI path + typed service + automated test in place |",
+  );
+  lines.push(
+    "| `contract-verified` | A scrubbed fixture records the live request/response pair |",
+  );
   lines.push("| `in-progress` | Implementation started, phase not closed |");
-  lines.push("| `planned` | Classified; implementation belongs to its target phase |");
+  lines.push(
+    "| `planned` | Classified; implementation belongs to its target phase |",
+  );
   lines.push("| `runtime-disabled` | The deployed topology cannot serve it |");
-  lines.push("| `not-proxied` | Reachable only on its own port, opt-in at startup |");
+  lines.push(
+    "| `not-proxied` | Reachable only on its own port, opt-in at startup |",
+  );
   lines.push("");
   lines.push(
     "Faz 0 ships no product UI, so no record is `implemented` yet. The release",
@@ -1600,9 +1966,13 @@ function renderMarkdown() {
   lines.push("");
   lines.push("| Metric | Count |");
   lines.push("| --- | --- |");
-  lines.push(`| records (routes + alternate implementations) | ${totals.records} |`);
+  lines.push(
+    `| records (routes + alternate implementations) | ${totals.records} |`,
+  );
   lines.push(`| — top-level routes | ${totals.top_level_routes} |`);
-  lines.push(`| — alternate implementations | ${totals.alternate_implementations} |`);
+  lines.push(
+    `| — alternate implementations | ${totals.alternate_implementations} |`,
+  );
   lines.push(`| reachable in the active scheme | ${totals.reachable} |`);
   lines.push(
     `| closed with no reachable equivalent (capability lost) | ${totals.capability_lost} |`,
@@ -1615,7 +1985,9 @@ function renderMarkdown() {
   lines.push("| --- | --- | --- |");
   for (const cls of CLASS_ORDER) {
     if (!byClass.has(cls)) continue;
-    lines.push(`| \`${cls}\` | ${byClass.get(cls)} | ${byClassReachable.get(cls) ?? 0} |`);
+    lines.push(
+      `| \`${cls}\` | ${byClass.get(cls)} | ${byClassReachable.get(cls) ?? 0} |`,
+    );
   }
   lines.push("");
   lines.push("### By status");
@@ -1676,7 +2048,9 @@ function renderMarkdown() {
         `${wholeFamilies.map((f) => `\`${f}\``).join(", ")}.`,
     );
     lines.push("");
-    lines.push("| Family | Lost | Family has reachable routes | Owner | Phase |");
+    lines.push(
+      "| Family | Lost | Family has reachable routes | Owner | Phase |",
+    );
     lines.push("| --- | --- | --- | --- | --- |");
     for (const family of [...lostByFamily.keys()].sort()) {
       const group = lostByFamily.get(family);
@@ -1697,7 +2071,10 @@ function renderMarkdown() {
     for (const family of [...lostByFamily.keys()].sort()) {
       for (const record of lostByFamily
         .get(family)
-        .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))) {
+        .sort(
+          (a, b) =>
+            a.path.localeCompare(b.path) || a.method.localeCompare(b.method),
+        )) {
         lines.push(
           `| ${record.method} | \`${record.path}\` | ${record.service} | \`${record.source}\` | ${record.owner} | ${record.target_phase} |`,
         );
@@ -1731,13 +2108,18 @@ function renderMarkdown() {
     for (const family of families) {
       const familyGroup = group
         .filter((r) => r.family === family)
-        .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
+        .sort(
+          (a, b) =>
+            a.path.localeCompare(b.path) || a.method.localeCompare(b.method),
+        );
       lines.push(`#### \`${family}\` (${familyGroup.length})`);
       lines.push("");
       lines.push(
         "| Method | Path | Service | Class | Owner | Auth role | Consumer | Status | Runtime | Typed service | UI path | Evidence | Justification | Source |",
       );
-      lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+      lines.push(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      );
       for (const record of familyGroup) {
         lines.push(
           `| ${record.method} | \`${record.path}\` | ${record.service}@${record.service_port} | \`${record.class}\` | ` +
@@ -1769,7 +2151,10 @@ const jsonText = `${JSON.stringify(
     generated_by: "scripts/rag-platform/coverage-matrix.mjs",
     derived_from: "docs/rag-platform/route-inventory.json",
     backend: inventory.backend,
-    proxy: { scheme: inventory.proxy.scheme, scheme_source: inventory.proxy.scheme_source },
+    proxy: {
+      scheme: inventory.proxy.scheme,
+      scheme_source: inventory.proxy.scheme_source,
+    },
     totals,
     records,
   },
@@ -1781,7 +2166,9 @@ const mdText = renderMarkdown();
 if (problems.length > 0) {
   for (const problem of problems.slice(0, 40)) console.error(problem);
   if (problems.length > 40) console.error(`… and ${problems.length - 40} more`);
-  console.error(`coverage matrix validation failed: ${problems.length} problem(s)`);
+  console.error(
+    `coverage matrix validation failed: ${problems.length} problem(s)`,
+  );
   process.exit(1);
 }
 
@@ -1802,7 +2189,9 @@ if (checkOnly) {
     }
   }
   if (drift) {
-    console.error("coverage matrix is out of date — run: node scripts/rag-platform/coverage-matrix.mjs");
+    console.error(
+      "coverage matrix is out of date — run: node scripts/rag-platform/coverage-matrix.mjs",
+    );
     process.exit(1);
   }
   console.log(

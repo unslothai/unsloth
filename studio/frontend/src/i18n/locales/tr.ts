@@ -202,7 +202,7 @@ export const tr = {
     },
     tabs: {
       general: "Genel",
-      profile: "Profili",
+      profile: "Profil",
       appearance: "Görünüm",
       resources: "Sistem",
       chat: "Sohbet",

@@ -8,7 +8,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function isPlatformEnvelope<TData = unknown>(
   value: unknown,
 ): value is PlatformEnvelope<TData> {
-  return isRecord(value) && "code" in value && "data" in value;
+  // Some successful backend mutations intentionally return only `{ code: 0 }`.
+  // `data` is therefore optional, while `code` remains the envelope marker.
+  return isRecord(value) && "code" in value;
 }
 
 function envelopeMessage(value: PlatformEnvelope<unknown>): string {
@@ -43,5 +45,5 @@ export function unwrapPlatformEnvelope<TData>(
     });
   }
 
-  return value.data;
+  return value.data as TData;
 }

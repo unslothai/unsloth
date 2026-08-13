@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getPlatformAuthConfig,
   getPlatformBackendConfig,
+  isPlatformModelToolsEnabled,
   resolvePlatformUrl,
 } from "../config";
 
@@ -68,5 +69,16 @@ describe("Rag Platform config", () => {
       publicKeyPem: "PUBLIC-KEY",
       registrationEnabled: false,
     });
+  });
+
+  it("enables Phase 3 by default and honors only an explicit rollout disable", () => {
+    expect(isPlatformModelToolsEnabled({})).toBe(true);
+    expect(
+      isPlatformModelToolsEnabled({
+        VITE_RAG_PLATFORM_ENABLED: "true",
+        VITE_RAG_PLATFORM_AUTH_ENABLED: "true",
+        VITE_RAG_PLATFORM_MODEL_TOOLS_ENABLED: "false",
+      }),
+    ).toBe(false);
   });
 });

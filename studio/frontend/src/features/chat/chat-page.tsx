@@ -64,14 +64,13 @@ import {
   NativeAttachmentTargetContext,
   NativeModelChip,
   NativeModelDropOverlay,
-  useChooseNativeModel,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
-import { chatModelLoaded } from "./lib/chat-model-loaded";
+import { PlatformChatModelSelector } from "./components/platform-chat-model-selector";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -1931,9 +1930,6 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
-  const residentCheckpoint = useChatRuntimeStore(
-    (state) => state.residentCheckpoint,
-  );
   const ggufContextLength = useChatRuntimeStore(
     (state) => state.ggufContextLength,
   );
@@ -2004,7 +2000,6 @@ export function ChatPage({
   const {
     refresh,
     selectModel,
-    ejectModel,
     cancelLoading,
     loadingModel,
     loadProgress,
@@ -2591,26 +2586,6 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  const handleNativeModelPickerAutoLoad = useCallback(
-    (intent: NativeIntent) =>
-      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
-    [loadNativeModelIntent],
-  );
-  const canAutoLoadPickedNativeModel = useCallback(() => {
-    const store = useChatRuntimeStore.getState();
-    return (
-      view.mode === "single" &&
-      nativePathLeasesSupported &&
-      !loadingModel &&
-      !modelLoading &&
-      !store.modelLoading &&
-      !store.params.checkpoint
-    );
-  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
-  const chooseNativeModel = useChooseNativeModel({
-    shouldAutoLoad: canAutoLoadPickedNativeModel,
-    onAutoLoad: handleNativeModelPickerAutoLoad,
-  });
   // Dropped documents go to the thread bar, which owns the RAG upload and can
   // materialize a thread id for a chat that hasn't been sent to yet.
   const handleNativeAttachmentDrop = useCallback(
@@ -2899,14 +2874,6 @@ export function ChatPage({
       handleCheckpointChange,
     ],
   );
-  const handleEject = useCallback(() => {
-    void (async () => {
-      if (await ejectModel()) {
-        resetArtifacts();
-      }
-    })();
-  }, [ejectModel, resetArtifacts]);
-
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
@@ -3332,37 +3299,12 @@ export function ChatPage({
               </Button>
             )}
             {view.mode !== "compare" && (
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                externalModels={externalModels}
-                value={inferenceParams.checkpoint}
-                // Resident, not merely picked: an image or video load evicts
-                // the chat model and leaves this selection behind, so the tick
-                // stayed on a model the backend had already released.
-                loaded={chatModelLoaded({
-                  checkpoint: inferenceParams.checkpoint,
-                  isExternalModel: isExternalModelId(
-                    inferenceParams.checkpoint,
-                  ),
-                  residentCheckpoint,
-                })}
-                activeGgufVariant={activeGgufVariant}
-                activeModelConfig={activeModelConfig}
-                activeGgufContextLength={ggufContextLength}
-                onValueChange={handleCheckpointChange}
-                onEject={handleEject}
-                onFoldersChange={refreshLocalModels}
-                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
-                onModelsChange={refreshModelLists}
-                deleteDisabled={modelOperationInProgress}
-                variant="ghost"
+              <PlatformChatModelSelector
                 open={active && modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] sm:max-w-none"
               />
             )}
             {view.mode !== "compare" && currentProjectId && (

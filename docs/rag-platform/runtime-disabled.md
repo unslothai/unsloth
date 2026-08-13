@@ -17,10 +17,10 @@ running in the active scheme.
 
 | Metric | Count |
 | --- | --- |
-| routes discovered | 709 |
+| routes discovered | 711 |
 | reachable | 516 |
-| runtime-disabled | 188 |
-| — no reachable equivalent (capability lost) | 7 |
+| runtime-disabled | 190 |
+| — no reachable equivalent (capability lost) | 9 |
 | — same concrete request served elsewhere (no capability lost) | 181 |
 | not proxied by nginx | 5 |
 
@@ -34,7 +34,7 @@ deduplication, not a lost capability. The Go executable provenance and the
 four direct service smoke probes are recorded in ADR 0005 and the Faz 0
 result report.
 
-9 auth route(s) are a separate forward-source case: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, are absent from deployed `v0.26.4`, and their worktree handlers return `CodeNotImplemented`. Live hybrid smoke returns HTTP 404 for seven concrete paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The UI therefore uses live channels and exposes direct registration without a false captcha/OTP step.
+11 route(s) are separate forward-source cases: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, and are absent from deployed `v0.26.4`. Nine auth handlers return `CodeNotImplemented`; the two pipeline catalog handlers are implemented but absent from the pinned runtime. Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The auth UI uses live channels without a false captcha/OTP step, while the pipeline selector shows an explicit runtime-disabled reason.
 
 ## Capability lost — no reachable route serves this method and path
 
@@ -53,6 +53,13 @@ provides the same method and path shape.
 | POST | `/api/v1/auth/register/captcha` | go-api@9384 | `internal/router/router_ee.go:37` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler Captcha returns CodeNotImplemented |
 | POST | `/api/v1/auth/register/otp` | go-api@9384 | `internal/router/router_ee.go:38` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler SendOTP returns CodeNotImplemented |
 | POST | `/api/v1/auth/register/otp/verify` | go-api@9384 | `internal/router/router_ee.go:39` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); handler VerifyOTP returns CodeNotImplemented |
+
+### `pipelines` (2)
+
+| Method | Path | Service | Source | Proxy result |
+| --- | --- | --- | --- | --- |
+| GET | `/api/v1/pipelines` | go-api@9384 | `internal/router/router.go:170` | implemented only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); live hybrid proxy probe returns HTTP 404 |
+| GET | `/api/v1/pipelines/:id` | go-api@9384 | `internal/router/router.go:171` | implemented only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); live hybrid proxy probe returns HTTP 404 |
 
 ## No capability lost — same method and path is served by a reachable route
 
@@ -213,6 +220,7 @@ serving implementation shown below keeps the surface available.
 | PUT | `/api/v1/messages/<memory_id>:<message_id>` | python-api@9380 | go-api (`/api/v1/messages/:memory_message`) | `api/apps/restful_apis/memory_api.py:230` |
 | GET | `/api/v1/messages/<memory_id>:<message_id>/content` | python-api@9380 | go-api (`/api/v1/messages/:memory_message/content`) | `api/apps/restful_apis/memory_api.py:300` |
 | POST | `/api/v1/openai/<chat_id>/chat/completions` | python-api@9380 | go-api (`/api/v1/openai/:chat_id/chat/completions`) | `api/apps/restful_apis/openai_api.py:237` |
+| PATCH | `/api/v1/providers/:provider_name/instances/:instance_name/models/*model_name` | go-api@9384 | python-api (`/api/v1/providers/<provider_id_or_name>/instances/<instance_id_or_name>/models/<path:model_name>`) | `internal/router/router.go:525` |
 | DELETE | `/api/v1/providers/<provider_id_or_name>` | python-api@9380 | go-api (`/api/v1/providers/:provider_name`) | `api/apps/restful_apis/provider_api.py:161` |
 | GET | `/api/v1/providers/<provider_id_or_name>` | python-api@9380 | go-api (`/api/v1/providers/:provider_name`) | `api/apps/restful_apis/provider_api.py:123` |
 | POST | `/api/v1/providers/<provider_id_or_name>/connection` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/connection`) | `api/apps/restful_apis/provider_api.py:359` |
@@ -222,7 +230,6 @@ serving implementation shown below keeps the surface available.
 | GET | `/api/v1/providers/<provider_id_or_name>/instances/<instance_id_or_name>` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/instances/:instance_name`) | `api/apps/restful_apis/provider_api.py:471` |
 | GET | `/api/v1/providers/<provider_id_or_name>/instances/<instance_id_or_name>/models` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/instances/:instance_name/models`) | `api/apps/restful_apis/provider_api.py:576` |
 | POST | `/api/v1/providers/<provider_id_or_name>/instances/<instance_id_or_name>/models` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/instances/:instance_name/models`) | `api/apps/restful_apis/provider_api.py:691` |
-| PATCH | `/api/v1/providers/<provider_id_or_name>/instances/<instance_id_or_name>/models/<path:model_name>` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/instances/:instance_name/models/*model_name`) | `api/apps/restful_apis/provider_api.py:764` |
 | GET | `/api/v1/providers/<provider_id_or_name>/models` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/models`) | `api/apps/restful_apis/provider_api.py:200` |
 | GET | `/api/v1/providers/<provider_id_or_name>/models/<path:model_name>` | python-api@9380 | go-api (`/api/v1/providers/:provider_name/models/:model_name`) | `api/apps/restful_apis/provider_api.py:245` |
 | DELETE | `/api/v1/searches/<search_id>` | python-api@9380 | go-api (`/api/v1/searches/:search_id`) | `api/apps/restful_apis/search_api.py:179` |
