@@ -536,7 +536,12 @@ class _FakeSpawnContext:
     def Queue(self):
         return self._queue
 
-    def Process(self, target = None, args = (), daemon = None):
+    def Process(
+        self,
+        target = None,
+        args = (),
+        daemon = None,
+    ):
         return self._child
 
 

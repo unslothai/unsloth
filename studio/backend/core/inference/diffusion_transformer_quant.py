@@ -730,7 +730,6 @@ def _close_probe_child(proc: Any, queue: Any) -> bool:
 
     if _probe_child_alive(proc):
         import logging
-
         logging.getLogger(__name__).error(
             "diffusion.transformer_quant: probe child pid=%s survived terminate and kill; "
             "keeping its lifetime record so the shutdown sweep can still reach it",
