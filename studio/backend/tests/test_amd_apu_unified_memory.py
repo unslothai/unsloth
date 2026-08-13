@@ -13,6 +13,19 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 
+_VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_gpu_mask(monkeypatch):
+    """These tests fake a torch host and then ask about GPU ordinal 0. A mask
+    inherited from the shell remaps that ordinal onto a physical id the fake
+    host does not have, so the answer flips to False and nine tests fail. CI
+    runners carry no mask, so it only ever bites locally. The tests that are
+    about a mask still set their own, after this."""
+    for _m in _VISIBLE_DEVICE_MASKS:
+        monkeypatch.delenv(_m, raising = False)
+
 
 def _fake_torch(
     hip,

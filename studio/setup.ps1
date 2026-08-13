@@ -132,9 +132,9 @@ function Write-StudioLine {
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
-# "rocm". "cpu" forces the CPU-only prebuilt. "vulkan" selects Vulkan even
-# when CUDA or ROCm is detected. "hip"/"rocm" opts out of automatic Vulkan.
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
+# "hip", or "rocm". Concrete values select and persist a backend across updates;
+# "auto" restores detection. Overrides Studio's Settings > System selection.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -5272,16 +5272,14 @@ $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
-$explicitVulkanSourceBuild = (
-    -not $IsMacOS -and
-    (
-        $sourceLlamaBackend -eq "vulkan" -or
-        (
-            $sourceLlamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
-            $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
-        )
-    )
-)
+$explicitLlamaSourceBackend = $null
+if (-not $IsMacOS) {
+    if ($sourceLlamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
+        $explicitLlamaSourceBackend = if ($sourceLlamaBackend -eq "hip") { "rocm" } else { $sourceLlamaBackend }
+    } elseif ($sourceLlamaBackend -ne "auto" -and $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")) {
+        $explicitLlamaSourceBackend = "vulkan"
+    }
+}
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
@@ -5470,11 +5468,11 @@ if ($LocalLlamaCppSrc) {
 
 if ($LocalLlamaCppLinked) {
     # local directory linked above; skip prebuilt install
-} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {
+} elseif ($explicitLlamaSourceBackend -and $NeedLlamaSourceBuild) {
     Write-StudioLine ""
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "Red"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override" "Yellow"
-    Exit-SetupFailure "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+    step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build" "Red"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND" "Yellow"
+    Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 } elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-StudioLine ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
@@ -5548,11 +5546,11 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # The backend override is case-insensitive and whitespace-trimmed. cpu
-        # maps to the persisted --force-cpu choice. vulkan is consumed directly
-        # by install_llama_prebuilt.py and does not change the torch backend.
+        # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself, and
+        # it is also the only side that can see a choice recorded in the install
+        # marker, so forwarding a second copy from here could only ever disagree
+        # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $legacyForceVulkan = $sourceLegacyForceVulkan
         $windowsArm64 = (
             $env:OS -eq "Windows_NT" -and
             (
@@ -5560,31 +5558,16 @@ if ($LocalLlamaCppLinked) {
                 "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
             )
         )
-        $explicitVulkanBackend = $false
-        if ($llamaBackend -eq "cpu") {
-            $prebuiltArgs += "--force-cpu"
-        } elseif ($llamaBackend -eq "vulkan") {
+        if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
             } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
-                $prebuiltArgs += @("--llama-backend", "vulkan")
-                $explicitVulkanBackend = $true
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
-        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "hip", "rocm")) {
-            Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
-        }
-        if (
-            -not $IsMacOS -and
-            $llamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
-            $legacyForceVulkan -in @("1", "true", "yes", "on")
-        ) {
-            if ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
-            }
-            $explicitVulkanBackend = $true
+        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "cpu", "cuda", "hip", "rocm")) {
+            Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -5647,27 +5630,32 @@ if ($LocalLlamaCppLinked) {
                 if (Test-PathQuiet $_cand) { $PreservedLlamaServerFound = $true; break }
             }
             if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
-            # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-            # request, and it leaves LlamaCppDegraded false, so without this the
-            # run reports success on the backend the user asked to replace.
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+            # A preserved server may not satisfy an explicit backend request, and
+            # it leaves LlamaCppDegraded false. Never report success on an
+            # unverified backend after the requested replacement ran out of space.
+            if ($explicitLlamaSourceBackend) {
+                step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, so the installer will not keep an unverified existing backend" "Red"
+                Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
             }
+        } elseif ($prebuiltExit -eq 5) {
+            step "llama.cpp" "selected backend could not be installed" "Red"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                substep "Existing install was restored" "Yellow"
+            }
+            substep "Check the error above, choose another backend, or retry" "Yellow"
+            Exit-SetupFailure "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
         } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
-                substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
-            } else {
-                substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
-                $NeedLlamaSourceBuild = $true
-            }
+            # Exit 2 means no concrete backend was in play: a request the installer
+            # could not honour -- named here or recorded in the install marker,
+            # which this script cannot see -- exits 5 above instead.
+            substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
+            $NeedLlamaSourceBuild = $true
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
             Write-LlamaFailureLog -Output $prebuiltOutput

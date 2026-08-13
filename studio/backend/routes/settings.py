@@ -54,6 +54,13 @@ from utils.model_memory_settings import (
     set_model_memory_settings,
     should_mlock,
 )
+from utils.vram_budget_settings import (
+    VRAM_FRACTION_DEFAULT,
+    VRAM_FRACTION_MAX,
+    VRAM_FRACTION_MIN,
+    get_vram_budget_state,
+    set_vram_budget_fraction,
+)
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
@@ -216,6 +223,35 @@ class ModelMemoryResponse(BaseModel):
     # that residency will not fully pin a model larger than this. None means
     # unlimited (macOS) or not applicable (Windows).
     memlock_limit_bytes: Optional[int] = None
+
+
+class VramBudgetPayload(BaseModel):
+    # None clears the stored budget so env/default applies again; it cannot also
+    # mean "leave untouched" as the model-memory switches do, since there is one
+    # field. Hence required, not defaulted: with a default, {} would mean "clear it"
+    # and a client that dropped the field would silently discard the stored budget.
+    fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
+
+    @field_validator("fraction", mode = "before")
+    @classmethod
+    def _reject_bool(cls, value: object) -> object:
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and stores
+        # the max budget instead of 422; pydantic coerces before the util's guard.
+        if isinstance(value, bool):
+            raise ValueError("fraction must be a number, not a boolean")
+        return value
+
+
+class VramBudgetResponse(BaseModel):
+    fraction: float
+    # False when inherited from UNSLOTH_VRAM_FRACTION or the default, so the UI
+    # knows whether clearing it would change anything.
+    is_stored: bool
+    default_fraction: float = VRAM_FRACTION_DEFAULT
+    min_fraction: float = VRAM_FRACTION_MIN
+    max_fraction: float = VRAM_FRACTION_MAX
+    # Read when a load sizes itself, so a change cannot reach a running child.
+    reload_required: bool
 
 
 class HuggingFaceCachePayload(BaseModel):
@@ -452,6 +488,45 @@ def _model_memory_response() -> ModelMemoryResponse:
     )
 
 
+def _vram_budget_reload_required(fraction: float) -> bool:
+    """True when a child is running that was sized against a different budget.
+
+    Compares against the fraction the child actually launched with, not merely
+    "is something loaded", so re-saving the same value does not nag for a reload.
+    Exact equality is fine: both sides come from the same clamp, so a stored 0.97
+    and a launched 0.97 are the same float.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        # A planned-but-unspawned load has no _process, so is_active is False while
+        # the child is already committed to its captured fraction; answer from the
+        # pending value there, as _active_launch_placement does for Model Memory.
+        pending = getattr(backend, "_vram_fraction_pending", None)
+        if pending is not None:
+            return float(pending) != float(fraction)
+        if not backend.is_active:
+            return False
+        launched = getattr(backend, "_vram_fraction_launched", None)
+        # A child predating this field, or from a path that never set it, cannot be
+        # compared; say no rather than nagging on every save.
+        if launched is None:
+            return False
+        return float(launched) != float(fraction)
+    except Exception:
+        return False
+
+
+def _vram_budget_response() -> VramBudgetResponse:
+    fraction, is_stored = get_vram_budget_state()
+    return VramBudgetResponse(
+        fraction = fraction,
+        is_stored = is_stored,
+        reload_required = _vram_budget_reload_required(fraction),
+    )
+
+
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
@@ -545,6 +620,28 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+@router.get("/vram-budget", response_model = VramBudgetResponse)
+def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
+    return _vram_budget_response()
+
+
+@router.put("/vram-budget", response_model = VramBudgetResponse)
+def update_vram_budget(
+    payload: VramBudgetPayload, current_subject: str = Depends(get_current_subject)
+) -> VramBudgetResponse:
+    try:
+        set_vram_budget_fraction(payload.fraction)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid VRAM budget."),
+            event = "settings.update_vram_budget_failed",
+            log = logger,
+        ) from exc
+    return _vram_budget_response()
 
 
 class CodingAgentsResponse(BaseModel):

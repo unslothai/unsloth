@@ -226,10 +226,17 @@ export async function syncExternalProvidersFromBackend(
       const synced: ExternalProviderConfig = {
         id: config.id,
         providerType: uiProviderType,
+        // Beside the UI type, which disagrees for a legacy row saved as `openai`:
+        // only the stored type decides what the backend accepts.
+        backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
+        maxOutputTokens:
+          uiProviderType === LEGACY_CUSTOM_PROVIDER_TYPE
+            ? (config.max_output_tokens ?? undefined)
+            : undefined,
 
         hasApiKey: config.has_api_key,
 

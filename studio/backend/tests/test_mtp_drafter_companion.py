@@ -2579,7 +2579,7 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     seen: dict = {"dflash_fetched": False}
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
     monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: False)
-    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 4096, 8192)])
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 4096, 8192)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
     monkeypatch.setattr(

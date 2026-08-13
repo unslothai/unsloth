@@ -178,7 +178,11 @@ function parseExternalModelId(id: string): any {
   return rest.length > 0 ? { providerId, modelId: rest.join(":") } : null;
 }
 const useExternalProvidersStore: any = { getState: () => ({ providers: [] }) };
-function getExternalMaxOutputTokens(_providerType: any, _modelId: any): number {
+function getExternalMaxOutputTokens(
+  _providerType: any,
+  _modelId: any,
+  _maxOutputTokens?: any,
+): number {
   return 8192;
 }
 function shouldAdvanceQueuedSettingsEpoch(
