@@ -53,6 +53,9 @@ PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialo
 GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
+# The DataTransfer reading half moved here when long pastes became attachments
+# (#8472). Both halves are still one contract, so read them as one.
+CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
@@ -358,7 +361,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
-    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")
+    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8") + CLIPBOARD_PAYLOAD.read_text(
+        encoding = "utf-8"
+    )
     thread = THREAD.read_text(encoding = "utf-8")
     shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
     capabilities = TAURI_CAPABILITIES.read_text(encoding = "utf-8")
