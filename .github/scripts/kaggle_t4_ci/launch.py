@@ -505,6 +505,27 @@ def fetch_evidence(
     return {"notebooks": fetched, "log": log_path.name if log_path.exists() else None}
 
 
+def flatten_kernel_log(raw: str) -> str:
+    """A kernel log as flat text, whichever shape Kaggle returned it in.
+
+    `kernels/output` hands `log` back as a JSON array of {stream_name, time,
+    data} records rather than as text, one record per line, so reading the
+    file verbatim shows a wall of JSON and NOTHING in it starts with a
+    payload prefix. Records are also cut by write rather than by line, so the
+    join has to happen before any line splitting.
+
+    Same treatment as `report.py::kernel_log_text` and
+    `collect_evidence.py::iter_text`; anything reading a kernel.log needs it.
+    """
+    try:
+        records = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(records, list):
+        return raw
+    return "".join(r.get("data", "") for r in records if isinstance(r, dict))
+
+
 def extract_reports(outdir: Path) -> list[dict]:
     """Every T4_SMOKE_REPORT payload found in the collected evidence.
 
@@ -545,7 +566,8 @@ def extract_reports(outdir: Path) -> list[dict]:
                     text = "".join(text)
                 _consume(text)
     for log_path in sorted(outdir.rglob("kernel.log")):
-        _consume(log_path.read_text(encoding = "utf-8", errors = "replace"))
+        raw = log_path.read_text(encoding = "utf-8", errors = "replace")
+        _consume(flatten_kernel_log(raw))
     return reports
 
 
