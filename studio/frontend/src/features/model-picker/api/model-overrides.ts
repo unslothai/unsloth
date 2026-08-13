@@ -224,8 +224,9 @@ async function sendModelOverride(
       // Say which operation this is: an all-default save carries no fields, shape-identical
       // to a forget, and guessing wrong wipes flags the UI cannot show or restore.
       remove: config === null && !options?.keepLaunchFlags,
-      // Flags have no UI control, so the backend preserves them when omitted; a forget
-      // means all of it, so that path sends an explicit [].
+      // The backend preserves the flags when omitted, which is what a save that
+      // never opened the box relies on; a forget means all of it, so that path
+      // sends an explicit [].
       ...(config === null && !options?.keepLaunchFlags
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: [] }
