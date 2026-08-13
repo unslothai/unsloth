@@ -548,7 +548,13 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
             self.closed = False
             workers.append(self)
 
-        def start(self, _snapshot_path, device, _dtype_name, _cancel_event = None):
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
             # The load succeeded; the cancel arrives a moment later.
             self.device = device
             assert sidecar.cancel_pending_load() is True
