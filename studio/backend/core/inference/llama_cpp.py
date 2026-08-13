@@ -9802,7 +9802,7 @@ class LlamaCppBackend:
         returncode: Optional[int] = None,
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
-        secrets: "Sequence[Optional[str]]" = (),
+        secrets: Sequence[Optional[str]] = (),
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -10079,7 +10079,7 @@ class LlamaCppBackend:
     )
 
     @staticmethod
-    def _scrub_secret_values(text: str, extra: "Sequence[Optional[str]]" = ()) -> str:
+    def _scrub_secret_values(text: str, extra: Sequence[Optional[str]] = ()) -> str:
         """Redact credential-looking environment values out of ``text``.
 
         llama-server inherits nearly all of Studio's environment, so a wrapper
@@ -10130,7 +10130,7 @@ class LlamaCppBackend:
         message: str,
         output: Optional[str],
         log_path: "Optional[Path | str]",
-        extra_secrets: "Sequence[Optional[str]]" = (),
+        extra_secrets: Sequence[Optional[str]] = (),
     ) -> str:
         """Append llama-server's output tail and log path to ``message``.
 
