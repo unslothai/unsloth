@@ -64,15 +64,15 @@ export function getRememberedParamsPatch(
   paramsByModel: Record<string, PersistedInferenceParams>,
   modelId: string | undefined,
   changedParams: PersistedInferenceParams,
+  snapshot: PersistedInferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
   if (!(enabled && modelId && hasKeys(changedParams))) {
     return null;
   }
-  return {
-    ...paramsByModel,
-    // Merge, not replace: an edit reports only the params it moved.
-    [modelId]: { ...paramsByModel[modelId], ...changedParams },
-  };
+  // The whole snapshot, not just what moved: replay overlays the entry onto the
+  // outgoing model's params, so a partial entry would leave the gaps filled by
+  // whichever model was on screen last.
+  return { ...paramsByModel, [modelId]: snapshot };
 }
 
 /** The params a model switch should land on. A model with nothing remembered

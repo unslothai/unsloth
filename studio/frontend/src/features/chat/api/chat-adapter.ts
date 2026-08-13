@@ -1807,9 +1807,14 @@ async function resolveProjectId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | null> {
   if (threadId) {
-    const thread = await (
-      readThreadRecord?.() ?? getStoredChatThread(threadId)
-    ).catch(() => null);
+    let thread: ThreadRecord | undefined;
+    try {
+      thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    } catch {
+      // A failed lookup is not proof the row is missing, so it must not adopt
+      // whichever project the composer last had open.
+      return null;
+    }
     if (thread) {
       return thread.projectId ?? null;
     }

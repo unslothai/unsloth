@@ -19,6 +19,7 @@ import {
   chatHistoryClearBoundary,
   ChatThreadDeletedError,
   ensureStoredChatThread,
+  getStoredChatThread,
   isThreadIncognito,
 } from "@/features/chat";
 import {
@@ -39,7 +40,11 @@ import {
   listProjectDocuments,
   listThreadDocuments,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
+import {
+  type DocumentStatus,
+  RAG_UPLOAD_ACCEPT,
+  isLinkedFolderManaged,
+} from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
@@ -98,6 +103,91 @@ async function requireStoredThread(threadId: string): Promise<void> {
   if (!stored) {
     throw new Error(`Thread ${threadId} was not persisted`);
   }
+}
+
+/** Read-only listing of the project's sources, shown when the Docs pill is off:
+ * they still reach the model, so they must not be invisible. */
+function InheritedProjectSources({
+  documents,
+}: {
+  documents: { id: string; filename: string; status: DocumentStatus }[];
+}) {
+  return (
+    <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
+      <span
+        className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
+        title="This chat retrieves from its project's sources. Manage them in the project's Sources tab."
+      >
+        <HugeiconsIcon icon={Folder02Icon} strokeWidth={2} className="size-3.5" />
+        <span>Project sources</span>
+      </span>
+      <div className="flex flex-1 flex-row flex-wrap items-center gap-1.5">
+        {documents.map((doc) => (
+          <DocumentStatusChip
+            key={`inherited:${doc.id}`}
+            filename={doc.filename}
+            status={doc.status}
+            shared={true}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The project the displayed chat belongs to. Read from the chat's own row, not
+ * the global activeProjectId: the chat page updates that only after its own
+ * async lookup, so during a navigation it still names the project the user just
+ * left. Null while unresolved, which suppresses the project affordances rather
+ * than pointing them at the wrong project.
+ */
+function useThreadProjectId(threadId: string | null): string | null {
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
+  const [resolved, setResolved] = useState<{
+    threadId: string;
+    projectId: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!threadId || isThreadIncognito(threadId)) {
+      return;
+    }
+    let cancelled = false;
+    getStoredChatThread(threadId).then(
+      (thread) => {
+        if (cancelled) {
+          return;
+        }
+        // No row yet: initialize() does not await the write, so the composer's
+        // project is the answer that row is about to record.
+        const projectId = thread
+          ? (thread.projectId ?? null)
+          : useChatRuntimeStore.getState().activeProjectId;
+        setResolved({ threadId, projectId });
+      },
+      // A failed lookup is not proof of no project, but it is no basis for
+      // filing a file into one either.
+      () => {
+        if (!cancelled) {
+          setResolved({ threadId, projectId: null });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
+
+  // A chat with no id yet is the one being composed, so it belongs to whatever
+  // project the composer is in.
+  if (!threadId) {
+    return activeProjectId;
+  }
+  if (isThreadIncognito(threadId)) {
+    return null;
+  }
+  return resolved?.threadId === threadId ? resolved.projectId : null;
 }
 
 /** The composer's attach control. Wording and glyph follow the active target, so
@@ -221,9 +311,6 @@ export function ThreadDocumentsBar({
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  // activeProjectId is set by the chat page from the thread's own row, so it is
-  // null for every chat with no project.
-  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const projectAttachmentTarget = useChatRuntimeStore(
     (s) => s.projectAttachmentTarget,
   );
@@ -231,10 +318,6 @@ export function ThreadDocumentsBar({
     (s) => s.setProjectAttachmentTarget,
   );
   const aui = useAui();
-  // A KB-scoped chat uploads through the KB dialog, so neither scope applies there.
-  const projectId = ragSource.type === "kb" ? null : activeProjectId;
-  const sharesWithProject =
-    projectId !== null && projectAttachmentTarget === "project";
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // A fresh chat has no thread id until the first message; materialize one on demand
@@ -252,6 +335,14 @@ export function ThreadDocumentsBar({
       initPromiseRef.current = null;
     }
   }, [threadId]);
+
+  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
+  // but a KB preference left over while the pill is off does not.
+  const threadProjectId = useThreadProjectId(effectiveThreadId);
+  const projectId =
+    ragEnabled && ragSource.type === "kb" ? null : threadProjectId;
+  const sharesWithProject =
+    projectId !== null && projectAttachmentTarget === "project";
 
   const lister = useCallback(
     () =>
@@ -280,7 +371,7 @@ export function ThreadDocumentsBar({
     upload: uploadToProject,
     remove: removeFromProject,
   } = useRagDocuments(
-    projectId && ragEnabled ? { type: "project", projectId } : null,
+    projectId ? { type: "project", projectId } : null,
     projectLister,
   );
 
@@ -350,7 +441,9 @@ export function ThreadDocumentsBar({
     (items: Parameters<typeof upload>[0]) => {
       if (sharesWithProject && projectId) {
         invalidateProjectSources(projectId);
-        void uploadToProject(items).finally(() =>
+        // Explicit scope: a desktop drop enables RAG and attaches in the same
+        // tick, so the hook's own scope is still null on this render.
+        void uploadToProject(items, { type: "project", projectId }).finally(() =>
           invalidateProjectSources(projectId),
         );
         return;
@@ -433,12 +526,18 @@ export function ThreadDocumentsBar({
     fileInputRef.current?.click();
   }, []);
 
-  // Shown whenever the RAG pill is on: ingestion only needs the embedder, so
-  // files can index before a chat model loads.
-  if (!ragEnabled) return null;
   // A KB source uploads via the KB dialog, not here; show which KB is active.
-  if (ragSource.type === "kb") {
+  if (ragEnabled && ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
+  }
+  // Project sources retrieve whenever the project has them, Docs pill or not
+  // (chat-adapter's projectRagEnabled), so keep them listed with the pill off
+  // rather than letting the model answer from files the user cannot see. The
+  // attach controls stay behind the pill: with it off, thread scope is inert.
+  if (!ragEnabled) {
+    return projectDocuments.length > 0 ? (
+      <InheritedProjectSources documents={projectDocuments} />
+    ) : null;
   }
 
   const busy = uploading || projectUploading;

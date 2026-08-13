@@ -1839,12 +1839,27 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params, options) =>
     set((state) => {
+      // Mirror setCheckpoint: the local load path can mutate params.checkpoint
+      // via setParams() before setCheckpoint runs, leaving stale per-turn
+      // counters under the new checkpoint.
+      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      // An interactive local load lands here with the destination checkpoint and
+      // the backend's recommended params, and only reaches setCheckpoint later,
+      // once params.checkpoint already matches. Replay here or that switch, the
+      // common one, never restores the model's own settings.
+      const nextParams = getReplayedParams(
+        state.rememberParamsPerModel,
+        state.paramsByModel,
+        params,
+        params.checkpoint,
+        checkpointChanged,
+      );
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
-      const changedParams = getChangedInferenceParams(params, state.params);
+      const changedParams = getChangedInferenceParams(nextParams, state.params);
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         state.params,
-        params,
+        nextParams,
         options?.trackQueuedSettings !== false,
       );
       // An edit belongs to the model the params now describe, so a call that moves
@@ -1853,19 +1868,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         getRememberedParamsPatch(
           state.rememberParamsPerModel,
           state.paramsByModel,
-          params.checkpoint,
+          nextParams.checkpoint,
           changedParams,
+          pickPersistedInferenceParams(nextParams),
         ),
       );
       if (options?.persist !== false && state.settingsHydrated) {
-        persistParamEdit(changedParams, paramsByModel, params.checkpoint);
+        persistParamEdit(changedParams, paramsByModel, nextParams.checkpoint);
       }
-      // Mirror setCheckpoint: the local load path can mutate params.checkpoint
-      // via setParams() before setCheckpoint runs, leaving stale per-turn
-      // counters under the new checkpoint.
-      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
-        params,
+        params: nextParams,
         ...(paramsByModel ? { paramsByModel } : {}),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
@@ -2541,12 +2553,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.rememberParamsPerModel,
       );
       // Turning it on adopts the settings on screen for the active model.
+      const snapshot = pickPersistedInferenceParams(state.params);
       const paramsByModel = trackParamsByModel(
         getRememberedParamsPatch(
           rememberParamsPerModel,
           state.paramsByModel,
           state.params.checkpoint,
-          pickPersistedInferenceParams(state.params),
+          snapshot,
+          snapshot,
         ),
       );
       if (paramsByModel && state.settingsHydrated && state.params.checkpoint) {

@@ -38,55 +38,117 @@ function params(overrides: Partial<InferenceParams> = {}): InferenceParams {
   } as InferenceParams;
 }
 
+/** What the store passes: the edit that moved, plus the full resulting params. */
+function record(
+  paramsByModel: Record<string, Record<string, unknown>>,
+  modelId: string | undefined,
+  changed: Record<string, unknown>,
+  full: InferenceParams,
+) {
+  return getRememberedParamsPatch(
+    true,
+    paramsByModel as never,
+    modelId,
+    changed as never,
+    pickPersistedInferenceParams(full),
+  );
+}
+
 test("an edit is filed against the model it was made for", () => {
-  const next = getRememberedParamsPatch(true, {}, QWEN, { temperature: 0.2 });
-  assert.deepEqual(next, { [QWEN]: { temperature: 0.2 } });
+  const next = record({}, QWEN, { temperature: 0.2 }, params({ temperature: 0.2 }));
+  assert.equal(next?.[QWEN].temperature, 0.2);
 });
 
-test("a later edit merges into the same model rather than replacing it", () => {
-  const first = getRememberedParamsPatch(true, {}, QWEN, { temperature: 0.2 });
-  assert.ok(first);
-  const second = getRememberedParamsPatch(true, first, QWEN, {
-    systemPrompt: "Be terse.",
-  });
-  assert.deepEqual(second, {
-    [QWEN]: { temperature: 0.2, systemPrompt: "Be terse." },
-  });
+// The entry has to be the whole snapshot. Replay overlays it onto the outgoing
+// model's params, so anything missing would silently keep the other model's value.
+test("an entry records every param, not only the one that moved", () => {
+  const next = record(
+    {},
+    QWEN,
+    { temperature: 0.2 },
+    params({ temperature: 0.2, systemPrompt: "Be terse." }),
+  );
+  assert.equal(next?.[QWEN].systemPrompt, "Be terse.");
+  assert.equal(next?.[QWEN].topP, 0.95);
 });
 
 test("editing one model leaves every other model's memory alone", () => {
   const before = { [LLAMA]: { temperature: 0.9 } };
-  const after = getRememberedParamsPatch(true, before, QWEN, {
-    temperature: 0.2,
-  });
-  assert.deepEqual(after, {
-    [LLAMA]: { temperature: 0.9 },
-    [QWEN]: { temperature: 0.2 },
-  });
+  const after = record(before, QWEN, { temperature: 0.2 }, params({ temperature: 0.2 }));
+  assert.deepEqual(after?.[LLAMA], { temperature: 0.9 });
+  assert.equal(after?.[QWEN].temperature, 0.2);
   // The input map is not mutated: the store compares by identity to decide
   // whether anything has to be persisted.
   assert.deepEqual(before, { [LLAMA]: { temperature: 0.9 } });
 });
 
+// The reported failure: A remembered only its temperature, so switching back
+// overlaid it onto B's prompt and A ran under settings it was never given.
+test("a model returns to the prompt it was last used with", () => {
+  const aParams = params({ checkpoint: QWEN, temperature: 0.2, systemPrompt: "A" });
+  const memory = record({}, QWEN, { temperature: 0.2 }, aParams);
+  assert.ok(memory);
+
+  // Switch to B, which has no memory, then change only B's prompt.
+  const onB = getReplayedParams(true, memory, aParams, LLAMA, true);
+  const bParams = { ...onB, checkpoint: LLAMA, systemPrompt: "B" };
+  const afterB = record(memory, LLAMA, { systemPrompt: "B" }, bParams);
+  assert.ok(afterB);
+
+  const backOnA = getReplayedParams(true, afterB, bParams, QWEN, true);
+  assert.equal(backOnA.systemPrompt, "A");
+  assert.equal(backOnA.temperature, 0.2);
+});
+
+// The interactive local load never calls setCheckpoint first: it calls
+// setParams with the destination checkpoint and the backend's recommended
+// params. Replay has to happen on that call or the common switch restores
+// nothing. This walks that exact sequence through the two helpers setParams uses.
+test("a local model load replays memory over the backend's recommendation", () => {
+  let memory: Record<string, ReturnType<typeof pickPersistedInferenceParams>> = {};
+  let live = params({ checkpoint: QWEN });
+
+  function loadModel(modelId: string, recommended: Partial<InferenceParams>) {
+    const merged = { ...live, ...recommended, checkpoint: modelId };
+    const replayed = getReplayedParams(true, memory, merged, modelId, true);
+    memory = record(memory, modelId, { temperature: 1 }, replayed) ?? memory;
+    live = replayed;
+  }
+
+  function edit(overrides: Partial<InferenceParams>) {
+    live = { ...live, ...overrides };
+    memory = record(memory, live.checkpoint, overrides, live) ?? memory;
+  }
+
+  loadModel(QWEN, { temperature: 0.7 });
+  edit({ temperature: 0.2 });
+  loadModel(LLAMA, { temperature: 0.6 });
+  assert.equal(live.temperature, 0.6, "a model with no memory takes its recommendation");
+
+  loadModel(QWEN, { temperature: 0.7 });
+  assert.equal(live.temperature, 0.2, "the tuned value beats the recommendation");
+});
+
 // Null is how the store leaves the map and its hydration version untouched.
 test("nothing is recorded when there is nothing to record", () => {
+  const snapshot = pickPersistedInferenceParams(params());
   assert.equal(
-    getRememberedParamsPatch(false, {}, QWEN, { temperature: 0.2 }),
+    getRememberedParamsPatch(false, {}, QWEN, { temperature: 0.2 }, snapshot),
     null,
     "the feature being off records nothing",
   );
   assert.equal(
-    getRememberedParamsPatch(true, {}, undefined, { temperature: 0.2 }),
+    getRememberedParamsPatch(true, {}, undefined, { temperature: 0.2 }, snapshot),
     null,
     "no model selected records nothing",
   );
   assert.equal(
-    getRememberedParamsPatch(true, {}, "", { temperature: 0.2 }),
+    getRememberedParamsPatch(true, {}, "", { temperature: 0.2 }, snapshot),
     null,
     "an empty checkpoint is not a model id",
   );
   assert.equal(
-    getRememberedParamsPatch(true, {}, QWEN, {}),
+    getRememberedParamsPatch(true, {}, QWEN, {}, snapshot),
     null,
     "an edit that moved no persisted param records nothing",
   );
