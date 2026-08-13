@@ -3249,9 +3249,7 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
         )
 
     @pytest.mark.parametrize("first_conversion", ["bf16", None])
-    def test_hardware_without_bf16_is_priced_at_f16(
-        self, sized, monkeypatch, first_conversion
-    ):
+    def test_hardware_without_bf16_is_priced_at_f16(self, sized, monkeypatch, first_conversion):
         """None goes through `_choose_first_conversion`, which returns "bf16" too."""
         monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: False)
         self._run(first_conversion)
@@ -3306,8 +3304,8 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
     """
 
     N = 8_190_735_360
-    BASE = 2 * N            # the 16-bit base the pre-warm downloads: 15.3GB
-    CONVERSION = 4 * N      # an f32 intermediate: 30.5GB, two base copies
+    BASE = 2 * N  # the 16-bit base the pre-warm downloads: 15.3GB
+    CONVERSION = 4 * N  # an f32 intermediate: 30.5GB, two base copies
     WORK = "/work"
     CACHE = "/home/u/.cache/huggingface"
 
@@ -3335,9 +3333,7 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
         monkeypatch.setattr(
             S,
             "free_bytes",
-            lambda path: state["conversion_free"]
-            if str(path) == self.WORK
-            else 1000 * GB,
+            lambda path: state["conversion_free"] if str(path) == self.WORK else 1000 * GB,
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
