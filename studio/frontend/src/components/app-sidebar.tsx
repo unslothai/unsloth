@@ -1841,14 +1841,24 @@ export function AppSidebar() {
                         // as one falls back to current membership -- the very
                         // answer the recorded id exists to override. Let it
                         // reach the report below instead.
-                        const recorded = await Promise.all(
-                          (threadIds.length > 0 ? threadIds : [item.id]).map(
-                            (threadId) =>
-                              listStoredChatMessages(threadId).then(
-                                recordedSandboxSessionId,
-                              ),
-                          ),
-                        );
+                        // One at a time, not Promise.all: this file's export
+                        // contract forbids a concurrent await here (a native
+                        // save dialog per item cannot race), and a compare row
+                        // has two panes, so there is nothing to win. A read
+                        // that fails stops the loop and is reported below,
+                        // rather than being read as "never ran a tool" and
+                        // falling back to the current scope -- the very answer
+                        // the recorded id exists to override.
+                        const recorded: (string | undefined)[] = [];
+                        for (const threadId of threadIds.length > 0
+                          ? threadIds
+                          : [item.id]) {
+                          recorded.push(
+                            recordedSandboxSessionId(
+                              await listStoredChatMessages(threadId),
+                            ),
+                          );
+                        }
                         const distinct = [...new Set(recorded.filter(Boolean))];
                         if (distinct.length > 1) {
                           toast.error("This chat wrote to more than one folder.", {

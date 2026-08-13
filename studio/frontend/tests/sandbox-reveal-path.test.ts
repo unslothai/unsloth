@@ -101,24 +101,32 @@ test("a successful reveal resolves without reading the body", async () => {
   await revealSandbox("thread-1");
 });
 
+const SIDEBAR = readFileSync(
+  fileURLToPath(new URL("../src/components/app-sidebar.tsx", import.meta.url)),
+  "utf-8",
+);
+
 test("a failed history read is reported, not mistaken for a chat that ran no tools", () => {
   // No React renderer here, so this asserts on source, like ~50 sibling tests.
   // Catching per pane would make a read failure indistinguishable from "never
   // ran a tool", and the handler falls back to current project membership --
   // which is the answer the recorded session id exists to override.
-  const sidebar = readFileSync(
-    fileURLToPath(
-      new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    ),
-    "utf-8",
-  );
-  const block = sidebar.slice(
-    sidebar.indexOf("const recorded = await Promise.all("),
-    sidebar.indexOf("const distinct = "),
+  const block = SIDEBAR.slice(
+    SIDEBAR.indexOf("const recorded: (string | undefined)[] = [];"),
+    SIDEBAR.indexOf("const distinct = "),
   );
   assert.ok(block.includes("recordedSandboxSessionId"), "the read block moved");
   assert.ok(
     !block.includes(".catch("),
     "a per-pane catch turns a failed read into a wrong folder",
   );
+});
+
+test("the sandbox reads stay off Promise.all, as the export contract requires", () => {
+  // tests/studio/test_desktop_reliability_frontend_contract.py forbids
+  // `await Promise.all(` anywhere in this file: every batch here ends in a
+  // native save dialog, and concurrent ones race each other and lose
+  // cancellation. Asserted from this side too, so the reason travels with the
+  // code rather than only with the Python guard that fails the build.
+  assert.ok(!SIDEBAR.includes("await Promise.all("));
 });
