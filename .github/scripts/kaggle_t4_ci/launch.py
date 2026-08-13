@@ -346,11 +346,24 @@ def push(
                 # launch_result.json, so the step goes red and the reporter
                 # that reads that file never gets to call the run NOT RUN --
                 # a red verdict for something the code under test never saw.
+                #
+                # Infra for the VERDICT, but not for the budget. A stalled
+                # CLI says nothing about whether Kaggle took the push, and
+                # Kaggle can accept it and start billing before the response
+                # is lost. The slug is ours and already decided here, so
+                # record it and hand it back: `release_kernels` deletes it on
+                # the way out, and if this process is killed first the
+                # registry entry leaves it for the next launcher's sweep.
+                # Deliberately NOT returned as "slug" -- the caller must not
+                # wait on a kernel that may never have been created.
                 _log("push timed out after 600s; treating as Kaggle transport")
+                orphan = f"{user}/{slug_name}"
+                _inflight_add(orphan)
                 return {
                     "ok": False,
                     "reason": "push_timeout",
                     "detail": f"kaggle kernels push exceeded 600s (attempt {attempt + 1})",
+                    "orphan_slug": orphan,
                 }
             out = proc.stdout + proc.stderr
             lowered = out.lower()
@@ -587,7 +600,9 @@ def release_kernels(result: dict, args) -> None:
                 _inflight_mark_kept(entry["slug"])
         return
     for entry in result.get("kernels") or []:
-        slug = entry.get("slug")
+        # `orphan_slug` is a push whose CLI stalled: the kernel may be running
+        # and nothing else will ever name it.
+        slug = entry.get("slug") or entry.get("orphan_slug")
         if not slug or entry.get("released"):
             continue
         try:
@@ -734,6 +749,8 @@ def main() -> int:
         entry = {
             "notebook": notebook,
             "slug": pushed.get("slug"),
+            # A push whose CLI stalled: never waited on, always released.
+            "orphan_slug": pushed.get("orphan_slug"),
             "state": None,
             "push_error": None
             if pushed["ok"]

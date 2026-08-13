@@ -158,6 +158,48 @@ def test_a_stalled_push_is_reported_as_infra_not_raised(tmp_path, monkeypatch):
     pushed = launch.push(notebook, "me", 3600)
     assert pushed["ok"] is False
     assert pushed["reason"] == "push_timeout"
+
+
+def test_a_timed_out_push_does_not_forget_the_kernel_it_may_have_created(tmp_path, monkeypatch):
+    """A stalled CLI says nothing about whether Kaggle took the push.
+
+    Kaggle can accept it and start billing before the response is lost, and
+    the slug is ours and already decided at that point. Forgetting it left a
+    running kernel that `finish()` could not delete and that no later orphan
+    sweep could see either, so it billed to its 70 minute ceiling with nobody
+    reading the result.
+    """
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    notebook = tmp_path / "kernel.ipynb"
+    notebook.write_text("{}", encoding = "utf-8")
+
+    def _stall(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd = ["kaggle"], timeout = 600)
+
+    monkeypatch.setattr(launch.subprocess, "run", _stall)
+    pushed = launch.push(notebook, "me", 3600)
+
+    slug = pushed["orphan_slug"]
+    assert slug.startswith("me/unsloth-t4-ci-")
+    # Not "slug": the caller must not WAIT on a kernel that may not exist.
+    assert pushed.get("slug") is None
+    assert [e["slug"] for e in launch._inflight_read()] == [slug]
+
+
+def test_a_kernel_only_a_timeout_knows_about_is_still_deleted(tmp_path, monkeypatch):
+    """release_kernels is the budget control, so it has to act on the slug a
+    timed out push left behind and not only on a confirmed one."""
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    _fake_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    launch._inflight_add("me/k-timeout")
+    result = {"kernels": [{"slug": None, "orphan_slug": "me/k-timeout"}]}
+
+    class A:
+        keep_kernel = False
+
+    launch.release_kernels(result, A())
+    assert _deletions(tmp_path) == ["kernels delete me/k-timeout -y"]
     assert launch._inflight_read() == []
 
 
