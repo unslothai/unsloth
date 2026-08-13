@@ -9108,9 +9108,19 @@ def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> st
                 normalize_path(snapshot_path),
             )
         local_path = (request.model_local_path or "").strip()
-        if request.prefer_local_cache and local_path:
+        if request.prefer_local_cache:
+            # No path is a legitimate cached selection -- an inventory row can carry a
+            # null cachePath -- and _resolve_model_snapshot then searches every cache
+            # root, which is what the scan route and /train/start both do with it. Only
+            # taking the pin when a path came along would leave those selections judged
+            # on the repo's current architecture while the worker loads the snapshot.
             from core.training.training import _resolve_model_snapshot
-            return _resolve_model_snapshot(model_name, normalize_path(local_path)) or model_name
+            return (
+                _resolve_model_snapshot(
+                    model_name, normalize_path(local_path) if local_path else None
+                )
+                or model_name
+            )
     except Exception as exc:
         logger.debug("Cache pin resolution failed for '%s': %s", model_name, exc)
     return model_name

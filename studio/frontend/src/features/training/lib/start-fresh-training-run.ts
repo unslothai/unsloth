@@ -280,15 +280,26 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     }
     // Upgrade consent first, then the custom-code gate: the same order chat loads use,
     // because installing a newer transformers changes what the load would even run.
+    // The upgrade check already read this model's config: carry its custom-code verdict
+    // into the next gate rather than let that gate's fallback re-derive it from the
+    // stored flag, which a fresh run leaves false.
+    const upgradeVerdict = { requiresTrustRemoteCode: false };
     if (
       !(await confirmSelectedModelTransformersUpgrade(
         attempt,
         tokenResult.token,
+        upgradeVerdict,
       ))
     ) {
       return false;
     }
-    if (!(await confirmSelectedModelRemoteCode(attempt, tokenResult.token))) {
+    if (
+      !(await confirmSelectedModelRemoteCode(
+        attempt,
+        tokenResult.token,
+        upgradeVerdict.requiresTrustRemoteCode,
+      ))
+    ) {
       return false;
     }
     return await submitFreshTrainingRun(attempt, tokenResult.token);
@@ -442,6 +453,7 @@ function openManualMapping(
 async function confirmSelectedModelTransformersUpgrade(
   attempt: FreshTrainingStartAttempt,
   hfToken: string | null,
+  verdict: { requiresTrustRemoteCode: boolean },
 ): Promise<boolean> {
   const modelName = attempt.config.selectedModel;
   if (!modelName) {
@@ -455,6 +467,7 @@ async function confirmSelectedModelTransformersUpgrade(
     // one the repo publishes today.
     modelCachePin: freshModelCachePin(attempt),
   });
+  verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode;
   if (attempt.abortIfInputsChanged()) {
     return false;
   }
@@ -476,6 +489,7 @@ function freshModelCachePin(attempt: FreshTrainingStartAttempt): {
 async function confirmSelectedModelRemoteCode(
   attempt: FreshTrainingStartAttempt,
   hfToken: string | null,
+  upgradeRequiresTrustRemoteCode = false,
 ): Promise<boolean> {
   const modelName = attempt.config.selectedModel;
   if (!modelName) {
@@ -487,7 +501,8 @@ async function confirmSelectedModelRemoteCode(
     modelName,
     hfToken,
     ...freshModelCachePin(attempt),
-    requiresTrustRemoteCode: attempt.config.trustRemoteCode,
+    requiresTrustRemoteCode:
+      attempt.config.trustRemoteCode || upgradeRequiresTrustRemoteCode,
     onApprove: (fingerprint) => {
       approvalApplied = attempt.updateConfig({
         trustRemoteCode: true,

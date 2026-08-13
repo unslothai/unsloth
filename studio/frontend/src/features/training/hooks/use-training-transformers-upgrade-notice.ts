@@ -53,10 +53,13 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
   const sidecarGeneration = useTransformersUpgradeDialogStore(
     (s) => s.sidecarGeneration,
   );
-  // The copy the run would load, resolved as the start path resolves it: a cached model
-  // loads from its pinned snapshot, and the preview must describe that snapshot's
-  // architecture rather than whatever the repo publishes today.
-  const localPath = (modelKnownCached && modelLocalPath) || null;
+  // The copy the run would load, resolved exactly as freshModelCachePin resolves it for
+  // the start: a cached model loads from its pinned snapshot, and the preview must
+  // describe that snapshot's architecture rather than whatever the repo publishes today.
+  // A known-cached row can carry a null path, and the backend still resolves the pin from
+  // the cache roots, so the flag travels on its own rather than being read off the path.
+  const preferLocalCache = Boolean(modelKnownCached);
+  const localPath = (preferLocalCache && modelLocalPath) || null;
   // The cache is the state. This counter exists only to re-render once an answer
   // lands in it, which keeps every setState out of the effect body: reading the
   // map during render already gives the right answer for a model that has been
@@ -67,6 +70,7 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
     ? upgradeNoticeCacheKey(
         sidecarGeneration,
         selectedModel,
+        preferLocalCache,
         localPath,
         hfToken,
       )
@@ -82,7 +86,7 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
     }
     let active = true;
     checkTransformersUpgrade(selectedModel, hfToken || null, {
-      preferLocalCache: Boolean(localPath),
+      preferLocalCache,
       modelLocalPath: localPath,
     })
       .then((result) => {
@@ -97,7 +101,14 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
     return () => {
       active = false;
     };
-  }, [key, selectedModel, localPath, hfToken, sidecarGeneration]);
+  }, [
+    key,
+    selectedModel,
+    preferLocalCache,
+    localPath,
+    hfToken,
+    sidecarGeneration,
+  ]);
 
   if (!(selectedModel && check)) {
     return EMPTY;

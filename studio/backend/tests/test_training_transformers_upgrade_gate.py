@@ -265,6 +265,27 @@ def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_pat
     assert resolved_from == [str(snapshot)], resolved_from
 
 
+def test_a_known_cached_model_with_no_path_still_resolves_its_snapshot(monkeypatch, tmp_path):
+    # A cached inventory row can carry a null cachePath, and the Train tab still sends
+    # prefer_local_cache for it (freshModelCachePin sets the flag from modelKnownCached
+    # and the path only when there is one). _resolve_model_snapshot searches every cache
+    # root for exactly that case, which is what routes/models.py and /train/start both
+    # rely on; requiring a path here left those selections judged on the repo's current
+    # architecture while the worker loads the snapshot.
+    inspected: list = []
+    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    snapshot = _cached_snapshot(monkeypatch, tmp_path)
+    from hub.utils import hf_cache_state
+
+    monkeypatch.setattr(
+        hf_cache_state, "iter_repo_cache_dirs", lambda *a, **k: [snapshot.parent.parent]
+    )
+
+    _call(inf_mod, model = "org/model", prefer_local_cache = True)
+
+    assert all(target == str(snapshot) for target in inspected), inspected
+
+
 def test_an_unpinned_model_is_still_checked_by_identifier(monkeypatch):
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)

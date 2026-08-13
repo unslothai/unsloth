@@ -42,21 +42,21 @@ const BEFORE_INSTALL: TransformersUpgradeCheck = {
 };
 
 test("an answer is reused for the same model, copy and token", () => {
-  const key = upgradeNoticeCacheKey(0, MODEL, null, "");
+  const key = upgradeNoticeCacheKey(0, MODEL, false, null, "");
   writeUpgradeNoticeCache(0, key, BEFORE_INSTALL);
 
-  assert.equal(upgradeNoticeCacheKey(0, MODEL, null, ""), key);
+  assert.equal(upgradeNoticeCacheKey(0, MODEL, false, null, ""), key);
   assert.equal(hasUpgradeNoticeCache(0, key), true);
   assert.equal(readUpgradeNoticeCache(0, key), BEFORE_INSTALL);
 });
 
 test("an install retires every answer taken before it", () => {
-  const before = upgradeNoticeCacheKey(1, MODEL, null, "");
+  const before = upgradeNoticeCacheKey(1, MODEL, false, null, "");
   writeUpgradeNoticeCache(1, before, BEFORE_INSTALL);
   assert.equal(readUpgradeNoticeCache(1, before), BEFORE_INSTALL);
 
   // The consent flow installed the sidecar, so the store's generation moved on.
-  const after = upgradeNoticeCacheKey(2, MODEL, null, "");
+  const after = upgradeNoticeCacheKey(2, MODEL, false, null, "");
   assert.notEqual(after, before);
   assert.equal(
     hasUpgradeNoticeCache(2, after),
@@ -67,19 +67,34 @@ test("an install retires every answer taken before it", () => {
 });
 
 test("a different copy or token is still a different answer", () => {
-  const key = upgradeNoticeCacheKey(3, MODEL, null, "");
+  const key = upgradeNoticeCacheKey(3, MODEL, false, null, "");
   writeUpgradeNoticeCache(3, key, BEFORE_INSTALL);
 
   assert.equal(
-    hasUpgradeNoticeCache(3, upgradeNoticeCacheKey(3, MODEL, "/cache/x", "")),
+    hasUpgradeNoticeCache(
+      3,
+      upgradeNoticeCacheKey(3, MODEL, true, "/cache/x", ""),
+    ),
     false,
   );
   assert.equal(
-    hasUpgradeNoticeCache(3, upgradeNoticeCacheKey(3, MODEL, null, "hf_token")),
+    hasUpgradeNoticeCache(
+      3,
+      upgradeNoticeCacheKey(3, MODEL, false, null, "hf_token"),
+    ),
     false,
   );
   assert.equal(
-    hasUpgradeNoticeCache(3, upgradeNoticeCacheKey(3, "org/other", null, "")),
+    hasUpgradeNoticeCache(
+      3,
+      upgradeNoticeCacheKey(3, "org/other", false, null, ""),
+    ),
+    false,
+  );
+  // A known-cached row can have a null path, and the backend still resolves the pin from
+  // the cache roots, so the flag alone is a different question about the same model.
+  assert.equal(
+    hasUpgradeNoticeCache(3, upgradeNoticeCacheKey(3, MODEL, true, null, "")),
     false,
   );
   assert.equal(readUpgradeNoticeCache(3, key), BEFORE_INSTALL);

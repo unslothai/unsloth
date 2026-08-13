@@ -58,10 +58,27 @@ export async function resumeTrainingRun(runId: string): Promise<boolean> {
 
     // Upgrade consent first, then the custom-code gate, like a fresh start: a resume
     // after a reinstall can face the same unknown architecture the first run installed for.
-    if (!(await confirmResumeTransformersUpgrade(runId, payload, attempt))) {
+    // The upgrade check already read this model's config: carry its custom-code verdict
+    // into the next gate rather than let that gate's fallback re-derive it from the
+    // stored flag.
+    const upgradeVerdict = { requiresTrustRemoteCode: false };
+    if (
+      !(await confirmResumeTransformersUpgrade(
+        runId,
+        payload,
+        attempt,
+        upgradeVerdict,
+      ))
+    ) {
       return false;
     }
-    if (!(await confirmResumeRemoteCode(payload, attempt))) {
+    if (
+      !(await confirmResumeRemoteCode(
+        payload,
+        attempt,
+        upgradeVerdict.requiresTrustRemoteCode,
+      ))
+    ) {
       return false;
     }
     return await submitResumeTrainingRun(payload, attempt);
@@ -246,6 +263,7 @@ async function confirmResumeTransformersUpgrade(
   runId: string,
   payload: TrainingStartRequest,
   attempt: ResumeTrainingStartAttempt,
+  verdict: { requiresTrustRemoteCode: boolean },
 ): Promise<boolean> {
   if (!payload.model_name) {
     return attempt.isPreflightActive();
@@ -259,6 +277,7 @@ async function confirmResumeTransformersUpgrade(
     // be attested against a 4-bit load the latest sidecar permanently refuses.
     resumeRunId: runId,
   });
+  verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode;
   if (!attempt.isPreflightActive()) {
     return false;
   }
@@ -281,6 +300,7 @@ function resumeModelCachePin(payload: TrainingStartRequest) {
 async function confirmResumeRemoteCode(
   payload: TrainingStartRequest,
   attempt: ResumeTrainingStartAttempt,
+  upgradeRequiresTrustRemoteCode = false,
 ): Promise<boolean> {
   if (!payload.model_name) {
     return attempt.isPreflightActive();
@@ -293,7 +313,7 @@ async function confirmResumeRemoteCode(
     modelName: payload.model_name,
     hfToken: payload.hf_token ?? null,
     ...resumeModelCachePin(payload),
-    requiresTrustRemoteCode: trustRemoteCode,
+    requiresTrustRemoteCode: trustRemoteCode || upgradeRequiresTrustRemoteCode,
     onApprove: (fingerprint) => {
       trustRemoteCode = true;
       approvedRemoteCodeFingerprint = fingerprint;

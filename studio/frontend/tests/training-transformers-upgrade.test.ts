@@ -48,7 +48,12 @@ test("a model no installed transformers ships pauses the start on the dialog", a
     hfToken: "hf_token",
   });
 
-  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
+  assert.deepEqual(outcome, {
+    proceed: true,
+    error: null,
+    forces16Bit: true,
+    requiresTrustRemoteCode: false,
+  });
   assert.equal(stub.calls[0]?.name, "checkTransformersUpgrade");
   assert.deepEqual(stub.calls[0]?.args.slice(0, 2), [MODEL, "hf_token"]);
   assert.equal(stub.calls[1]?.name, "confirmTransformersUpgradeIfNeeded");
@@ -115,7 +120,12 @@ test("a resolved custom-code fallback still loads 4-bit", async () => {
     modelName: MODEL,
   });
 
-  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
+  assert.deepEqual(outcome, {
+    proceed: true,
+    error: null,
+    forces16Bit: false,
+    requiresTrustRemoteCode: true,
+  });
 });
 
 test("an already-routed model reports 16-bit without a dialog", async () => {
@@ -131,7 +141,12 @@ test("an already-routed model reports 16-bit without a dialog", async () => {
     modelName: MODEL,
   });
 
-  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
+  assert.deepEqual(outcome, {
+    proceed: true,
+    error: null,
+    forces16Bit: true,
+    requiresTrustRemoteCode: false,
+  });
   assert.equal(
     stub.calls.length,
     1,
@@ -159,7 +174,12 @@ test("an exact 4-bit resume is never offered an install that strands it", async 
     resumeRunId: "run-42",
   });
 
-  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
+  assert.deepEqual(outcome, {
+    proceed: true,
+    error: null,
+    forces16Bit: false,
+    requiresTrustRemoteCode: true,
+  });
   assert.equal(
     stub.calls.length,
     1,
@@ -274,6 +294,51 @@ test("a backend without the check leaves the start exactly as it was", async () 
     modelName: MODEL,
   });
 
-  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
+  assert.deepEqual(outcome, {
+    proceed: true,
+    error: null,
+    forces16Bit: false,
+    requiresTrustRemoteCode: false,
+  });
   assert.equal(stub.calls.length, 1);
+});
+
+test("the custom-code verdict travels to the next gate", async () => {
+  // The gate has just read this model's config, so it knows the model ships its own
+  // modeling code. confirmRemoteCodeIfNeeded falls back to the caller's flag when the
+  // scan request itself fails, and the training callers' stored flag is false on a fresh
+  // run: without carrying this out, that fallback skips consent and starts a worker with
+  // trust_remote_code off, for a model that cannot load without it.
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: { ...UPGRADE, supported_in_pypi: false },
+    requiresTrustRemoteCode: true,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+  stub.state.consentResult = true;
+  stub.state.installRan = false;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
+
+  assert.equal(outcome.proceed, true);
+  assert.equal(outcome.requiresTrustRemoteCode, true);
+});
+
+test("a model without custom code reports no verdict to carry", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: null,
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
+
+  assert.equal(outcome.requiresTrustRemoteCode, false);
 });

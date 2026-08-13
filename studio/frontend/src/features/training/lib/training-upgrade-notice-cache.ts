@@ -24,12 +24,20 @@ let cachedGeneration = 0;
 export function upgradeNoticeCacheKey(
   sidecarGeneration: number,
   modelName: string,
+  preferLocalCache: boolean,
   localPath: string | null,
   hfToken: string,
 ): string {
-  return [sidecarGeneration, modelName, localPath ?? "", hfToken].join(
-    KEY_SEPARATOR,
-  );
+  // preferLocalCache is its own field: a known-cached row with a null path resolves to a
+  // pinned snapshot, and that is a different answer from the same model asked about
+  // without the cache preference.
+  return [
+    sidecarGeneration,
+    modelName,
+    preferLocalCache ? "1" : "0",
+    localPath ?? "",
+    hfToken,
+  ].join(KEY_SEPARATOR);
 }
 
 // Entries from a superseded generation can never be read again, so drop them rather

@@ -115,3 +115,22 @@ test("the Configure preview re-asks the check after an install", () => {
     "the preview cache key must carry the generation, or an install cannot retire it",
   );
 });
+
+test("both start paths carry the upgrade gate's custom-code verdict forward", () => {
+  // confirmRemoteCodeIfNeeded falls back to the caller's requiresTrustRemoteCode when the
+  // scan request fails, and the stored flag is false on a fresh run. The upgrade check
+  // has already answered the question, so it has to be the one that travels.
+  for (const file of START_PATHS) {
+    const source = read(file);
+    assert.ok(
+      source.includes(
+        "verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode",
+      ),
+      `${file} must record the upgrade gate's custom-code verdict`,
+    );
+    assert.ok(
+      source.includes("upgradeRequiresTrustRemoteCode"),
+      `${file} must pass that verdict into the custom-code gate`,
+    );
+  }
+});

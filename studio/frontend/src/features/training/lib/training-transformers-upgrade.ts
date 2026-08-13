@@ -17,6 +17,11 @@ export interface TrainingTransformersUpgradeOutcome {
   error: string | null;
   /** The run will load 16-bit, not bnb 4-bit, because it routes to the latest sidecar. */
   forces16Bit: boolean;
+  /** The model ships its own modeling code. Hand this to the custom-code gate that runs
+   *  next: its coarse fallback, taken when the scan request itself fails, otherwise reads
+   *  the stored config flag, which is false for a fresh run, and skips consent for a model
+   *  that cannot load without it. Chat passes its own /validate verdict the same way. */
+  requiresTrustRemoteCode: boolean;
 }
 
 /** Names the worker's own failure ("... is not supported yet in transformers==x.y.z")
@@ -76,10 +81,21 @@ export async function confirmTrainingTransformersUpgrade({
       resumeRunId,
     });
   } catch {
-    return { proceed: true, error: null, forces16Bit: false };
+    return {
+      proceed: true,
+      error: null,
+      forces16Bit: false,
+      requiresTrustRemoteCode: false,
+    };
   }
+  const requiresTrustRemoteCode = Boolean(check.requiresTrustRemoteCode);
   if (!check.upgrade) {
-    return { proceed: true, error: null, forces16Bit: check.forces16Bit };
+    return {
+      proceed: true,
+      error: null,
+      forces16Bit: check.forces16Bit,
+      requiresTrustRemoteCode,
+    };
   }
   if (check.installBreaksExactResume) {
     // This resume is attested against a 4-bit model load the latest sidecar refuses,
@@ -89,7 +105,12 @@ export async function confirmTrainingTransformersUpgrade({
       // The model ships its own modeling code, so the custom-code gate that runs next
       // loads it on the CURRENT transformers, in the 4-bit mode the checkpoint needs.
       // Nothing to offer, so offer nothing.
-      return { proceed: true, error: null, forces16Bit: false };
+      return {
+        proceed: true,
+        error: null,
+        forces16Bit: false,
+        requiresTrustRemoteCode,
+      };
     }
     // No fallback either, and the install is not the way out it looks like: it activates
     // the latest tier, after which effective_training_load_in_4bit RAISES for exactly
@@ -101,6 +122,7 @@ export async function confirmTrainingTransformersUpgrade({
       proceed: false,
       error: getTrainingResumeUpgradeWouldStrandMessage(modelName),
       forces16Bit: false,
+      requiresTrustRemoteCode,
     };
   }
 
@@ -109,7 +131,7 @@ export async function confirmTrainingTransformersUpgrade({
     upgrade: check.upgrade,
     // No installable release: a model shipping its own modeling code can still go
     // through the trust_remote_code gate the caller runs next, exactly as chat does.
-    trustRemoteCodeFallback: check.requiresTrustRemoteCode,
+    trustRemoteCodeFallback: requiresTrustRemoteCode,
     // No forceCancelActive: training raises no "stop N chats" prompt of its own, so it
     // has no such answer to carry. A chat mid-generation makes the install refuse and
     // the dialog says so, rather than this tab killing someone else's stream unasked.
@@ -138,9 +160,15 @@ export async function confirmTrainingTransformersUpgrade({
         ? getTrainingTransformersUpgradeRequiredMessage(modelName)
         : getTrainingTransformersUpgradeUnavailableMessage(modelName),
       forces16Bit: false,
+      requiresTrustRemoteCode,
     };
   }
   // Installed: the model now routes to the latest sidecar, which trains 16-bit. The
   // custom-code fallback resolves true WITHOUT installing and still loads 4-bit.
-  return { proceed: true, error: null, forces16Bit: installRan };
+  return {
+    proceed: true,
+    error: null,
+    forces16Bit: installRan,
+    requiresTrustRemoteCode,
+  };
 }
