@@ -133,6 +133,36 @@ test("a result without a session id is skipped rather than read as one", () => {
   assert.equal(recordedSandboxSessionId(messages), undefined);
 });
 
+test("a run that created no files still names the sandbox it ran in", () => {
+  // The backend emits no __FILES__ envelope when the call changed nothing AND
+  // when a concurrent call shared the directory (_created_file_sentinels'
+  // `shared` guard), so a run that DID write files can arrive bare. The
+  // adapter wraps python and terminal results either way, and this is the
+  // shape it writes: no images, no files, but the session it ran in.
+  const messages = [
+    {
+      id: "m2",
+      threadId: "t",
+      role: "assistant",
+      createdAt: 2,
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "c",
+          toolName: "python",
+          result: {
+            text: "42\n",
+            images: [],
+            sessionId: "project-p1",
+            files: [],
+          },
+        },
+      ],
+    } as unknown as Message,
+  ];
+  assert.equal(recordedSandboxSessionId(messages), "project-p1");
+});
+
 test("content that is not an array is skipped rather than thrown on", () => {
   // Legacy rows and imported chats carry a plain string here, and this runs
   // from a menu handler: throwing would take the click, not just the answer.

@@ -122,6 +122,33 @@ test("a failed history read is reported, not mistaken for a chat that ran no too
   );
 });
 
+test("a sandbox tool result is wrapped even when it carries no envelope", () => {
+  // chat-adapter.ts cannot be imported here (it reaches JSX barrels), so this
+  // asserts on source. The branch matters because the session id is the only
+  // record of WHERE a call ran: the backend suppresses __FILES__ when a
+  // concurrent call shared the directory, so a run that did write files can
+  // still arrive bare, and a chat moved afterwards would then fall back to its
+  // current scope and name a folder it never wrote to.
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf-8",
+  );
+  const branch = adapter.slice(
+    adapter.indexOf(
+      "} else if (\n                      createdFiles.length > 0 ||",
+    ),
+    adapter.indexOf("// Merge tool_end args first"),
+  );
+  assert.ok(branch.length > 0, "the sandbox result branch moved");
+  assert.ok(
+    branch.includes("SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName"),
+    "python and terminal results must be wrapped without an envelope too",
+  );
+  assert.ok(branch.includes("sessionId: sandboxSessionId"));
+});
+
 test("the sandbox reads stay off Promise.all, as the export contract requires", () => {
   // tests/studio/test_desktop_reliability_frontend_contract.py forbids
   // `await Promise.all(` anywhere in this file: every batch here ends in a

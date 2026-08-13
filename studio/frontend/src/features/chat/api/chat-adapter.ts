@@ -5645,9 +5645,21 @@ export function createOpenAIStreamAdapter(
                       } catch {
                         parsedResult = rawResult;
                       }
-                    } else if (createdFiles.length > 0) {
+                    } else if (
+                      createdFiles.length > 0 ||
+                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                    ) {
                       // Files but no images: still structured, so the card can
-                      // offer downloads.
+                      // offer downloads. And with neither, still structured,
+                      // because the session is the only record of WHERE this
+                      // call ran: _created_file_sentinels emits nothing when a
+                      // concurrent call shared the directory, so a run that
+                      // did write files can still arrive bare, and a chat
+                      // moved afterwards would fall back to its current scope
+                      // and name a folder it never wrote to.
+                      // Transparent to everything downstream: both
+                      // toolResultModelText and the outbound translator unwrap
+                      // a sandbox wrapper to .text, which is this same string.
                       parsedResult = {
                         text: rawResult,
                         images: [],
