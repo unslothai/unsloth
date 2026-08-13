@@ -2086,6 +2086,128 @@ def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
         assert marker["gfx_target"] is None, kind
 
 
+def _rocm_choice(**overrides):
+    """A published ROCm bundle choice, the shape published_rocm_choice_for_host
+    returns."""
+    fields = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b10360",
+        name = "app-b10360-linux-x64-rocm-gfx110X.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "app",
+        bundle_profile = "rocm",
+        runtime_line = "rocm",
+        coverage_class = "gfx110X",
+        gfx_target = "gfx110X",
+        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+    )
+    fields.update(overrides)
+    return AssetChoice(**fields)
+
+
+def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
+    """An install made before mapped_targets existed must gain it on reuse.
+
+    write_prebuilt_metadata only runs on a real install and the field is
+    deliberately outside the install fingerprint, so without this backfill the
+    #7624 arch gate keeps failing open on an up-to-date install: the marker
+    only gains coverage when an unrelated llama.cpp release forces a real
+    reinstall.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
+        encoding = "utf-8",
+    )
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["release_tag"] == "b10360"  # nothing else lost
+    assert marker["llama_backend"] == "auto"
+
+
+def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
+    """A manifest that corrects mapped_targets for an unchanged asset must
+    reach the marker. Stale coverage is worse than none: too narrow forces a
+    supported GPU to CPU, too wide leaves an unsupported one visible to crash.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "release_tag": "b10360",
+                "gfx_target": "gfx110X",
+                "mapped_targets": ["gfx1100"],
+            }
+        )
+        + "\n",
+        encoding = "utf-8",
+    )
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+
+
+@pytest.mark.parametrize("targets", [None, [], ["", "   "]])
+def test_a_bundle_that_declares_no_arch_leaves_the_marker_alone(tmp_path: Path, targets):
+    """CUDA, Vulkan, CPU and source builds declare no targets. Absent means
+    "this bundle has none", not "clear what is there": reuse requires the
+    fingerprint to match, so the asset is the one the marker already describes.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = {
+        "release_tag": "b10360",
+        "gfx_target": "gfx110X",
+        "mapped_targets": ["gfx1100", "gfx1101"],
+    }
+    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(
+        install_dir, _rocm_choice(gfx_target = None, mapped_targets = targets)
+    )
+
+    assert json.loads(marker_path.read_text(encoding = "utf-8")) == original
+
+
+def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
+    """It runs after the install is already valid, so it must never raise:
+    an unexpected exit here no longer falls back to a source build."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    # No marker at all.
+    INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    assert not marker_path.exists()
+    # A marker that is not JSON, and one that is JSON but not an object.
+    for payload in ("{not json", "[1, 2]"):
+        marker_path.write_text(payload, encoding = "utf-8")
+        INSTALL_LLAMA_PREBUILT.sync_marker_arch_coverage(install_dir, _rocm_choice())
+        assert marker_path.read_text(encoding = "utf-8") == payload
+
+
+def test_every_reuse_path_syncs_the_arch_coverage():
+    """The three reuse paths each skip write_prebuilt_metadata, so each has to
+    call the backfill. Source-level, because reaching them needs a full install
+    run: pinned beside sync_marker_rocm_gfx, which has exactly the same reach.
+    """
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("sync_marker_arch_coverage(install_dir,") == source.count(
+        "sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)"
+    ) == 3
+
+
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
     """The reuse-path syncs must not drop the arch fields (#7624).
 

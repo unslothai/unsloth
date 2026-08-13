@@ -6123,6 +6123,45 @@ def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
         )
 
 
+def sync_marker_arch_coverage(install_dir: Path, choice: AssetChoice) -> None:
+    """Backfill the ROCm bundle's built-arch list when the bundle is reused.
+
+    Same shape as the ggml_tree backfill, and needed for the same reason:
+    write_prebuilt_metadata only runs on a real install, and mapped_targets is
+    deliberately outside the install fingerprint (so recording it never forces
+    an existing install to reinstall). Without this the runtime arch gate
+    (#7624) reads whatever the marker happened to hold forever -- an install
+    made before the field existed never gains it, so the gate keeps failing
+    open on exactly the mixed iGPU + dGPU hosts it was written for until an
+    unrelated llama.cpp release happens to trigger a real reinstall.
+
+    Absent targets mean "this bundle declares none" (CUDA, Vulkan, CPU, a
+    source build), not "clear it": reuse requires the fingerprint to match, so
+    the asset is the same one the marker already describes.
+    """
+    targets = [str(t).strip() for t in (choice.mapped_targets or []) if str(t).strip()]
+    if not targets:
+        return
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict):
+        return
+    if marker.get("mapped_targets") == targets and marker.get("gfx_target") == choice.gfx_target:
+        return
+    marker["gfx_target"] = choice.gfx_target
+    marker["mapped_targets"] = targets
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record mapped_targets={targets!r} in {marker_path}; "
+            "GPU selection will keep every device visible to llama-server"
+        )
+        return
+    log(f"existing install reused; recorded mapped_targets={targets!r} from this run")
+
+
 def recorded_ggml_tree(
     approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice
 ) -> str | None:
@@ -7284,6 +7323,7 @@ def install_prebuilt(
                         recorded_ggml_tree(current.approved_checksums, current.attempts[0]),
                     )
                     sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
+                    sync_marker_arch_coverage(install_dir, current.attempts[0])
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe = lazy_validation_model(
@@ -7327,6 +7367,7 @@ def install_prebuilt(
                                 recorded_ggml_tree(plan.approved_checksums, choice),
                             )
                             sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
+                            sync_marker_arch_coverage(install_dir, choice)
                             return
                     log(
                         "selected "
@@ -7360,6 +7401,7 @@ def install_prebuilt(
                             recorded_ggml_tree(plan.approved_checksums, satisfied.choice),
                         )
                         sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
+                        sync_marker_arch_coverage(install_dir, satisfied.choice)
                         return
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):
