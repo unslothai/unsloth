@@ -753,6 +753,35 @@ def test_tool_call_turn_without_reasoning_adds_no_reasoning_content(monkeypatch)
     assert "reasoning_content" not in first_assistant
 
 
+def test_tool_call_turn_with_blank_reasoning_adds_no_reasoning_content(monkeypatch):
+    """Whitespace split from a closed thinking prefill is not a trace."""
+    tool_stream = [_sse({"reasoning_content": "\n\n"})] + _structured_tool_call(
+        "web_search", {"query": "weather"}, "call_blank"
+    )
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    first_assistant = next(
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert "reasoning_content" not in first_assistant
+
+
 def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     tool_stream = [
         _sse({"reasoning_content": "Need a render."}),

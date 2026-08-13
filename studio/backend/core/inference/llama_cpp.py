@@ -17619,7 +17619,7 @@ class LlamaCppBackend:
                     tool_calls = tool_calls[:1]
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
-                if reasoning_accum:
+                if reasoning_accum.strip():
                     assistant_msg["reasoning_content"] = reasoning_accum
                 assistant_appended = False
                 # Collect no-op feedback and flush it after the batch, so a
