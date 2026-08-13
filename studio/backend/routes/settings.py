@@ -970,6 +970,7 @@ def update_model_memory(
 
 
 LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
+_LAST_LOCAL_MODEL_LOCK = threading.Lock()
 
 
 class LastLocalModelPayload(BaseModel):
@@ -1009,8 +1010,26 @@ def get_last_local_model(
 def update_last_local_model(
     payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
 ) -> LastLocalModelResponse:
-    from storage.studio_db import upsert_app_settings
-    upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump()})
+    from storage.studio_db import get_app_setting, upsert_app_settings
+    # A delayed older PUT (token refresh, network retry) must not overwrite a newer
+    # load from another surface: loaded_at orders stamped writes, and the stored
+    # record is returned so the caller sees the authoritative state. Unstamped
+    # writes come from pre-loaded_at clients and keep last-write-wins.
+    with _LAST_LOCAL_MODEL_LOCK:
+        if payload.loaded_at is not None:
+            stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+            if isinstance(stored, dict):
+                try:
+                    current = LastLocalModelPayload(**stored)
+                except Exception:
+                    current = None
+                if (
+                    current is not None
+                    and current.loaded_at is not None
+                    and payload.loaded_at < current.loaded_at
+                ):
+                    return LastLocalModelResponse(**current.model_dump())
+        upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump()})
     return LastLocalModelResponse(**payload.model_dump())
 
 

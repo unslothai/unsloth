@@ -91,6 +91,30 @@ def test_put_without_variant(client):
     }
 
 
+def test_put_ignores_stale_timestamped_write(client):
+    c, _ = client
+    newer = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": 2000}
+    stale = {
+        "id": "unsloth/gemma-4-E2B-it-GGUF",
+        "kind": "gguf",
+        "gguf_variant": "UD-Q4_K_XL",
+        "loaded_at": 1000,
+    }
+    assert c.put("/last-local-model", json = newer).status_code == 200
+    r = c.put("/last-local-model", json = stale)
+    assert r.status_code == 200
+    assert r.json()["id"] == "unsloth/Qwen3-4B"
+    assert c.get("/last-local-model").json()["loaded_at"] == 2000
+
+
+def test_put_unstamped_write_keeps_last_write_wins(client):
+    c, _ = client
+    stamped = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": 2000}
+    assert c.put("/last-local-model", json = stamped).status_code == 200
+    assert c.put("/last-local-model", json = {"id": "unsloth/OLMo-4-13B", "kind": "model"}).status_code == 200
+    assert c.get("/last-local-model").json()["id"] == "unsloth/OLMo-4-13B"
+
+
 def test_put_rejects_bad_payloads(client):
     c, _ = client
     assert c.put("/last-local-model", json = {"id": "x", "kind": "lora"}).status_code == 422
