@@ -10307,7 +10307,10 @@ class LlamaCppBackend:
         """Return cmd with every ``names`` flag (and its value) dropped, or None
         when it carries none. ``_flag_name`` peels ``--key=value`` and llama.cpp's
         underscore spellings, and an ``=`` form carries its own value, so only the
-        two-token form may swallow the next argv entry."""
+        two-token form may swallow the next argv entry. Callers must pass only
+        VALUE-TAKING flags: llama.cpp's valueless ones (``--mlock``, ``--no-mmap``,
+        ``-fa`` bare) stand alone, so scanning for them here would drop whatever
+        argv entry happened to follow."""
         out: list[str] = []
         found = False
         skip = False
@@ -14679,21 +14682,31 @@ class LlamaCppBackend:
                             probe_vulkan = should_mlock(),
                             fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
-                        if _retry_host_resident != _mem_host_resident:
+                        # Only the lock-ADDING direction. `cmd` carries a
+                        # policy-emitted lock only when the first launch found the
+                        # weights host-resident, so going host-resident is the one
+                        # direction that adds without having to take anything back
+                        # off argv -- and taking flags back off would mean scanning
+                        # for --mlock/--no-mmap, which are VALUELESS in llama.cpp's
+                        # parser, so a value-consuming scan would eat the user
+                        # extra that follows them. The reverse direction leaves the
+                        # crashed launch's lock in place on both argv and the
+                        # record, which stays truthful: the child really does hold
+                        # it.
+                        if _retry_host_resident and not _mem_host_resident:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
                                 supports_load_mode = bool(server_caps.get("supports_load_mode")),
                                 weights_in_host_memory = _retry_host_resident,
                             )
-                            # Drop whatever the crashed launch's policy put on
-                            # argv before appending this one, so a respawn cannot
-                            # carry both spellings of the same decision.
-                            _stripped = self._without_flags(
-                                cmd, ("--mlock", "--no-mmap", "--load-mode")
-                            )
-                            if _stripped is not None:
-                                cmd = _stripped
                             if _retry_managed:
+                                # Appended after the user extras, so llama.cpp's
+                                # last-wins parse gives it the final say over any
+                                # hand-written memory flag -- the same end state
+                                # the first launch reaches by emitting the lock and
+                                # letting apply_model_memory_policy filter the
+                                # extras. Nothing is stripped, so extras the policy
+                                # deliberately kept survive the respawn.
                                 cmd.extend(_retry_managed)
                             _mem_host_resident = _retry_host_resident
                             self._memory_mlock_applicable = _retry_host_resident
@@ -14703,8 +14716,10 @@ class LlamaCppBackend:
                             self._memory_policy_active = (
                                 bool(_retry_managed) or self._memory_policy_active
                             )
+                            # In argv order -- extras first, then the appended
+                            # lock -- because the resolver is last-wins too.
                             self._memory_state = resolve_effective_memory_state(
-                                list(_retry_managed) + list(_mem_extras), env
+                                list(_mem_extras) + list(_retry_managed), env
                             )
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "

@@ -2295,3 +2295,42 @@ class TestTheApuRetryRecomputesThePageLock:
         assert launches
         for cmd, _env in launches:
             assert "--mlock" not in cmd
+
+    def test_the_users_own_extra_args_survive_the_recompute(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The recompute may only ADD the lock. Rewriting argv to take the
+        crashed launch's memory flags back off would have to scan for --mlock /
+        --no-mmap, which are valueless in llama.cpp's parser, so the scan drops
+        the argv entry that follows them -- here the user's own -c 8192."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
+        )
+        import utils.model_memory_settings as _mem_settings
+
+        monkeypatch.setattr(_mem_settings, "get_model_memory_settings", lambda: (True, False))
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._dgpu_then_apu(monkeypatch),
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            capture = capture,
+            # --no-mmap is a memory flag apply_model_memory_policy keeps when it
+            # emits the legacy --mlock (this build reports no --load-mode), and
+            # -c 8192 is the entry a valueless-flag scan would eat with it.
+            intent_kwargs = {"extra_args": ["--no-mmap", "-c", "8192"]},
+        )
+        retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert retry, [_visibility(e) for _c, e in launches]
+        cmd, _env = retry[0]
+        assert "--no-mmap" in cmd, f"a user memory flag was stripped by the recompute: {cmd}"
+        assert cmd[cmd.index("-c") + 1] == "8192", f"the extra after --no-mmap was eaten: {cmd}"
+        assert "--mlock" in cmd, cmd
+        # The record has to describe the argv actually launched, or the reload
+        # comparator fights a child it already agrees with.
+        assert capture["backend"]._memory_mlock_applicable is True
+        assert capture["backend"]._memory_state[0] is True  # (mlock, reserves_ram)
