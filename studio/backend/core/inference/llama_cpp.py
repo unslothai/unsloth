@@ -6059,7 +6059,6 @@ class LlamaCppBackend:
         """
         try:
             import torch
-
             if not LlamaCppBackend._torch_is_rocm(torch):
                 return []
         except Exception:

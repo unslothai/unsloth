@@ -67,9 +67,7 @@ def test_amd_smi_supplies_free_and_total_without_torch(rocm, monkeypatch):
 
 def test_the_visibility_mask_is_honoured(rocm, monkeypatch):
     """amd-smi enumerates every card; a masked-out GPU must not be offered."""
-    monkeypatch.setattr(
-        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [1])
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [1]))
     monkeypatch.setattr(
         amd, "_run_amd_smi", lambda *a, **k: _payload((0, 0, 24576), (1, 8192, 16384))
     )
@@ -78,14 +76,10 @@ def test_the_visibility_mask_is_honoured(rocm, monkeypatch):
 
 def test_a_unified_memory_apu_keeps_its_host_reserve(rocm, monkeypatch):
     """Same shared-pool treatment as the torch branch: total 0, reserve taken."""
-    monkeypatch.setattr(
-        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
-    )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8192)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
+    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8192))
     monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: _payload((0, 0, 65536)))
-    (idx, free_mib, total_mib), = LlamaCppBackend._get_gpu_memory_amd_smi()
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._get_gpu_memory_amd_smi()
     assert (idx, total_mib) == (0, 0)  # shared pool reports no VRAM total
     assert 0 < free_mib < 8192  # capped at system RAM, then reserved against
 
@@ -149,9 +143,9 @@ class TestTheArchGateAppliesToThisBranchToo:
         return str(tmp_path / "build" / "bin" / "llama-server")
 
     def test_an_uncovered_device_is_dropped(self, mixed_host):
-        assert LlamaCppBackend._get_gpu_memory_amd_smi(
-            mixed_host, for_llama_server = True
-        ) == [(0, 20480, 24576)]
+        assert LlamaCppBackend._get_gpu_memory_amd_smi(mixed_host, for_llama_server = True) == [
+            (0, 20480, 24576)
+        ]
 
     def test_and_kept_for_every_other_caller(self, mixed_host):
         # _resolve_auto's winner runs under PyTorch, which covers the card fine.
@@ -194,6 +188,4 @@ class TestTheArchGateAppliesToThisBranchToo:
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_arch_by_physical_id", staticmethod(lambda: {0: "gfx1101"})
         )
-        assert len(
-            LlamaCppBackend._get_gpu_memory_amd_smi(mixed_host, for_llama_server = True)
-        ) == 2
+        assert len(LlamaCppBackend._get_gpu_memory_amd_smi(mixed_host, for_llama_server = True)) == 2
