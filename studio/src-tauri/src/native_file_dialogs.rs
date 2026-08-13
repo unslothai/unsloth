@@ -461,12 +461,16 @@ fn read_range(
     offset: u64,
     length: usize,
 ) -> Result<Vec<u8>, String> {
+    // Clamped here rather than only at the call site, so the bound holds for
+    // every caller: `take` was reading past it while only the allocation was
+    // capped, which left the read itself unbounded.
+    let length = length.min(MAX_CHAT_IMPORT_CHUNK_BYTES);
     let mut file = handle
         .lock()
         .map_err(|_| format!("Failed to read {}: handle poisoned", path.display()))?;
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let mut bytes = Vec::with_capacity(length.min(MAX_CHAT_IMPORT_CHUNK_BYTES));
+    let mut bytes = Vec::with_capacity(length);
     Read::by_ref(&mut *file)
         .take(length as u64)
         .read_to_end(&mut bytes)
@@ -948,6 +952,19 @@ mod tests {
         assert_eq!(registry.resolve(&token).unwrap().0, path);
         assert_eq!(registry.resolve(&newer).unwrap().0, second);
         assert_ne!(token, newer);
+
+        // A hostile length cannot read past one chunk, whatever the caller passes.
+        let big = temp_path("ranges-clamp").with_extension("jsonl");
+        fs::write(&big, vec![b'x'; MAX_CHAT_IMPORT_CHUNK_BYTES + 4096]).unwrap();
+        let big_token = register_for_test(&registry, &big);
+        let (big_path, big_handle) = registry.resolve(&big_token).unwrap();
+        assert_eq!(
+            read_range(&big_handle, &big_path, 0, usize::MAX)
+                .unwrap()
+                .len(),
+            MAX_CHAT_IMPORT_CHUNK_BYTES
+        );
+        let _ = fs::remove_file(big);
 
         // The map is bounded, so a long session cannot accumulate handles.
         for index in 0..CHAT_IMPORT_HANDLE_LIMIT {
