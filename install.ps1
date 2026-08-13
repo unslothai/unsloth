@@ -4277,6 +4277,12 @@ exit 0
     function Get-ArmFilteredRequirements {
         param([string]$Path)
         if (-not $script:ArmInferenceOnly -or -not $Path -or -not (Test-Path -LiteralPath $Path)) { return $Path }
+        # The lifts are a wheel-availability workaround, so they apply on ARM64 only.
+        # UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install too, and there the
+        # pinned versions are the tested ones -- install_python_stack.py gates its own
+        # lift on IS_WINDOWS_ARM64_PYTHON for the same reason. The skips still apply:
+        # asking for no datasets means no datasets, whatever the architecture.
+        $applyLifts = ((Get-HostMachineArch) -eq "arm64")
         $kept = foreach ($line in Get-Content -LiteralPath $Path) {
             $bare = ($line -split "#")[0].Trim()
             if (-not $bare) { $line; continue }
@@ -4284,7 +4290,7 @@ exit 0
             # Normalised PEP 503 style so hf_transfer and hf-transfer are one package.
             $name = (($bare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
             if ($script:ArmInferenceSkipPackages -contains $name) { continue }
-            if ($script:ArmInferenceLiftPackages.ContainsKey($name)) {
+            if ($applyLifts -and $script:ArmInferenceLiftPackages.ContainsKey($name)) {
                 $script:ArmInferenceLiftPackages[$name]
                 continue
             }

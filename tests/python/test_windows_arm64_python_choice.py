@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -261,3 +262,66 @@ def test_setup_reads_the_tier_marker_not_just_the_env_var():
     # And it has to come after the venv interpreter is resolved, or there is no
     # venv path to look in.
     assert source.index("$ReusedSetupPython = Resolve-ReusedSetupPython") < index
+
+
+# ── Get-ArmFilteredRequirements: what the tier hands uv ──
+
+
+def _filter_script(requirements: str, host_arch: str, tier: bool) -> str:
+    """The real function and its two tables, over one requirements file."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    skip = _extract(r"\$script:ArmInferenceSkipPackages = .*?\)", source)
+    lift = _extract(r"\$script:ArmInferenceLiftPackages = @\{.*?\n    \}", source)
+    body = _extract(r"    function Get-ArmFilteredRequirements \{.*?\n    \}", source)
+    body = "\n".join(line[4:] if line.startswith("    ") else line for line in body.splitlines())
+    path = Path(tempfile.mkdtemp()) / "reqs.txt"
+    path.write_text(requirements, encoding = "utf-8")
+    return f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param($m, $c) }}
+function Get-HostMachineArch {{ return "{host_arch}" }}
+{skip}
+{lift}
+{body}
+$script:ArmInferenceOnly = ${str(tier).lower()}
+$out = Get-ArmFilteredRequirements -Path "{path}"
+if ($out -eq "{path}") {{ Write-Output "UNCHANGED" }} else {{ Get-Content -LiteralPath $out -Raw }}
+"""
+
+
+_TIER_SAMPLE = """\
+# keep me
+datasets==4.3.0
+hf_transfer==0.1.9
+pymupdf==1.27.2.3
+transformers>=4.57.6
+"""
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_filter_is_a_no_op_outside_the_tier():
+    """Every non-ARM install goes through this function too, and must get its own
+    file back untouched."""
+    assert _pwsh(_filter_script(_TIER_SAMPLE, "arm64", tier = False)) == "UNCHANGED"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_filter_drops_and_lifts_on_an_arm64_host():
+    out = _pwsh(_filter_script(_TIER_SAMPLE, "arm64", tier = True))
+    assert "datasets==" not in out
+    assert "hf_transfer" not in out  # spelled with an underscore here, hyphen in the list
+    assert "pymupdf>=1.28.2" in out
+    assert "transformers>=4.57.6" in out
+    assert "# keep me" in out
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_lifts_do_not_apply_on_an_x64_host():
+    """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install as well. There the
+    pinned versions are the tested ones and every one of them has a win_amd64 wheel,
+    so only the skips apply -- install_python_stack.py gates its own lift on
+    IS_WINDOWS_ARM64_PYTHON for the same reason."""
+    out = _pwsh(_filter_script(_TIER_SAMPLE, "x64", tier = True))
+    assert "datasets==" not in out
+    assert "pymupdf==1.27.2.3" in out
+    assert "pymupdf>=1.28.2" not in out
