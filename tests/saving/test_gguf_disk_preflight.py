@@ -535,6 +535,82 @@ class TestMergeSizing:
         assert 'out_dir = base + "-" + suffix' in source
 
 
+class TestTorchaoStagingSharesTheRedirectDestination:
+    """The torchao staging merge is on /tmp, and so is the redirect target.
+
+    `_unsloth_save_torchao` merges into `tempfile.mkdtemp()` and deletes it
+    only after quantization, so on a Kaggle kernel both artefacts are on /tmp
+    at once. Sending the sibling to a /tmp that cannot hold the staging merge
+    as well turns an export that fit in /kaggle/working into a disk-full
+    failure, so a destination that is too small for both is not used.
+
+    The staging bytes are deliberately NOT added to `need_bytes`: nothing
+    stages in the working directory, and charging it there would relocate
+    exports that fit into /tmp, which is not kept as notebook output.
+    """
+
+    @pytest.fixture
+    def redirected(self, monkeypatch, tmp_path):
+        """A redirect that always fires, onto a real directory the test owns."""
+        target = str(tmp_path)
+        free = {"bytes": 0}
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (target, "moved"),
+        )
+        monkeypatch.setattr(S, "free_bytes", lambda path: free["bytes"])
+        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: True)
+        return target, free
+
+    # 10GB merge -> a 5GB sibling, asked for with the 5% merge headroom.
+    _SIBLING = _with_merge_headroom(5 * GB)
+
+    def test_room_for_the_sibling_alone_is_not_enough(self, redirected):
+        target, free = redirected
+        free["bytes"] = self._SIBLING + 10 * GB - 1
+        assert S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8") == "model"
+
+    def test_room_for_both_takes_the_redirect(self, redirected):
+        target, free = redirected
+        free["bytes"] = self._SIBLING + 10 * GB
+        assert S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8") == target
+
+    def test_a_separate_staging_filesystem_is_not_charged(self, redirected, monkeypatch):
+        """Off Kaggle `tempfile` can be its own mount; then only the sibling lands here."""
+        target, free = redirected
+        free["bytes"] = self._SIBLING
+        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: False)
+        assert S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8") == target
+
+    @pytest.mark.parametrize("save_method", ["merged_16bit", "fp8", "mxfp4"])
+    def test_an_export_that_stages_nothing_is_never_cancelled(self, redirected, save_method):
+        """Only torchao stages a second copy; the rest write into `save_directory`."""
+        target, free = redirected
+        free["bytes"] = 0
+        assert S._preflight_merge_disk(_FakeModel(), "model", save_method) == target
+
+    def test_an_unmeasurable_destination_takes_the_redirect(self, redirected):
+        target, free = redirected
+        free["bytes"] = None
+        assert S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8") == target
+
+    def test_the_staging_is_not_charged_to_the_working_directory(self, monkeypatch):
+        """What `kaggle_tmp_redirect` is asked for stays the sibling alone."""
+        asked = []
+        monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
+        monkeypatch.setattr(
+            S,
+            "kaggle_tmp_redirect",
+            lambda save_directory, need_bytes = 0, what = "export": (
+                asked.append(need_bytes) or (save_directory, None)
+            ),
+        )
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+        assert asked == [self._SIBLING]
+
+
 class TestMergeHeadroomMatchesTheZooGuard:
     """A working directory that is "just big enough" is not big enough.
 

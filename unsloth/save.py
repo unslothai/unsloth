@@ -2983,6 +2983,43 @@ def _quantized_sibling_bytes(model, merge_bytes, weight_bits):
     return int((merge_bytes - unquantized) * weight_bits / 16) + unquantized
 
 
+def _same_filesystem(left, right):
+    """True when two existing paths sit on the same mount."""
+    return os.stat(left).st_dev == os.stat(right).st_dev
+
+
+def _destination_holds_torchao_staging(destination, need_bytes, staging_bytes):
+    """Can the redirect target hold the torchao staging merge as well?
+
+    `_unsloth_save_torchao` merges into `tempfile.mkdtemp()` and removes it
+    only once quantization has finished, so where the tempfile default and the
+    redirect target are the same filesystem - which is exactly a Kaggle kernel,
+    where both are /tmp - the staging checkpoint and the quantized sibling sit
+    on the destination at the same time.
+
+    Checked here rather than added to `need_bytes`, because the staging
+    directory never lands in /kaggle/working: charging it there would relocate
+    exports that fit into /tmp, which is not kept as notebook output. So this
+    can only ever cancel a redirect, never cause one, and it cancels one only
+    when the destination could not have held the export anyway - in which case
+    staying put leaves the working directory's own guard to raise the real
+    error.
+    """
+    import tempfile
+
+    try:
+        if staging_bytes <= 0:
+            return True
+        if not _same_filesystem(tempfile.gettempdir(), destination):
+            return True
+        free = free_bytes(destination)
+        if free is None:
+            return True
+        return free >= need_bytes + staging_bytes
+    except Exception:
+        return True
+
+
 def _preflight_merge_disk(
     model,
     save_directory,
@@ -3027,10 +3064,15 @@ def _preflight_merge_disk(
         need = model_16bit_bytes(model)
         if need <= 0:
             return save_directory
+        # What the torchao staging directory costs on whatever filesystem
+        # `tempfile` resolves to. Zero for every other export, which stages
+        # nothing.
+        staging = 0
         if torchao is not None:
             # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
             # directory rather than `save_directory`, so the only thing landing
             # here is the 8-bit sibling.
+            staging = need
             need = _quantized_sibling_bytes(model, need, _TORCHAO_SIBLING_WEIGHT_BITS)
         elif compressed is not None:
             need += _quantized_sibling_bytes(
@@ -3045,6 +3087,8 @@ def _preflight_merge_disk(
     except Exception:
         return save_directory
     if message is not None:
+        if not _destination_holds_torchao_staging(new_directory, need, staging):
+            return save_directory
         print(message)
         return new_directory
     return save_directory
