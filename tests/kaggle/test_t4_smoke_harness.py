@@ -450,9 +450,7 @@ def test_a_survey_that_ran_out_of_time_is_not_read_as_an_idle_account():
             return super().kernels_status(ref)
 
     api = _SlowApi([_FakeKernel(f"u/k{i}", _ago(1)) for i in range(5)])
-    survey = survey_kernels(
-        api, now = _now(), budget_sec = 180, clock = lambda: ticks["t"]
-    )
+    survey = survey_kernels(api, now = _now(), budget_sec = 180, clock = lambda: ticks["t"])
     assert survey["out_of_budget"] is True
     assert survey["complete"] is False
     # Two calls fit in the budget and the other three kernels were never

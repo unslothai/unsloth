@@ -390,7 +390,9 @@ def concurrency_verdict(
             f"as a pair."
         )
     if not survey["complete"]:
-        ran_out = "its wall-clock budget" if survey.get("out_of_budget") else f"{MAX_KERNEL_PAGES} pages"
+        ran_out = (
+            "its wall-clock budget" if survey.get("out_of_budget") else f"{MAX_KERNEL_PAGES} pages"
+        )
         return False, (
             "the in-flight survey did not reach the end of its "
             f"{survey['window_hours']}h window within {ran_out}, so an older "
