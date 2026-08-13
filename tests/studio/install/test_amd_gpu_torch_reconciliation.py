@@ -822,8 +822,17 @@ def test_the_attempt_is_recorded_before_the_install_runs():
     )
 
 
-def _run_ensure_rocm_torch(monkeypatch, plan, torch_ready):
+def _run_ensure_rocm_torch(
+    monkeypatch,
+    plan,
+    torch_ready,
+    *,
+    repaired_torch = (False, "2.11.0+cu128", True, "12.8"),
+):
     cleared = []
+    # What the re-probe after the install reads back. Defaulted to a non-ROCm wheel so a
+    # test that does not install cannot pass by accidentally looking converged.
+    monkeypatch.setattr(stack, "_probe_rocm_torch", lambda: repaired_torch)
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
@@ -864,6 +873,52 @@ def test_a_blocked_repair_keeps_the_ledger(monkeypatch, torch_ready):
         blocked = True,
     )
     assert _run_ensure_rocm_torch(monkeypatch, blocked, torch_ready) == []
+
+
+def _repair_plan(**overrides):
+    fields = {
+        "index_url": "https://download.pytorch.org/whl/rocm7.2",
+        "packages": ("torch", "torchvision", "torchaudio"),
+        "label": "ROCm torch (rocm7.2)",
+        "reason": "ROCm 7.2",
+        "install_torch": True,
+        "clear_hsa_spoof_gfx": None,
+        "repair_key": "b" * 32,
+    }
+    fields.update(overrides)
+    return stack._LinuxRocmTorchPlan(**fields)
+
+
+def test_a_repair_that_landed_rocm_torch_forgets_its_own_entry(monkeypatch):
+    """The dependency pass repairs twice because the requirements in between can pull CUDA
+    torch back from PyPI. A restored wheel in the same state recomputes the same key, so an
+    entry left behind by the first, SUCCESSFUL repair suppresses the second one and the
+    install ends on non-ROCm torch."""
+    cleared = _run_ensure_rocm_torch(
+        monkeypatch,
+        _repair_plan(),
+        False,
+        repaired_torch = (True, "2.11.0+rocm7.2", True, ""),
+    )
+    assert cleared == [True]
+
+
+def test_a_repair_that_left_non_rocm_torch_keeps_the_ledger(monkeypatch):
+    """pip can exit 0 on a wheel that is not a HIP build. Forgetting the attempt there
+    re-arms the multi-gigabyte reinstall on every later update."""
+    assert _run_ensure_rocm_torch(monkeypatch, _repair_plan(), False) == []
+
+
+def test_an_env_clear_without_an_install_keeps_the_ledger(monkeypatch):
+    """Dropping a confirmed HSA spoof repairs nothing about the wheel, so the attempt it
+    was recorded against is still owed."""
+    cleared = _run_ensure_rocm_torch(
+        monkeypatch,
+        _repair_plan(install_torch = False, clear_hsa_spoof_gfx = "gfx1151"),
+        False,
+        repaired_torch = (True, "2.11.0+rocm7.2", True, ""),
+    )
+    assert cleared == []
 
 
 def _run_fast_path_probe(monkeypatch, plan, torch_ready):
@@ -1016,6 +1071,64 @@ def test_the_recorded_pin_survives_an_interrupted_dependency_pass(monkeypatch, t
     install_manifest.set_torch_index_marker(stack._manifest_torch_index_url(), root = tmp_path)
     install_manifest.remove_manifest(root = tmp_path)
     assert install_manifest.recorded_torch_index_url(root = tmp_path) == pin
+
+
+# ── Returning to autodetection must drop the pin the user left behind ──
+
+
+@pytest.mark.parametrize(
+    "pin",
+    ["https://download.pytorch.org/whl/cpu", "https://download.pytorch.org/whl/cu128"],
+    ids = ["cpu", "cuda"],
+)
+def test_a_fresh_installer_run_without_a_pin_clears_the_recorded_one(monkeypatch, pin):
+    """Unsetting the override and rerunning install.sh is how a user returns to
+    autodetection. install.sh exports only its resolved backend, so preserving the old
+    record rewrites it into the marker and the manifest and every later update then
+    refuses the ROCm repair through _recorded_non_rocm_torch_pin()."""
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setenv("UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX", "1")
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", pin)
+    assert stack._manifest_torch_index_url() is None
+    assert stack._recorded_non_rocm_torch_pin() is None
+    assert _plan(monkeypatch, recorded_pin = pin) is not None
+
+
+@pytest.mark.parametrize(
+    "pin",
+    ["https://download.pytorch.org/whl/cpu", "https://download.pytorch.org/whl/cu128"],
+    ids = ["cpu", "cuda"],
+)
+def test_an_update_without_the_installer_signal_keeps_the_recorded_pin(monkeypatch, pin):
+    """The other half: `unsloth studio update` runs setup.sh directly and resolves no
+    index, so the deliberate CPU or CUDA choice must still survive it."""
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv("UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX", raising = False)
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", pin)
+    assert stack._manifest_torch_index_url() == pin
+    assert stack._recorded_non_rocm_torch_pin() == pin
+    assert _plan(monkeypatch, recorded_pin = pin) is None
+
+
+def test_this_runs_explicit_pin_still_wins_over_the_installer_signal(monkeypatch):
+    """The signal only says "autodetected". A pin exported for this run is the choice."""
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cpu")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setenv("UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX", "1")
+    monkeypatch.setattr(stack, "_RECORDED_TORCH_INDEX_URL", None)
+    assert stack._manifest_torch_index_url() == "https://download.pytorch.org/whl/cpu"
+
+
+def test_install_sh_exports_the_autodetection_signal_with_the_backend():
+    """Exported from the block that classifies the resolved leaf, so the two can never
+    disagree about which run resolved the index."""
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    assert "export UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX=1" in source
+    assert source.index('export UNSLOTH_TORCH_BACKEND="rocm"') < source.index(
+        "export UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX=1"
+    )
 
 
 def test_the_installer_records_the_pin_before_the_dependency_pass():

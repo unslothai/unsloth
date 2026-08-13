@@ -27,6 +27,9 @@ _ROUTING_ENV_VARS = (
     "CUDA_VISIBLE_DEVICES",
     "UNSLOTH_ROCM_TORCH_INSTALLED",
     "ROCM_PATH",
+    # install.sh exports this, so a suite run from an installer shell would assert the
+    # fresh-install branch of the recorded-pin guards instead of the update one.
+    "UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX",
 )
 
 

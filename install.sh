@@ -4342,6 +4342,13 @@ case "$_torch_index_leaf" in
     *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
 
+# This run resolved TORCH_INDEX_URL from scratch, so the pin recorded by an earlier install
+# no longer describes the venv. install_python_stack.py clears the record on seeing this;
+# an `unsloth studio update` runs setup.sh directly and never sets it, so the record it must
+# preserve stays preserved. UNSLOTH_TORCH_BACKEND cannot carry the signal -- users are told
+# to export that one themselves to hold a deliberate non-CUDA torch.
+export UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX=1
+
 # Whether TORCH_INDEX_URL names an actual pip ROCm family (rocm<digit>* / gfx*), gating the
 # ROCm-only side effects below (AMD bitsandbytes, ROCm-torch repair). Digit-gated so a leaf
 # merely STARTING with "rocm" isn't force-repaired from the wrong path.

@@ -2311,6 +2311,18 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return None if _is_known_torch_family_leaf(_torch_index_leaf(url)) else url
 
 
+def _installer_resolved_torch_index() -> bool:
+    """True when install.sh re-resolved the wheel index for THIS run.
+
+    Exported next to UNSLOTH_TORCH_BACKEND and nowhere else, so it is absent for every
+    `unsloth studio update` (the CLI and the desktop app both run setup.sh directly and
+    never re-run install.sh). UNSLOTH_TORCH_BACKEND cannot stand in for it: the stack
+    tells users to export that one themselves to hold a deliberate non-CUDA torch, so
+    keying on it would delete a recorded pin on an ordinary update.
+    """
+    return bool(os.environ.get("UNSLOTH_INSTALLER_RESOLVED_TORCH_INDEX", "").strip())
+
+
 def _manifest_torch_index_url() -> "str | None":
     """The pin to persist: this run's explicit one, else the one already recorded.
 
@@ -2323,6 +2335,13 @@ def _manifest_torch_index_url() -> "str | None":
     pin = _explicit_torch_index_url()
     if pin:
         return _strip_index_url_credentials(pin)
+    # A fresh installer run that resolved the index by autodetection: the old record no
+    # longer describes this venv, so carrying it forward pins the user to a family they
+    # left behind -- a stale cpu/cuXXX entry makes _linux_rocm_torch_plan refuse every
+    # later ROCm repair on an AMD host. Cleared rather than replaced with this run's
+    # resolved index, which would outlive the host it described.
+    if _installer_resolved_torch_index():
+        return None
     return _RECORDED_TORCH_INDEX_URL
 
 
@@ -2335,6 +2354,11 @@ def _recorded_non_rocm_torch_pin() -> "str | None":
     reinstalls several GB over the CPU or CUDA index they chose.
     """
     if _explicit_torch_index_url() is not None:
+        return None
+    # Same reason as in _manifest_torch_index_url, and it has to be the same run: this
+    # pass is about to overwrite the record, so reading the outgoing value here would
+    # suppress the very repair the fresh install just asked for.
+    if _installer_resolved_torch_index():
         return None
     url = _RECORDED_TORCH_INDEX_URL
     if url is None:
@@ -3552,6 +3576,17 @@ def _ensure_rocm_torch() -> None:
                 plan.index_url,
                 constrain = False,
             )
+            # A repair that WORKED must not keep its entry. This runs twice per dependency
+            # pass (after the base packages, then in the final phase, because the steps in
+            # between can pull CUDA torch back from PyPI), and a wheel restored to the same
+            # observed state recomputes the same key -- so a retained entry suppresses the
+            # second, still-owed repair and the install ends on non-ROCm torch, with every
+            # later update suppressed too. Gated on a re-probe rather than on pip's exit
+            # code: pip can exit 0 on a wheel that is not a HIP build, and forgetting THAT
+            # attempt re-arms the multi-gigabyte reinstall loop the ledger exists to stop.
+            _repaired_is_rocm, _, _, _ = _probe_rocm_torch()
+            if _repaired_is_rocm:
+                install_manifest.clear_rocm_repair_attempt()
             rocm_torch_ready = True
 
     # gfx906 has no prebuilt bitsandbytes: the continuous-release/PyPI wheels ship
