@@ -575,6 +575,7 @@ class TestLaunchStopsAtSomebodyElsesWrapper:
     @staticmethod
     def _tree(tmp_path, inner_body):
         import json
+
         root = tmp_path / ".unsloth" / "llama.cpp"
         (root / "build" / "bin").mkdir(parents = True)
         (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"tag": "b9415"}))
@@ -589,8 +590,10 @@ class TestLaunchStopsAtSomebodyElsesWrapper:
         outer.chmod(0o755)
         return outer, inner, real
 
-    _CUSTOM = ('#!/bin/sh\nexport GGML_METAL_PATH_RESOURCES=/custom\n'
-               'exec "$(dirname "$0")/llama-server-real" "$@"\n')
+    _CUSTOM = (
+        "#!/bin/sh\nexport GGML_METAL_PATH_RESOURCES=/custom\n"
+        'exec "$(dirname "$0")/llama-server-real" "$@"\n'
+    )
     _TEMPLATE = '#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n'
 
     def test_a_custom_inner_wrapper_is_launched_not_skipped(self, tmp_path, monkeypatch):

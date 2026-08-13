@@ -10123,7 +10123,13 @@ class LlamaCppBackend:
         """
         return LlamaCppBackend._scrub_secret_values(
             LlamaCppBackend._classify_start_failure_text(
-                output, gguf_path, model_identifier, returncode, binary, log_path, secrets,
+                output,
+                gguf_path,
+                model_identifier,
+                returncode,
+                binary,
+                log_path,
+                secrets,
             ),
             secrets,
         )

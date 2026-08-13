@@ -1368,23 +1368,27 @@ class TestEveryClassifiedBranchIsRedacted:
     def test_a_secret_in_a_dyld_library_name_is_redacted(self, monkeypatch):
         token = "sk-supersecret-abcdefghijk"
         monkeypatch.setenv("MY_API_TOKEN", token)
-        out = (f"dyld[1]: Library not loaded: @rpath/{token}.dylib\n"
-               f"  Reason: tried: '/a/{token}.dylib' (no such file)\n")
-        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server",
-                        log_path = "/l.log", secrets = (token,))
+        out = (
+            f"dyld[1]: Library not loaded: @rpath/{token}.dylib\n"
+            f"  Reason: tried: '/a/{token}.dylib' (no such file)\n"
+        )
+        msg = _classify(
+            out, "/m.gguf", "u/x", 1, "/i/bin/llama-server", log_path = "/l.log", secrets = (token,)
+        )
         assert token not in msg
         assert "***" in msg
 
     def test_a_per_launch_secret_is_redacted_in_a_classified_branch(self):
         minted = "unsloth-launch-key-abcdefghij"
         out = f"dyld[1]: Library not loaded: @rpath/{minted}.dylib\n"
-        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server",
-                        secrets = (minted,))
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server", secrets = (minted,))
         assert minted not in msg
 
     def test_an_ordinary_diagnosis_is_unchanged_by_the_extra_pass(self):
-        out = ("dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
-               "  Reason: tried: '/a/libllama.dylib' (no such file)\n")
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
+            "  Reason: tried: '/a/libllama.dylib' (no such file)\n"
+        )
         msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server")
         assert "libllama.dylib" in msg
         assert "***" not in msg
