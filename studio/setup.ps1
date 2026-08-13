@@ -4541,6 +4541,10 @@ function Install-UvFromPinnedRelease {
         Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
     }
     $env:PATH = "$destDir;$env:PATH"
+    # Recorded on the script scope as well as returned: the caller runs this through
+    # Invoke-SetupCommand, which hands back [int]$LASTEXITCODE rather than the pipeline value,
+    # so the return alone cannot tell the fallback whether to run.
+    $script:UvPinnedInstalled = $true
     return $true
 }
 
@@ -4555,13 +4559,14 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        $uvPinned = Invoke-SetupCommand { Install-UvFromPinnedRelease } | Select-Object -Last 1
+        $script:UvPinnedInstalled = $false
+        Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
         # The merge base ran astral's installer here, so a failed pinned install has to have
         # somewhere to go: without a fallback the whole setup silently drops to pip for torch,
         # bitsandbytes, Triton and the rest, which is a different resolver, not a different
         # download. winget rather than the remote script, since it is the shape this branch
         # exists to remove, and it is what install.ps1 already tries first.
-        if ($uvPinned -ne $true -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        if (-not $script:UvPinnedInstalled -and (Get-Command winget -ErrorAction SilentlyContinue)) {
             Invoke-SetupCommand {
                 winget install --id astral-sh.uv --source winget --accept-source-agreements `
                     --accept-package-agreements --silent

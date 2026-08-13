@@ -2579,6 +2579,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         # replaced as one, and a failure anywhere before them leaves the destination untouched.
         _uip_ready=1
         for _uip_exe in uv uvx; do
+            # `mv f d` moves f INTO d and reports success, and a searchable directory passes -x
+            # too, so a directory called uv at the destination would look like a published
+            # binary and skip the fallback. The installer already refuses one for its own shim.
+            if [ -d "$_uip_dest/$_uip_exe" ]; then _uip_ready=0; break; fi
             _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
             if [ -z "$_uip_src" ] || [ ! -f "$_uip_src" ]; then _uip_ready=0; break; fi
             # cp onto a symlinked destination writes through it and would rewrite, say, the
@@ -5504,13 +5508,13 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
         _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
         # Anchored on both sides, so /opt/uv is not satisfied by /opt/uv-old and the match has
         # to be a whole PATH entry rather than any occurrence of the text.
-        _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[^$*\\/]/\\&/g')
+        _uv_grep_esc=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
         # ...and the $HOME-relative spelling as well, because the shim block above writes
         # `export PATH="$HOME/.local/bin:$PATH"` unexpanded. Without this the default install
         # would add a second line for the same directory in the same file.
         case "$_UNSLOTH_UV_BIN_DIR" in
             "$HOME"/*)
-                _uv_grep_esc="$_uv_grep_esc|\\\$HOME$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[].[^$*\\/]/\\&/g')"
+                _uv_grep_esc="$_uv_grep_esc|\\\$HOME$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')"
                 ;;
         esac
         _uv_pattern="(^|[^[:alnum:]_.~/-])($_uv_grep_esc)([^[:alnum:]_.~/-]|\$)"

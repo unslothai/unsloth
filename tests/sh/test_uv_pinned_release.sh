@@ -1011,10 +1011,61 @@ fi
 
 # studio/setup.ps1 replaced astral's installer, so a failed pinned install needs somewhere to go
 # or the whole setup silently drops to pip for torch and everything after it.
-if grep -q 'if ($uvPinned -ne $true -and (Get-Command winget' "$SETUP_PS1"; then
+# The flag, not the return value: Invoke-SetupCommand hands back $LASTEXITCODE, so reading the
+# function's $true through it always said "failed" and ran the fallback every time.
+if grep -q 'if (-not $script:UvPinnedInstalled -and (Get-Command winget' "$SETUP_PS1" \
+   && grep -q '$script:UvPinnedInstalled = $true' "$SETUP_PS1"; then
     ok "setup.ps1 still has a uv fallback when the pinned install fails"
 else
     bad "setup.ps1 still has a uv fallback when the pinned install fails"
+fi
+
+# A directory named uv at the destination must not look like a published binary: `mv f d` moves
+# into it and reports success, and a searchable directory passes -x.
+mkdir -p "$WORK/home_dir_target/.local/bin/uv"
+(
+    set +e
+    tauri_log() { :; }
+    # shellcheck disable=SC1090
+    . "$WORK/uvfns.sh"
+    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
+    download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
+    HOME="$WORK/home_dir_target"; export HOME
+    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+    _uv_install_pinned
+    echo "rc=$?"
+) > "$WORK/out_dir_target" 2>&1 || true
+if grep -q '^rc=0$' "$WORK/out_dir_target"; then
+    bad "a directory at the destination declines to the fallback"
+else
+    ok "a directory at the destination declines to the fallback"
+fi
+
+# A destination holding an ERE metacharacter must still match itself on the next run, or every
+# reinstall appends another PATH block to every profile.
+_mh="$WORK/meta_home"
+mkdir -p "$_mh/.local/bin" "$_mh/opt/a+b(c)"
+: > "$_mh/.bashrc"
+for _pass in 1 2; do
+    (
+        set +e
+        step() { :; }
+        HOME="$_mh"; export HOME
+        SHELL="/bin/bash"; export SHELL
+        unset ZSH_VERSION ZDOTDIR UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
+        _LOCAL_BIN="$HOME/.local/bin"
+        _STUDIO_HOME_REDIRECT="none"
+        _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+        _UNSLOTH_UV_BIN_DIR="$HOME/opt/a+b(c)"
+        # shellcheck disable=SC1090
+        . "$WORK/path_guard.sh"
+    ) >/dev/null 2>&1 || true
+done
+_n=$(grep -cF 'a+b(c)' "$_mh/.bashrc") || _n=0
+if [ "$_n" = "1" ]; then
+    ok "a destination holding regex metacharacters is written once, not once per run"
+else
+    bad "a destination holding regex metacharacters is written once, not once per run ($_n)"
 fi
 
 echo

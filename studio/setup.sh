@@ -1629,6 +1629,10 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         # other so the pair is replaced as one.
         _siup_ready=1
         for _siup_exe in uv uvx; do
+            # `mv f d` moves f INTO d and reports success, and a searchable directory passes -x
+            # too, so a directory called uv at the destination would look like a published
+            # binary and skip the fallback. The installer already refuses one for its own shim.
+            if [ -d "$_siup_dest/$_siup_exe" ]; then _siup_ready=0; break; fi
             _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
             if [ -z "$_siup_src" ]; then _siup_ready=0; break; fi
             # cp writes through a symlinked destination, and a per-process staging name keeps
@@ -1714,7 +1718,7 @@ _setup_persist_uv_path() {
     # Comments stripped and the directory anchored as a whole entry: a commented-out old export,
     # or /opt/uv-old when we want /opt/uv, is not an active entry, and taking either for one
     # leaves the next shell unable to resolve uv.
-    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[^$*\\/]/\\&/g')
+    _supp_grep=$(printf '%s' "$_supp_dir" | sed 's/[].[\\()*+?{}|^$\/]/\\&/g')
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
     _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
