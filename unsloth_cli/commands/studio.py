@@ -6,6 +6,7 @@ import functools
 import importlib.util
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import platform
@@ -20,10 +21,11 @@ import tempfile
 import time
 import types
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Sequence
+from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate
@@ -44,14 +46,54 @@ def _enable_verbose_access_logs() -> None:
 # sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
 # the installer's env var has expired), then legacy ~/.unsloth/studio.
 # UNSLOTH_STUDIO_HOME wins when both env vars are set.
+# Both halves, and the 8 KB ceiling, are Test-UnslothCmdShimFile's in install.ps1 and
+# _IsUnslothCmdShim's in scripts/uninstall.ps1. Bytes, not text: the shim is written
+# without a BOM but an edited copy may carry one, and a decode error here would be
+# indistinguishable from "not ours".
+_CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
+_CMD_SHIM_MAX_BYTES = 8192
+
+
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Unsloth root.
+
+    On Windows bin\\unsloth.cmd counts too. Only install.sh writes
+    share/studio.conf, so on a custom-root Windows install the generated
+    unsloth.exe is the only sentinel there is, and antivirus quarantine deletes
+    it -- after which this returns False, the root falls back to
+    ~/.unsloth/studio, and every `unsloth studio ...` reads and writes the wrong
+    installation. The .cmd is written by the same installer for the same
+    directory, so it answers the same question.
+
+    It has to be OUR .cmd: this decides which tree the CLI manages, and the
+    directory is on PATH, so any file of that name would otherwise be enough to
+    point a custom root at itself. Same marker Test-UnslothCmdShimFile in
+    install.ps1 and the uninstaller's recursive-delete guard require.
     """
-    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
-    return (candidate / "share" / "studio.conf").is_file() or (
-        candidate / "bin" / shim_name
-    ).is_file()
+    if (candidate / "share" / "studio.conf").is_file():
+        return True
+    if platform.system() != "Windows":
+        return (candidate / "bin" / "unsloth").is_file()
+    if (candidate / "bin" / "unsloth.exe").is_file():
+        return True
+    return _is_managed_cmd_shim(candidate / "bin" / "unsloth.cmd")
+
+
+def _is_managed_cmd_shim(path: Path) -> bool:
+    """Whether *path* is the .cmd shim this installer generates.
+
+    Read as bytes and matched on the marker line install.ps1 writes. A hand
+    rolled wrapper that happens to invoke the CLI is not this, and must not be
+    taken as proof of an installer-managed root.
+    """
+    try:
+        if path.stat().st_size > _CMD_SHIM_MAX_BYTES:
+            return False
+        body = path.read_bytes()
+    except OSError:
+        return False
+    return all(marker in body for marker in _CMD_SHIM_MARKERS)
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
@@ -171,6 +213,81 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
+# Windows materialises the `unsloth` entry point as a generated, unsigned .exe that
+# Application Control denies while the signed interpreter beside it still runs, so
+# every managed invocation goes through the interpreter (issue #8490).
+#
+# Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs and to
+# $script:UnslothCliTrampoline in install.ps1, which carries the full rationale for
+# both halves and for the deliberate absence of -I.
+_WINDOWS_CLI_ENTRYPOINT = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+)
+
+# Asks the managed interpreter whether the trampoline's import would succeed, by
+# performing that exact import. The sys.path[0] scrub is
+# _WINDOWS_CLI_ENTRYPOINT's, kept a separate literal because a parity test
+# literal_evals that constant; the two must agree or the probe answers for a
+# different sys.path than the launch uses.
+#
+# `from unsloth_cli import app` rather than a find_spec, deliberately. find_spec
+# locates without executing, which sounds like the lighter question and is the
+# wrong one: it answers True for an empty unsloth_cli/ directory (a namespace
+# package), for a package whose __init__ raises, and for one whose dependencies
+# an interrupted install never fetched. Every one of those is a venv the
+# trampoline cannot start, and this probe gates the headless-public strip of
+# .bootstrap_password, so a false pass there is a public Studio with no login
+# page and no plaintext recovery credential. Paying the import is what makes the
+# probe's answer the launch's answer.
+_MANAGED_CLI_IMPORT_PROBE = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "from unsloth_cli import app; sys.exit(0)"
+)
+
+# Seconds, and generous: this is a bare interpreter start plus the CLI package
+# import, and it can run from cold on a machine whose antivirus is scanning the
+# venv it just quarantined a file out of. The caller treats a timeout as "no
+# verdict" rather than as a missing package, so overrunning it is not fatal.
+_MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
+
+# CreateProcess refuses a program blocked by an Application Control policy with
+# ERROR_ACCESS_DISABLED_BY_POLICY, which Python surfaces as OSError.winerror.
+_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+
+
+def _managed_cli_argv(
+    python: Path,
+    *args: str,
+    isolated: bool = False,
+) -> List[str]:
+    """argv that runs the managed `unsloth` CLI through *python*.
+
+    -X utf8 rather than PYTHONUTF8 so the encoding holds even for a caller that
+    scrubs the environment. -X utf8 precedes -I because -I implies -E, which
+    would discard PYTHONUTF8 but cannot touch a command-line -X.
+
+    *isolated* mirrors the Isolation enum in studio/src-tauri/src/process.rs and
+    carries the same rule: the default is inherit, because -I implies -E and -s
+    and so drops PYTHONPATH, PYTHONWARNINGS, PYTHONHASHSEED and user
+    site-packages that the console script honoured, an observable difference on
+    machines with no policy at all. Only a caller that must reproduce an
+    already-isolated launch asks for it, and today that is the desktop updater's
+    health probe, matching build_update_command's Isolation::Isolated.
+    """
+    flags = ["-X", "utf8", "-I"] if isolated else ["-X", "utf8"]
+    return [str(python), *flags, "-c", _WINDOWS_CLI_ENTRYPOINT, *args]
+
+
+def _is_application_control_block(error: OSError) -> bool:
+    """True when Windows refused to start a program because a policy blocks it.
+
+    Distinct from a missing or corrupt executable: nothing ran, so the failure
+    says nothing about the program itself.
+    """
+    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+
+
 @contextlib.contextmanager
 def _studio_runtime_launch_guard(*, inherited: bool = False):
     guard = _studio_runtime_gate.studio_runtime_launch_guard(
@@ -251,6 +368,247 @@ def _studio_venv_python() -> Optional[Path]:
     else:
         p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
     return p if p.is_file() else None
+
+
+def _managed_cli_site_packages_layout(python: Path) -> bool:
+    """On-disk hint that the venv holding *python* still carries the CLI.
+
+    Weaker than the import probe below and only used when the probe could not be
+    run at all: an empty ``unsloth_cli/`` or an orphaned dist-info left by an
+    interrupted install answers yes here without being importable.
+
+    The dist-info is accepted alongside the package directory because an
+    editable install of the checkout leaves a .pth and no unsloth_cli/ here.
+    """
+    site_packages = python.parent.parent / "Lib" / "site-packages"
+    if (site_packages / "unsloth_cli").is_dir():
+        return True
+    return any(site_packages.glob("unsloth-*.dist-info"))
+
+
+def _managed_cli_package_present(python: Path) -> bool:
+    """Whether the venv holding *python* can still import the package the CLI runs.
+
+    Windows only, and only asked when the console script is gone. The generated
+    unsloth.exe is what proves a CLI on POSIX, but on Windows nothing launches it
+    any more (issue #8490) and antivirus quarantine deletes the unsigned stub
+    while leaving the environment perfectly able to run.
+
+    Asked of the interpreter rather than of site-packages, because the two are
+    not the same claim. What Windows launches is the trampoline's
+    ``from unsloth_cli import app``, so an orphaned ``unsloth-*.dist-info`` (a
+    moved editable checkout, an interrupted install) or an empty ``unsloth_cli/``
+    directory is metadata, not a runnable CLI. It matters here specifically:
+    this gate stands in front of the headless-public strip of
+    .bootstrap_password, so passing a venv that then fails to import is the one
+    outcome the gate's placement exists to prevent -- a public Studio with no
+    login page and no plaintext recovery credential.
+
+    The probe runs the trampoline's own ``from unsloth_cli import app`` rather
+    than a cheaper spec lookup (see _MANAGED_CLI_IMPORT_PROBE for why the cheaper
+    one answers a different question), with the same sys.path[0] scrub applied so
+    an ``unsloth_cli`` directory in the caller's cwd cannot answer for the venv.
+    """
+    if platform.system() != "Windows":
+        return False
+    try:
+        probe = subprocess.run(
+            [str(python), "-X", "utf8", "-c", _MANAGED_CLI_IMPORT_PROBE],
+            capture_output = True,
+            timeout = _MANAGED_CLI_IMPORT_PROBE_TIMEOUT,
+            # Same as every other managed-interpreter probe here: a non-interactive
+            # Windows launch must not flash a console window (issue #8490's sibling).
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        # Slow is not broken. A cold venv under an antivirus scan can take longer
+        # than the probe waits, and the re-exec this gate stands in front of has
+        # no timeout at all, so it would still come up. Fall back to the on-disk
+        # layout rather than aborting an install that works -- the failure this
+        # whole fallback exists to remove.
+        return _managed_cli_site_packages_layout(python)
+    except (OSError, subprocess.SubprocessError):
+        # No verdict for a different reason: the interpreter would not start at
+        # all (missing, or denied by an Application Control policy). The re-exec
+        # runs THAT interpreter, so it is going to fail the same way, and the
+        # on-disk layout cannot say otherwise. Fail closed, because the caller
+        # strips .bootstrap_password on a headless public launch before it
+        # re-execs: passing here would leave a public Studio with no login page
+        # and no plaintext recovery credential, which is worse than telling the
+        # user to re-run setup.
+        return False
+    return probe.returncode == 0
+
+
+def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
+    """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
+
+    libhsakmt (topology.c) reads it as a major.minor.stepping triple
+    (``sscanf(envvar, "%u.%u.%u%c") != 3`` rejects anything else) and the target
+    name concatenates the stepping in hex, which is why 9.0.10 is gfx90a:
+    11.0.0 -> gfx1100, 11.5.1 -> gfx1151.
+
+    Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py and
+    in install.sh.
+    """
+    if not value:
+        return None
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
+        return None
+    major, minor, step = (int(p) for p in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
+    if not (0 <= step <= 15) or major <= 0 or minor > 9:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
+def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
+    """Whether the installed torch actually resolves through the ``rocm`` meta-package.
+
+    AMD's per-gfx wheels depend on it; the generic pytorch.org ROCm wheels vendor their
+    own runtime and depend on nothing, so after a switch between them the meta-package is
+    left behind describing a family with no bearing on what torch loads. Unknown shapes
+    answer False: refusing to arbitrate leaves the environment untouched.
+    """
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("torch-*.dist-info"):
+                if not re.fullmatch(r"torch-[^-]+\.dist-info", info.name):
+                    continue
+                metadata = info / "METADATA"
+                if not metadata.is_file():
+                    continue
+                try:
+                    text = metadata.read_text(encoding = "utf-8", errors = "replace")
+                except OSError:
+                    return False
+                for line in text.splitlines():
+                    if not line.lower().startswith("requires-dist:"):
+                        continue
+                    # `Requires-Dist: rocm[libraries,devel]==7.13.0` and plain `rocm` both
+                    # count; `rocm-sdk-core` does not, it is a component not the arbiter.
+                    if re.search(r"requires-dist:\s*rocm(?![-_a-z0-9])", line, re.IGNORECASE):
+                        return True
+                return False
+    return False
+
+
+def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
+    """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None.
+
+    AMD's per-gfx index ships one runtime distribution per architecture,
+    ``rocm-sdk-libraries-<family>``, and the torch beside it holds code objects for
+    that family alone. Which one is live has to come from the ``rocm`` meta-package,
+    whose ``Requires-Dist`` names the family AMD's torch resolved (verified on
+    repo.amd.com/rocm/whl/gfx1151: ``rocm-sdk-libraries-gfx1151==7.13.0; extra ==
+    "libraries"``). Globbing for a ``rocm_sdk_libraries_gfx*`` directory instead
+    would read an ORPHAN: ``rocm`` upgrades in place across a family switch while the
+    superseded runtime keeps its own distribution name and is never uninstalled, so a
+    venv that has changed families holds both. Same reasoning and hazard as
+    _installed_rocm_wheel_family in studio/install_python_stack.py.
+
+    None means "do not act": no ``rocm``, unreadable metadata, more than one family
+    named, or a MULTI-arch family such as gfx120x-all, whose runtime carries kernels
+    for several ISAs and so contradicts no override.
+    """
+    # The bare `rocm` metadata only describes a LIVE install while torch still resolves
+    # through it. Switching from AMD's per-gfx index to a generic pytorch.org one does not
+    # uninstall it: the generic wheels vendor their own ROCm libraries and depend on no
+    # meta-package, so `rocm` is orphaned and pip never removes it. Reading it then would
+    # name the OLD family and clear an override the generic wheels may be the only reason
+    # the GPU works at all.
+    if not _torch_requires_rocm_metapackage(venv_dir):
+        return None
+    _metadata: Optional[Path] = None
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("rocm-*.dist-info"):
+                # rocm-sdk-core and rocm-sdk-libraries-* also start "rocm-"; only the
+                # bare `rocm` meta-package arbitrates.
+                if (
+                    re.fullmatch(r"rocm-[^-]+\.dist-info", info.name)
+                    and (info / "METADATA").is_file()
+                ):
+                    _metadata = info / "METADATA"
+                    break
+    if _metadata is None:
+        return None
+    try:
+        _text = _metadata.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    _families = set()
+    for _line in _text.splitlines():
+        if not _line.lower().startswith("requires-dist:"):
+            continue
+        _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([0-9a-zA-Z]+)", _line)
+        if _m:
+            _families.add(_m.group(1).lower())
+    if len(_families) != 1:
+        return None  # nothing to arbitrate with, or two runtimes and no tie-break
+    _family = _families.pop()
+    # Single ISA only: gfx120x-all style families cover several architectures, so an
+    # override naming one of them is contradicted by nothing.
+    return _family if re.fullmatch(r"gfx[0-9a-f]+", _family) else None
+
+
+def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
+    """Drop an HSA_OVERRIDE_GFX_VERSION no installed kernel can satisfy (#7331).
+
+    libhsakmt (topology.c) writes the variable's major.minor.stepping straight into
+    the KFD node's EngineId and ROCr names the agent from that, so the override
+    decides the ISA every later process sees. Against per-gfx wheels, which hold code
+    objects for one architecture, an override naming a different one leaves the
+    runtime asking for kernels the install does not contain and every launch fails on
+    the first allocation, exactly as before the routing fix.
+
+    install.sh clears it for the one launch it performs itself, but that unset dies
+    with the installer: `unsloth studio update` runs install_python_stack.py as a
+    child (studio/setup.sh:1444) and every later launch inherits the user's shell
+    instead. This is the chokepoint the exec, the Windows Popen and the in-process
+    paths all pass through.
+
+    Keyed on the INSTALL, never on a hardware probe: on a generic multi-arch index
+    there is nothing to contradict and the override is often the only thing making
+    the GPU usable. Returns the installed arch when the variable was dropped.
+    """
+    raw = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+    # Windows ROCm ignores the variable entirely, so there is nothing to correct.
+    if not raw or platform.system() == "Windows":
+        return None
+    arch = _installed_rocm_single_arch(venv_dir)
+    if arch is None:
+        return None
+    named = _hsa_override_gfx_arch(raw)
+    # Unreadable: libhsakmt rejects it too, so it is not this spoof to undo.
+    if named is None or named == arch:
+        return None
+    os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
+    return arch
+
+
+def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
+    """Run the #7331 spoof clear for whichever entry point is about to launch.
+
+    Every launch needs it, not just plain ``unsloth studio``: the group callback
+    returns early once a subcommand is named, and ``unsloth run`` is bound straight
+    to ``studio_run``, so both would otherwise reach llama-server and the backend
+    with the contradicting override still set. Idempotent, so chained entry points
+    are free to call it twice.
+    """
+    _venv = STUDIO_HOME / "unsloth_studio"
+    _arch = _clear_hsa_override_contradicting_install(
+        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    )
+    if _arch is not None and not silent:
+        typer.echo(
+            f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
+            f"only, so the runtime has to report the real arch. Remove the export "
+            f"from your shell profile as well, or the next terminal restores it.",
+            err = True,
+        )
+    return _arch
 
 
 def _find_run_py() -> Optional[Path]:
@@ -1400,9 +1758,11 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
-        "/v1/messages takes the on direction per request (enable_tools) because it has no "
-        "confirmation channel; the off direction still applies everywhere.",
+        "every request. Default: no server-wide policy, so the per-chat UI toggle "
+        "(the request's own enable_tools) decides; `unsloth studio run` is the "
+        "launcher that defaults them on. /v1/messages takes the on direction per "
+        "request (enable_tools) because it has no confirmation channel; the off "
+        "direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
@@ -1547,6 +1907,10 @@ def studio_default(
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    # Before any of the three launch paths below, and before the environment is handed
+    # to a child: an override contradicting single-arch wheels makes every kernel launch
+    # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
+    _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -1918,9 +2282,10 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind. /v1/messages takes the on "
-            "direction per request (enable_tools) because it has no confirmation "
-            "channel; the off direction still applies everywhere."
+            "every request. Default: on for every bind, with a request's own "
+            "enable_tools: false (what the Studio UI sends) honored. /v1/messages "
+            "takes the on direction per request (enable_tools) because it has no "
+            "confirmation channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
@@ -2095,6 +2460,10 @@ def run(
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    # The group callback returns before its own clear once a subcommand is named, and
+    # `unsloth run` is bound straight here, so this path has to do it itself or
+    # llama-server and the backend start with the contradicting override (#7331).
+    _clear_hsa_override_before_launch(silent = bool(silent))
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
@@ -2201,9 +2570,11 @@ def run(
             )
         host = "127.0.0.1"
 
-    # Tool policy no longer depends on the bind: tools default on everywhere
-    # (--secure is a loopback tunnel; the operator owns a raw bind). Resolve here
-    # so the re-exec'd child inherits a concrete decision.
+    # Tool policy does not depend on the bind: tools default on everywhere
+    # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
+    # this stays None, so the default applies without becoming an override and a
+    # request's own enable_tools: false is honored. Resolve here so the re-exec'd
+    # child inherits the same decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -2229,10 +2600,15 @@ def run(
         # Re-exec via the studio venv's `unsloth` console-script. Windows ships it as
         # unsloth.exe, so the bare name is never a file there and `unsloth run` aborted
         # with "venv missing 'unsloth' entry point" on a perfectly good install.
+        #
+        # On Windows the file is no longer what gets launched (see the launch_head
+        # below) and no longer the only thing that proves a CLI: quarantine deletes
+        # the stub and leaves the environment able to run, so the installed package
+        # answers for it.
         studio_bin = studio_python.parent / (
             "unsloth.exe" if platform.system() == "Windows" else "unsloth"
         )
-        if not studio_bin.is_file():
+        if not studio_bin.is_file() and not _managed_cli_package_present(studio_python):
             typer.echo("Unsloth venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
         # `run` serves the same Unsloth UI (unless --api-only); a public launch must
@@ -2285,8 +2661,16 @@ def run(
     )
 
     if not in_studio_venv:
+        # Windows launches the child through the venv interpreter rather than the
+        # console script it just validated: Application Control blocks the
+        # generated unsloth.exe on some machines, and the signed python.exe beside
+        # it is not blocked. POSIX keeps execing the script directly, which is what
+        # the os.execvp below needs anyway.
+        launch_head = (
+            _managed_cli_argv(studio_python) if sys.platform == "win32" else [str(studio_bin)]
+        )
         args = [
-            str(studio_bin),
+            *launch_head,
             "studio",
             "run",
             "--model",
@@ -2321,10 +2705,11 @@ def run(
             args.append("--api-only")
         if silent:
             args.append("--silent")
-        # Forward the resolved tool policy so the child doesn't re-resolve.
-        if enable_tools:
+        # Forward the resolved tool policy so the child doesn't re-resolve. None
+        # forwards neither flag: the child then leaves the policy unset too.
+        if enable_tools is True:
             args.append("--enable-tools")
-        else:
+        elif enable_tools is False:
             args.append("--disable-tools")
         # Forward --yes only if the user passed it; resolution no longer prompts.
         if yes:
@@ -2375,8 +2760,10 @@ def run(
     # Match the route handlers' import path: run.py adds studio/backend/ to
     # sys.path, so they import as `state.tool_policy`. Set this before
     # run_server() starts uvicorn; once sockets are bound, routes can be hit.
-    from state.tool_policy import set_tool_policy
+    # run_server() applies the same pair; both calls are idempotent.
+    from state.tool_policy import set_tool_policy, set_tool_policy_default
 
+    set_tool_policy_default(True)
     set_tool_policy(enable_tools)
 
     run_kwargs = dict(
@@ -2464,7 +2851,7 @@ def run(
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
     _is_external = is_external_host(host)
-    if not enable_tools:
+    if enable_tools is False:
         _tool_notice = "Server-side tools are DISABLED (--disable-tools)."
     elif secure:
         _tool_notice = (
@@ -3215,8 +3602,144 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
+# The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
+# so a launcher fix reaches users without waiting for a release.
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
 _INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. Anywhere
+# else, or plain http, is refused rather than followed.
+_INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
+_INSTALLER_FETCH_TIMEOUT = 30
+# install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
+_INSTALLER_MAX_BYTES = 8 * 1024 * 1024
+# The flag this code passes, so an installer without it cannot serve the request.
+# Internal names would be tighter but can be renamed in a perfectly good installer,
+# and a false negative here skips every wheel-based refresh until new Python ships.
+_INSTALLER_MARKERS = {
+    "install.sh": (b"--shortcuts-only",),
+    "install.ps1": (b"--shortcuts-only",),
+}
+
+
+def _is_allowed_installer_url(url: str) -> bool:
+    """https on a known host. Applied to the first request and to every redirect."""
+    split = urllib.parse.urlsplit(url)
+    return split.scheme == "https" and split.hostname in _INSTALLER_FETCH_HOSTS
+
+
+class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the installer fetch on the unsloth.ai -> raw.githubusercontent chain."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_allowed_installer_url(newurl):
+            raise urllib.error.URLError(f"refused installer redirect to {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_installer_opener() -> urllib.request.OpenerDirector:
+    """A private opener, so the redirect chain can be checked before it is followed.
+
+    urlopen() would instead use whatever install_opener() put in place. Carrying those
+    handlers over was tried and abandoned: OpenerDirector.add_handler() assigns
+    handler.parent, so sharing them repoints the installed opener at this one and
+    breaks every later urlopen() in the process, and copying them does not help either
+    because the default HTTPSHandler here already answers first. Proxy environment
+    variables and the system trust store still work, since build_opener() sets up both.
+    The residue is a machine whose proxy auth or CA lives in a programmatically
+    installed opener: its refresh is skipped, which the update survives, rather than
+    silently pulling the installer through an unchecked path.
+    """
+    return urllib.request.build_opener(_InstallerRedirectHandler)
+
+
+def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
+    """Cheap shape check before a fetched installer is executed.
+
+    Not a trust check -- the hosts above are trusted. It stops a captive-portal page or
+    an HTTP error body from being piped into bash when something in between answers.
+    """
+    if not body or len(body) < 512:
+        return False
+    head = body.lstrip()[:256].lower()
+    # `<#` opens PowerShell comment-based help, which is a perfectly ordinary way for
+    # install.ps1 to start, so match the actual markup rather than any leading "<".
+    if not head.startswith(b"<#") and (
+        head.startswith((b"<!doctype", b"<html", b"<head", b"<?xml", b"<body"))
+        or b"<html" in head
+        or b"<!doctype" in head
+    ):
+        return False
+    return all(marker in body for marker in _INSTALLER_MARKERS[installer_name])
+
+
+def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[bytes]:
+    """Fetch install.sh / install.ps1, or None if nothing usable came back."""
+    url = _INSTALLER_URL_PWSH if installer_name == "install.ps1" else _INSTALLER_URL_BASH
+    if not _is_allowed_installer_url(url):
+        typer.echo(f"  refresh-launcher  refusing to fetch {installer_name} from {url}")
+        return None
+    try:
+        opener = _build_installer_opener()
+        request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
+        with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
+            body = response.read(_INSTALLER_MAX_BYTES + 1)
+            # read(amt) does not check Content-Length; only a further read() does,
+            # raising IncompleteRead. Without it a transfer cut off mid-file still
+            # carries the markers and would be piped into bash half-written.
+            if len(body) <= _INSTALLER_MAX_BYTES:
+                body += response.read()
+    except (
+        urllib.error.URLError,
+        # IncompleteRead / a malformed proxy response raises at the HTTP framing layer,
+        # which is neither URLError nor OSError, so it would abort an already-done update.
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as exc:
+        typer.echo(f"  refresh-launcher  skipped: could not fetch {url} ({exc})")
+        return None
+
+    if len(body) > _INSTALLER_MAX_BYTES:
+        typer.echo(f"  refresh-launcher  skipped: oversized {installer_name} response")
+        return None
+    if not _looks_like_installer(body, installer_name):
+        typer.echo(f"  refresh-launcher  skipped: response is not {installer_name}")
+        return None
+    if verbose:
+        typer.echo(f"  refresh-launcher  fetched {url} ({len(body)} bytes)")
+    return body
+
+
+def _installer_script_candidates(installer_name: str) -> List[Path]:
+    """Source-tree installers, which outrank the network because `update --local` is
+    testing its own installer, so fetching over the top of it would be wrong."""
+    candidates: List[Path] = []
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    if local_repo:
+        candidates.append(Path(local_repo).expanduser() / installer_name)
+    # Clone or editable install: _PACKAGE_ROOT is the repo root.
+    root = _PACKAGE_ROOT / installer_name
+    if root not in candidates:
+        candidates.append(root)
+    return candidates
+
+
+def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
+    """Every candidate that exists, not just the first.
+
+    The pre-refactor loop probed and launched in one pass, so a candidate that could
+    not be launched left the next one to try before the network was reached. Returning
+    only the first match would quietly drop that second chance.
+    """
+    found: List[Path] = []
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                found.append(candidate)
+        except OSError:
+            continue
+    return found
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
@@ -3227,145 +3750,124 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     is_windows = platform.system() == "Windows"
     installer_name = "install.ps1" if is_windows else "install.sh"
-    installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
-
-    # Prefer local checkout, fall back to package dir, then network fetch.
-    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
-    candidates: list[Path] = []
-    if local_repo:
-        candidates.append(Path(local_repo) / installer_name)
-    candidates.append(_PACKAGE_ROOT / installer_name)
 
     args = ["--shortcuts-only"]
     if verbose:
         args.append("--verbose")
 
+    checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
+
     if is_windows:
-        ps_argv: list[str] = ["powershell.exe"]
+        ps_argv: List[str] = ["powershell.exe"]
         # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
         # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
             ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
 
-        for script in candidates:
-            try:
-                if script.is_file():
-                    quoted = str(script).replace("'", "''")
-                    argv = list(ps_argv)
-                    argv.extend(
-                        [
-                            "-ExecutionPolicy",
-                            "Bypass",
-                            "-Command",
-                            f"& '{quoted}' {' '.join(args)} *>&1",
-                        ]
-                    )
-                    result = subprocess.run(
-                        argv,
-                        env = env,
-                        check = False,
-                        **_windows_hidden_subprocess_kwargs(),
-                    )
-                    if result.returncode != 0:
-                        typer.echo(f"  refresh-launcher  install.ps1 exited {result.returncode}")
-                    return
-            except OSError:
-                continue
-
-        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
-        try:
-            request = urllib.request.Request(
-                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
-            )
-            with urllib.request.urlopen(request, timeout = 30) as response:
-                installer = response.read().decode("utf-8", errors = "replace")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+        # Stops at the first candidate that launched; only an unlaunchable one moves on.
+        if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
             return
-
-        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
-        # stdin `$args` is empty so that triggers the full installer flow
-        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
-        installer = re.sub(
-            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
-            "",
-            installer,
-        )
-        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
-        marker_args = " ".join(args)
-        wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
-
-        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
-        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
-        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
-        # in install.ps1. -File reads the BOM and decodes correctly. The
-        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
-        ps1_fd, ps1_path = tempfile.mkstemp(
-            prefix = "unsloth-studio-refresh-",
-            suffix = ".ps1",
-        )
-        try:
-            with os.fdopen(ps1_fd, "wb") as fh:
-                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
-            argv = list(ps_argv)
-            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
-            try:
-                result = subprocess.run(
-                    argv,
-                    env = env,
-                    check = False,
-                    **_windows_hidden_subprocess_kwargs(),
-                )
-                if result.returncode != 0:
-                    typer.echo(
-                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
-                    )
-            except OSError as exc:
-                typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
-        finally:
-            try:
-                os.unlink(ps1_path)
-            except OSError:
-                pass
+        fetched = _fetch_installer(installer_name, verbose = verbose)
+        if fetched is not None:
+            _run_fetched_installer_ps1(fetched, args, ps_argv, env)
         return
 
-    for script in candidates:
-        try:
-            if script.is_file():
-                result = subprocess.run(
-                    ["bash", str(script), *args],
-                    env = env,
-                    check = False,
-                )
-                if result.returncode != 0:
-                    typer.echo(f"  refresh-launcher  install.sh exited {result.returncode}")
-                return
-        except OSError:
-            continue
-
-    # PyPI installs lack install.sh: fetch upstream.
-    try:
-        request = urllib.request.Request(
-            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
-        )
-        with urllib.request.urlopen(request, timeout = 30) as response:
-            installer = response.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+    if any(_run_installer_bash(script, args, env) for script in checkouts):
         return
+    fetched = _fetch_installer(installer_name, verbose = verbose)
+    if fetched is not None:
+        _run_fetched_installer_bash(fetched, args, env)
 
+
+def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
+    """False when the interpreter could not be launched, so the caller can fall back.
+
+    The pre-refactor candidate loop caught that OSError and carried on to the next
+    candidate and then to the network, silently. Returning False keeps a machine that
+    cannot spawn bash for the checkout on exactly that path instead of ending the
+    refresh early.
+    """
     try:
-        result = subprocess.run(
-            ["bash", "-s", "--", *args],
-            input = installer,
-            env = env,
-            check = False,
-        )
-        if result.returncode != 0:
-            typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+        result = subprocess.run(["bash", str(script), *args], env = env, check = False)
+    except OSError:
+        return False
+    if result.returncode != 0:
+        typer.echo(f"  refresh-launcher  {script.name} exited {result.returncode}")
+    return True
+
+
+def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> None:
+    try:
+        result = subprocess.run(["bash", "-s", "--", *args], input = installer, env = env, check = False)
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
+        return
+    if result.returncode != 0:
+        typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+
+
+def _run_installer_ps1(
+    script: Path, args: Sequence[str], ps_argv: Sequence[str], env: dict
+) -> bool:
+    """False when powershell.exe could not be launched. See _run_installer_bash."""
+    quoted = str(script).replace("'", "''")
+    argv = list(ps_argv)
+    argv.extend(["-ExecutionPolicy", "Bypass", "-Command", f"& '{quoted}' {' '.join(args)} *>&1"])
+    try:
+        result = subprocess.run(argv, env = env, check = False, **_windows_hidden_subprocess_kwargs())
+    except OSError:
+        return False
+    if result.returncode != 0:
+        typer.echo(f"  refresh-launcher  {script.name} exited {result.returncode}")
+    return True
+
+
+def _run_fetched_installer_ps1(
+    installer: bytes, args: Sequence[str], ps_argv: Sequence[str], env: dict
+) -> None:
+    """Run a fetched install.ps1 from a tempfile.
+
+    -File rather than `-Command -`: stdin is decoded with [Console]::InputEncoding
+    (CP1252/OEM on most Windows boxes), which mangles install.ps1's box-drawing chars,
+    while -File honours the BOM written below. The args go after the path so the
+    installer's own `Install-UnslothStudio @args` at EOF receives them, which is why
+    this no longer rewrites that line. The prefix gives AV/EDR engines (and anyone
+    grepping temp) a clear identity.
+
+    Creating and writing that file is its own failure mode: a full disk, a read-only or
+    missing %TEMP%, or AV holding the handle. Those raise OSError, and the refresh runs
+    after the package update has already succeeded, so they are reported and skipped
+    rather than allowed to abort the command.
+    """
+    try:
+        ps1_fd, ps1_path = tempfile.mkstemp(prefix = "unsloth-studio-refresh-", suffix = ".ps1")
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: could not create a temp script ({exc})")
+        return
+    try:
+        try:
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + installer)
+        except OSError as exc:
+            typer.echo(f"  refresh-launcher  skipped: could not write the temp script ({exc})")
+            return
+        argv = list(ps_argv)
+        argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path, *args])
+        try:
+            result = subprocess.run(
+                argv, env = env, check = False, **_windows_hidden_subprocess_kwargs()
+            )
+        except OSError as exc:
+            typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
+            return
+        if result.returncode != 0:
+            typer.echo(f"  refresh-launcher  fetched install.ps1 exited {result.returncode}")
+    finally:
+        try:
+            os.unlink(ps1_path)
+        except OSError:
+            pass
 
 
 @studio_app.command(hidden = True)
@@ -3612,6 +4114,15 @@ class _WindowsLauncherUpdateTransaction:
     """Keep the managed Windows launcher recoverable during a Python update."""
 
     _VERSION_TIMEOUT_SECONDS = 10
+    # Sentinel rather than a message: _launcher_health_error matches on identity,
+    # so it can never be confused with a real diagnostic that happens to read the
+    # same way, and it never reaches a user.
+    _POLICY_BLOCKED = "an Application Control policy blocked the launcher"
+    # Absence is not corruption. Quarantine takes the unsigned stub and leaves the
+    # environment intact, and nothing executes the stub any more, so the CLI can be
+    # perfectly healthy without it. Kept apart from the PE-shape failure, which is
+    # still a real one.
+    _LAUNCHER_ABSENT = "the updated launcher is not on disk"
     _RESTORE_ATTEMPTS = 3
 
     def __init__(self) -> None:
@@ -3707,18 +4218,27 @@ class _WindowsLauncherUpdateTransaction:
         # unusable, and the backup beside it can repair either.
         if self._is_valid_pe(self.launcher):
             return
+        last_error: Optional[Tuple[Path, OSError]] = None
         for recovery in (self.backup, self.stale, self.legacy_backup, self.shim):
             if recovery is not None and self._is_valid_pe(recovery):
                 try:
                     self._atomic_copy(recovery, self.launcher)
                 except OSError as exc:
-                    typer.echo(
-                        f"Error: could not recover {self.launcher} from {recovery}: {exc}",
-                        err = True,
-                    )
-                    typer.echo(f"Manual recovery copy retained at: {recovery}", err = True)
-                    raise typer.Exit(1)
+                    # Try the next copy. The header check and the copy open the file
+                    # separately, so antivirus taking a candidate in between is a race
+                    # this loop can lose without the others being unusable, and giving
+                    # up on the first one turned a recoverable install into a failure.
+                    last_error = (recovery, exc)
+                    continue
                 return
+        if last_error is not None:
+            recovery, exc = last_error
+            typer.echo(
+                f"Error: could not recover {self.launcher} from {recovery}: {exc}",
+                err = True,
+            )
+            typer.echo(f"Manual recovery copy retained at: {recovery}", err = True)
+            raise typer.Exit(1)
 
     @staticmethod
     def _files_match(left: Path, right: Path) -> bool:
@@ -3813,6 +4333,15 @@ class _WindowsLauncherUpdateTransaction:
         candidate that fails --version must not stop the next one being tried,
         and a launcher already in place and working must not be replaced by a
         candidate that is merely PE-shaped.
+
+        Under Application Control that discrimination degrades to the PE-shape
+        check, because no candidate can be told apart by running it: every
+        --version attempt dies in CreateProcess. That is a real limitation and
+        not a hidden one -- a PE-shaped but corrupt copy can be left in place --
+        but it is also unavoidable, since the only way to tell a good stub from a
+        corrupt one is to start it. It is confined to the case where the launcher
+        was missing or truncated, since an intact one never reaches this loop:
+        _launcher_health_error asks the interpreter and reports healthy.
         """
         if self._launcher_health_error() is None:
             return True
@@ -3824,12 +4353,30 @@ class _WindowsLauncherUpdateTransaction:
         # one happened to be tried last.
         if candidates:
             self._restore_from(candidates[0])
-        return False
+        # No copy could be put back and started. A launcher that is simply gone,
+        # or one the policy denies, is still not a broken CLI, so ask the
+        # interpreter before giving up. Asked only here, after every candidate
+        # has been tried, so a launcher that could have been recovered still is.
+        return self._recovered_cli_health_error() is None
 
-    def _launcher_health_error(self) -> Optional[str]:
+    def _launcher_runs_error(self) -> Optional[str]:
+        """Whether THIS launcher file starts and answers --version.
+
+        Deliberately about the file, not about the CLI: it is the only check that
+        can catch a stub that is PE-shaped but corrupt, on every machine. Its
+        caller decides what a policy denial means.
+
+        The stub is probed first, and still is on a locked-down machine, which
+        costs one denied-launch event per update there. That is a log entry, not
+        a failure. Asking the interpreter instead would be quieter but blind: it
+        cannot see a corrupt launcher on ANY machine, including the overwhelming
+        majority that have no policy at all, which is the strictly worse trade.
+        """
         assert self.launcher is not None
+        if not self.launcher.exists():
+            return self._LAUNCHER_ABSENT
         if not self._is_valid_pe(self.launcher):
-            return "the updated launcher is missing or is not a non-empty PE file"
+            return "the updated launcher is not a non-empty PE file"
         try:
             result = subprocess.run(
                 [str(self.launcher), "--version"],
@@ -3841,9 +4388,95 @@ class _WindowsLauncherUpdateTransaction:
         except subprocess.TimeoutExpired:
             return f"the updated launcher timed out after {self._VERSION_TIMEOUT_SECONDS} seconds"
         except OSError as exc:
+            if _is_application_control_block(exc):
+                return self._POLICY_BLOCKED
             return f"the updated launcher could not run --version ({exc})"
         if result.returncode != 0:
             return f"the updated launcher returned {result.returncode} for --version"
+        return None
+
+    def _launcher_health_error(self) -> Optional[str]:
+        """Whether the update left a working CLI -- the question that matters.
+
+        Identical to _launcher_runs_error except when the launcher was denied by
+        an Application Control policy. That denial happens before Python starts,
+        so it says nothing about the update: the package can be perfectly
+        healthy. Ask the signed interpreter beside it instead, or every update on
+        such a machine reports failure and rolls a good install back (issue
+        #8490). A launcher that fails to start for any other reason is the
+        failure it always was.
+        """
+        error = self._launcher_runs_error()
+        if error is self._POLICY_BLOCKED:
+            return self._interpreter_health_error(error)
+        return error
+
+    def _recovered_cli_health_error(self) -> Optional[str]:
+        """_launcher_health_error, once recovering the launcher has been ruled out.
+
+        Absence is the difference. A missing launcher IS worth restoring, so
+        _launcher_health_error keeps reporting it and validate_launcher goes on
+        to put the previous one back. But quarantine deletes the unsigned stub
+        rather than denying it, and no copy survives being restored either, so
+        once every candidate has failed, absence says as little about the update
+        as a policy denial does: ask the interpreter instead of failing a good
+        update and rolling it back (issue #8490).
+        """
+        error = self._launcher_runs_error()
+        if error is self._POLICY_BLOCKED or error is self._LAUNCHER_ABSENT:
+            return self._interpreter_health_error(error)
+        return error
+
+    def _interpreter_health_error(self, reason: str) -> Optional[str]:
+        """Health of the managed CLI when the launcher itself cannot be started.
+
+        Answers the question validate_launcher actually has -- did the update
+        leave a working CLI? -- on a machine where --version on the launcher can
+        never succeed. Falls back to reporting the original block when there is
+        no interpreter to ask.
+
+        Isolated, alone among this module's managed invocations, because the
+        launch it is predicting is itself isolated: build_update_command in
+        studio/src-tauri/src/update.rs runs the desktop updater under
+        Isolation::Isolated and clears PYTHONHOME/PYTHONPATH. Inheriting them
+        here would let a foreign checkout on PYTHONPATH answer --version for a
+        managed package the update actually broke, and validate_launcher would
+        keep an update that the next desktop launch cannot start. -I implies -E,
+        so it clears the same two variables the Rust side removes by hand.
+        """
+        assert self.launcher is not None
+        python = self.launcher.parent / "python.exe"
+        if not python.is_file():
+            blocked = reason is self._POLICY_BLOCKED
+            state = "is blocked by an Application Control policy" if blocked else "is missing"
+            return (
+                f"the updated launcher {state} and there is no managed interpreter "
+                f"at {python} to ask instead"
+            )
+        try:
+            result = subprocess.run(
+                _managed_cli_argv(python, "--version", isolated = True),
+                check = False,
+                capture_output = True,
+                # The import probe's ceiling, not the launcher's. --version on the
+                # launcher is a process start; here it is a bare interpreter start
+                # plus the whole CLI package import, which is exactly the work
+                # _MANAGED_CLI_IMPORT_PROBE_TIMEOUT is generous for. Under the
+                # antivirus scan that produced the quarantine this path exists to
+                # survive, the launcher's 10 seconds would call a healthy update
+                # broken and roll it back, once per recovery candidate.
+                timeout = _MANAGED_CLI_IMPORT_PROBE_TIMEOUT,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                f"the managed Python CLI timed out after "
+                f"{_MANAGED_CLI_IMPORT_PROBE_TIMEOUT} seconds"
+            )
+        except OSError as exc:
+            return f"the managed Python CLI could not run --version ({exc})"
+        if result.returncode != 0:
+            return f"the managed Python CLI returned {result.returncode} for --version"
         return None
 
     @staticmethod
@@ -3941,6 +4574,14 @@ class _WindowsLauncherUpdateTransaction:
                     typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
                 raise typer.Exit(1)
         self._validated = True
+        # Only once the launcher is actually back. A quarantined or locked stub can
+        # be judged healthy through the interpreter while every attempt to restore
+        # a copy failed, and deleting the copies there would throw away the only
+        # material a later run could recover from. They are fixed names, so keeping
+        # them costs nothing and the next update that does put a launcher back
+        # clears them.
+        if not self._is_valid_pe(self.launcher):
+            return
         for orphan in (self.stale, self.backup, self.legacy_backup):
             if orphan is None:
                 continue

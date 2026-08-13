@@ -288,6 +288,232 @@ class TestPinnedIndexClearsUvEnv:
         assert env is None
 
 
+class TestSdistOnlyBuildArgs:
+    """A hardened user config must not be able to fail the extras step.
+
+    #8530: `no-build = true` (uv.toml) or `only-binary = :all:` (pip.conf) makes every
+    wheel-less requirement in extras.txt unresolvable, so the install died at "unsloth
+    extras". A PACKAGE-SCOPED --no-binary overrides that for those names only -- verified
+    against uv 0.10 and pip 26: drop one name and that name is refused again.
+    """
+
+    def test_emits_no_binary_for_every_sdist_only_package(self):
+        args = ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)
+        for name in ips.SDIST_ONLY_PACKAGES:
+            assert ["--no-binary", name] == args[
+                args.index(name) - 1 : args.index(name) + 1
+            ], f"{name} must be passed as a package-scoped --no-binary, got: {args}"
+        assert len(args) == 2 * len(ips.SDIST_ONLY_PACKAGES)
+
+    def test_openai_whisper_is_covered(self):
+        """The package named in the issue, and the transitive one behind omegaconf."""
+        assert "openai-whisper" in ips.SDIST_ONLY_PACKAGES
+        # omegaconf==2.3.1 pins antlr4-python3-runtime below the 4.13.2 wheel, so it
+        # arrives as a transitive sdist and fails no-build even though extras.txt
+        # never names it.
+        assert "antlr4-python3-runtime" in ips.SDIST_ONLY_PACKAGES
+
+    def test_flags_survive_translation_to_uv(self):
+        """uv is the primary path, so the flags must reach _build_uv_cmd intact."""
+        cmd = ips._build_uv_cmd(tuple(ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)))
+        for name in ips.SDIST_ONLY_PACKAGES:
+            assert name in cmd
+        assert cmd.count("--no-binary") == len(ips.SDIST_ONLY_PACKAGES)
+
+    def test_flags_survive_translation_to_pip(self):
+        """And the pip FALLBACK must carry them too, for the uv-less/uv-broken case."""
+        cmd = ips._build_pip_cmd(tuple(ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)))
+        for name in ips.SDIST_ONLY_PACKAGES:
+            assert name in cmd
+        assert cmd.count("--no-binary") == len(ips.SDIST_ONLY_PACKAGES)
+
+    @pytest.mark.parametrize(
+        "is_macos, version, expected",
+        [
+            (True, (3, 14, 0), True),
+            (True, (3, 13, 12), False),
+            (False, (3, 14, 0), False),
+            (False, (3, 13, 12), False),
+        ],
+    )
+    def test_mecab_is_exempted_only_where_it_has_no_wheel(self, is_macos, version, expected):
+        """extras.txt pins MeCab==0.996.5 on macOS cp314+, which ships only an sdist.
+
+        MeCab is a C extension, so an unconditional exemption would force a
+        compiler-dependent build on every other host -- a worse bug than the one being
+        fixed. Verified against uv 0.10: 0.996.5 is refused under `no-build = true` for
+        macOS cp314 and resolves with --no-binary MeCab; 0.996.13 stays a wheel elsewhere.
+        """
+        with (
+            mock.patch.object(ips, "IS_MACOS", is_macos),
+            mock.patch.object(sys, "version_info", version),
+        ):
+            names = ips._extras_sdist_only_packages()
+        assert ("MeCab" in names) is expected
+        # The unconditional ones are always present.
+        assert set(ips.SDIST_ONLY_PACKAGES) <= set(names)
+
+    def test_the_diffusers_pin_is_exempted_on_the_archive_path(self):
+        """The pin is a source ARCHIVE, and uv's no-build refuses to build one, so the
+        install still died here after extras.txt was fixed.
+
+        Guarded on python >= 3.10 because diffusers-pin.txt resolves a released wheel
+        below that, which must not be forced through a source build.
+        """
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
+                continue
+            req = next((k for k in node.keywords if k.arg == "req"), None)
+            if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
+                continue
+            splat = " ".join(ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred))
+            assert (
+                "_sdist_only_build_args('diffusers')" in splat
+            ), f"the diffusers pin at line {node.lineno} must exempt the source archive"
+            assert "version_info >= (3, 10)" in splat, (
+                "the exemption must be guarded so the pre-3.10 wheel is not forced "
+                f"through a source build (line {node.lineno})"
+            )
+            return
+        pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
+
+    def test_the_extras_step_actually_passes_them(self):
+        """The helper existing is not the fix; the extras call site using it is.
+
+        extras.txt is the manifest that carries the wheel-less requirements, and its
+        pip_install() is fatal, so this is the call that #8530 died on.
+        """
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
+                continue
+            req = next((k for k in node.keywords if k.arg == "req"), None)
+            if req is None or "extras.txt" not in ast.unparse(req.value):
+                continue
+            starred = [ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred)]
+            assert any("_sdist_only_build_args(" in s for s in starred), (
+                f"the extras.txt install at line {node.lineno} must splat "
+                "_sdist_only_build_args() or a hardened uv.toml fails it again"
+            )
+            assert any("_extras_sdist_only_packages()" in s for s in starred), (
+                "the extras install must use the platform-aware list so the macOS "
+                "cp314 MeCab sdist is exempted too"
+            )
+            return
+        pytest.fail("no pip_install(req=.../extras.txt) call found")
+
+    def test_matches_the_ci_nobuild_allowlists(self):
+        """CI already ratifies exactly these as audited pure-Python sdist builds.
+
+        If the two lists drift, either CI fails a legitimate build or we exempt a
+        package nobody audited, so pin them together.
+        """
+        repo = Path(ips.__file__).resolve().parents[1]
+        shell = (repo / ".github/scripts/clean-machine-assert.sh").read_text(encoding = "utf-8")
+        allow = shell[shell.index('_allow="$(printf') :]
+        allow = allow[: allow.index("\n")]
+        ps1 = (repo / ".github/scripts/assert-nobuild.ps1").read_text(encoding = "utf-8")
+        for name in ips.SDIST_ONLY_PACKAGES:
+            assert name in allow, f"{name} missing from clean-machine-assert.sh nobuild allowlist"
+            assert f"'{name}'" in ps1, f"{name} missing from assert-nobuild.ps1 allowlist"
+
+
+class TestHardenedPipConfigRelaxation:
+    """`require-hashes = true` in pip.conf killed the pip FALLBACK in #8530.
+
+    Every requirements file we ship is pinned but unhashed, so hash-required mode can
+    never be satisfied. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
+    in the child env overrides it while pip.conf's index-url, trusted-host, cert and
+    proxy stay in force. It has no command-line equivalent, hence the env var.
+    """
+
+    HOSTILE = {
+        "PIP_REQUIRE_HASHES": "1",
+        "PIP_ONLY_BINARY": ":all:",
+        "UV_NO_BUILD": "1",
+        "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z",
+    }
+
+    def test_uv_commands_are_left_alone(self):
+        """uv reads none of the PIP_* vars, and its own no-build is handled by the
+        package-scoped --no-binary, so a uv command must still inherit the env
+        unchanged -- the mirror contract at test_non_pinned_install_keeps_user_mirror."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert ips._install_env_for_cmd(["uv", "pip", "install", "-r", "extras.txt"]) is None
+
+    def test_non_pinned_pip_install_relaxes_hash_mode(self):
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+        assert env is not None, "the pip fallback must not inherit require-hashes"
+        assert env["PIP_REQUIRE_HASHES"] == "0"
+
+    def test_non_pinned_pip_keeps_the_user_mirror_and_binary_policy(self):
+        """Only hash mode is relaxed. The mirror stays, and so does only-binary --
+        the wheel-less packages are exempted per-package on the command line instead."""
+        with mock.patch.dict(
+            os.environ,
+            dict(self.HOSTILE, PIP_INDEX_URL = "https://mirror.corp/simple"),
+        ):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+        assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple"
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert "PIP_CONFIG_FILE" not in env, "a non-pinned install must still read pip.conf"
+        assert "UV_NO_CONFIG" not in env, "a non-pinned install must still read uv.toml"
+
+    def test_non_install_commands_are_untouched(self):
+        """run() routes EVERY command through this helper, not just installs."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert ips._install_env_for_cmd(["python", "-m", "pip", "--version"]) is None
+            assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
+
+    def test_pinned_cmd_strips_restrictive_policy_env(self):
+        """The pinned branch neutralises the config FILES, but an env var outranks a
+        config file, so a hardened shell could still fail a torch repair the pin was
+        supposed to make deterministic."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        for name in ("PIP_REQUIRE_HASHES", "PIP_ONLY_BINARY", "UV_NO_BUILD", "UV_EXCLUDE_NEWER"):
+            assert name not in env, f"{name} must be cleared for a pinned install"
+        # The pre-existing pinned contract is unchanged.
+        assert env["UV_NO_CONFIG"] == "1" and env["PIP_CONFIG_FILE"] == os.devnull
+
+    def test_the_parent_environment_is_never_mutated(self):
+        """The relaxation is a child-env override. Leaking it into os.environ would
+        weaken the user's policy for their own later pip commands in this session."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+            ips._install_env_for_cmd(["uv", "pip", "install", "x", "--index-url", "https://y"])
+            assert os.environ["PIP_REQUIRE_HASHES"] == "1"
+            assert os.environ["UV_NO_BUILD"] == "1"
+
+    def test_the_pip_fallback_receives_the_relaxation(self):
+        """End of the real path: uv fails, pip_install falls back through run(), and
+        that pip command is the one #8530 died on."""
+        seen: dict = {}
+
+        def _fake_run(label, cmd, *a, **kw):
+            seen["env"] = ips._install_env_for_cmd(cmd)
+            seen["cmd"] = cmd
+
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "subprocess") as sp,
+            mock.patch.object(ips, "run", _fake_run),
+            mock.patch.dict(os.environ, self.HOSTILE),
+        ):
+            sp.run.return_value = mock.Mock(returncode = 1, stdout = "")
+            sp.PIPE, sp.STDOUT = -1, -2
+            ips.pip_install("deps", *ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES))
+
+        assert seen["env"]["PIP_REQUIRE_HASHES"] == "0"
+        for name in ips.SDIST_ONLY_PACKAGES:
+            assert name in seen["cmd"], "the fallback lost the source-build exemptions"
+
+
 class TestProgressLineNotes:
     """_progress() leaves the cursor mid-line, so anything printed between two
     progress steps must close that line first. Before centralising this, a real

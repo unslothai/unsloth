@@ -13,8 +13,10 @@ export const en = {
     searchAriaLabel: "Search {noun}",
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
-    pickModelFile: "Pick a model file from disk",
-    ejectLoadedModel: "Eject loaded model",
+    modelDropped: "No longer offered",
+    modelDroppedByProvider: "{provider} · no longer offered",
+    modelDisabled: "Not enabled",
+    modelDisabledByProvider: "{provider} · not enabled",
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
@@ -416,14 +418,14 @@ export const en = {
         launchAtLogin: "Run Unsloth at login",
         launchAtLoginDescription:
           "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+
+        closeToTray: "Close to system tray",
+        closeToTrayDescription:
+          "Keep Unsloth and its server running in the background when you close the main window.",
+        closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
-      gettingStarted: "Getting started",
-      startOnboarding: "Start onboarding",
-      startOnboardingDescription:
-        "Reopen the setup wizard without changing your account.",
-      startOnboardingAction: "Start onboarding",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
@@ -712,6 +714,39 @@ export const en = {
         free: "{value} free",
         total: "{value} total",
       },
+      llamaBackend: {
+        title: "GGUF inference engine",
+        label: "Compute backend",
+        description: "The backend llama.cpp uses to run GGUF models.",
+        runningOn: "llama.cpp currently runs on {backend}.",
+        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        autoWith: "Automatic ({backend})",
+        apply: "Apply",
+        applying: "Installing...",
+        applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
+        applyHintWithSize: "Downloads {size} and restarts llama.cpp. A loaded model is unloaded.",
+        switchedTo: "llama.cpp now runs on {backend}.",
+        switchFailed: "Could not change the llama.cpp backend.",
+        switchInterrupted: "The switch was interrupted before completion.",
+        envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        backends: {
+          auto: "Automatic",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
+          localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
+          sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          unresolved: "The available backends could not be checked. Check your connection and try again.",
+        },
+        // Not rendered: extra terms the settings search matches these rows on.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
+      },
       modelMemory: {
         title: "Model memory",
         keepResident: "Keep model in GPU memory",
@@ -922,11 +957,13 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Import a JSONL, NDJSON, or CSV export into Recents.",
+        "Import an Open WebUI, JSONL, NDJSON, or CSV export into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",
       importedChatCount: "Imported {count} conversations to Recents.",
+      importingChats: "Importing chats: {count} so far ({percent}%)...",
+      importedChatCountPartial: "Imported {count} conversations to Recents; {failed} could not be saved.",
       importFailed: "Import failed.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete chat history from this device.",
@@ -1192,23 +1229,7 @@ export const en = {
         "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
-      hfTokenLabel: "Hugging Face token",
       hfTokenDescription: "Required for gated or private models and datasets.",
-      hfTokenGet: "Get token",
-      hfTokenChecking: "Checking token…",
-      modelPickerDescription:
-        "Search Hugging Face or choose a trainable model already on this device.",
-      trainingMethod: "Training method",
-      trainingMethodDescription: "Choose how to fine-tune {model}",
-      trainingMethodTooltip:
-        "QLoRA uses 4-bit quantization for the lowest VRAM use. LoRA uses 16-bit weights, while full fine-tuning updates every weight.",
-      datasetPickerDescription:
-        "Search Hugging Face or choose a dataset already on this device.",
-      uploadDataset: "Upload a dataset",
-      uploadDatasetDescription: "Supports CSV, JSONL, JSON, and Parquet.",
-      chooseFile: "Choose a file",
-      format: "Format",
-      autoDetect: "Auto Detect",
       uploadLocalLabel: "Or upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",
@@ -1371,23 +1392,6 @@ export const en = {
     loadingRuntime: "Loading training runtime...",
     checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",
-    sections: {
-      model: "Model",
-      dataset: "Dataset",
-      params: "Parameters",
-      training: "Training",
-      charts: "Charts",
-      progress: "Training Progress",
-    },
-    configure: {
-      title: "Configure",
-      description: "Choose a model, dataset, and training settings.",
-      startTraining: "Start Training",
-      starting: "Starting...",
-      loadingModel: "Loading model...",
-      checkingDataset: "Checking dataset...",
-      trainingConfig: "Training Config",
-    },
     dataset: {
       selectors: {
         subset: "Subset",
@@ -1409,7 +1413,6 @@ export const en = {
         manualTooLong: "Use 128 characters or fewer.",
         manualInvalid: "This value contains unsupported characters.",
       },
-      source: "Dataset source",
       sourceAriaLabel: "Dataset source",
       localDataset: "Local dataset",
       localDatasetRows: " / {count} rows",
@@ -1426,8 +1429,6 @@ export const en = {
       fileTooLarge: "File too large",
       fileTooLargeDescription:
         "{file} is {size}. Training uploads support up to {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · up to {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "This file needs conversion first",
         genericFile: "This file",
@@ -1509,7 +1510,6 @@ export const en = {
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
         "Training dataset upload accepts a single file.",
-      preview: "Preview dataset",
       previewLoadingHuggingFace:
         "Fetching dataset preview from Hugging Face...",
       previewLoading: "Loading preview...",
@@ -1531,8 +1531,6 @@ export const en = {
         requiredDescription:
           "Assign roles to columns using the dropdowns in the headers. At minimum, assign {required}.",
       },
-      split: "Split",
-      subset: "Subset",
       s3: {
         title: "S3 Configuration",
         description:
@@ -1543,20 +1541,11 @@ export const en = {
         regionPlaceholder: "us-east-1",
         prefix: "Path Prefix",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Optional path within the bucket to your dataset files",
         accessKeyId: "Access Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Your AWS secret access key",
         useIamRole: "Use IAM Role",
-        useIamRoleTooltip:
-          "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
-        testConnection: "Test Connection",
-        connectionSuccess: "Successfully connected to S3 bucket",
-        connectionFailed: "Failed to connect to S3 bucket",
-        comingSoon: "S3 integration coming soon",
-        comingSoonDescription:
-          "S3 dataset loading requires boto3. This feature is under development.",
       },
     },
     params: {
@@ -1752,7 +1741,6 @@ export const en = {
         "The run was deleted but its files could not be removed.",
       deleteArtifactsRetainedError:
         "The adapter files could not be removed, so the training run was kept in history.",
-      emptyTitle: "No training runs yet",
       emptyDescription:
         "No training runs yet. Start your first training run in the Configure tab.",
       loadError: "Failed to load training runs",
@@ -1765,9 +1753,6 @@ export const en = {
       deleteTitle: "Delete training run?",
       deleteDescription:
         "This will permanently delete this training run and all its metrics. This action cannot be undone.",
-      runCount: "{count} runs",
-      oneRun: "1 run",
-      resume: "Resume",
       resumeTraining: "Resume training",
       resuming: "Resuming...",
       deleteRun: "Delete run",
@@ -1900,9 +1885,6 @@ export const en = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
-    },
-    tour: {
-      guidedTour: "Guided Tour",
     },
   },
 } as const;

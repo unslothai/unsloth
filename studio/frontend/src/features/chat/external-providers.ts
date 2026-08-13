@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type {
+  ProviderAuthKind,
+  ProviderAuthStatus,
+} from "./api/providers-api";
+
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -13,9 +18,21 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /**
+   * The provider type as the BACKEND stores it, which is not always `providerType`
+   * above: `resolveUiProviderTypeFromConfig` shows a row saved as `openai` with a
+   * custom name or base URL as "custom". Absent means unknown, not custom.
+   */
+  backendProviderType?: string;
+  /** Optional maximum Max Tokens cap for a generic Custom connection. */
+  maxOutputTokens?: number;
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
+
+  /** Sanitized backend-owned authorization state; never contains OAuth material. */
+  authKind?: ProviderAuthKind;
+  authStatus?: ProviderAuthStatus;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
   /**
@@ -107,9 +124,180 @@ export function providerTypeSupportsVision(
   return null;
 }
 
+
+const REGISTRY_MODEL_CAPABILITIES = new Map<
+  string,
+  Record<string, { vision?: boolean; studio_tools?: boolean }>
+>();
+
+const REGISTRY_MODEL_CAPABILITIES_KEY =
+  "unsloth_chat_provider_model_capabilities";
+let registryCapabilitiesHydrated = false;
+
+function hydrateProviderModelCapabilities(): void {
+  if (registryCapabilitiesHydrated) return;
+  registryCapabilitiesHydrated = true;
+  if (!canUseStorage()) return;
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(REGISTRY_MODEL_CAPABILITIES_KEY) ?? "{}",
+    ) as Record<
+      string,
+      Record<string, { vision?: boolean; studio_tools?: boolean }>
+    >;
+    for (const [providerType, capabilities] of Object.entries(parsed)) {
+      if (capabilities && typeof capabilities === "object") {
+        REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
+      }
+    }
+  } catch {
+    // Ignore invalid browser state; the backend registry will repopulate it.
+  }
+}
+
+function persistProviderModelCapabilities(): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(
+      REGISTRY_MODEL_CAPABILITIES_KEY,
+      JSON.stringify(Object.fromEntries(REGISTRY_MODEL_CAPABILITIES)),
+    );
+  } catch {
+    // Ignore storage failures; capabilities remain valid for this session.
+  }
+}
+
+export function setProviderModelCapabilities(
+  providerType: string,
+  capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+): void {
+  hydrateProviderModelCapabilities();
+  if (capabilities) REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
+  else REGISTRY_MODEL_CAPABILITIES.delete(providerType);
+  persistProviderModelCapabilities();
+}
+
+/** Drop persisted capabilities for provider types the registry no longer lists.
+ *
+ * This map outlives the backend that wrote it: it is localStorage, so a browser
+ * carries it across a downgrade, and a per-entry write can only ever correct the
+ * entries the registry still returns. A provider that has been hidden or that a
+ * rolled-back backend does not know about is simply absent from the response, so
+ * without this its last-known `studio_tools: true` latches forever and the
+ * composer keeps offering a loop that backend cannot run.
+ *
+ * Convergence is the point: the registry response is the whole truth about which
+ * provider types exist, so an empty one legitimately means "none", and clearing
+ * is the safe direction anyway (an unknown capability reads as null, which every
+ * caller treats as "not capable").
+ */
+export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<string>): void {
+  hydrateProviderModelCapabilities();
+  const known = new Set(knownProviderTypes);
+  let removed = false;
+  for (const providerType of [...REGISTRY_MODEL_CAPABILITIES.keys()]) {
+    if (!known.has(providerType)) {
+      REGISTRY_MODEL_CAPABILITIES.delete(providerType);
+      removed = true;
+    }
+  }
+  if (removed) persistProviderModelCapabilities();
+}
+
+
+export function providerModelSupportsVision(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+
+  hydrateProviderModelCapabilities();
+  if (providerType && modelId) {
+    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    if (typeof capability?.vision === "boolean") return capability.vision;
+  }
+  return providerTypeSupportsVision(providerType);
+}
+
+
+/** Provider-level capability key. Self-hosted model ids are user-supplied, so
+ * there is no per-model entry to look up: the registry declares the capability
+ * once for the whole provider type and it applies to every model on it. */
+export const PROVIDER_CAPABILITY_WILDCARD = "*";
+
+export function providerModelSupportsStudioTools(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+  if (!providerType) return null;
+  hydrateProviderModelCapabilities();
+  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  if (modelId) {
+    const value = capabilities?.[modelId]?.studio_tools;
+    if (typeof value === "boolean") return value;
+  }
+  const providerDefault = capabilities?.[PROVIDER_CAPABILITY_WILDCARD]?.studio_tools;
+  return typeof providerDefault === "boolean" ? providerDefault : null;
+}
+
+/** Whether the connection behind an ``external::`` model id runs Studio tools.
+ *
+ * Resolves the provider type from the saved connection, so callers that only
+ * have a checkpoint id (the runtime store) can ask the capability question
+ * without reaching for the providers store and risking an import cycle.
+ */
+export function externalModelSupportsStudioTools(
+  checkpoint: string | null | undefined,
+): boolean {
+  const selection = parseExternalModelId(checkpoint);
+  if (!selection) return false;
+  const provider = loadExternalProviders().find(
+    (candidate) => candidate.id === selection.providerId,
+  );
+  if (!provider) return false;
+  return (
+    providerModelSupportsStudioTools(provider.providerType, selection.modelId) === true
+  );
+}
+
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
+export const CUSTOM_MAX_OUTPUT_TOKENS_MIN = 64;
+
+export function normalizeCustomMaxOutputTokens(
+  providerType: string | null | undefined,
+  value: unknown,
+): number | undefined {
+  if (
+    providerType !== LEGACY_CUSTOM_PROVIDER_TYPE ||
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < CUSTOM_MAX_OUTPUT_TOKENS_MIN
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Whether a connection may carry a per-connection Max Tokens limit.
+ *
+ * Both types have to agree: the UI type decides what the dialog draws, the stored type
+ * decides what the server accepts, and they differ for a row saved as `openai` with a
+ * custom name or base URL. An unknown stored type (synced before this field, or a
+ * connection with no server row yet) falls back to what the create call will send.
+ */
+export function supportsCustomMaxOutputTokens(
+  uiProviderType: string | null | undefined,
+  backendProviderType: string | null | undefined,
+): boolean {
+  if (uiProviderType !== LEGACY_CUSTOM_PROVIDER_TYPE) return false;
+  const effective =
+    typeof backendProviderType === "string" && backendProviderType.length > 0
+      ? backendProviderType
+      : toExternalBackendProviderType(uiProviderType);
+  return effective === LEGACY_CUSTOM_PROVIDER_TYPE;
+}
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
@@ -327,6 +515,16 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    // Junk from a hand-edited entry becomes undefined, i.e. unknown.
+    backendProviderType:
+      typeof raw.backendProviderType === "string" &&
+      raw.backendProviderType.trim().length > 0
+        ? raw.backendProviderType.trim()
+        : undefined,
+    maxOutputTokens: normalizeCustomMaxOutputTokens(
+      providerType,
+      raw.maxOutputTokens,
+    ),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

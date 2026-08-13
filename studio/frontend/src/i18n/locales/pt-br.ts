@@ -17,8 +17,10 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
-    pickModelFile: "Escolher um arquivo de modelo no disco",
-    ejectLoadedModel: "Ejetar o modelo carregado",
+    modelDropped: "Não é mais oferecido",
+    modelDroppedByProvider: "{provider} · não é mais oferecido",
+    modelDisabled: "Não ativado",
+    modelDisabledByProvider: "{provider} · não ativado",
     multipleMatches:
       "Há vários {noun} correspondentes. Escolha uma opção na lista.",
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
@@ -420,16 +422,17 @@ export const ptBR = {
         launchAtLogin: "Executar o Unsloth ao fazer login",
         launchAtLoginDescription:
           "Inicia o Unsloth em segundo plano quando você faz login. Ele permanece na barra de menus ou na bandeja do sistema até você abri-lo.",
+
+        closeToTray: "Fechar para a bandeja do sistema",
+        closeToTrayDescription:
+          "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
+        closeToTraySaveError:
+          "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
           "Não foi possível atualizar a configuração de inicialização no login.",
       },
-      gettingStarted: "Primeiros passos",
-      startOnboarding: "Iniciar configuração",
-      startOnboardingDescription:
-        "Reabre o assistente de configuração sem alterar sua conta.",
-      startOnboardingAction: "Iniciar configuração",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
@@ -725,6 +728,39 @@ export const ptBR = {
         free: "{value} livres",
         total: "{value} total",
       },
+      llamaBackend: {
+        title: "GGUF inference engine",
+        label: "Compute backend",
+        description: "The backend llama.cpp uses to run GGUF models.",
+        runningOn: "llama.cpp currently runs on {backend}.",
+        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        autoWith: "Automatic ({backend})",
+        apply: "Apply",
+        applying: "Installing...",
+        applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
+        applyHintWithSize: "Downloads {size} and restarts llama.cpp. A loaded model is unloaded.",
+        switchedTo: "llama.cpp now runs on {backend}.",
+        switchFailed: "Could not change the llama.cpp backend.",
+        switchInterrupted: "The switch was interrupted before completion.",
+        envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        backends: {
+          auto: "Automatic",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
+          localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
+          sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          unresolved: "The available backends could not be checked. Check your connection and try again.",
+        },
+        // Not rendered: extra terms the settings search matches these rows on.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
+      },
       modelMemory: {
         title: "Memória do modelo",
         keepResident: "Manter o modelo na memória da GPU",
@@ -941,11 +977,13 @@ export const ptBR = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importe um arquivo exportado em JSONL, NDJSON ou CSV para Recentes.",
+        "Importe um export do Open WebUI, JSONL, NDJSON ou CSV para Recentes.",
       importChatsAction: "Importar",
       importNoConversations: "Nenhuma conversa encontrada no arquivo.",
       importedOneChat: "1 conversa foi importada para Recentes.",
       importedChatCount: "{count} conversas foram importadas para Recentes.",
+      importingChats: "Importando chats: {count} até agora ({percent}%)...",
+      importedChatCountPartial: "{count} conversas importadas para Recentes; {failed} não puderam ser salvas.",
       importFailed: "Falha na importação.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
@@ -1217,24 +1255,8 @@ export const ptBR = {
       modelTooltip: "O modelo base que você quer ajustar.",
       methodTooltip: "Como o modelo é treinado. LoRA e QLoRA atualizam adaptadores pequenos em vez de todos os pesos.",
       datasetTooltip: "Os dados de treinamento usados para ajustar o modelo.",
-      hfTokenLabel: "Token do Hugging Face",
       hfTokenDescription:
         "Necessário para modelos e conjuntos de dados restritos ou privados.",
-      hfTokenGet: "Obter token",
-      hfTokenChecking: "Verificando token…",
-      modelPickerDescription:
-        "Pesquise no Hugging Face ou escolha um modelo treinável já disponível neste dispositivo.",
-      trainingMethod: "Método de treinamento",
-      trainingMethodDescription: "Escolha como fazer o fine-tuning de {model}",
-      trainingMethodTooltip:
-        "O QLoRA usa quantização de 4 bits para reduzir ao mínimo o uso de VRAM. O LoRA usa pesos de 16 bits, enquanto o fine-tuning completo atualiza todos os pesos.",
-      datasetPickerDescription:
-        "Pesquise no Hugging Face ou escolha um dataset já disponível neste dispositivo.",
-      uploadDataset: "Enviar um dataset",
-      uploadDatasetDescription: "Compatível com CSV, JSONL, JSON e Parquet.",
-      chooseFile: "Escolher um arquivo",
-      format: "Formato",
-      autoDetect: "Detecção automática",
       uploadLocalLabel: "Ou envie um arquivo local",
       sourceBrowse: "Procurar",
       releaseToUpload: "Solte para enviar",
@@ -1402,23 +1424,6 @@ export const ptBR = {
     loadingRuntime: "Carregando ambiente de execução de treino...",
     checkingSupport: "Verificando se esta máquina oferece suporte a treino...",
     backToHistory: "Voltar ao histórico",
-    sections: {
-      model: "Modelo",
-      dataset: "Dataset",
-      params: "Parâmetros",
-      training: "Treinamento",
-      charts: "Gráficos",
-      progress: "Progresso do Treinamento",
-    },
-    configure: {
-      title: "Configurar",
-      description: "Escolha um modelo, dataset e configurações de treinamento.",
-      startTraining: "Iniciar Treinamento",
-      starting: "Iniciando...",
-      loadingModel: "Carregando modelo...",
-      checkingDataset: "Verificando dataset...",
-      trainingConfig: "Configuração de Treino",
-    },
     dataset: {
       selectors: {
         subset: "Subconjunto",
@@ -1441,7 +1446,6 @@ export const ptBR = {
         manualTooLong: "Use no máximo 128 caracteres.",
         manualInvalid: "Este valor contém caracteres não suportados.",
       },
-      source: "Origem do dataset",
       sourceAriaLabel: "Origem do dataset",
       localDataset: "Dataset local",
       localDatasetRows: " / {count} linhas",
@@ -1458,8 +1462,6 @@ export const ptBR = {
       fileTooLarge: "Arquivo muito grande",
       fileTooLargeDescription:
         "{file} tem {size}. Os uploads de treinamento aceitam até {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · até {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Este arquivo precisa ser convertido primeiro",
         genericFile: "Este arquivo",
@@ -1546,7 +1548,6 @@ export const ptBR = {
       uploadOneFileAtATime: "Envie um arquivo por vez",
       uploadSingleFileDescription:
         "O upload do dataset de treinamento aceita apenas um único arquivo.",
-      preview: "Pré-visualizar dataset",
       previewLoadingHuggingFace:
         "Buscando a pré-visualização do dataset no Hugging Face...",
       previewLoading: "Carregando pré-visualização...",
@@ -1568,8 +1569,6 @@ export const ptBR = {
         requiredDescription:
           "Atribua funções às colunas usando os menus nos cabeçalhos. Atribua pelo menos {required}.",
       },
-      split: "Divisão (Split)",
-      subset: "Subconjunto (Subset)",
       s3: {
         title: "Configuração do S3",
         description: "Carregue datasets em .parquet, .json, .jsonl ou .csv do Amazon S3",
@@ -1579,18 +1578,11 @@ export const ptBR = {
         regionPlaceholder: "us-east-1",
         prefix: "Prefixo do Caminho",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Caminho opcional dentro do bucket para os arquivos do seu dataset",
         accessKeyId: "ID da Chave de Acesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Chave de Acesso Secreta",
         secretAccessKeyPlaceholder: "Sua chave de acesso secreta da AWS",
         useIamRole: "Usar Função IAM",
-        useIamRoleTooltip: "Usa credenciais de função IAM em vez de chaves de acesso (recomendado para EC2/SageMaker)",
-        testConnection: "Testar Conexão",
-        connectionSuccess: "Conectado com sucesso ao bucket S3",
-        connectionFailed: "Falha ao conectar ao bucket S3",
-        comingSoon: "Integração com S3 em breve",
-        comingSoonDescription: "O carregamento de datasets do S3 requer o boto3. Este recurso está em desenvolvimento.",
       },
     },
     params: {
@@ -1776,7 +1768,6 @@ export const ptBR = {
     },
     history: {
       title: "Histórico",
-      emptyTitle: "Nenhuma execução de treino ainda",
       emptyDescription:
         "Nenhuma execução de treino ainda. Inicie sua primeira execução na aba Configurar.",
       loadError: "Falha ao carregar as execuções de treino",
@@ -1804,9 +1795,6 @@ export const ptBR = {
         "A execução foi excluída, mas não foi possível apagar seus arquivos.",
       deleteArtifactsRetainedError:
         "Não foi possível remover os arquivos do adaptador, então a execução foi mantida no histórico.",
-      runCount: "{count} execuções",
-      oneRun: "1 execução",
-      resume: "Retomar",
       resumeTraining: "Retomar treinamento",
       resuming: "Retomando...",
       deleteRun: "Excluir execução",
@@ -1939,9 +1927,6 @@ export const ptBR = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: streaming (sem download completo)",
       modelWeights: "Pesos do modelo",
-    },
-    tour: {
-      guidedTour: "Tour Guiado",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
