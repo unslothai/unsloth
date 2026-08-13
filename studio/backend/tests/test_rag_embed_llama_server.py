@@ -621,3 +621,37 @@ def test_use_gpu_honours_the_normalized_preference(monkeypatch):
             staticmethod(lambda: True),
         )
         assert backend._use_gpu() is False, requested
+
+
+def test_gpu_opt_in_still_falls_back_to_cpu(monkeypatch):
+    """Opting into the GPU by naming it must not turn a failed GPU start fatal.
+
+    These spellings all fell through to ``auto`` before the normalizer read them,
+    so they fell back; making them fatal would stop RAG on hosts it worked on."""
+    for requested in ("cuda", "rocm", "hip", "xpu", "mps", "metal", "  gpu  ", "  CUDA  "):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        calls: list[bool] = []
+
+        def fake_spawn_once(use_gpu, _calls = calls):
+            _calls.append(use_gpu)
+            if use_gpu:
+                raise RuntimeError("GPU start failed")
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        backend._spawn()
+        assert calls == [True, False], requested
+        assert backend._force_cpu is True, requested
+
+
+def test_literal_gpu_remains_a_hard_request(monkeypatch):
+    """The documented value keeps forcing the GPU, as it always has."""
+    for requested in ("gpu", "GPU"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        monkeypatch.setattr(
+            backend, "_spawn_once", lambda use_gpu: (_ for _ in ()).throw(RuntimeError("no cuda"))
+        )
+        with pytest.raises(RuntimeError, match = "no cuda"):
+            backend._spawn()
+        assert backend._force_cpu is False, requested

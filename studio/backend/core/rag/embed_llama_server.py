@@ -418,14 +418,13 @@ class LlamaServerBackend:
             pass
 
     def _spawn(self) -> None:
-        """Start the embed server (caller holds the lock). On ``auto``, a failed
-        GPU start falls back to CPU once; explicit ``gpu``/``cpu`` do not."""
+        """Start the embed server (caller holds the lock). A failed GPU start falls
+        back to CPU once, unless ``RAG_EMBED_DEVICE`` is the literal ``gpu``."""
         use_gpu = self._use_gpu()
         try:
             self._spawn_once(use_gpu)
         except RuntimeError:
-            auto = config.embed_device_preference() == "auto"
-            if use_gpu and auto:
+            if use_gpu and not config.embed_device_requires_gpu():
                 logger.warning("embed server GPU start failed; falling back to CPU")
                 self._force_cpu = True
                 self._spawn_once(False)

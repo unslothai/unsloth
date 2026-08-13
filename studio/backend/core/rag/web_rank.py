@@ -104,7 +104,7 @@ def retrieve_web_chunks(
                 filename = source,
                 sha256 = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest(),
                 status = "ready",
-                embedding_model = model,
+                embedding_model = embeddings.embedding_identity(model),
             )
             doc_ids.append(doc_id)
             store.add_chunks(conn, scope, doc_id, chunks, vectors)

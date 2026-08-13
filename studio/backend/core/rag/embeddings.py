@@ -702,6 +702,22 @@ def active_backend_is_llama() -> bool:
         return False
 
 
+def embedding_identity(model_name: str | None = None) -> str:
+    """Identity of the vectors this process produces right now.
+
+    Recorded on every document, because the model name alone does not name the
+    embedding space: llama-server ignores the name and embeds through the GGUF
+    companion with its own pooling, and this process can switch to it at runtime. Two
+    spaces under one label is an index that answers with the wrong documents and says
+    nothing about it."""
+    name = model_name or config.effective_embedding_model()
+    if active_backend_is_llama():
+        return config.embedding_identity(
+            "llama-server", name, gguf_repo = config.gguf_repo_for_embedding_model(name)
+        )
+    return config.embedding_identity("sentence-transformers", name)
+
+
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
     _get_backend().warm(model_name = model_name)

@@ -76,6 +76,43 @@ OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 # the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 
+# ``documents.embedding_model`` records the embedder that produced a document's
+# vectors, not just the configured model name. The name alone is not the embedding
+# space: llama-server ignores it and embeds through the GGUF companion, which pools
+# its own way, so one name can mean two spaces on the same machine.
+EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server")
+
+
+def embedding_identity(backend: str, model: str, *, gguf_repo: str | None = None) -> str:
+    """Tagged identity for ``documents.embedding_model``.
+
+    The configured model comes first so a row written before identities carried a tag
+    still compares equal on it. llama-server appends the GGUF repo it actually embeds
+    through, which is the part that can differ from the model's ST form."""
+    return f"{backend}:{model}" if gguf_repo is None else f"{backend}:{model}:{gguf_repo}"
+
+
+def embedding_identity_model(identity: str | None) -> str | None:
+    """The configured model inside a tagged identity, or None when untagged."""
+    for tag in EMBEDDING_IDENTITY_TAGS:
+        if identity and identity.startswith(f"{tag}:"):
+            return identity[len(tag) + 1:].split(":", 1)[0]
+    return None
+
+
+def embedding_identity_matches(stored: str | None, current: str) -> bool:
+    """Whether ``stored``'s vectors can answer a query embedded under ``current``.
+
+    NULL is still assumed current. An untagged row predates the tag and we cannot know
+    which backend wrote it, so it matches on the model name alone, exactly as it did
+    before: dropping those would empty dense search over every corpus indexed so far.
+    They are reported instead (``store.count_untagged_documents``)."""
+    if stored is None:
+        return True
+    if embedding_identity_model(stored) is not None:
+        return stored == current
+    return stored == (embedding_identity_model(current) or current)
+
 
 def effective_embedding_model() -> str:
     """The embedding model actually in use: the persisted Settings override when
@@ -150,6 +187,17 @@ def embed_device_preference() -> str:
     if value == "cpu":
         return "cpu"
     return "auto"
+
+
+def embed_device_requires_gpu() -> bool:
+    """True when a failed GPU start must raise instead of retrying on CPU.
+
+    Only the literal documented value is that hard a request, which is what it has
+    always meant. The spellings we newly began honoring above -- padding, or the
+    accelerator's own name -- used to fall through to ``auto``, and ``auto`` falls
+    back, so reading them as fatal would take RAG away from hosts it worked on. They
+    still opt into the GPU; they just do not insist on it."""
+    return (EMBED_DEVICE or "").lower() == "gpu"
 
 
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")

@@ -273,6 +273,11 @@ def _run(
 
         _progress(conn, job_id, "embedding", 0.5)
         vectors = _embed_all([c.text for c in chunks], model_name)
+        # An ST encode failure swaps the process to llama-server, so the embedder that
+        # produced these vectors is only known now.
+        store.set_document_embedding_model(
+            conn, document_id, embeddings.embedding_identity(model_name)
+        )
 
         # Locate each chunk's highlight regions (non-PDFs/failures yield none).
         regions = None
@@ -357,6 +362,7 @@ def start_ingestion(
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
         effective_model = model_name or config.effective_embedding_model()
+        effective_identity = embeddings.embedding_identity(effective_model)
         # (old_document_id, old_stored_path) replaced by this upload; deleted by
         # the worker only after the replacement completes, so a failed re-index
         # never destroys the still-searchable original.
@@ -374,8 +380,9 @@ def start_ingestion(
             stale_model = (
                 doc is not None
                 and doc.get("status") == "completed"
-                and doc.get("embedding_model") is not None
-                and doc.get("embedding_model") != effective_model
+                and not config.embedding_identity_matches(
+                    doc.get("embedding_model"), effective_identity
+                )
             )
             if empty_completed or stale_model:
                 # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
@@ -408,7 +415,7 @@ def start_ingestion(
             project_id = project_id,
             status = "pending",
             stored_path = stored_path,
-            embedding_model = effective_model,
+            embedding_model = effective_identity,
             linked_folder_id = linked_folder_id,
             linked_relative_path = linked_relative_path,
             commit = False,
