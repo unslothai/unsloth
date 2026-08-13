@@ -11,6 +11,16 @@ export const DEFAULT_Y_AXIS_WIDTH = 45;
 const TRAILING_ZEROES_RE = /\.?0+$/;
 const NEGATIVE_ZERO_RE = /^-0$/;
 
+// Trailing zeroes are only padding after a decimal point. toFixed(0) produces
+// none, and stripping them from a plain integer eats real digits: "25000" would
+// come back as "25", and "1000000" as "1".
+function trimFormatted(text: string): string {
+  const trimmed = text.includes(".")
+    ? text.replace(TRAILING_ZEROES_RE, "")
+    : text;
+  return trimmed.replace(NEGATIVE_ZERO_RE, "0");
+}
+
 export const placeholderEvalData = [
   { step: 0, loss: 2.8 },
   { step: 50, loss: 2.4 },
@@ -49,10 +59,7 @@ export function formatMetric(value: number): string {
     decimals = 8;
   }
 
-  return value
-    .toFixed(decimals)
-    .replace(TRAILING_ZEROES_RE, "")
-    .replace(NEGATIVE_ZERO_RE, "0");
+  return trimFormatted(value.toFixed(decimals));
 }
 
 export function formatAxisMetric(value: number): string {
@@ -75,10 +82,7 @@ export function formatAxisMetric(value: number): string {
     decimals = 5;
   }
 
-  return value
-    .toFixed(decimals)
-    .replace(TRAILING_ZEROES_RE, "")
-    .replace(NEGATIVE_ZERO_RE, "0");
+  return trimFormatted(value.toFixed(decimals));
 }
 
 export function formatStepTick(value: number): string {
