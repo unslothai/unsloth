@@ -273,8 +273,16 @@ jobs:
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==1.7.4.5'
 
-      # budget-hours is the worst case ONE invocation can cost: both kernel
-      # ceilings set below (45 + 60 min), rounded up.
+      # budget-hours is the worst case ONE invocation can cost, and it is
+      # derived from the LAUNCHER's bound rather than from the ceiling passed
+      # to Kaggle at push time. That ceiling has been observed not to stop a
+      # wedged kernel (see the note by --kernel-timeout-sec below), so what
+      # actually ends a session is launch.py deleting it at its own deadline:
+      # --max-wait, 5400s, now measured from before the first push. Two
+      # kernels, each billing its own session wall clock, is 2 x 1.5h plus
+      # the evidence collection before the deletions -- about 3.2h, rounded
+      # up. Keep this in step with --max-wait; the harness suite asserts the
+      # relation.
       #
       # reserve-hours is what turns the 40 GPU-h/week allowance into a hard
       # ceiling. The account budget is 60h, so refusing to start below 20h
@@ -293,7 +301,7 @@ jobs:
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-t4-ci \
             --kernels 2 \
-            --budget-hours 2 \
+            --budget-hours 4 \
             --reserve-hours 20
 
   t4-smoke:
@@ -500,7 +508,7 @@ jobs:
           python .github/scripts/kaggle_t4_ci/gate.py \
             --force true \
             --kernels 2 \
-            --budget-hours 2 \
+            --budget-hours 4 \
             --reserve-hours 20
 
       # Through the environment rather than an inline expression, so nothing

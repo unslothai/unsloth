@@ -502,7 +502,11 @@ def main() -> int:
         help = "hard ceiling enforced by KAGGLE on the session",
     )
     ap.add_argument(
-        "--max-wait", type = int, default = 4200, help = "how long this process waits before giving up"
+        "--max-wait",
+        type = int,
+        default = 4200,
+        help = "wall clock this invocation gives the kernels, measured from "
+        "BEFORE the first push",
     )
     ap.add_argument("--poll-every", type = int, default = 60)
     ap.add_argument(
@@ -568,6 +572,20 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
+    # ONE deadline for the whole invocation, started BEFORE the first push.
+    #
+    # A kernel starts billing the moment Kaggle accepts it, so the clock that
+    # decides when it gets deleted has to include the time spent pushing the
+    # others. Started after the push loop instead, a throttled second push
+    # (PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus the
+    # backoffs, about 45 minutes) was added on top of --max-wait for the
+    # kernel that had already been accepted: 135 minutes of billing against a
+    # ceiling that reads as 90. Kaggle's own push-time timeout does not cover
+    # that gap either -- see this file's docstring for the kernel that ignored
+    # it for two hours -- so the deletion deadline is the only bound there is,
+    # and it now bounds the whole invocation.
+    deadline = time.time() + args.max_wait
+
     # Push everything first. See this file's docstring: waiting between
     # pushes would serialise sessions Kaggle runs happily in parallel, and
     # would put an hour between the control leg and the canary leg.
@@ -602,10 +620,9 @@ def main() -> int:
     # shape of this file.
     result["slug"] = live[0]["slug"]
 
-    # One deadline for the whole run, not one per kernel. They are running
+    # The deadline set above is shared, not one per kernel. They are running
     # concurrently, so consuming the ceiling once per kernel would let a
     # two-kernel run wait twice as long as its own stated bound.
-    deadline = time.time() + args.max_wait
     for entry in live:
         remaining = max(0, int(deadline - time.time()))
         entry["state"] = wait(api, entry["slug"], args.poll_every, remaining)

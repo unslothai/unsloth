@@ -1771,6 +1771,28 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
     ), f"the launcher can take {worst}s and the job is killed at {timeout_s}s"
 
 
+def test_the_reserved_budget_covers_the_launchers_own_bound():
+    """What ends a session is the launcher deleting it, not Kaggle's ceiling.
+
+    The ceiling passed at push time has been observed not to stop a wedged
+    kernel, so the quota a run can actually spend is one --max-wait per kernel
+    and the gate has to reserve that much. Reserving less means a run that
+    goes long eats into the 20h left for humans.
+    """
+    import re as _re
+
+    source = WORKFLOW.read_text(encoding = "utf-8")
+    max_wait = int(_re.search(r"--max-wait (\d+)", source).group(1))
+    budgets = {int(b) for b in _re.findall(r"--budget-hours (\d+)", source)}
+    kernels = {int(k) for k in _re.findall(r"--kernels (\d+)", source)}
+    assert len(budgets) == 1 and len(kernels) == 1, (budgets, kernels)
+    budget_s = budgets.pop() * 3600
+    worst = kernels.pop() * max_wait
+    assert budget_s >= worst, (
+        f"the gate reserves {budget_s}s of quota and the launcher can spend {worst}s"
+    )
+
+
 def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
     """The gate job's survey is stale by the time a queued run gets the slot.
 

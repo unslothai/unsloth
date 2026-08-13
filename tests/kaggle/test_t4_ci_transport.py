@@ -374,6 +374,93 @@ def test_every_push_attempt_gets_its_own_slug(monkeypatch):
     assert pushed["attempts"] == slugs
 
 
+def _drive_main(monkeypatch, tmp_path, *, push_seconds, pushes, extra_argv = ()):
+    """Run `launch.main()` end to end with Kaggle replaced by stubs.
+
+    Returns the per-kernel wait budgets, the slugs deleted on the way out and
+    the launch result. The clock is fake so a push can be made to burn an
+    arbitrary amount of wall time without the test taking any.
+    """
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(launch.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(launch, "_api", lambda: object())
+
+    outcomes = list(pushes)
+
+    def fake_push(notebook, user, kernel_timeout_sec, accelerator = "NvidiaTeslaT4"):
+        clock["t"] += push_seconds
+        return outcomes.pop(0)
+
+    waits: list[int] = []
+
+    def fake_wait(api, slug, poll_every, max_wait):
+        waits.append(max_wait)
+        return "COMPLETE"
+
+    deleted: list[str] = []
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            deleted.append(cmd[3])
+        return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(launch, "push", fake_push)
+    monkeypatch.setattr(launch, "wait", fake_wait)
+    monkeypatch.setattr(
+        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+    )
+    monkeypatch.setattr(
+        launch,
+        "extract_reports",
+        lambda outdir: [{"label": "control", "model": "m", "passed": True}],
+    )
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch.py",
+            *[a for i in range(len(pushes)) for a in ("--notebook", f"k{i}.ipynb")],
+            "--user",
+            "someuser",
+            "--outdir",
+            str(tmp_path),
+            "--expect",
+            "1",
+            "--max-wait",
+            "5400",
+            *extra_argv,
+        ],
+    )
+    assert launch.main() == 0
+    result = json.loads((tmp_path / "launch_result.json").read_text(encoding = "utf-8"))
+    return waits, deleted, result
+
+
+def test_the_deletion_deadline_covers_the_time_spent_pushing(monkeypatch, tmp_path):
+    """A kernel bills from the moment Kaggle accepts it, not from the last push.
+
+    Started after the push loop, the deadline gave the first kernel --max-wait
+    on top of however long the SECOND push took to get through its retries:
+    45 minutes of throttling turned a 90 minute ceiling into 135 minutes of
+    billing, on the far side of the budget the gate reserved for the run.
+    """
+    waits, _, _ = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 1800.0,
+        pushes = [
+            {"ok": True, "slug": "someuser/unsloth-t4-ci-aaaa", "attempts": ["someuser/unsloth-t4-ci-aaaa"]},
+            {"ok": True, "slug": "someuser/unsloth-t4-ci-bbbb", "attempts": ["someuser/unsloth-t4-ci-bbbb"]},
+        ],
+    )
+    # 5400s of invocation deadline, 3600s of it spent pushing.
+    assert waits == [1800, 1800]
+
+
 def test_the_temp_dir_is_left_alone_when_the_log_is_not_json(tmp_path):
     """A plain-text log, and a JSON object that is not a record array."""
     kernel_dir = tmp_path / "unsloth-t4-ci-beef"
