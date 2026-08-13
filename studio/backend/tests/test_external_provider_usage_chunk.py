@@ -487,9 +487,21 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.update(json.loads(request.content.decode("utf-8")))
+        # Shaped to the endpoint the client chose. openai routes to /v1/responses, whose
+        # reader wants Responses events, so serving every provider a Chat Completions
+        # chunk made this test depend on that reader ignoring the shape it was handed.
+        if request.url.path.endswith("/responses"):
+            content = (
+                b'event: response.output_text.delta\n'
+                b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+                b'event: response.completed\n'
+                b'data: {"type":"response.completed"}\n\n'
+            )
+        else:
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            content = content,
             headers = {"content-type": "text/event-stream"},
         )
 
@@ -635,3 +647,61 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
     assert "tools" in search_body
     assert "tools" not in fallback_body
     assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def test_a_responses_event_typed_only_by_its_sse_field_is_read(monkeypatch):
+    """A Responses stream carries the type twice, in the `event:` line and in the payload's
+    `type`, and either alone is a valid event. The reader used to drop the `event:` line and
+    then raise "Responses event type is missing" on a payload that leaned on it, killing the
+    generation mid-stream. openai_codex_client already reads the field for this reason."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = (
+                b"event: response.output_text.delta\n"
+                b'data: {"delta":"ok"}\n\n'
+                b"event: response.completed\n"
+                b"data: {}\n\n"
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        async for chunk in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5",
+        ):
+            seen.append(chunk)
+        await client.close()
+
+    _drive(run())
+    # The delta arrived rather than the stream dying on the first event, and the completion
+    # event closed it out.
+    assert any("ok" in chunk for chunk in seen), seen
+    assert any('"finish_reason": "stop"' in chunk for chunk in seen), seen
+
+
+def test_an_event_the_sse_field_does_not_type_either_is_still_rejected(monkeypatch):
+    """The field is a fallback, not a licence to guess: an event typed by neither still
+    raises, so a genuinely malformed stream is not read as if it made sense."""
+    from core.inference.openai_responses_shared import response_event_type
+
+    with pytest.raises(ValueError):
+        response_event_type({"delta": "ok"}, "")
+    assert response_event_type({"delta": "ok"}, "response.output_text.delta") == (
+        "response.output_text.delta"
+    )
+    assert response_event_type({"type": "response.completed"}, "") == "response.completed"
+    # The payload wins when both are present; the SSE field only fills a gap.
+    assert response_event_type({"type": "response.completed"}, "response.created") == (
+        "response.completed"
+    )

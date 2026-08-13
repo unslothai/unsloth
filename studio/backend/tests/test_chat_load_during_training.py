@@ -1461,6 +1461,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             with (
                 patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
                 patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+                # The remote compute buffers are charged whatever the drafter or
+                # companions turn out to be, and have their own tests, so silence them
+                # rather than restating their size in the expected total.
+                patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
                 self._dflash_capable(),
             ):
                 gb = self.route._estimate_gguf_required_gb(
@@ -1493,6 +1497,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
+            # The remote compute buffers are charged whatever the drafter turns out to
+            # be, and have their own tests, so silence them rather than restating
+            # their size in the expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             self._dspark_capable(),
         ):
             gb = self.route._estimate_gguf_required_gb(
@@ -1892,6 +1900,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            # These price DRAFTERS, and the remote compute buffers are charged whatever the
+            # drafter turns out to be, so silence them the way the KV estimate above is
+            # silenced rather than restating their size in every expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             patch("huggingface_hub.model_info", side_effect = AssertionError("priced as a repo")),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -1922,6 +1934,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            # These price DRAFTERS, and the remote compute buffers are charged whatever the
+            # drafter turns out to be, so silence them the way the KV estimate above is
+            # silenced rather than restating their size in every expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             patch("huggingface_hub.model_info", side_effect = AssertionError("priced as a repo")),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -1935,6 +1951,104 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 ],
             )
         self.assertAlmostEqual(charged, 4.0, places = 6)
+
+    def test_the_remote_compute_reserve_is_charged_and_scales(self):
+        """The buffers the drafter tests silence. A remote header cannot be read, so the
+        output buffer is reserved as if the model enables embeddings: llama.cpp keeps one
+        per slot then, not one per slot past the first, and skipping it entirely let the
+        guard admit a load that then OOMs the training job it protects."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        one = self.route._remote_compute_reserve_gb(
+            mask_bytes = 0,
+            effective_ubatch = 512,
+            n_parallel = 1,
+            devices = 1,
+            tensor_parallel = False,
+        )
+        expected = (
+            self.route._ASSUMED_MAX_VOCAB
+            * 512
+            * 4
+            * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        ) / (1024**3)
+        self.assertAlmostEqual(one, expected, places = 9)
+        self.assertGreater(one, 0.0)
+
+        # One slot is charged, not zero: that is the embeddings assumption.
+        four = self.route._remote_compute_reserve_gb(
+            mask_bytes = 0,
+            effective_ubatch = 512,
+            n_parallel = 4,
+            devices = 1,
+            tensor_parallel = False,
+        )
+        self.assertAlmostEqual(four, one * 4, places = 9)
+
+        # Tensor mode replicates the buffer per device; a layer split folds it in once.
+        split = self.route._remote_compute_reserve_gb(
+            mask_bytes = 0,
+            effective_ubatch = 512,
+            n_parallel = 1,
+            devices = 2,
+            tensor_parallel = False,
+        )
+        tensor = self.route._remote_compute_reserve_gb(
+            mask_bytes = 0,
+            effective_ubatch = 512,
+            n_parallel = 1,
+            devices = 2,
+            tensor_parallel = True,
+        )
+        self.assertAlmostEqual(split, one, places = 9)
+        self.assertAlmostEqual(tensor, one * 2, places = 9)
+
+        # The mask rides along untouched.
+        self.assertAlmostEqual(
+            self.route._remote_compute_reserve_gb(
+                mask_bytes = 1024**3,
+                effective_ubatch = 512,
+                n_parallel = 1,
+                devices = 1,
+                tensor_parallel = False,
+            ),
+            one + 1.0,
+            places = 9,
+        )
+
+    def test_a_remote_load_without_an_explicit_ubatch_still_reserves_buffers(self):
+        """The default micro-batch stands in for the unreadable header. Without it the
+        whole compute reserve was skipped for every remote load that did not name a
+        ubatch, which is the common one."""
+        import utils.models.model_config as mc
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
+        seen = {}
+
+        def _reserve(**kwargs):
+            seen.update(kwargs)
+            return 0.25
+
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_compute_reserve_gb", _reserve),
+        ):
+            charged = self.route._estimate_gguf_required_gb(cfg, speculative_type = "none")
+
+        self.assertAlmostEqual(charged, 4.25, places = 6)
+        self.assertEqual(seen.get("effective_ubatch"), LlamaCppBackend._DEFAULT_N_UBATCH)
 
     def test_the_cached_drafter_scan_reads_the_cache_studio_is_pointed_at(self):
         """A user who moved the Hugging Face cache launches llama-server against the
@@ -1989,6 +2103,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            # These price DRAFTERS, and the remote compute buffers are charged whatever the
+            # drafter turns out to be, so silence them the way the KV estimate above is
+            # silenced rather than restating their size in every expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 6 * 1024**3),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -2040,6 +2158,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ),
             patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 3 * 1024**3),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            # These price DRAFTERS, and the remote compute buffers are charged whatever the
+            # drafter turns out to be, so silence them the way the KV estimate above is
+            # silenced rather than restating their size in every expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             self._dflash_capable(),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -2398,6 +2520,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 "huggingface_hub.model_info",
                 return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
             ),
+            # The remote compute buffers are charged whatever the drafter turns out to
+            # be, and have their own tests, so silence them rather than restating
+            # their size in the expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             self._dflash_capable(),
         ):
             gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
@@ -2430,6 +2556,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 "huggingface_hub.model_info",
                 return_value = SimpleNamespace(siblings = siblings),
             ),
+            # The remote compute buffers are charged whatever the drafter turns out to
+            # be, and have their own tests, so silence them rather than restating
+            # their size in the expected total.
+            patch.object(self.route, "_remote_compute_reserve_gb", return_value = 0.0),
             self._dflash_capable(),
         ):
             owned = self.route._estimate_gguf_required_gb(

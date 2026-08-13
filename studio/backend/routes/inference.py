@@ -6100,6 +6100,37 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _remote_compute_reserve_gb(
+    *,
+    mask_bytes: float,
+    effective_ubatch: int,
+    n_parallel: int,
+    devices: int,
+    tensor_parallel: bool,
+) -> float:
+    """The compute buffers a remote GGUF is charged for, in GB: the KQ mask plus the
+    output buffer.
+
+    Split out of the sizing walk so it can be measured on its own, and so a test about
+    which drafter gets priced can silence it the way it already silences the KV estimate.
+
+    The remote header is unknown, so the output buffer is reserved as if the model
+    enables embeddings, where llama.cpp keeps one per slot rather than one per slot past
+    the first.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    out_buffer_bytes = (
+        _ASSUMED_MAX_VOCAB
+        * effective_ubatch
+        * 4
+        * max(1, n_parallel)
+        * (devices if tensor_parallel else 1)
+        * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+    )
+    return (mask_bytes + out_buffer_bytes) / (1024**3)
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
@@ -6414,17 +6445,13 @@ def _estimate_gguf_required_gb(
                 # Scaled per device only in tensor mode, mirroring the local branch: a
                 # layer split folds the flat buffer in once (_flat_buffer(False)), and
                 # only tensor mode replicates it on every card.
-                # The remote header is unknown, so reserve as if it enables embeddings.
-                _out_slots = max(1, n_parallel)
-                out_buffer_bytes = (
-                    _ASSUMED_MAX_VOCAB
-                    * effective_ubatch
-                    * 4
-                    * _out_slots
-                    * (devices if tensor_parallel else 1)
-                    * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+                total_gb += _remote_compute_reserve_gb(
+                    mask_bytes = mask_bytes,
+                    effective_ubatch = effective_ubatch,
+                    n_parallel = n_parallel,
+                    devices = devices,
+                    tensor_parallel = tensor_parallel,
                 )
-                total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)
             return total_gb
         return None
     except Exception as e:

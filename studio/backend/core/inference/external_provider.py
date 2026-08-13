@@ -5453,13 +5453,24 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    # The SSE event name, kept for the data line it belongs to. A Responses
+                    # stream carries the type in both places, the `event:` field and the
+                    # payload's `type`, and a payload that omits it is still a valid event.
+                    # Dropping the field meant one such event raised and killed the stream;
+                    # the Codex client reads the same helper's event_name for this reason.
+                    sse_event_name = ""
                     try:
                         while True:
                             try:
                                 line = await lines_gen.__anext__()
                             except StopAsyncIteration:
                                 break
-                            if not line or line.startswith("event:"):
+                            if not line:
+                                # Blank line dispatches the event, so the name stops here.
+                                sse_event_name = ""
+                                continue
+                            if line.startswith("event:"):
+                                sse_event_name = line[len("event:") :].strip()
                                 continue
                             if not line.startswith("data:"):
                                 continue
@@ -5498,7 +5509,7 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            event_type = response_event_type(event)
+                            event_type = response_event_type(event, sse_event_name)
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
