@@ -239,8 +239,39 @@ def test_a_disposable_merge_is_reclaimed_when_the_disk_is_tight(monkeypatch, tmp
     _Harness(monkeypatch, tmp_path)
     weights = _merge_weights(tmp_path)
     _tight_disk(monkeypatch)
-    _run(tmp_path, ["q4_k_m"], merge_is_disposable = True)
+    _run(
+        tmp_path, ["q4_k_m"],
+        merge_is_disposable = True,
+        preexisting_weights = frozenset(),
+    )
     assert not weights.exists()
+
+
+def test_the_ownership_record_survives_the_same_trip(monkeypatch, tmp_path):
+    """The second half of the safety story has to arrive too.
+
+    A file named in `preexisting_weights` is the caller's, so the same tight-disk
+    export that reclaims the merge must leave it alone. Testing this at the
+    bottom only would not show that `save_to_gguf` still carries it down.
+    """
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(
+        tmp_path, ["q4_k_m"],
+        merge_is_disposable = True,
+        preexisting_weights = frozenset([weights.name]),
+    )
+    assert weights.exists(), "a file the caller owned was reclaimed"
+
+
+def test_an_export_that_cannot_say_what_it_owns_reclaims_nothing(monkeypatch, tmp_path):
+    """No ownership record is not an empty one, all the way up."""
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(tmp_path, ["q4_k_m"], merge_is_disposable = True)
+    assert weights.exists()
 
 
 def test_a_merge_the_caller_owns_survives_the_same_export(monkeypatch, tmp_path):

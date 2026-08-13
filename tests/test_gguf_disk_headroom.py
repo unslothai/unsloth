@@ -103,9 +103,13 @@ def _reclaim(
 
     The helper defaults `merge_is_disposable` off so a caller pointing it at a
     real checkpoint keeps it, so every test about the reclamation itself has to
-    opt in, exactly like the real call site.
+    opt in, exactly like the real call site. `preexisting_weights` defaults to
+    empty for the same reason the layouts do: the ordinary merge writes into a
+    directory of its own, so everything in it is the export's. The tests about a
+    reused directory pass their own.
     """
     kwargs.setdefault("merge_is_disposable", True)
+    kwargs.setdefault("preexisting_weights", frozenset())
     return save_mod._free_merge_if_disk_is_tight(
         merge, gguf, bases, quant_methods = list(quant_methods), **kwargs
     )
@@ -202,6 +206,103 @@ def test_the_helper_is_called_before_quantizing(save_mod):
 
 
 # ---- what reclamation must never do ---------------------------------------
+
+
+def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save_mod):
+    """A finished earlier save in the same directory, index and every shard.
+
+    This is the case self-consistency cannot decide. An index left by a previous
+    sharded save lists `-00001-of-00002` and `-00002-of-00002` under one stem and
+    both are on disk, so it looks exactly like an index the current merge wrote.
+    transformers removes neither: its stale sweep does not match
+    `model.safetensors.index`, and it only prunes shards under the stem it is
+    writing. What separates them is not their shape but who wrote them.
+    """
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    stale = ["archive-00001-of-00002.safetensors", "archive-00002-of-00002.safetensors"]
+    for name in stale:
+        with open(os.path.join(merge, name), "wb") as fh:
+            fh.truncate(GB)
+    index = {"weight_map": {f"layer.{i}": name for i, name in enumerate(stale)}}
+    with open(os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8") as fh:
+        json.dump(index, fh)
+    preexisting = frozenset(stale + ["model.safetensors.index.json"])
+    _with_free(monkeypatch, save_mod, 20)
+    _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)
+    for name in stale:
+        assert os.path.isfile(os.path.join(merge, name)), (
+            f"{name} belonged to an earlier save and was deleted"
+        )
+
+
+def test_a_consolidated_file_the_merge_did_not_write_is_kept(tmp_path, monkeypatch, save_mod):
+    """`consolidated.safetensors` is a name the merge uses and may not have written.
+
+    The shard selection drops it whenever ordinary shards coexist, so a caller
+    reusing an output directory can hold one this run never touched. The name
+    matcher cannot tell the difference, which is the whole reason ownership is
+    recorded rather than inferred.
+    """
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    with open(os.path.join(merge, "consolidated.safetensors"), "wb") as fh:
+        fh.truncate(GB)
+    _with_free(monkeypatch, save_mod, 20)
+    _reclaim(
+        save_mod, merge, gguf, bases,
+        preexisting_weights = frozenset(["consolidated.safetensors"]),
+    )
+    assert os.path.isfile(os.path.join(merge, "consolidated.safetensors")), (
+        "a consolidated checkpoint this export never wrote was deleted"
+    )
+
+
+def test_unknown_provenance_reclaims_nothing(tmp_path, monkeypatch, save_mod):
+    """No answer is not the same as an empty answer.
+
+    A caller that could not read the directory before the merge cannot say what
+    it owns, and the deletion is permanent, so the reclamation declines.
+    """
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    _with_free(monkeypatch, save_mod, 20)
+    freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = None)
+    assert freed == 0
+    assert [f for f in os.listdir(merge) if f.endswith(".safetensors")]
+
+
+def test_a_small_output_with_modest_free_space_is_not_called_a_full_disk(save_mod):
+    """The rebuild advice is only wrong when the disk is the problem.
+
+    A fixed 2GB floor is a claim about the machine, not about the write. An
+    incompatible quantizer failing on a sub-gigabyte model with 1.5GB free has
+    all the room it needs, and calling that a full disk suppresses the version
+    advice that would actually have fixed it.
+    """
+    import types as _types
+
+    free = _types.SimpleNamespace(total = 0, used = 0, free = int(1.5 * GB))
+    original = save_mod.shutil.disk_usage
+    save_mod.shutil.disk_usage = lambda *_a, **_k: free
+    try:
+        failure = RuntimeError("unknown model architecture")
+        # 400MB of output: 1.5GB free is ample, so this is not a disk problem.
+        assert not save_mod._gguf_failure_looks_like_disk(
+            failure, ".", needed_bytes = int(0.4 * GB)
+        )
+        # 4GB of output into 1.5GB free is.
+        assert save_mod._gguf_failure_looks_like_disk(
+            failure, ".", needed_bytes = 4 * GB
+        )
+        # A caller that cannot say what it needed still gets the fixed floor.
+        assert save_mod._gguf_failure_looks_like_disk(failure, ".")
+    finally:
+        save_mod.shutil.disk_usage = original
+
+
+def test_an_explicit_enospc_is_a_full_disk_whatever_the_size(save_mod):
+    """The message and errno signals are independent of the arithmetic, so a
+    real ENOSPC is still a full disk even when the output would have fit."""
+    failure = OSError(28, "No space left on device")
+    assert save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = 1)
 
 
 def test_a_reused_checkpoint_is_never_reclaimed(tmp_path, monkeypatch, save_mod):
