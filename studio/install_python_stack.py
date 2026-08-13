@@ -5088,6 +5088,19 @@ def install_python_stack() -> int:
         **_windows_hidden_subprocess_kwargs(),
     )
 
+    # 14b. Repair again before the manifest is written. The pass above runs
+    # before the core packages are installed, so an upgrade that itself leaves a
+    # superseded record behind -- the exact state this repair exists for -- would
+    # otherwise survive it. write_manifest would then record a null version and
+    # the installer would report success while every later check rejects the
+    # environment. A no-op when nothing is ambiguous.
+    if not _repair_duplicate_core_metadata(
+        (package_name, "unsloth-zoo"),
+        local_repo = local_repo,
+        ci_source_overlay = ci_source_overlay,
+    ):
+        return 1
+
     # 15. Record success. Written last so an earlier kill leaves none. Exiting 0
     # without it reports a finished install every later check calls unfinished.
     if (

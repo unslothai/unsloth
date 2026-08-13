@@ -990,6 +990,19 @@ class TestDuplicateCoreMetadataRepair:
         assert installs[0][1] == ("--no-cache-dir", "--no-deps", "-e", "/src/candidate")
         assert installs[0][2]["constrain"] is False
 
+    def test_the_repair_runs_again_before_the_manifest_is_written(self):
+        """The first pass runs before the core packages are installed, so an
+        upgrade that leaves a superseded record behind would survive it and
+        write_manifest would record a null version under a successful exit."""
+        source = inspect.getsource(ips.install_python_stack)
+        first = source.index("_repair_duplicate_core_metadata")
+        second = source.index("_repair_duplicate_core_metadata", first + 1)
+        manifest = source.index("write_manifest(")
+        assert first < second < manifest, (
+            "the duplicate-metadata repair must run again after the core-package "
+            "install and before the manifest is written"
+        )
+
     def test_ci_overlay_is_wired_into_duplicate_repair(self):
         source = inspect.getsource(ips.install_python_stack).replace(" ", "")
         assert 'os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY","")' in source
