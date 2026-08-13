@@ -69,6 +69,11 @@ _TOOL_BUDGET_EXHAUSTED = (
 
 _TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
 
+_TOOL_TRUNCATED = (
+    "Studio did not execute this tool call because the provider stopped mid-call at its "
+    "output limit."
+)
+
 # Card text for a call the controller skipped. The client already painted a card
 # from the provider's own tool_calls delta, so it needs a short result; the long
 # model-facing nudge stays in the conversation.
@@ -737,6 +742,33 @@ async def stream_with_studio_tools(
                     continue
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
+        if truncated:
+            # The other half of the same problem. A call the provider streamed as
+            # a tool_calls delta was relayed as it arrived, so the client already
+            # has a card for it, and refusing to run it leaves that card open for
+            # the rest of the response. Close it the way every other unrun call
+            # is closed. Structured only: a healed call was never streamed, and
+            # the span released just above is what tells the user about that one.
+            for raw_call in turn.by_index.values():
+                truncated_id = raw_call.get("id")
+                function = raw_call.get("function")
+                name = function.get("name") if isinstance(function, dict) else None
+                if not isinstance(truncated_id, str) or not truncated_id:
+                    continue
+                if not isinstance(name, str) or not name:
+                    # Not enough of the call arrived to name a tool, so there is
+                    # no card of ours to close.
+                    continue
+                for card_line in _unrun_call_card(
+                    tool_name = name,
+                    tool_call_id = truncated_id,
+                    # The arguments are cut off mid-write, so there is nothing
+                    # well formed to show; the result says what happened.
+                    arguments = {},
+                    result = _TOOL_TRUNCATED,
+                    provenance = {"source": "local", "round_id": round_id + 1},
+                ):
+                    yield card_line
         calls = [] if truncated else turn.calls(used_call_ids)
         if not calls:
             # No tool this turn. A model that only said what it was about to do

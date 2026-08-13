@@ -1034,6 +1034,10 @@ def test_approval_that_never_arrives_ends_on_cancel_without_leaking_a_slot(execu
     """Real approval plumbing: the user closes the tab while the card is up."""
     from state import tool_approvals
 
+    # Slots this test did not open. The registry is process-global and a sibling
+    # module that drives the route can leave one behind, so asserting the whole
+    # dict is empty makes this test pass or fail on collection order.
+    pre_existing = set(tool_approvals._pending)
     cancel_event = threading.Event()
     threading.Timer(0.6, cancel_event.set).start()
 
@@ -1048,4 +1052,5 @@ def test_approval_that_never_arrives_ends_on_cancel_without_leaking_a_slot(execu
 
     assert executed == []
     assert len(_events(lines, "tool_end")) == 1
-    assert tool_approvals._pending == {}, tool_approvals._pending
+    leaked = set(tool_approvals._pending) - pre_existing
+    assert not leaked, {key: tool_approvals._pending[key] for key in leaked}
