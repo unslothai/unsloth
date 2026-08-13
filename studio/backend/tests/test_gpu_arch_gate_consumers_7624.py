@@ -460,15 +460,31 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ROCm error: device kernel image is invalid",
             "ggml-cuda.cu:76: ROCm error\n  device kernel image is invalid\n  current device: 1",
             "DEVICE KERNEL IMAGE IS INVALID".lower(),
+            # hipErrorNoBinaryForGpu: HIP's other code for the same mismatch,
+            # and the one whose documented cause is code compiled for a
+            # different GPU arch. Neither field log happened to show it, but a
+            # different ROCm or ggml build raises it for the same iGPU pick.
+            "ROCm error: no kernel image is available for execution on the device",
+            "ggml-cuda.cu:76: ROCm error\n"
+            "  no kernel image is available for execution on the device\n"
+            "  current device: 1",
         ],
     )
     def test_the_real_crash_matches(self, output):
         assert LlamaCppBackend._kernel_image_invalid(output)
 
-    def test_matching_is_case_sensitive_by_design(self):
-        # HIP emits the message lowercase. Documenting the actual contract so a
-        # future "make it case-insensitive" change is a deliberate one.
-        assert not LlamaCppBackend._kernel_image_invalid("Device Kernel Image Is Invalid")
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "Device Kernel Image Is Invalid",
+            "ROCm error: DEVICE KERNEL IMAGE IS INVALID",
+            "No kernel image is available for execution on the device",
+        ],
+    )
+    def test_matching_is_case_insensitive(self, output):
+        # hipGetErrorString is lowercase, but the layers that reprint it are not
+        # consistent about that, and a missed match costs the whole recovery.
+        assert LlamaCppBackend._kernel_image_invalid(output)
 
     def test_non_string_input_is_not_a_match(self):
         assert not LlamaCppBackend._kernel_image_invalid(None)

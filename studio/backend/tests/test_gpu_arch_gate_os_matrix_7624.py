@@ -1196,6 +1196,25 @@ class TestArchCrashRetryEnv:
         assert _retry, "the arch-crash retry did not fire"
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for env in _retry)
 
+    def test_the_no_binary_for_gpu_spelling_also_fires_the_retry(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Same mismatch, HIP's other error code: hipErrorNoBinaryForGpu, whose
+        documented cause is code compiled for a different GPU arch. Neither
+        field log showed it, so keying the recovery on the InvalidImage wording
+        alone would leave those builds back on the misleading GGUF error."""
+        torch = self._apu_then_dgpu(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: no kernel image is available for execution on the device",
+        )
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the retry did not fire on the NoBinaryForGpu wording"
+
     def test_a_user_set_unified_memory_value_survives_the_retry(
         self, tmp_path, monkeypatch, probe_env
     ):

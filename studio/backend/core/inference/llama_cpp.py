@@ -10186,11 +10186,23 @@ class LlamaCppBackend:
     # ROCm's arch-mismatch crash: the binary carries no compiled kernels for the
     # device it launched on (#7624). Deterministic -- fit / flash-attn retries
     # cannot help, only a different device can.
-    _KERNEL_IMAGE_INVALID_MARKER = "device kernel image is invalid"
+    # Two spellings, because HIP has two error codes for this and which one
+    # surfaces depends on where it is caught: hipErrorInvalidImage ("device
+    # kernel image is invalid", the wording both field logs show) and
+    # hipErrorNoBinaryForGpu, whose own documented cause is code compiled for a
+    # different GPU arch. Matching only the first leaves a build that raises the
+    # second back on the misleading GGUF/memory error.
+    _KERNEL_IMAGE_INVALID_MARKERS = (
+        "device kernel image is invalid",  # hipErrorInvalidImage
+        "no kernel image is available for execution",  # hipErrorNoBinaryForGpu
+    )
 
     @classmethod
     def _kernel_image_invalid(cls, output: str) -> bool:
-        return cls._KERNEL_IMAGE_INVALID_MARKER in (output or "")
+        # Case-folded: hipGetErrorString is lowercase, but the layers that
+        # reprint it are not consistent about that.
+        text = (output or "").lower()
+        return any(marker in text for marker in cls._KERNEL_IMAGE_INVALID_MARKERS)
 
     @classmethod
     def _arch_crash_retry_gpu_ids(cls, selected, enumerated) -> list[int]:
@@ -14477,10 +14489,9 @@ class LlamaCppBackend:
                                 self._kill_process()
                                 raise RuntimeError(_retry_ram_msg)
                         logger.warning(
-                            f"llama-server crashed with 'device kernel image is "
-                            f"invalid' on GPU(s) {_crashed} -- the llama.cpp build "
-                            f"has no kernels for that arch. Retrying on GPU(s) "
-                            f"{_remaining}."
+                            f"llama-server crashed with a HIP kernel-image error on "
+                            f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
+                            f"for that arch. Retrying on GPU(s) {_remaining}."
                         )
                         self._kill_process()
                         gpu_indices = _remaining

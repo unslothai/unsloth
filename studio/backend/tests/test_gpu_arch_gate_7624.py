@@ -267,6 +267,17 @@ class TestKernelImageInvalidMarker:
         )
         assert LlamaCppBackend._kernel_image_invalid(tail)
 
+    def test_detects_the_no_binary_for_gpu_spelling(self):
+        # hipErrorNoBinaryForGpu: the same arch mismatch, and the code whose
+        # documented cause IS "compiled for a different GPU architecture". A
+        # build that raises this one must reach the retry too.
+        tail = (
+            "ggml-cuda.cu:76: ROCm error\n"
+            "  no kernel image is available for execution on the device\n"
+            "  current device: 1"
+        )
+        assert LlamaCppBackend._kernel_image_invalid(tail)
+
     def test_ignores_other_crashes(self):
         assert not LlamaCppBackend._kernel_image_invalid("out of memory")
         assert not LlamaCppBackend._kernel_image_invalid("")
