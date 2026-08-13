@@ -72,8 +72,15 @@ DRIVER_SENTINEL = "KAGGLE_T4_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_T4_CI_PAYLOAD"
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 
-# Where the payload sources land on the Kaggle side.
+# Where the payload sources land on the Kaggle side. One directory PER LEG:
+# the payloads of a kernel run concurrently and carry byte-identical copies of
+# the same files, and `write_bytes` truncates before it writes, so a single
+# shared directory lets one payload empty a file the other is importing.
 KERNEL_ROOT = "/kaggle/working/t4_smoke_src"
+
+
+def _kernel_root(leg: Leg) -> str:
+    return f"{KERNEL_ROOT}_{leg.name}"
 
 
 def _encode_bytes(data: bytes) -> str:
@@ -89,6 +96,34 @@ def _code_cell(source: str) -> dict:
         "outputs": [],
         "source": source.splitlines(keepends = True),
     }
+
+
+def _shared_args_for(leg: Leg, extra_args: tuple[str, ...]) -> list[str]:
+    """``--smoke-args``, minus any option the leg already sets for itself.
+
+    The shared arguments exist so the control and canary legs differ in
+    nothing but versions, and they are appended AFTER each leg's own. For a
+    leg that names the same option that is an override, because argparse
+    takes the last value: the gpt-oss leg asks for 3 steps -- a measured fit
+    for a 16GB card -- and the workflow's ``--max-steps 10`` silently
+    retrained the 20B model for ten.
+    """
+    own = {a.split("=", 1)[0] for a in leg.args if a.startswith("--")}
+    kept: list[str] = []
+    drop_value = False
+    for token in extra_args:
+        if token.startswith("--"):
+            if token.split("=", 1)[0] in own:
+                # `--opt value` has to lose its value token as well.
+                drop_value = "=" not in token
+                continue
+            drop_value = False
+            kept.append(token)
+        elif drop_value:
+            drop_value = False
+        else:
+            kept.append(token)
+    return kept
 
 
 def _arg_expression(value: str) -> str:
@@ -118,6 +153,7 @@ def build_payload_notebook(
     reference: str | None = None,
 ) -> dict:
     """A single-GPU notebook that installs one leg's stack and runs it."""
+    root = _kernel_root(leg)
     wanted = list(leg.files)
     if leg.entry not in wanted:
         wanted.append(leg.entry)
@@ -142,7 +178,7 @@ def build_payload_notebook(
 # travels in here, so the files have to be on disk before the first pip call.
 import base64, gzip, json, os, pathlib
 FILES = {json.dumps(files)}
-ROOT = pathlib.Path({json.dumps(KERNEL_ROOT)})
+ROOT = pathlib.Path({json.dumps(root)})
 for name, blob in FILES.items():
     dest = ROOT / name
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -200,7 +236,7 @@ importlib.invalidate_caches()
 # installed distributions rather than from module attributes. This is the
 # line a reader diffs between the control leg and the canary leg to name
 # what moved, so it is printed before anything can crash.
-sys.path.insert(0, {json.dumps(KERNEL_ROOT)})
+sys.path.insert(0, {json.dumps(root)})
 import versions
 print("{PAYLOAD_SENTINEL} resolved " + json.dumps(
     versions.flatten_versions(versions.resolved_versions())), flush=True)
@@ -223,6 +259,19 @@ for mod in {json.dumps(list(leg.imports))}:
         missing.append(f"{{mod}}: {{type(exc).__name__}}: {{exc}}")
 if missing:
     print("{PAYLOAD_SENTINEL} MISSING " + json.dumps(missing), flush=True)
+    # A probe failure is a VERDICT, not missing evidence, and the two exit
+    # differently: the launcher extracts reports, and with none of them it
+    # calls the whole run `infra` and the workflow stays green. So a commit
+    # that breaks `import unsloth` -- a syntax error, a dropped runtime
+    # dependency -- used to pass this job by failing early enough. The run
+    # cell below is the only other thing that emits a report and it is never
+    # reached from here, so the report is written HERE instead.
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "dependency probe",
+        "passed": False,
+        "failures": ["import failed -- " + m for m in missing],
+    }}), flush=True)
     raise SystemExit("payload dependencies incomplete: " + "; ".join(missing))
 
 import torch
@@ -238,7 +287,7 @@ assert torch.cuda.device_count() == 1, (
     f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
 """
 
-    argv = list(leg.args) + list(extra_args)
+    argv = list(leg.args) + _shared_args_for(leg, tuple(extra_args))
     if ref_name:
         argv += ["--reference", f"@ROOT/references/{ref_name}"]
     arg_exprs = ", ".join(_arg_expression(a) for a in argv)
@@ -249,7 +298,7 @@ assert torch.cuda.device_count() == 1, (
 # before torch is imported (and papermill has already imported plenty), and
 # a hard crash then leaves this cell alive to report it.
 import json, os, pathlib, subprocess, sys
-ROOT = pathlib.Path({json.dumps(KERNEL_ROOT)})
+ROOT = pathlib.Path({json.dumps(root)})
 OUT = pathlib.Path("/kaggle/working/t4_out_{leg.name}")
 OUT.mkdir(parents=True, exist_ok=True)
 
@@ -344,7 +393,20 @@ try:
 except Exception:
     GPUS = []
 print("{DRIVER_SENTINEL}_GPUS " + json.dumps(GPUS), flush=True)
-N_GPU = max(1, len(GPUS))
+N_GPU = len(GPUS)
+# A shortfall is INFRASTRUCTURE, and it has to be called that HERE, before a
+# thread starts. `max(1, ...)` used to make one card look like enough: both
+# payloads were pinned to device 0, each child still saw exactly one GPU and
+# passed its own visibility assertion, and the contention came back as an OOM
+# that read like a code failure. Standing the kernel down instead produces no
+# report, which the launcher already classifies as infra rather than red.
+if N_GPU < len(PAYLOADS):
+    print("{DRIVER_SENTINEL}_INFRA " + json.dumps(
+        {{"reason": "gpu_shortfall", "gpus": N_GPU, "payloads": len(PAYLOADS)}}),
+        flush=True)
+    raise SystemExit(
+        f"{{len(PAYLOADS)}} payload(s) need one T4 each; the allocation "
+        f"exposed {{N_GPU}}")
 
 for name, blob in PAYLOADS.items():
     (WORK / name).write_bytes(gzip.decompress(base64.b64decode(blob)))
@@ -391,14 +453,36 @@ def run_one(name, gpu_index, idx):
     # single T4 a Colab user gets; two visible GPUs is a different test.
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
     env["PYTHONUNBUFFERED"] = "1"
+    # One compile cache per payload. `unsloth_compiled_cache` is a RELATIVE
+    # path resolved against the working directory, which both papermill
+    # children inherit, so the legs -- which exist to install different
+    # transformers/TRL versions and then compile the same modules -- would
+    # otherwise overwrite and import each other's generated files. Set here
+    # rather than in the payload so it also covers the notebook's own early
+    # `import unsloth` in the verify cell.
+    env["UNSLOTH_COMPILE_LOCATION"] = str(
+        WORK / ("unsloth_compiled_cache_" + pathlib.Path(name).stem))
 
-    kernel = "python3"
     made = _make_venv(idx, SYSTEM_SITE.get(name, True))
-    if made:
-        py, kernel, bindir = made
-        env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
-        env["VIRTUAL_ENV"] = str(pathlib.Path(bindir).parent)
-        env["UV_SYSTEM_PYTHON"] = "0"
+    if not made:
+        # No venv means the SHARED system site-packages, which is the one
+        # thing this driver exists to prevent: the legs' deliberately
+        # different library sets would land in one tree, the last writer
+        # would win, and the resulting import error would be reported as a
+        # regression in the code under test. Skip the payload instead. It
+        # produces no report, which the launcher classifies as infra.
+        with lock:
+            results[name] = {{"returncode": None, "gpu": gpu_index, "seconds": 0.0,
+                              "error": "virtualenv creation failed; payload skipped "
+                                       "rather than run in the shared system kernel",
+                              "kernel": None, "output_exists": False}}
+        print(f"{DRIVER_SENTINEL}_SKIPPED " + json.dumps({{name: results[name]}}),
+              flush=True)
+        return
+    py, kernel, bindir = made
+    env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
+    env["VIRTUAL_ENV"] = str(pathlib.Path(bindir).parent)
+    env["UV_SYSTEM_PYTHON"] = "0"
 
     log = WORK / (pathlib.Path(name).stem + "_driver.log")
     started = time.time()
@@ -460,7 +544,7 @@ for name in sorted(PAYLOADS):
 # sweep shipped 371MB back, almost all of it venv site-packages, and the
 # download was still running eighteen minutes later.
 import shutil as _shutil
-for _pat in ("venv_*", "unsloth_compiled_cache", "t4_smoke_src",
+for _pat in ("venv_*", "unsloth_compiled_cache*", "t4_smoke_src*",
              "huggingface_tokenizers_cache", "*/trainer*", "outputs"):
     for _d in WORK.glob(_pat):
         try:
