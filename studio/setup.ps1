@@ -5186,7 +5186,11 @@ $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
 } elseif ($_gpuCheckAnnounced -like "AMD*") {
     Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
 } else { $false }
+# The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose
+# CUDA is below 11 to the CPU index by design, then hands the tag over. $null is "did not say"
+# (an older cached installer, or a standalone update) and must still be reconciled.
 if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
+    ($InstallerTorchTag -ne "cpu") -and
     -not $_gpuCheckMasked -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {

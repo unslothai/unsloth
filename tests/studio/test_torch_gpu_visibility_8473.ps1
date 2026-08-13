@@ -191,6 +191,12 @@ Check "an explicit cpu pin is excluded"   ($report -match '\$_gpuCheckPinLeaf -n
 # CUDA_VISIBLE_DEVICES and the AMD arch can come from a WMI GPU name, so the card is announced
 # while torch is meant to see nothing.
 Check "a hide-all mask is excluded"       ($report -match '-not \$_gpuCheckMasked')
+# install.ps1 routes an NVIDIA host whose CUDA is below 11 to the CPU index by design and hands
+# the resolved tag over, so the CPU wheel answering False there is the install working.
+Check "an installer cpu tag is excluded"  ($report -match '\$InstallerTorchTag -ne "cpu"')
+# $null is "did not say" -- an older cached installer, or a standalone update -- and a presence
+# test would disable the check on every run that did not come from install.ps1.
+Check "an absent tag is not read as cpu"  (-not ($reportCode -match '-not \$InstallerTorchTag|\$InstallerTorchTag -eq \$null'))
 # Scoped to the mask governing what was announced: an idle HIP mask must not mute a real mismatch.
 Check "the NVIDIA arm reads the CUDA mask" ($report -match 'NVIDIA\*.*[\s\S]{0,80}CUDA_VISIBLE_DEVICES')
 # All three, in hardware.py's order: ROCm layers HIP/ROCR on the CUDA mask and falls back to it.
