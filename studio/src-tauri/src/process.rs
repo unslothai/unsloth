@@ -1531,11 +1531,12 @@ fn relative_override_pins_from(
     // the child with that override still relative would retarget it silently,
     // which is what the pinning exists to prevent. The CLI guard refuses the
     // same case.
-    let anchor = |value: &str| -> Result<std::path::PathBuf, String> {
+    let anchor = |name: &str, value: &str| -> Result<std::path::PathBuf, String> {
         if needs_os_resolution(value) {
             // "D:cache" is drive D's own current directory and "\\cache" the
             // root of the current drive, neither of which join() knows.
-            absolute(value).ok_or_else(|| format!("Could not resolve the path in {value}"))
+            absolute(value)
+                .ok_or_else(|| format!("{name} names a path this machine cannot resolve"))
         } else {
             Ok(cwd.join(value))
         }
@@ -1573,7 +1574,14 @@ fn relative_override_pins_from(
         if !names_a_path(name, &value) {
             continue;
         }
-        pins.push((*name, anchor(&value)?));
+        match anchor(name, &value) {
+            Ok(pinned) => pins.push((*name, pinned)),
+            Err(error) => {
+                if !BEST_EFFORT_ENV.contains(name) {
+                    return Err(error);
+                }
+            }
+        }
     }
     for name in PATH_LIST_ENV {
         let Some(raw) = lookup(name) else { continue };
@@ -1614,7 +1622,7 @@ fn relative_override_pins_from(
                 entries.push(entry);
                 continue;
             }
-            entries.push(anchor(&entry)?.to_string_lossy().into_owned());
+            entries.push(anchor(name, &entry)?.to_string_lossy().into_owned());
         }
         let joined = entries.join(";");
         if joined == raw {
@@ -1655,15 +1663,21 @@ fn pins_for_move(
     work_dir: &std::path::Path,
     skipped: &[&str],
 ) -> Result<Option<Vec<(&'static str, std::path::PathBuf)>>, String> {
-    match relative_override_pins(work_dir, skipped) {
+    stay_put_on_lost_cwd(
+        relative_override_pins(work_dir, skipped),
+        std::env::current_dir().is_ok(),
+    )
+}
+
+/// Split out so the decision is testable without moving this process.
+fn stay_put_on_lost_cwd(
+    pins: Result<Vec<(&'static str, std::path::PathBuf)>, String>,
+    cwd_is_known: bool,
+) -> Result<Option<Vec<(&'static str, std::path::PathBuf)>>, String> {
+    match pins {
         Ok(pins) => Ok(Some(pins)),
-        Err(error) => {
-            if std::env::current_dir().is_err() {
-                Ok(None)
-            } else {
-                Err(error)
-            }
-        }
+        Err(error) if cwd_is_known => Err(error),
+        Err(_) => Ok(None),
     }
 }
 
@@ -1679,6 +1693,13 @@ fn update_child_skipped_env() -> Vec<&'static str> {
         .chain(cfg!(windows).then_some("PYTHONPATH"))
         .collect()
 }
+
+/// Pinned when it can be, but never at the cost of the spawn. The update is the
+/// one child that receives STUDIO_LOCAL_REPO, and a bare `unsloth studio update`
+/// drops it before anything reads it (commands/studio.py), so refusing to start
+/// over a stale drive-relative value would defeat the fallback this exists for.
+/// The twin of `_BEST_EFFORT_ENV` in the CLI guard.
+const BEST_EFFORT_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
 
 /// What an ordinary managed child neither receives nor needs.
 fn child_skipped_env() -> Vec<&'static str> {
@@ -3394,36 +3415,14 @@ mod managed_cli_working_dir_tests {
             .is_err(),
             "the pins still report what a move would lose"
         );
-        // And the spawn path turns that report into staying put. Run from a
-        // directory that is really gone, which is the only way to reach it: the
-        // whole process moves, so this holds the env lock and puts it back.
-        #[cfg(unix)]
-        {
-            let _env = crate::native_path_policy::PROCESS_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let here = std::env::current_dir().unwrap();
-            let gone = scratch("vanished-cwd");
-            fs::create_dir_all(&gone).unwrap();
-            std::env::set_var("DG_VISUAL_BIN", "visual");
-            std::env::set_current_dir(&gone).unwrap();
-            fs::remove_dir_all(&gone).ok();
-            let unnameable = std::env::current_dir().is_err();
-            let mut cmd = Command::new("unsloth");
-            let applied = apply_managed_cli_context_at(&mut cmd, &work_dir);
-            let carries_cwd = cmd.get_current_dir().is_some();
-            std::env::set_current_dir(&here).unwrap();
-            std::env::remove_var("DG_VISUAL_BIN");
-            assert!(unnameable, "the directory should be gone");
-            assert!(
-                applied.is_ok(),
-                "a lost directory must not fail the spawn: {applied:?}"
-            );
-            assert!(
-                !carries_cwd,
-                "only a directory this process can name is worth moving out of"
-            );
-        }
+        // And the spawn path turns that report into staying put, without
+        // moving this process to prove it: an unpinnable environment plus a
+        // directory that cannot be named means the child stays where it is.
+        let unpinnable: Result<Vec<(&'static str, PathBuf)>, String> =
+            Err("DG_VISUAL_BIN is relative and the directory it was written against is gone"
+                .to_string());
+        assert_eq!(stay_put_on_lost_cwd(unpinnable.clone(), false), Ok(None));
+        assert!(stay_put_on_lost_cwd(unpinnable, true).is_err());
     }
 
     #[test]

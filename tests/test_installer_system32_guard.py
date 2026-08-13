@@ -1220,6 +1220,33 @@ def test_cli_guard_writes_back_only_an_expansion_the_reader_agrees_with():
     assert environ_out["HF_HOME"] == r"%HF_HOME%\cache"
 
 
+def test_cli_guard_never_refuses_an_update_over_the_local_checkout_setting():
+    r"""A stale STUDIO_LOCAL_REPO on a drive that is gone must not stop the one
+    update form that relocates: the bare update drops the value before anything
+    reads it, so refusing over it would defeat the fallback this guard exists
+    for. Every other setting still refuses, because something does read those."""
+    environ_out: dict[str, str] = {}
+    _message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "update"],
+        # Z: has no current directory, so this one cannot be resolved at all.
+        environ_extra = {"STUDIO_LOCAL_REPO": "Z:checkout"},
+        environ_out = environ_out,
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+    # Left exactly as written, and the update proceeds.
+    assert environ_out["STUDIO_LOCAL_REPO"] == "Z:checkout"
+
+    # The same value under a name something reads still stops the move.
+    message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "update"],
+        environ_extra = {"HF_HOME": "Z:cache"},
+    )
+    assert colour == "red"
+    assert "path settings" in message
+
+
 def test_cli_guard_refuses_a_path_attached_to_a_short_option():
     r"""Click reads `-f.\dist` as a value the same way it reads
     `--frontend=.\dist`, so a marked invocation carrying one is refused rather

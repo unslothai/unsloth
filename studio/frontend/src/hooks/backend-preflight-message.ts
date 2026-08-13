@@ -15,11 +15,14 @@ export function preflightStaleMessage(
   disposition: string,
   reason: string | null,
 ): string {
+  // The backend appends the setting it could not preserve, as `reason:NAME`, so
+  // the discriminator is the part before the colon and the name is the rest.
+  const [kind, setting] = (reason ?? "").split(":", 2);
   // Not an install problem: the home folder itself is unreachable, and updating
   // needs the same folder. The roaming-profile cause is a Windows one, but this
   // reason reaches every platform (`home_dir_available()` is probed ungated), so
   // it is offered rather than asserted.
-  if (reason === WORKING_DIRECTORY_UNAVAILABLE) {
+  if (kind === WORKING_DIRECTORY_UNAVAILABLE) {
     const cause =
       typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")
         ? " This usually means a network or roaming profile is not available yet."
@@ -28,8 +31,9 @@ export function preflightStaleMessage(
   }
   // Also not an install problem, and not the folder either: one of Unsloth's own
   // path settings names somewhere unresolvable, so the value is the fix.
-  if (reason === PATH_SETTING_UNRESOLVABLE) {
-    return "One of Unsloth's folder settings points somewhere that cannot be resolved, so it has nowhere safe to run from. Set it to a full path, such as D:\\unsloth-cache, and try again.";
+  if (kind === PATH_SETTING_UNRESOLVABLE) {
+    const which = setting ? `${setting} points` : "One of Unsloth's folder settings points";
+    return `${which} somewhere that cannot be resolved, so Unsloth has nowhere safe to run from. Set it to a full path, such as D:\\unsloth-cache, and try again.`;
   }
   if (disposition === "owned_stale") {
     return "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth.";

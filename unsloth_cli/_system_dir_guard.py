@@ -363,6 +363,14 @@ _RELATIVE_PATH_ENV = (
     "CUDA_ROOT",
 )
 
+# Pinned when it can be, but never at the cost of the move. `studio update
+# --local` is the only command that reads STUDIO_LOCAL_REPO and it takes a path,
+# so it keeps the hard error; the bare update that does relocate drops the value
+# before anything reads it (commands/studio.py). Refusing a System32 update over
+# a stale setting nothing was going to look at would defeat the fallback this
+# guard exists for, so an unresolvable one is left behind instead.
+_BEST_EFFORT_ENV = frozenset(("STUDIO_LOCAL_REPO",))
+
 # The separator is Windows', not the host's: this guard only ever runs on
 # Windows, and os.pathsep would split "D:\\shared" apart anywhere else.
 _PATH_LIST_SEPARATOR = ";"
@@ -395,7 +403,12 @@ def pin_relative_overrides(
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
-        anchored = _anchor(name, value, cwd, pathmod, abspath, expandvars, expanduser)
+        try:
+            anchored = _anchor(name, value, cwd, pathmod, abspath, expandvars, expanduser)
+        except Exception:
+            if name not in _BEST_EFFORT_ENV:
+                raise
+            continue
         if anchored is not None:
             environ[name] = anchored
             pinned.append(name)

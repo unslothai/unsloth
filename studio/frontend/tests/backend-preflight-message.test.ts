@@ -82,3 +82,18 @@ test("a path setting that cannot be resolved is told apart from an unreachable f
   assert.doesNotMatch(message, /user folder/);
   assert.doesNotMatch(message, /update/);
 });
+
+test("the setting that could not be resolved is named", () => {
+  // "one of Unsloth's folder settings" is not something anyone can act on, so
+  // the backend appends the name and the message uses it.
+  const named = preflightStaleMessage(
+    "managed_stale",
+    `${PATH_SETTING_UNRESOLVABLE}:HF_HOME`,
+  );
+  assert.match(named, /^HF_HOME points somewhere that cannot be resolved/);
+  assert.match(named, /full path/);
+  // Without a name it still reads as a sentence, and still is not an update.
+  const unnamed = preflightStaleMessage("managed_stale", PATH_SETTING_UNRESOLVABLE);
+  assert.match(unnamed, /One of Unsloth's folder settings points/);
+  assert.doesNotMatch(unnamed, UPDATE_ADVICE);
+});

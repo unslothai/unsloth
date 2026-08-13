@@ -20,17 +20,38 @@ pub(super) const WORKING_DIRECTORY_UNAVAILABLE: &str = "working_directory_unavai
 /// so reinstalling hits the same wall. Mirrored in the frontend message map.
 pub(super) const PATH_SETTING_UNRESOLVABLE: &str = "path_setting_unresolvable";
 
-/// The reason a managed context failure is reported under.
-pub(super) fn context_reason(error: &crate::process::ManagedContextError) -> &'static str {
+/// The reason a managed context failure is reported under, with the setting that
+/// caused it where there is one: "one of Unsloth's folder settings" is not
+/// something a user can act on, and every pin failure names the setting it could
+/// not preserve. The name only, never the value, since this reaches the window.
+pub(super) fn context_reason(error: &crate::process::ManagedContextError) -> String {
     match error {
-        crate::process::ManagedContextError::WorkingDirectory(_) => WORKING_DIRECTORY_UNAVAILABLE,
-        crate::process::ManagedContextError::PathSetting(_) => PATH_SETTING_UNRESOLVABLE,
+        crate::process::ManagedContextError::WorkingDirectory(_) => {
+            WORKING_DIRECTORY_UNAVAILABLE.to_string()
+        }
+        crate::process::ManagedContextError::PathSetting(detail) => {
+            match setting_name(detail) {
+                Some(name) => format!("{PATH_SETTING_UNRESOLVABLE}:{name}"),
+                None => PATH_SETTING_UNRESOLVABLE.to_string(),
+            }
+        }
     }
+}
+
+/// The leading token of a pin failure, when it looks like an environment name.
+fn setting_name(detail: &str) -> Option<&str> {
+    let name = detail.split_whitespace().next()?;
+    let named = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    named.then_some(name)
 }
 
 /// Whether the reason is a context the app cannot build, not a repairable install.
 pub(super) fn is_context_reason(reason: &str) -> bool {
-    reason == WORKING_DIRECTORY_UNAVAILABLE || reason == PATH_SETTING_UNRESOLVABLE
+    let head = reason.split(':').next().unwrap_or(reason);
+    head == WORKING_DIRECTORY_UNAVAILABLE || head == PATH_SETTING_UNRESOLVABLE
 }
 
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -499,7 +520,7 @@ fn working_directory_reason() -> Option<String> {
     // different thing to fix.
     let error = crate::process::managed_cli_context_error()?;
     info!("Managed preflight: managed context unavailable: {error}");
-    Some(context_reason(&error).to_string())
+    Some(context_reason(&error))
 }
 
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
@@ -514,7 +535,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         );
         return ManagedProbe::Stale {
             bin,
-            reason: context_reason(&error).to_string(),
+            reason: context_reason(&error),
         };
     }
 
@@ -857,5 +878,27 @@ mod tests {
             "a removed studio package must not keep serving the cached Ready answer"
         );
         let _ = fs::remove_dir_all(&venv);
+    }
+
+    #[test]
+    fn a_context_reason_names_the_setting_it_could_not_preserve() {
+        use crate::process::ManagedContextError;
+        // Every pin failure names the setting first, and the window needs that
+        // name: "one of Unsloth's folder settings" is not something to act on.
+        let reason = context_reason(&ManagedContextError::PathSetting(
+            "HF_HOME names a path this machine cannot resolve".to_string(),
+        ));
+        assert_eq!(reason, "path_setting_unresolvable:HF_HOME");
+        assert!(is_context_reason(&reason));
+        // The name is carried, never the value or the sentence around it.
+        assert!(!reason.contains("cannot resolve"));
+        // A failure that does not start with a setting name still classifies.
+        let bare = context_reason(&ManagedContextError::PathSetting(
+            "the environment block is too long".to_string(),
+        ));
+        assert_eq!(bare, PATH_SETTING_UNRESOLVABLE);
+        assert!(is_context_reason(&bare));
+        assert!(is_context_reason(WORKING_DIRECTORY_UNAVAILABLE));
+        assert!(!is_context_reason("cli_unusable"));
     }
 }
