@@ -215,6 +215,21 @@ def compare_metrics(
 
     ``identical`` is bitwise equality of every compared field, not equality
     within a tolerance: the caller decides what tolerance means.
+
+    Two things that are NOT numeric deviations are still differences here,
+    because both are the run-to-run comparison's own subject matter:
+
+    * A field logged by one run and not by the other. Same-length lists whose
+      entries carry different keys are two different traces, and no arithmetic
+      covers it. ``check_reference`` already calls that "a change in the SHAPE
+      of what the trainer logged"; the exact comparator cannot be laxer than
+      the tolerance band beside it.
+    * A step coordinate that moved. The lists are zipped positionally, so
+      values are only comparable while the entries they came from describe the
+      same step. A shifted, duplicated or reordered ``step`` makes every later
+      pairing meaningless AND is itself the kind of trainer nondeterminism
+      this comparison exists to catch, so it is reported rather than zipped
+      over.
     """
     result: dict[str, Any] = {
         "identical": True,
@@ -222,15 +237,33 @@ def compare_metrics(
         "length_b": len(b),
         "max_abs_diff": {},
         "first_diff_step": None,
+        "step_mismatch": [],
     }
     if len(a) != len(b):
         result["identical"] = False
         result["length_mismatch"] = True
         return result
+    for index, (ea, eb) in enumerate(zip(a, b)):
+        sa, sb = ea.get("step"), eb.get("step")
+        if sa != sb:
+            result["step_mismatch"].append({"index": index, "a": sa, "b": sb})
+            if result["identical"]:
+                result["identical"] = False
+                result["first_diff_step"] = sa
     for field in fields:
         worst = 0.0
         for ea, eb in zip(a, b):
-            if field not in ea or field not in eb:
+            has_a, has_b = field in ea, field in eb
+            if not has_a and not has_b:
+                continue
+            if has_a != has_b:
+                if result["identical"]:
+                    result["identical"] = False
+                    result["first_diff_step"] = (ea if has_a else eb).get("step")
+                result.setdefault("one_sided_fields", []).append(
+                    {"step": (ea if has_a else eb).get("step"), "field": field,
+                     "present_in": "a" if has_a else "b"}
+                )
                 continue
             va, vb = float(ea[field]), float(eb[field])
             # NaN is a legitimate, REPRODUCIBLE value here. Under fp16 the
