@@ -470,6 +470,18 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
     desktop_capability_stale_reason(capability).is_none()
 }
 
+/// `WORKING_DIRECTORY_UNAVAILABLE` when the directory children run from has
+/// become unreachable, so a probe failure can be attributed to it.
+fn working_directory_reason() -> Option<String> {
+    match crate::process::managed_cli_working_dir() {
+        Ok(_) => None,
+        Err(error) => {
+            info!("Managed preflight: working directory unavailable: {error}");
+            Some(WORKING_DIRECTORY_UNAVAILABLE.to_string())
+        }
+    }
+}
+
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
 
@@ -499,9 +511,12 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
             bin,
             started.elapsed().as_millis()
         );
+        // The profile can drop between the check above and the probe, and every
+        // later probe fails the same way, so ask again rather than calling a
+        // reachable install broken and repairing it into the same failure.
         return ManagedProbe::Stale {
             bin,
-            reason: "cli_unusable".to_string(),
+            reason: working_directory_reason().unwrap_or_else(|| "cli_unusable".to_string()),
         };
     }
 
@@ -548,7 +563,8 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     );
     ManagedProbe::Stale {
         bin,
-        reason: "desktop_capability_probe_failed".to_string(),
+        reason: working_directory_reason()
+            .unwrap_or_else(|| "desktop_capability_probe_failed".to_string()),
     }
 }
 

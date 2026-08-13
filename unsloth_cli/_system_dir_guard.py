@@ -250,6 +250,8 @@ _RELATIVE_PATH_ENV = (
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
     "UNSLOTH_STUDIO_PROJECTS_HOME",
     "UNSLOTH_STUDIO_SANDBOX_HOME",
+    # `studio update` reads it, and that command relocates.
+    "STUDIO_LOCAL_REPO",
     # Engine and tool locations the user may point somewhere of their own.
     "UNSLOTH_LLAMA_CPP_PATH",
     "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR",

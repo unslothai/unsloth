@@ -847,6 +847,20 @@ def test_safe_user_dir_rejects_the_public_profile_from_either_candidate(public: 
     )
 
 
+def test_cli_guard_pins_the_local_checkout_update_reads():
+    """`studio update` relocates, and commands/studio.py resolves a relative
+    STUDIO_LOCAL_REPO against the working directory, so it has to be pinned."""
+    environ_out: dict[str, str] = {}
+    _, colour, _ = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "update"],
+        environ_extra = {"STUDIO_LOCAL_REPO": r"..\src\unsloth"},
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out["STUDIO_LOCAL_REPO"] == r"C:\Windows\System32\..\src\unsloth"
+
+
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
     """ "D:cache" means the current directory on drive D, which join() cannot know
     and which the move changes, so Windows itself has to resolve it first."""
