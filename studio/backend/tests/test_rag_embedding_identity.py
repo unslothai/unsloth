@@ -267,9 +267,7 @@ def test_stale_backend_chunks_do_not_starve_the_current_backend(rag_conn):
     assert [cid for cid, _ in hits] == ["new:0"]
 
 
-def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(
-    rag_conn, monkeypatch
-):
+def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_conn, monkeypatch):
     """A concurrent ST failure swaps the process embedder for the rest of its life. A
     query sentence-transformers had already encoded must still be answered by the
     sentence-transformers half of the index, not by the backend that took over."""
@@ -282,13 +280,21 @@ def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(
     )
 
     class _SwapsMidEncode:
-        def encode(self, texts, *, model_name = None, normalize = True):
+        def encode(
+            self,
+            texts,
+            *,
+            model_name = None,
+            normalize = True,
+        ):
             vectors = [_vector(t) for t in texts]
             monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
             return vectors
 
     monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
-    monkeypatch.setattr(embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower())
+    monkeypatch.setattr(
+        embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower()
+    )
     hits = retrieval.retrieve_dense(rag_conn, "kb_r", "alpha bravo", k = 5, model_name = MODEL)
     assert [h.chunk_id for h in hits] == ["d1:0"]
 
