@@ -988,6 +988,11 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          // No store fallback and no reset with the rest below: undefined means
+          // "this config never read them", and the route preserves the stored
+          // flags when the field is omitted. Falling back to another model's
+          // value, or to null, would clear flags the user set elsewhere.
+          const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
@@ -1272,6 +1277,11 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              // Sent only once known, and [] is the explicit "launch with none":
+              // the flags are llama-server's, so a transformers load never carries them.
+              ...(isGguf && loadLlamaExtraArgs !== undefined
+                ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
+                : {}),
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
               ...(isGguf && loadNUbatch != null

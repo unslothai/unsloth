@@ -256,3 +256,26 @@ test("the load sends the flags only once they are known", () => {
     /ownConfig\.llamaExtraArgs !== undefined \? .* \{ llama_extra_args: ownConfig\.llamaExtraArgs \?\? \[\] \} : \{\}/,
   );
 });
+
+test("the panel's own Load goes through the runtime, which sends them too", () => {
+  // Found by loading a model from the panel and reading the emitted command: the
+  // flags were in the config and absent from the argv, because this hook is the
+  // path the Load button takes and it built the payload field by field.
+  const runtime = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  assert.match(
+    runtime,
+    /const loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
+  );
+  assert.match(
+    runtime,
+    /isGguf && loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \} : \{\}/,
+  );
+});
