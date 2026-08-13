@@ -37,6 +37,22 @@ from utils import hardware
 from utils.hardware import amd
 
 
+def _hip_sees(
+    monkeypatch,
+    count,
+    totals = None,
+):
+    """Declare HIP's own inventory: how many devices it opens, and the total memory
+    it reports per physical id. Empty totals mean torch could not describe the
+    devices, which the probe fails open on."""
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_rocm_total_memory_mib_by_physical_id",
+        staticmethod(lambda: dict(totals or {})),
+    )
+
+
 @pytest.fixture
 def rocm(monkeypatch):
     """A ROCm host whose nvidia-smi probe finds nothing, with no APUs.
@@ -44,8 +60,9 @@ def rocm(monkeypatch):
     The mask is cleared from the environment as well as patched: the probe asks
     whether a mask is SET before asking what it resolves to, so the shell's own
     CUDA_VISIBLE_DEVICES would otherwise read as a mask that resolves to nothing
-    (#8662 for the same trap in the APU tests). HIP reachability is declared for the
-    same reason: unpatched it reads this host's own GPU, and CI has none."""
+    (#8662 for the same trap in the APU tests). HIP reachability and its device
+    count are declared for the same reason: unpatched they read this host's own
+    GPU, and CI has none."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
@@ -53,9 +70,11 @@ def rocm(monkeypatch):
     )
     for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(_var, raising = False)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
     monkeypatch.setattr(
         LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
     )
+    _hip_sees(monkeypatch, 1)
 
 
 def _payload(*gpus: tuple[int, int, int]):
@@ -231,6 +250,7 @@ class TestTheArchGateAppliesToThisBranchToo:
             "_run_amd_smi",
             _fake_amd_smi(_payload((0, 4096, 24576), (1, 1024, 16384)), {0: 0, 1: 1}),
         )
+        _hip_sees(monkeypatch, 2)
         return str(tmp_path / "build" / "bin" / "llama-server")
 
     def test_an_uncovered_device_is_dropped(self, mixed_host):
@@ -273,6 +293,7 @@ class TestTheArchGateAppliesToThisBranchToo:
             "_run_amd_smi",
             _fake_amd_smi(_payload((0, 4096, 24576), (1, 1024, 16384)), {0: 0, 1: 1}),
         )
+        _hip_sees(monkeypatch, 2)
         binary = str(tmp_path / "build" / "bin" / "llama-server")
         assert len(LlamaCppBackend._get_gpu_memory_amd_smi(binary, for_llama_server = True)) == 2
 

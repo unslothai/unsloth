@@ -38,12 +38,28 @@ from utils import hardware
 from utils.hardware import amd
 
 
+def _hip_sees(
+    monkeypatch,
+    count,
+    totals = None,
+):
+    """Declare HIP's own inventory: how many devices it opens, and the total memory
+    it reports per physical id. Empty totals mean torch could not describe the
+    devices, which the probe fails open on."""
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_rocm_total_memory_mib_by_physical_id",
+        staticmethod(lambda: dict(totals or {})),
+    )
+
+
 @pytest.fixture
 def rocm(monkeypatch):
     """A ROCm host whose nvidia-smi probe finds nothing, with no APUs and no mask.
 
-    HIP reachability is declared, not inherited: unpatched it reads this host's own
-    GPU, and CI has none."""
+    HIP reachability and its device count are declared, not inherited: unpatched
+    they read this host's own GPU, and CI has none."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
@@ -51,6 +67,8 @@ def rocm(monkeypatch):
     )
     for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(_var, raising = False)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+    _hip_sees(monkeypatch, 1)
 
 
 def _payload(*gpus: tuple[int, int, int]):
@@ -99,6 +117,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
                 _enumeration({0: 1, 1: 0}),
             ),
         )
+        _hip_sees(monkeypatch, 2)
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [
             (0, 96256, 98304),
             (1, 15360, 16384),
@@ -188,6 +207,7 @@ class TestAPartialAnswerDefersToTorch:
                 _enumeration({0: 0, 1: 1}),
             ),
         )
+        _hip_sees(monkeypatch, 2)
 
     def test_the_branch_declines_rather_than_answering_for_one_card(self, apu_plus_dgpu):
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
@@ -223,5 +243,6 @@ class TestAPartialAnswerDefersToTorch:
         """The mask names two cards and amd-smi answered for one; the other is not
         "absent", it is unmeasured."""
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
+        _hip_sees(monkeypatch, 2)
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
