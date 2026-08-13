@@ -82,6 +82,7 @@ export function useMediaGenerationPresets<Params extends object>({
   const deferredSavedSettingsRef =
     useRef<MediaGenerationPresetSettings<Params> | null>(null);
   const deferredFreshSettingsRef = useRef(false);
+  const inflightWriteRef = useRef<Promise<unknown>>(Promise.resolve());
   const baselineParamsRef = useRef(defaultParams);
   const activePresetRef = useRef(activePreset);
   // Bumped by every action that takes over the form, so a write that resolves late can still
@@ -271,17 +272,29 @@ export function useMediaGenerationPresets<Params extends object>({
     latestSettingsRef.current = settings;
   }, [settings]);
 
+  // One state write at a time. A pause between edits while the first PUT is slow puts two in
+  // flight, and the store keeps whichever the backend saw LAST, so the older snapshot could win
+  // and the newest recipe would come back changed on the next read. Same chain the chat settings
+  // path keeps, for the same reason.
+  const queueWrite = useCallback((write: () => Promise<unknown>) => {
+    inflightWriteRef.current = inflightWriteRef.current
+      .catch(() => undefined)
+      .then(write);
+  }, []);
+
   useEffect(() => {
     if (!presetsReady) {
       return;
     }
     const timer = window.setTimeout(() => {
-      saveMediaGenerationPresetSettings(kind, settings).catch(() => {
-        toast.error(`Could not save ${kind} presets`);
-      });
+      queueWrite(() =>
+        saveMediaGenerationPresetSettings(kind, settings).catch(() => {
+          toast.error(`Could not save ${kind} presets`);
+        }),
+      );
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [kind, presetsReady, settings]);
+  }, [kind, presetsReady, queueWrite, settings]);
 
   useEffect(() => {
     if (!presetsReady) {
@@ -290,8 +303,10 @@ export function useMediaGenerationPresets<Params extends object>({
     const flush = () => {
       const latest = latestSettingsRef.current;
       if (latest) {
-        saveMediaGenerationPresetSettings(kind, latest, true).catch(
-          () => undefined,
+        queueWrite(() =>
+          saveMediaGenerationPresetSettings(kind, latest, true).catch(
+            () => undefined,
+          ),
         );
       }
     };
@@ -300,7 +315,7 @@ export function useMediaGenerationPresets<Params extends object>({
       window.removeEventListener("beforeunload", flush);
       flush();
     };
-  }, [kind, presetsReady]);
+  }, [kind, presetsReady, queueWrite]);
 
   const selectPreset = useCallback(
     (name: string) => {

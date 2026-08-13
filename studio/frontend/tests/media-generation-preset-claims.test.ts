@@ -103,6 +103,27 @@ test("a preset write that failed gives its form claim back", () => {
   }
 });
 
+test("state writes go out one at a time, newest last", () => {
+  // Two PUTs in flight land in whatever order the backend sees them, and the store keeps the last
+  // one, so an older snapshot could outlive the newest recipe.
+  assert.match(
+    HOOK,
+    /inflightWriteRef\.current = inflightWriteRef\.current\s*\n?\s*\.catch\(\(\) => undefined\)\s*\n?\s*\.then\(write\);/,
+  );
+  for (const site of [
+    "saveMediaGenerationPresetSettings(kind, settings)",
+    "saveMediaGenerationPresetSettings(kind, latest, true)",
+  ]) {
+    const at = HOOK.indexOf(site);
+    assert.ok(at > 0, site);
+    assert.match(
+      HOOK.slice(at - 120, at),
+      /queueWrite\(\(\) =>\s*$/,
+      `${site} must go through the queue`,
+    );
+  }
+});
+
 test("a delete clears the selection even when a pick took the form meanwhile", () => {
   // The preset is gone either way, and a selection naming it leaves the control on a definition
   // that no longer exists (and persists that name on the next debounced write).
