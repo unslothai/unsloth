@@ -154,6 +154,16 @@ ldd_pairs() {  # elf -> "soname target" per line
     -e 's|^[[:space:]]*\(/[^[:space:]]*\)[[:space:]]*(0x.*$|\1 \1|p'
 }
 
+# The same two forms, keeping the whole right-hand side instead of its first word.
+# The closure walk only needs a path it can copy, so ldd_pairs collapsing "not found"
+# to "not" costs it nothing; the completeness gate has to tell "resolved nowhere" apart
+# from "resolved, but out on the host", which are different faults with the same cure.
+ldd_resolved() {  # elf -> "soname where" per line; where = a path or "not found"
+  ldd "$1" 2>/dev/null | sed -n \
+    -e 's|^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\(.*\)$|\1 \2|p' \
+    -e 's|^[[:space:]]*\(/[^[:space:]]*\)[[:space:]]*(0x.*$|\1 \1|p'
+}
+
 log() { printf '[portable-appimage] %s\n' "$*"; }
 die() { printf '[portable-appimage] %s\n' "$*" >&2; exit 1; }
 
@@ -183,27 +193,65 @@ assert_portable_appdir() {
   [[ -x "$webkit_exec/WebKitWebProcess" ]] \
     || die "Portable AppImage is missing WebKitWebProcess"
 
-  local target
+  # DT_NEEDED is read with patchelf below, and a check that cannot run reads exactly
+  # like a check that passed -- which is the fault this whole script keeps meeting.
+  command -v patchelf >/dev/null 2>&1 \
+    || die "patchelf is required to verify an AppDir: DT_NEEDED cannot be read without it"
+
+  # Every dependency must land inside THIS AppDir, so the AppDir has to be named
+  # in the same absolute, symlink-free form the loader reports.
+  local root_abs=""
+  root_abs="$(CDPATH= cd -- "$root" && pwd -P)" || die "cannot resolve AppDir: $root"
+
+  local target dep where
   while IFS= read -r -d '' target; do
-    local unresolved
-    # Names on the host allowlist are supposed to come from the target system,
-    # so their absence on THIS machine says nothing about the bundle. Everything
-    # else unresolved is a genuine hole in the closure.
-    # No LD_LIBRARY_PATH here, deliberately: AppRun does not set one either (it
-    # captures host library loads and reproduces #7953), so the bundle has to
-    # resolve through the $ORIGIN RUNPATHs alone. Checking WITH it would pass a
-    # bundle that only works under an export the runtime no longer performs.
-    unresolved="$(
-      ldd "$target" 2>/dev/null |
-        sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p' |
-        while IFS= read -r miss; do
-          [[ "$miss" =~ $HOST_LIBS_RE ]] || printf '%s\n' "$miss"
-        done
-    )"
-    if [[ -n "$unresolved" ]]; then
-      printf 'Unresolved in %s:\n%s\n' "$target" "$unresolved" >&2
+    local -A resolved_of=()
+    local escaped=""
+    # Where the loader actually put each name. No LD_LIBRARY_PATH, deliberately:
+    # AppRun does not set one either (it captures host library loads and reproduces
+    # #7953), so the bundle has to resolve through the $ORIGIN RUNPATHs alone.
+    # Checking WITH it would pass a bundle that only works under an export the
+    # runtime no longer performs.
+    while read -r soname resolved; do
+      resolved_of["${soname##*/}"]="${resolved% (0x*}"
+    done < <(ldd_resolved "$target")
+
+    # Judge this object's OWN DT_NEEDED entries, not everything ldd printed. ldd
+    # reports the whole transitive closure, and the tail of it belongs to whichever
+    # library pulled it in: libX11 stays on the host by design and drags libxcb,
+    # libXdmcp, libbsd and libmd along with it, none of which we ship or should.
+    # Demanding those come from the bundle would reject every correct build.
+    #
+    # For an entry we DO own there are two ways to be missing, and only "not found"
+    # used to be one of them. The other is the dangerous one: the loader searches
+    # ld.so.cache after RUNPATH, so a library the closure walk failed to copy still
+    # RESOLVES here -- out of the build host's own /usr/lib -- and the bundle reads
+    # as complete while the target, which does not have it, cannot start the app.
+    # Measured against this very script before the change: an AppDir whose
+    # executable needs libz.so.1 and bundles only WebKit passed --verify-appdir on a
+    # host with zlib. Both cases are the same fault (not in the bundle, not on the
+    # documented host boundary), so both fail here.
+    for dep in $(patchelf --print-needed "$target" 2>/dev/null || true); do
+      dep="${dep##*/}"
+      [[ "$dep" =~ $HOST_LIBS_RE ]] && continue
+      where="${resolved_of[$dep]-}"
+      [[ "$where" == "$root_abs"/* ]] && continue
+      # Slow path only; a correct bundle never reaches it. Re-check through realpath
+      # so an AppDir reached by way of a symlinked parent is not reported.
+      if [[ -z "$where" || "$where" == "not found" ]]; then
+        escaped+="  $dep: not found"$'\n'
+        continue
+      fi
+      # Slow path only; a correct bundle never reaches it. Re-check through realpath
+      # so an AppDir reached by way of a symlinked parent is not reported.
+      [[ "$(realpath -m -- "$where" 2>/dev/null)" == "$root_abs"/* ]] \
+        || escaped+="  $dep: resolved on the host, not in the bundle -> $where"$'\n'
+    done
+    if [[ -n "$escaped" ]]; then
+      printf 'Not self-contained: %s\n%s' "$target" "$escaped" >&2
       failed=1
     fi
+    unset resolved_of
   done < <(
     printf '%s\0' "$root/usr/bin/unsloth-studio"
     find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0

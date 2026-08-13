@@ -100,6 +100,15 @@ _verify() {  # dir -> "ok"/"rejected"
     if bash "$BUILD_SH" --verify-appdir "$1" >/dev/null 2>&1; then echo ok; else echo rejected; fi
 }
 
+# Same, with $2 on the loader's search path. LD_LIBRARY_PATH stands in for the build
+# host's own /usr/lib: a test cannot install into it, and what the gate has to notice
+# is only that a name resolved somewhere OUTSIDE the AppDir -- which is the place that
+# will not exist on the user's machine.
+_verify_with_hostpath() {  # dir, hostdir -> "ok"/"rejected"
+    if LD_LIBRARY_PATH="$2" bash "$BUILD_SH" --verify-appdir "$1" >/dev/null 2>&1
+    then echo ok; else echo rejected; fi
+}
+
 if [ "$HAVE_TOOLCHAIN" = yes ]; then
     echo "=== a complete closure passes ==="
     make_appdir "$_TMP/good" complete
@@ -144,6 +153,51 @@ if [ "$HAVE_TOOLCHAIN" = yes ]; then
     else
         echo "  SKIP: toolchain did not record an absolute DT_NEEDED"
     fi
+
+    echo "=== a dependency the BUILD HOST happens to provide is still rejected ==="
+    # "not found" is the easy half. The dangerous half is a library the closure walk
+    # failed to copy that RESOLVES here anyway, because the loader searches the host
+    # after RUNPATH -- the bundle then reads as complete and fails on a target that
+    # does not carry it. Measured against --verify-appdir before this was tightened:
+    # an AppDir needing libz.so.1 and bundling only WebKit was accepted, and the CI
+    # step that re-verifies the SHIPPED squashfs inherited the same blind spot.
+    _HOSTLIBS="$_TMP/hostlibs"; mkdir -p "$_HOSTLIBS"
+    make_appdir "$_TMP/hostdep" complete
+    printf 'int host_symbol(void){return 3;}\n' > "$_TMP/hl.c"
+    gcc -shared -fPIC -o "$_HOSTLIBS/libhostonly.so.1" "$_TMP/hl.c" \
+        -Wl,-soname,libhostonly.so.1 2>/dev/null
+    printf 'int host_symbol(void); int webkit_symbol(void);\nint main(void){return host_symbol()+webkit_symbol();}\n' > "$_TMP/mh.c"
+    gcc -o "$_TMP/hostdep/usr/bin/unsloth-studio" "$_TMP/mh.c" \
+        -L"$_TMP/hostdep/usr/lib/unsloth" -l:libwebkit2gtk-4.1.so.0 \
+        -L"$_HOSTLIBS" -l:libhostonly.so.1 2>/dev/null
+    patchelf --set-rpath '$ORIGIN/../lib/unsloth' \
+        "$_TMP/hostdep/usr/bin/unsloth-studio" 2>/dev/null || true
+    assert_eq "a host-resolved dependency is rejected" "rejected" \
+        "$(_verify_with_hostpath "$_TMP/hostdep" "$_HOSTLIBS")"
+
+    echo "=== but a HOST-BOUNDARY library, and its own tail, still passes ==="
+    # The boundary libraries are supposed to resolve on the host, and each drags its
+    # own dependencies with it: libX11 pulls libxcb, libXdmcp, libbsd and libmd, none
+    # of which this bundle ships or should. Judging everything ldd prints -- rather
+    # than each object's own DT_NEEDED -- would reject every correct build on that
+    # tail alone, so this is the case that keeps the gate from being unusable.
+    make_appdir "$_TMP/hostok" complete
+    printf 'int tail_symbol(void){return 5;}\n' > "$_TMP/tl.c"
+    gcc -shared -fPIC -o "$_HOSTLIBS/libtail.so.1" "$_TMP/tl.c" \
+        -Wl,-soname,libtail.so.1 2>/dev/null
+    printf 'int tail_symbol(void); int egl_symbol(void){return tail_symbol();}\n' > "$_TMP/eg.c"
+    gcc -shared -fPIC -o "$_HOSTLIBS/libEGL.so.1" "$_TMP/eg.c" \
+        -Wl,-soname,libEGL.so.1 -L"$_HOSTLIBS" -l:libtail.so.1 2>/dev/null
+    printf 'int egl_symbol(void); int webkit_symbol(void);\nint main(void){return egl_symbol()+webkit_symbol();}\n' > "$_TMP/me.c"
+    # -rpath-link only tells the LINKER where libEGL's own libtail is; it records no
+    # RUNPATH, so at verify time libtail is still reached through the host path alone.
+    gcc -o "$_TMP/hostok/usr/bin/unsloth-studio" "$_TMP/me.c" \
+        -L"$_TMP/hostok/usr/lib/unsloth" -l:libwebkit2gtk-4.1.so.0 \
+        -L"$_HOSTLIBS" -Wl,-rpath-link,"$_HOSTLIBS" -l:libEGL.so.1 2>/dev/null
+    patchelf --set-rpath '$ORIGIN/../lib/unsloth' \
+        "$_TMP/hostok/usr/bin/unsloth-studio" 2>/dev/null || true
+    assert_eq "a host-boundary library is accepted" "ok" \
+        "$(_verify_with_hostpath "$_TMP/hostok" "$_HOSTLIBS")"
 fi
 
 echo "=== structural: the ldd parser sees BOTH ldd output forms ==="
