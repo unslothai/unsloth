@@ -256,5 +256,13 @@ def reveal_in_file_manager(path: Path) -> None:
             os.startfile(target)  # noqa: S606 - local user's own file manager
     elif not _wsl_reveal_in_explorer(path):
         # No cross-desktop "select file" standard on Linux; open the directory.
-        directory = target if path.is_dir() else str(path.parent)
+        if path.is_dir():
+            directory = target
+        elif path.is_file():
+            directory = str(path.parent)
+        else:
+            # Gone between the guard above and this branch, which are two
+            # separate stats. Widening to the parent here would open the root
+            # holding every other chat's sandbox, so fail closed instead.
+            raise FileNotFoundError(target)
         subprocess.Popen(["xdg-open", directory])
