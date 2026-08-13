@@ -14,9 +14,12 @@ network so `update --local` tests its own installer.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -290,22 +293,38 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     def _ok_mkstemp(*a, **k):
         fd, path = real_mkstemp(dir = tmp_path)
         made["path"] = path
+        made["fd"] = fd
         return fd, path
 
     class _BadHandle:
+        """Stands in for the real handle, and owns the descriptor like one.
+
+        Windows refuses to unlink a file that still has an open descriptor, so a
+        handle that leaked the fd would make the cleanup below fail there for a
+        reason that has nothing to do with the code under test.
+        """
+
+        def __init__(self, fd):
+            self._fd = fd
+
         def __enter__(self):
             return self
 
         def __exit__(self, *a):
+            os.close(self._fd)
             return False
 
         def write(self, _data):
             raise OSError(5, "Input/output error")
 
     monkeypatch.setattr(studio.tempfile, "mkstemp", _ok_mkstemp)
-    monkeypatch.setattr(studio.os, "fdopen", lambda *a, **k: _BadHandle())
+    monkeypatch.setattr(studio.os, "fdopen", lambda fd, *a, **k: _BadHandle(fd))
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert not Path(made["path"]).exists(), "the temp script must not be left behind"
+    # Asserted directly so the descriptor leak is caught on Linux too, rather than
+    # only surfacing as an unlink failure on Windows.
+    with pytest.raises(OSError):
+        os.fstat(made["fd"])
 
 
 def test_a_powershell_help_block_is_not_mistaken_for_html():
