@@ -9704,9 +9704,17 @@ async def get_llama_flags(current_subject: str = Depends(get_current_subject)):
         # stall every other request on the first open of the panel after an update.
         capabilities = await asyncio.to_thread(type(backend).probe_server_capabilities)
         flags = capabilities.get("flags") or {}
-        # found=False means no binary at all, which is not the same as a binary whose
-        # help would not parse; both leave the editor unable to verify.
-        probe_ok = bool(capabilities.get("found")) and bool(flags)
+        # Three ways to be unverifiable, and the editor treats them alike: no binary
+        # (found=False), a --help that did not parse (empty catalogue), and a --help
+        # that exited nonzero after printing part of itself. The last one is why the
+        # probe's own result is read rather than inferred from a non-empty map: a
+        # partial catalogue would otherwise be published as the whole truth, and
+        # every flag past the failure point called a typo.
+        probe_ok = (
+            bool(capabilities.get("found"))
+            and bool(flags)
+            and bool(capabilities.get("help_probe_ok", True))
+        )
     except Exception as exc:  # noqa: BLE001 -- an unverifiable flag is not a failed request
         logger.debug(f"llama-server flag catalogue unavailable: {exc}")
         flags = {}

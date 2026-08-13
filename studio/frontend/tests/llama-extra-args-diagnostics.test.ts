@@ -136,6 +136,26 @@ test("too many arguments is an error at the backend's own limit", () => {
   assert.match(diagnostics[0].message, /limit 256/);
 });
 
+test("a payload over the byte limit is an error, even within the token cap", () => {
+  // One long token is the realistic shape: a grammar or a JSON schema. The backend
+  // refuses this on size, so the row has to say so rather than let the load start.
+  const huge = `--grammar ${"a".repeat(40_000)}`;
+  const diagnostics = diagnoseExtraArgs(huge, CATALOG);
+
+  assert.equal(diagnostics[0].level, "error");
+  assert.match(diagnostics[0].message, /limit 32768/);
+  assert.equal(extraArgsAreLoadable(diagnostics), false);
+  // Multi-byte characters count as their UTF-8 length, which is what the backend
+  // measures; counting characters would let a CJK grammar through.
+  const multibyte = `--grammar ${"\u65e5".repeat(11_000)}`;
+  assert.equal(
+    extraArgsAreLoadable(diagnoseExtraArgs(multibyte, CATALOG)),
+    false,
+  );
+  // And an ordinary line is nowhere near it.
+  assert.deepEqual(diagnoseExtraArgs("--numa distribute", CATALOG), []);
+});
+
 test("each flag is reported once however often it appears", () => {
   assert.equal(
     diagnoseExtraArgs("--tempp 1 --tempp 2 --tempp 3", CATALOG).length,
@@ -195,34 +215,42 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // set is to ask. An empty box would read as "no flags" and the first edit would
   // submit a list that dropped them.
   assert.match(body, /fetchModelOverrides\(\)/);
-  assert.match(body, /overrides\[key\]\?\.llama_extra_args/);
-  // Most specific key first, then the bare repo id: the overrides route carries
-  // repo-level flags into the first per-quant save, so reading only the exact key
-  // shows an empty box for the entry that is about to be inherited.
+  // Through the resolver, not a literal lookup: the backend folds identities and
+  // falls back from repo:QUANT to the bare repo before it reads a row.
   assert.match(
-    pageSource.replace(/\s+/g, " "),
-    /overrideKeys=\{\[ modelOverrideKey\(configId, target\.ggufVariant\), configId, \]\}/,
+    body,
+    /resolveStoredExtraArgs\( overrides, latest\.current\.overrideKeys, \)/,
   );
-  // Into the text only. Calling update here would make an untouched config look
-  // edited, and then a save would pin flags the user never chose.
-  const start = body.indexOf("fetchModelOverrides()");
-  const end = body.indexOf("}, [keyIdentity", start);
+  // Into the config, not only the textarea. The load sends what the config holds,
+  // and the route's omission path inherits from a resident process rather than
+  // from this stored override, so a box that filled without the config would show
+  // flags the launch did not use.
+  assert.match(body, /latest\.current\.update\(\{ llamaExtraArgs: stored \}\)/);
+  // And the key is marked only once a response is in hand, or StrictMode's replayed
+  // effect cancels the first fetch and skips the second.
+  const marked = body.indexOf("hydrated.current = keyIdentity");
   assert.ok(
-    end > start,
-    "expected the hydration effect to close on the key identity",
+    marked > body.indexOf("if (cancelled) { return; }"),
+    "mark after the response",
   );
-  assert.doesNotMatch(body.slice(start, end), /update\(/);
 });
 
-test("an argument the backend would refuse blocks the load button", () => {
-  // Painting it red is not enough: the panel owns the button, and starting a load
-  // that validate_extra_args refuses turns a visible objection into a failed load.
-  const flat = pageSource.replace(/\s+/g, " ");
-  assert.match(flat, /const loadable = extraArgsAreLoadable\(diagnostics\)/);
-  assert.match(flat, /onExtraArgsLoadableChange=\{setExtraArgsLoadable\}/);
-  assert.match(flat, /!extraArgsLoadable \|\|/);
-  // And the objection leaves with the row, or a model with no box could never load.
-  assert.match(flat, /return \(\) => onLoadableChange\(true\)/);
+test("the row does not withdraw its objection when it unmounts", () => {
+  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
+  const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
+  // Collapsing Advanced settings unmounts the row while its tokens stay in the
+  // config and still go out with the load, so a cleanup that reset the flag would
+  // re-enable Load for a request the backend refuses.
+  const effect = body.slice(body.indexOf("onLoadableChange(loadable)"));
+  assert.doesNotMatch(
+    effect.slice(0, effect.indexOf("const commit")),
+    /return \(\) => onLoadableChange/,
+  );
+  // The panel retires it on a model change instead.
+  assert.match(
+    pageSource.replace(/\s+/g, " "),
+    /useEffect\(\(\) => \{ setExtraArgsLoadable\(true\); \}, \[configId, target\.ggufVariant\]\)/,
+  );
 });
 
 test("a config that never read the stored value is not sent as a clear", () => {

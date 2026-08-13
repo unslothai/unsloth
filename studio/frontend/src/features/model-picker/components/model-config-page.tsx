@@ -63,6 +63,7 @@ import {
 import {
   fetchModelOverrides,
   modelOverrideKey,
+  resolveStoredExtraArgs,
   syncModelOverride,
 } from "../api/model-overrides";
 import {
@@ -1248,13 +1249,19 @@ function ExtraArgsRow({
 
   // The one field on this page whose stored value the local config may never have
   // seen. Everything else here is written by this panel, but llama_extra_args can be
-  // set through the overrides API (PUT /openai-auto-switch-override) with no UI
-  // involved, which is exactly why that route preserves it when omitted. Showing an
-  // empty box for a model that has flags would read as "none", and the first edit
-  // would then submit a list that silently dropped them. Fetched, not guessed.
+  // set through the overrides API with no UI involved, which is exactly why that
+  // route preserves it when omitted. Showing an empty box for a model that has flags
+  // would read as "none", and the first edit would then submit a list that silently
+  // dropped them. Fetched, not guessed.
   //
-  // Into the text only, never through `update`: a config that has not been edited
-  // must stay `undefined` so a save omits the field and the backend keeps its copy.
+  // Read by the hydration below when its response lands, never as dependencies: an
+  // arrow prop and an array literal are new values on every render, so depending on
+  // them would cancel and restart the request on each keystroke.
+  const latest = useRef({ text, update, overrideKeys });
+  useEffect(() => {
+    latest.current = { text, update, overrideKeys };
+  });
+
   const hydrated = useRef<string | null>(null);
   // Joined because an array literal is a new value every render, and this is the
   // effect's identity.
@@ -1267,23 +1274,29 @@ function ExtraArgsRow({
       return;
     }
     let cancelled = false;
-    // Marked before the request, not after it lands: this effect re-runs on every
-    // keystroke, and one fetch per model is the point.
-    hydrated.current = keyIdentity;
     fetchModelOverrides()
       .then((overrides) => {
-        // Most specific key first, then the bare repo id, mirroring what the
-        // overrides route itself does when this panel saves: flags stored under
-        // the repo are carried over to the first per-quant save. Reading only the
-        // exact key would show an empty box for the entry that is about to be
-        // inherited.
-        const stored = overrideKeys
-          .map((key) => overrides[key]?.llama_extra_args)
-          .find((value) => value !== undefined && value.length > 0);
+        // Marked here rather than before the request: StrictMode replays the effect
+        // (setup, cleanup, setup), so a key marked up front would leave the first
+        // fetch cancelled and the second setup returning early, and the box would
+        // never fill in development.
+        if (cancelled) {
+          return;
+        }
+        hydrated.current = keyIdentity;
+        const stored = resolveStoredExtraArgs(
+          overrides,
+          latest.current.overrideKeys,
+        );
         // Only while the box is still untouched, or a slow response would land on
         // top of what the user typed in the meantime.
-        if (!cancelled && stored !== undefined && text === "") {
+        if (stored.length > 0 && latest.current.text === "") {
           setText(formatExtraArgs(stored));
+          // Into the config as well as the box. The load sends what the config
+          // holds, and the route's omission path inherits from a resident process
+          // rather than from this stored override, so filling only the textarea
+          // would show flags the launch then did not use.
+          latest.current.update({ llamaExtraArgs: stored });
         }
       })
       .catch(() => {
@@ -1293,7 +1306,7 @@ function ExtraArgsRow({
     return () => {
       cancelled = true;
     };
-  }, [keyIdentity, overrideKeys, config.llamaExtraArgs, text]);
+  }, [keyIdentity, config.llamaExtraArgs]);
 
   const diagnostics = diagnoseExtraArgs(text, catalog);
   const tokenCount = parseExtraArgs(text).tokens.length;
@@ -1304,8 +1317,10 @@ function ExtraArgsRow({
   const loadable = extraArgsAreLoadable(diagnostics);
   useEffect(() => {
     onLoadableChange(loadable);
-    // On unmount the row's objection goes with it: a diffusion model has no box.
-    return () => onLoadableChange(true);
+    // Deliberately no cleanup. Collapsing Advanced settings unmounts this row while
+    // the tokens stay in the config and still go out with the load, so withdrawing
+    // the objection there would re-enable a button for a request the backend
+    // refuses. The panel clears it when the model changes instead.
   }, [loadable, onLoadableChange]);
 
   const commit = (next: string) => {
@@ -1451,8 +1466,17 @@ export function ModelConfigPage({
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
   // Raised by the extra-arguments row when what is typed is something
-  // validate_extra_args would refuse, so the load is not started to fail.
+  // validate_extra_args would refuse, so the load is not started to fail. Held by
+  // the panel rather than the row because the row unmounts whenever Advanced
+  // settings are collapsed, while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
+  // The row does not withdraw its own objection when it unmounts, or collapsing
+  // Advanced settings would re-enable Load for arguments the backend refuses. A
+  // different model is the one thing that really does retire it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
+  useEffect(() => {
+    setExtraArgsLoadable(true);
+  }, [configId, target.ggufVariant]);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =

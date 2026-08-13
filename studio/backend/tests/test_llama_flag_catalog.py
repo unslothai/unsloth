@@ -74,6 +74,26 @@ def test_a_missing_binary_is_also_unverifiable(monkeypatch):
     assert result.probe_ok is False
 
 
+def test_a_help_run_that_failed_partway_is_unverifiable(monkeypatch):
+    # The catalogue is non-empty, which is exactly the trap: --help exited nonzero
+    # after printing some of itself, so everything below the failure point is
+    # missing and would be reported as "not in this build".
+    result = _call(
+        monkeypatch,
+        {"found": True, "flags": {"--top-k": "x"}, "help_probe_ok": False},
+    )
+
+    assert result.probe_ok is False
+
+
+def test_an_older_probe_without_the_field_is_still_trusted(monkeypatch):
+    # The key is new; a capability dict that predates it (or a stub in another test)
+    # must not read as a failed probe.
+    result = _call(monkeypatch, {"found": True, "flags": {"--top-k": "x"}})
+
+    assert result.probe_ok is True
+
+
 def test_a_binary_whose_help_did_not_parse_is_unverifiable(monkeypatch):
     # A binary that ran but produced nothing parseable must not read as verified,
     # or every flag becomes unknown.
@@ -101,3 +121,59 @@ def test_help_text_is_coerced_to_a_string(monkeypatch, value):
     result = _call(monkeypatch, {"found": True, "flags": {"--top-k": value}})
 
     assert isinstance(result.flags["--top-k"], str)
+
+
+# --- what the probe publishes ---------------------------------------------------
+# The route only forwards; these pin the map it forwards, driven through the real
+# --help parser rather than a stub of it.
+
+
+def _probe_with_help(monkeypatch, tmp_path, help_text: str, returncode: int = 0):
+    """Run the real capability probe over a canned --help."""
+    import types
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+
+    def _run(_cmd, **kwargs):
+        return types.SimpleNamespace(stdout = help_text, stderr = "", returncode = returncode)
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    # Keyed on (path, mtime, size), so a fresh file per test is a fresh probe.
+    return LlamaCppBackend.probe_server_capabilities(str(binary))
+
+
+_HELP_WITH_A_REMOVAL_STUB = """\
+--top-k N                               top-k sampling (default: 40)
+--draft, --draft-n, --draft-max N       the argument has been removed. use --spec-draft-n-max
+--numa TYPE                             attempt optimizations that help on some NUMA systems
+"""
+
+
+def test_a_removed_flag_is_not_published_as_supported(monkeypatch, tmp_path):
+    # llama.cpp keeps the old names in --help only to say they are gone. Publishing
+    # them would make the editor stay quiet about a flag the load then refuses,
+    # which is the one thing the catalogue exists to prevent.
+    caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB)
+
+    assert "--top-k" in caps["flags"]
+    assert "--numa" in caps["flags"]
+    for removed in ("--draft", "--draft-n", "--draft-max"):
+        assert removed not in caps["flags"], removed
+
+
+def test_a_help_that_exited_nonzero_says_so(monkeypatch, tmp_path):
+    # Partial output parses fine, so nothing else in the dict would reveal that the
+    # rest of the catalogue is missing.
+    caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB, returncode = 1)
+
+    assert caps["help_probe_ok"] is False
+
+
+def test_a_clean_help_run_says_so(monkeypatch, tmp_path):
+    caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB)
+
+    assert caps["help_probe_ok"] is True

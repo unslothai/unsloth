@@ -162,8 +162,10 @@ export {
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-// v2 added nBatch / nUbatch; a v1 client's normalizer would rewrite them away
-const STORAGE_SCHEMA_VERSION = 2;
+// v2 added nBatch / nUbatch and v3 llamaExtraArgs; a client from before either
+// would normalize the field it does not know straight back out of the record.
+const STORAGE_SCHEMA_VERSION = 3;
+const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
 const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
@@ -741,11 +743,15 @@ function normalize(raw: unknown): PerModelConfig {
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
   const normalized = normalize(config);
-  // records without the v2-only batch fields keep v1 so older clients can still rewrite them
+  // Stamped with the OLDEST version that still understands every field present, so
+  // a record an older client can safely rewrite is not needlessly locked away from
+  // it. Only a record carrying a newer field is put out of that client's reach.
   const version =
-    normalized.nBatch != null || normalized.nUbatch != null
+    normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
       ? STORAGE_SCHEMA_VERSION
-      : PRE_BATCH_SCHEMA_VERSION;
+      : normalized.nBatch != null || normalized.nUbatch != null
+        ? PRE_EXTRA_ARGS_SCHEMA_VERSION
+        : PRE_BATCH_SCHEMA_VERSION;
   return {
     version,
     ...normalized,
@@ -864,6 +870,9 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&
+    // Or a config whose only change is Extra Arguments reads as default, and
+    // savePerModelConfig deletes the entry it was asked to remember.
+    (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
     gpuFieldsAtDefault(config)
   );
 }

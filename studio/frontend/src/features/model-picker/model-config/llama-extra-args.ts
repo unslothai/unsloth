@@ -20,6 +20,8 @@ const NEEDS_QUOTING = /[\s"'\\]/;
 const DOUBLE_QUOTE_ESCAPES = /(["\\$`])/g;
 const DIGIT = /[0-9]/;
 const UNDERSCORE = /_/g;
+// Hoisted for the same reason as the patterns above: this runs on every keystroke.
+const TEXT_ENCODER = new TextEncoder();
 
 /** Longest input the editor will parse, mirroring MAX_EXTRA_ARGS_BYTES in llama_server_args.py. */
 export const EXTRA_ARGS_MAX_BYTES = 32 * 1024;
@@ -257,6 +259,16 @@ export function diagnoseExtraArgs(
     out.push({
       level: "error",
       message: `Too many arguments: ${tokens.length}, limit ${EXTRA_ARGS_MAX_TOKENS}.`,
+    });
+  }
+  // The other half of the backend's bounds. A grammar or a JSON schema is one long
+  // token, so a payload can sit well inside the token cap and still be refused on
+  // size; without this the Load button starts a request that cannot succeed.
+  const bytes = TEXT_ENCODER.encode(tokens.join("")).length;
+  if (bytes > EXTRA_ARGS_MAX_BYTES) {
+    out.push({
+      level: "error",
+      message: `Arguments are too large: ${bytes} bytes, limit ${EXTRA_ARGS_MAX_BYTES}.`,
     });
   }
 

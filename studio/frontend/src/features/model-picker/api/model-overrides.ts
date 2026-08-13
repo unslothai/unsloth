@@ -65,6 +65,42 @@ export function modelOverrideKey(
   return ggufVariant ? `${modelId}:${ggufVariant}` : modelId;
 }
 
+/**
+ * The stored pass-through args for a model, under any key the backend would resolve.
+ *
+ * The overrides route folds identities before it reads a row: a repo id and a quant
+ * differing only in case resolve to the same entry, and it falls back from
+ * `repo:QUANT` to the bare repo. A literal lookup on the two keys this panel happens
+ * to use would show an empty box for a model that will launch with arguments, and
+ * the first edit would then replace a list nobody saw. Keys are tried most specific
+ * first, then folded, mirroring that order.
+ */
+export function resolveStoredExtraArgs(
+  overrides: ApiModelOverrides,
+  keys: readonly string[],
+): string[] {
+  for (const key of keys) {
+    const exact = overrides[key]?.llama_extra_args;
+    if (exact && exact.length > 0) {
+      return exact;
+    }
+  }
+  const folded = new Map<string, string[]>();
+  for (const [key, value] of Object.entries(overrides)) {
+    const args = value?.llama_extra_args;
+    if (args && args.length > 0 && !folded.has(key.toLowerCase())) {
+      folded.set(key.toLowerCase(), args);
+    }
+  }
+  for (const key of keys) {
+    const match = folded.get(key.toLowerCase());
+    if (match) {
+      return match;
+    }
+  }
+  return [];
+}
+
 export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
   const res = await authFetch(OVERRIDES_URL);
   if (!res.ok) {

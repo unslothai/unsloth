@@ -121,19 +121,19 @@ test("an unquoted Windows path loses its separators, as in a shell", () => {
   // character in every POSIX shell, and changing that would break every escape the
   // hint tells people to use. It IS a trap on Windows, which is why the row's hint
   // names backslashes and not just spaces.
-  assert.deepEqual(parseExtraArgs("--chat-template-file C:\\a\\b.jinja").tokens, [
-    "--chat-template-file",
-    "C:ab.jinja",
-  ]);
+  assert.deepEqual(
+    parseExtraArgs("--chat-template-file C:\\a\\b.jinja").tokens,
+    ["--chat-template-file", "C:ab.jinja"],
+  );
   // Quoted, it survives whole, and that is what the hint asks for.
-  assert.deepEqual(parseExtraArgs('--chat-template-file "C:\\a\\b.jinja"').tokens, [
-    "--chat-template-file",
-    "C:\\a\\b.jinja",
-  ]);
-  assert.deepEqual(parseExtraArgs("--chat-template-file 'C:\\a\\b.jinja'").tokens, [
-    "--chat-template-file",
-    "C:\\a\\b.jinja",
-  ]);
+  assert.deepEqual(
+    parseExtraArgs('--chat-template-file "C:\\a\\b.jinja"').tokens,
+    ["--chat-template-file", "C:\\a\\b.jinja"],
+  );
+  assert.deepEqual(
+    parseExtraArgs("--chat-template-file 'C:\\a\\b.jinja'").tokens,
+    ["--chat-template-file", "C:\\a\\b.jinja"],
+  );
 });
 
 test("shell metacharacters are literal, because nothing here runs a shell", () => {
