@@ -1,5 +1,6 @@
 mod backend;
 mod managed;
+mod pid_records;
 mod types;
 mod version;
 
@@ -7,7 +8,7 @@ use crate::desktop_backend_owner::{
     OwnedBackendProbe, OwnedBackendReadiness, VerifiedOwnedBackend,
 };
 use backend::probe_existing_backends;
-use log::warn;
+use log::{info, warn};
 pub use managed::managed_install_ready;
 use managed::probe_managed_install;
 use std::path::PathBuf;
@@ -163,15 +164,30 @@ fn choose_ownerless_spawned_preflight(
     }
 }
 
-fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
+fn mutation_blocker_from_probe(
+    probe: BackendProbe,
+    live_local_backend: &dyn Fn(u16) -> Option<u32>,
+) -> Option<ExternalBackendConflict> {
     match probe {
-        // A launch may step over an unadoptable backend; rewriting the venv may
-        // not. We cannot prove an id-less backend is not running out of our own
-        // install, so a mutation still refuses, exactly as it did before.
-        BackendProbe::ExternalConflict { port, reason }
-        | BackendProbe::Unrelated { port, reason } => {
+        BackendProbe::ExternalConflict { port, reason } => {
             Some(ExternalBackendConflict { port, reason })
         }
+        // An id-less backend may be this install serving from a terminal, in
+        // which case rewriting the venv underneath it would break it. It may
+        // equally be a remote Studio behind a port forward, and refusing on
+        // that leaves a stale install with no way to repair itself, since
+        // repair is what the app runs automatically. The local per-port record
+        // is what tells the two apart, so it, not the port, decides.
+        BackendProbe::Unrelated { port, reason } => match live_local_backend(port) {
+            Some(pid) => {
+                info!("Desktop preflight: mutation blocked by local backend {pid} on port {port}");
+                Some(ExternalBackendConflict { port, reason })
+            }
+            None => {
+                info!("Desktop preflight: mutation may proceed past port {port} ({reason}): no live backend of this install is recorded there");
+                None
+            }
+        },
         BackendProbe::Ready { port } => Some(ExternalBackendConflict {
             port,
             reason: "same_root_external_backend_active".to_string(),
@@ -186,7 +202,9 @@ pub async fn mutation_blocking_backend_ignoring(
     backend::probe_backend_ports(ignored_ports)
         .await
         .into_iter()
-        .find_map(mutation_blocker_from_probe)
+        .find_map(|probe| {
+            mutation_blocker_from_probe(probe, &pid_records::live_backend_pid_on_port)
+        })
 }
 
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
@@ -432,7 +450,7 @@ mod tests {
     #[test]
     fn mutation_blocker_blocks_ready_external_backends() {
         assert_eq!(
-            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }),
+            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }, &|_| None),
             Some(ExternalBackendConflict {
                 port: 8890,
                 reason: "same_root_external_backend_active".to_string(),
@@ -761,8 +779,16 @@ exit 1
 
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
+        // Tied to the owner on purpose: the secret comes from the desktop spawn,
+        // so an ownerless (terminal-started) backend can never report it. Both at
+        // once describes a backend that cannot exist.
+        let leases = if include_owner {
+            r#""native_path_leases_supported":true,"#
+        } else {
+            ""
+        };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -848,7 +874,7 @@ exit 1
         // protocol-compatible backend into a conflict the user has to kill.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -884,6 +910,76 @@ exit 1
         .await;
 
         assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn terminal_started_backend_without_native_path_leases_stays_adoptable() {
+        // What EVERY terminal-started server looks like, not an edge case.
+        // Refusing it would drop the attach use-tauri-backend.ts supports on
+        // purpose, to grey out one button that use-linked-folders.ts already
+        // greys out from the same capability.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn backend_predating_the_lease_capability_field_stays_adoptable() {
+        // Absent, not false: a backend predating the field reports nothing, and
+        // Option<bool> makes that indistinguishable from `false` untested.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn owned_backend_without_native_path_leases_is_stale_not_a_conflict() {
+        // A defect in our own spawn, and ours to restart, so Stale (repairable)
+        // rather than a conflict the user has to resolve by hand.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old { reason, .. } if reason == "native_path_leases_unsupported"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_is_still_reported_as_a_version_problem() {
+        // Ordering guard: the lease check used to run first, so a backend that
+        // really needed an update reported the wrong cause to diagnostics.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_backend_version_too_old"
+        ));
     }
 
     #[tokio::test]
@@ -973,18 +1069,57 @@ exit 1
         assert_eq!(result.port, None);
     }
 
-    /// ...but a venv rewrite underneath it is still refused, because we cannot
-    /// rule out that it is our own install serving from a terminal.
+    /// ...and a venv rewrite is still refused while a local backend of this
+    /// install is recorded on the port, because it would break that backend.
     #[test]
-    fn an_unrelated_backend_still_blocks_mutations() {
+    fn an_unrelated_backend_blocks_mutations_when_it_is_recorded_locally() {
         assert_eq!(
-            mutation_blocker_from_probe(BackendProbe::Unrelated {
-                port: 8899,
-                reason: "ambiguous_root_external_backend_active".to_string(),
-            }),
+            mutation_blocker_from_probe(
+                BackendProbe::Unrelated {
+                    port: 8899,
+                    reason: "ambiguous_root_external_backend_active".to_string(),
+                },
+                &|port| (port == 8899).then_some(4242)
+            ),
             Some(ExternalBackendConflict {
                 port: 8899,
                 reason: "ambiguous_root_external_backend_active".to_string(),
+            })
+        );
+    }
+
+    /// The follow-up report: a stale install auto-runs a repair, and an id-less
+    /// backend reached over a port forward left it erroring on every attempt
+    /// with nothing the user could stop locally.
+    #[test]
+    fn an_unrecorded_unrelated_backend_does_not_block_a_repair() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::Unrelated {
+                    port: 8888,
+                    reason: "ambiguous_root_external_backend_active".to_string(),
+                },
+                &|_| None
+            ),
+            None
+        );
+    }
+
+    /// A local record is only consulted for the unattributable case: a backend
+    /// that identified itself as a conflict blocks either way.
+    #[test]
+    fn an_external_conflict_blocks_mutations_without_a_local_record() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::ExternalConflict {
+                    port: 8890,
+                    reason: "desktop_backend_version_too_old".to_string(),
+                },
+                &|_| None
+            ),
+            Some(ExternalBackendConflict {
+                port: 8890,
+                reason: "desktop_backend_version_too_old".to_string(),
             })
         );
     }

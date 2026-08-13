@@ -189,6 +189,8 @@ import type {
 } from "./types";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
+  ggufQuantChipLabel,
+  ggufQuantDetailLabel,
   ggufVariantPickerLabel,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
@@ -1426,10 +1428,6 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
-  const effectiveRecommended = useMemo(
-    () => new Set(effectiveRecommendedByGroup.values()),
-    [effectiveRecommendedByGroup],
-  );
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -1679,6 +1677,11 @@ function GgufVariantExpander({
         );
         const showGroupHeading =
           group?.title != null && group.variants[0]?.filename === v.filename;
+        // Its own group's pick. Matching on the quant alone happens to work only
+        // because an H3 key is unique per file, which is the backend's rule.
+        const isRecommended =
+          group != null &&
+          effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
@@ -1732,7 +1735,7 @@ function GgufVariantExpander({
                     </span>
                   ) : null}
                 </>
-              ) : effectiveRecommended.has(v.quant) ? (
+              ) : isRecommended ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
                   recommended
                 </span>
@@ -2056,7 +2059,7 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "lastModified", label: "Recent" },
 ];
 
-// Sort for the On Device / Custom (local) lists. "recent" = last loaded;
+// Sort for the On Device lists. "recent" = last loaded;
 // "downloaded" = file download date.
 type LocalSortKey = "recent" | "downloaded" | "size" | "name";
 
@@ -2152,10 +2155,17 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
-function localPathTooltip(name: string, path: string): ReactNode {
+function localPathTooltip(
+  name: string,
+  path: string,
+  // Which checkpoint, since the path cannot say: an H3 repo holds its keyframe
+  // and reference partitions in one directory.
+  detail?: string,
+): ReactNode {
   return (
     <>
       <span className="block break-words">{name}</span>
+      {detail ? <span className="mt-0.5 block break-words">{detail}</span> : null}
       <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
         {path}
       </span>
@@ -2247,7 +2257,7 @@ export function HubModelPicker({
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
-  section?: "downloaded" | "recommended" | "custom" | "connected";
+  section?: "downloaded" | "recommended" | "connected";
   /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
   onEject?: () => void;
@@ -4300,7 +4310,7 @@ export function HubModelPicker({
       <span className="truncate">{label}</span>
     </span>
   );
-  // On Device / Custom rows are already on disk, so the device-fit filter
+  // On Device rows are already on disk, so the device-fit filter
   // only applies to the Unsloth listing.
   const sectionSortDropdown =
     section === "recommended" ? (
@@ -4425,9 +4435,11 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={entry.repoId}
-            tooltipText={`${entry.repoId} (${entry.quant})`}
+            tooltipText={`${entry.repoId} (${ggufQuantDetailLabel(
+              entry.quant,
+            )})`}
             meta="GGUF"
-            quantChip={entry.quant}
+            quantChip={ggufQuantChipLabel(entry.quant)}
             alignMeta="device"
             selected={isSelected}
             loaded={isLoaded}
@@ -4545,9 +4557,13 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
-            tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
+            tooltipText={localPathTooltip(
+              c.repo_id,
+              c.cache_path,
+              ggufQuantDetailLabel(variant.quant),
+            )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
-            quantChip={variant.quant}
+            quantChip={ggufQuantChipLabel(variant.quant)}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}

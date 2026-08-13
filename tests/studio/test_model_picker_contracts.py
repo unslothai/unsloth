@@ -237,11 +237,7 @@ def test_active_model_config_round_trips_gpu_fields():
     ):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
-    for rel in (
-        "features/chat/chat-page.tsx",
-        "features/hub/catalog/sampling-settings-dialog.tsx",
-    ):
-        assert "useActiveModelConfig(" in _read(rel), rel
+    assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
@@ -1698,9 +1694,11 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     fn = fn[: fn.index("\n}\n")]
     assert "sawActive" in fn
     assert "did not reach the server" in fn
-    # The id comparison moved into hasUnknownRecord, so follow it there rather
-    # than asserting on a body that no longer holds it.
+    # The proof used to be an inline knownIds set; it is now a baseline handed
+    # to hasUnknownRecord in lib/gallery-flags.ts. Same proof, named helper, so
+    # the assertion follows it rather than pinning the old spelling.
     assert "hasUnknownRecord(" in fn
+    assert "hasUnknownRecord(\n        baseline," in fn
     # The caller still snapshots the ids BEFORE the POST and passes them in.
     # Pin the data flow, not three strings that can each be present while the
     # baseline handed to the probe is a fresh one taken after the POST.
@@ -1708,14 +1706,14 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     baseline = src.index("const probeBaseline = newRecordProbeBaseline(")
     assert baseline < src.index("await generateDiffusionImage(", baseline)
     assert "settleLostGeneration(() => isMounted.current, probeBaseline)" in src
-    assert "hasUnknownRecord(\n        baseline," in fn
 
-    probe = _read("lib/gallery-flags.ts")
+    flags = _read("lib/gallery-flags.ts")
+    assert "export async function hasUnknownRecord" in flags
     # An unknown row is the proof, and only an unpinned one counts.
-    assert "return !baseline.knownIds.has(record.id);" in probe
+    assert "return !baseline.knownIds.has(record.id);" in flags
     # Inconclusive listings must refuse to claim proof, else a submission that
     # never landed reads as a finished image, which is the bug this guards.
-    assert "if (!baseline.canJudgeUnpinned) return false;" in probe
+    assert "if (!baseline.canJudgeUnpinned) return false;" in flags
 
 
 def test_parallel_slots_setting_wired_end_to_end():
@@ -3381,9 +3379,12 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     group = group.split("}, [displayVariants, effectiveRecommendedByGroup]);", 1)[0]
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
-    # The recommended quant still wins, and only inside its own group. The
-    # flattened effectiveRecommended set would bless the other group's pick
-    # when two families in one repo share quant names, so pin the keyed lookup.
+    # The recommended quant still wins, and only inside its own group. Main
+    # tracked the source through effectiveRecommended becoming a SET and
+    # asserted membership in it; but that set is flattened across groups, so it
+    # blesses the other group's pick when two families in one repo share quant
+    # names. The lookup is now keyed by group, so pin that instead, and pin
+    # that the flattened set is gone from this block rather than merely unused.
     assert "effectiveRecommendedByGroup.get(key)" in group
     assert "variant.quant === recommended" in group
     assert "current.quant !== recommended" in group

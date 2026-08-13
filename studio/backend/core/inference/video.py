@@ -666,8 +666,11 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
     if device != "cuda":
         return None
     try:
-        import torch
-        return int(torch.cuda.mem_get_info()[0])
+        from utils.hardware import trusted_mem_get_info
+
+        # Windows ROCm over-reports free (#8403); pinning the denoiser on that
+        # reading is how a card that is already full still looks roomy.
+        return int(trusted_mem_get_info()[0])
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None
 
@@ -4197,7 +4200,7 @@ class VideoBackend:
                     free_bytes = None
                     if sizes is not None:
                         try:
-                            free_bytes = torch.cuda.mem_get_info()[0] if device == "cuda" else None
+                            free_bytes = _h3_free_device_bytes(device)
                         except Exception:  # noqa: BLE001 -- unreadable free memory keeps the rotation
                             free_bytes = None
                     if sizes is not None and free_bytes is not None:
@@ -4764,7 +4767,11 @@ class VideoBackend:
                     device_obj = torch.device(state.device)
                     device_module = getattr(torch, device_obj.type, None)
                     if device_module is not None and hasattr(device_module, "mem_get_info"):
-                        free_bytes, _ = device_module.mem_get_info(device_obj)
+                        # Windows ROCm's free half is an over-report and this is a
+                        # hard refusal, so cap it against the allocator (#8403).
+                        from utils.hardware import trusted_mem_get_info
+
+                        free_bytes, _ = trusted_mem_get_info(device_obj, module = device_module)
                         reserved_bytes = (
                             device_module.memory_reserved(device_obj)
                             if hasattr(device_module, "memory_reserved")

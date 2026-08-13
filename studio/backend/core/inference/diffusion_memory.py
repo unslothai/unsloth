@@ -254,7 +254,14 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
 
-        free, total = torch.cuda.mem_get_info()
+        # Not torch.cuda.mem_get_info directly: on Windows ROCm its free half is an
+        # over-report that does not track residency, and this feeds the activation
+        # refusal that exists BECAUSE Windows WDDM spills to host RAM instead of
+        # raising (#8403). Imported lazily to keep this module free of backend
+        # imports at module scope.
+        from utils.hardware import trusted_mem_get_info
+
+        free, total = trusted_mem_get_info()
         kind = "discrete_vram"
         try:
             # Query the CURRENT device (mem_get_info reports it); hardcoding 0 would inspect the wrong GPU and misclassify it.
@@ -1006,9 +1013,15 @@ def image_activation_shortfall_message(
     batch_size: int = 1,
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    source_driven: bool = False,
 ) -> Optional[str]:
     """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead
     cannot fit the free device budget, else None.
+
+    ``source_driven`` says the refused size comes from an UPLOADED image rather than the
+    Resolution control (inpaint / extend / upscale / edit). Telling those callers to "generate at
+    a smaller resolution" points them at a control that cannot change the number in the refusal.
+    Same verdict either way; only the remedy sentence differs.
 
     Why this is a refusal and not another tuning knob: weights can be offloaded, activations
     cannot. Every offload tier moves WEIGHTS between host and device; the latents, attention
@@ -1101,7 +1114,8 @@ def image_activation_shortfall_message(
         # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be
         # answered by asking for fewer, and pointing there sends the caller at the one change
         # that provably will not help.
-        f"Generate at a smaller resolution{' or a smaller batch size' if batch > 1 else ''}, "
+        f"{'Upload a smaller source image (this workflow takes its output size from the image, not the Resolution setting)' if source_driven else 'Generate at a smaller resolution'}"
+        f"{' or a smaller batch size' if batch > 1 else ''}, "
         "free device memory by closing other applications, or set "
         f"{OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
     )
@@ -1115,6 +1129,7 @@ def raise_on_image_activation_shortfall(
     batch_size: int = 1,
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    source_driven: bool = False,
     logger: Any = None,
 ) -> None:
     """Refuse a generation whose activations cannot fit the free device budget. No-op whenever
@@ -1131,6 +1146,7 @@ def raise_on_image_activation_shortfall(
         batch_size = batch_size,
         family = family,
         base_overhead_mib = base_overhead_mib,
+        source_driven = source_driven,
     )
     if message is None:
         return

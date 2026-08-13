@@ -568,8 +568,8 @@ with sync_playwright() as p:
         ),
     )
     page = ctx.new_page()
-    # 60s default (was 30s): macos-14 under --single-process Chromium is
-    # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
+    # 60s default (was 30s): the macos-14 runners are slow enough that
+    # renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -2008,10 +2008,10 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
     # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: macOS Chromium runs --single-process, where
-    # closing the last context kills the browser and a second context cannot
-    # be created. Open the new page before closing the old one; the context
-    # init script covers the new page.
+    # Stay in the SAME context: it keeps the init script and costs nothing to
+    # reuse. This used to be forced, because macOS ran --single-process Chromium,
+    # which allows only one context; that flag is gone now. Open the new page
+    # before closing the old one; the context init script covers the new page.
     try:
         ctx.clear_cookies()
     except Exception as exc:

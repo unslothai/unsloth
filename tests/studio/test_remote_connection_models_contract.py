@@ -12,7 +12,7 @@ PROVIDERS_API = FRONTEND / "features/chat/api/providers-api.ts"
 SYNC_PROVIDERS = FRONTEND / "features/chat/sync-external-providers.ts"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 RECONCILIATION = FRONTEND / "features/credentials/reconciliation.ts"
-BOOTSTRAP = FRONTEND / "features/credentials/bootstrap.ts"
+CREDENTIAL_BOOTSTRAP = FRONTEND / "features/credentials/bootstrap.ts"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 PROVIDERS_DB = REPO / "studio/backend/storage/providers_db.py"
 PROVIDERS_MODELS = REPO / "studio/backend/models/providers.py"
@@ -42,14 +42,17 @@ def test_frontend_sync_backfills_local_models_to_backend():
     source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
     assert "updateProviderConfig" in source
     assert "needsModelBackfill" in source
-    # The inline `Promise.allSettled(backfillTasks)` moved behind
-    # settleTasksIfCurrent, which adds a staleness guard. Assert the call plus
-    # what the helper does, so "every backfill task is settled, one slow one
-    # cannot drop the rest" is still pinned rather than taken on trust.
+    # The backfill tasks are awaited as a batch, and one failing must not sink
+    # the rest. That used to be a literal Promise.allSettled here; it is now
+    # settleTasksIfCurrent in features/credentials/reconciliation.ts, which
+    # allSettles them AND drops the result when the auth session has moved on.
+    # Same guarantee through a named helper, so the assertion follows it.
     assert "settleTasksIfCurrent(backfillTasks" in source
     helper = RECONCILIATION.read_text(encoding = "utf-8")
     assert "export async function settleTasksIfCurrent" in helper
-    assert "await Promise.allSettled(tasks.map((task) => task()))" in helper
+    assert (
+        "allSettled" in helper
+    ), "the batch must still settle rather than reject on the first failure"
 
 
 def test_frontend_sync_preserves_local_provider_options():
@@ -59,22 +62,31 @@ def test_frontend_sync_preserves_local_provider_options():
     assert "openaiContainerTtlMinutes" in source
 
 
-def test_connections_hydrate_on_startup():
-    # Provider hydration moved off the chat page into the credential bootstrap,
-    # which the root route runs, so connections now hydrate app-wide instead of
-    # only once chat mounts. Follow it there: asserting on the chat page alone
-    # would fail on working code, and dropping the assertion would stop pinning
-    # that hydration happens at startup at all.
-    # Match the call sites, not the bare names: an import survives deleting the
-    # call, so a name-only assertion would pass on a startup that hydrates
-    # nothing.
-    bootstrap = BOOTSTRAP.read_text(encoding = "utf-8")
+def test_connections_are_hydrated_on_startup():
+    """Renamed from test_chat_page_hydrates_connections_on_startup, because the
+    chat page is no longer where it happens.
+
+    The provider sync moved out of chat-page.tsx into
+    features/credentials/bootstrap.ts, which the ROOT route calls. That is a
+    wider guarantee, not a narrower one: connections now hydrate on any entry
+    into the app rather than only on the chat page. Asserting the old location
+    would fail on a change that improved the thing being asserted, so the
+    assertion follows the call to where it went and pins both halves -- the
+    bootstrap wires the sync, and something actually runs the bootstrap.
+
+    Both halves match CALL sites, not bare names: an import survives deleting
+    the call it feeds, so a name-only assertion passes on a startup that
+    hydrates nothing."""
+    bootstrap = CREDENTIAL_BOOTSTRAP.read_text(encoding = "utf-8")
     assert "syncExternalProvidersFromBackend(providers" in bootstrap
-    # The call alone is not enough: it lives inside CredentialBootstrapGate, so
-    # dropping the wrapper stops hydration while the call still exists.
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
-    assert "bootstrapPersistedCredentials()" in root
+    assert (
+        "bootstrapPersistedCredentials()" in root
+    ), "nothing calls the credential bootstrap, so no page hydrates connections"
+    # The call lives inside CredentialBootstrapGate, so the gate has to be
+    # rendered too: dropping it stops hydration while the call still exists.
     assert "<CredentialBootstrapGate>" in root
+    # The chat page still hydrates its own persisted settings.
     assert "hydratePersistedSettings()" in CHAT_PAGE.read_text(encoding = "utf-8")
 
 

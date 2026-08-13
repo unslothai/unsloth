@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import deque
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
@@ -874,6 +875,9 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "re-enable it (show the update affordance); 'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
             "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
             "'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
@@ -1485,57 +1489,100 @@ class ChatCompletionRequest(BaseModel):
         unconsumed tool_call; synth a random id only if none exists. A user
         turn breaks the lookup.
         """
+        # Both passes below were a backwards rescan per tool result, O(n^2) for one assistant
+        # with n calls. Each is now one forward pass with an index -- the same search, since
+        # the backward walk never left the current user-delimited segment.
+        messages = self.messages
+        # The first pass only feeds the second, so with every tool_call_id present there is
+        # nothing to do (the common case).
+        for msg in messages:
+            if msg.role == "tool" and not msg.tool_call_id:
+                break
+        else:
+            return self
+
         # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
-        def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
-            for asst_idx in range(start_idx - 1, -1, -1):
-                prev = self.messages[asst_idx]
-                if prev.role == "user":
-                    break
-                if prev.role != "assistant" or not prev.tool_calls:
+        # Newest assistant call per explicit id in this segment; within one assistant the
+        # first index wins, matching the old first-match-nearest-assistant walk. Only
+        # ``str`` ids are indexed: ``tool_call_id`` is a ``str``, so nothing else matches.
+        latest_by_id: dict = {}
+        for asst_idx, msg in enumerate(messages):
+            role = msg.role
+            if role == "user":
+                latest_by_id.clear()
+            elif role == "assistant":
+                if not msg.tool_calls:
                     continue
-                for tc_idx, tc in enumerate(prev.tool_calls):
-                    if isinstance(tc, dict) and tc.get("id") == tool_call_id:
-                        consumed.add((asst_idx, tc_idx))
-                        return
-
-        for tool_idx, msg in enumerate(self.messages):
-            if msg.role == "tool" and msg.tool_call_id:
-                _mark_consumed(tool_idx, msg.tool_call_id)
-
-        for tool_idx, msg in enumerate(self.messages):
-            if msg.role != "tool" or msg.tool_call_id:
-                continue
-            picked: str | None = None
-            for asst_idx in range(tool_idx - 1, -1, -1):
-                prev = self.messages[asst_idx]
-                if prev.role != "assistant" or not prev.tool_calls:
-                    if prev.role == "user":
-                        break
-                    continue
-                name_match = None
-                fallback = None
-                for tc_idx, tc in enumerate(prev.tool_calls):
-                    if (asst_idx, tc_idx) in consumed:
-                        continue
+                here: set = set()
+                for tc_idx, tc in enumerate(msg.tool_calls):
                     if not isinstance(tc, dict):
                         continue
                     tc_id = tc.get("id")
-                    if not tc_id:
+                    if isinstance(tc_id, str) and tc_id not in here:
+                        here.add(tc_id)
+                        latest_by_id[tc_id] = (asst_idx, tc_idx)
+            elif role == "tool" and msg.tool_call_id:
+                claimed = latest_by_id.get(msg.tool_call_id)
+                if claimed is not None:
+                    consumed.add(claimed)
+
+        # Assistants in this segment with an unclaimed call, oldest first, so the nearest is
+        # on top. A drained assistant never refills, so popping it is permanent and the walk
+        # past it happens once overall, not once per tool result. Each frame keeps its calls
+        # in order plus the same indexes bucketed by function name; one consumed out of turn
+        # is dropped when it reaches a queue front.
+        stack: list = []
+        for asst_idx, msg in enumerate(messages):
+            role = msg.role
+            if role == "user":
+                stack.clear()
+                continue
+            if role == "assistant":
+                if not msg.tool_calls:
+                    continue
+                in_order: deque = deque()
+                by_name: dict = {}
+                for tc_idx, tc in enumerate(msg.tool_calls):
+                    if (asst_idx, tc_idx) in consumed or not isinstance(tc, dict):
+                        continue
+                    if not tc.get("id"):
                         continue
                     function = tc.get("function")
                     function_name = function.get("name") if isinstance(function, dict) else None
-                    if msg.name and function_name == msg.name:
-                        name_match = (tc_id, asst_idx, tc_idx)
-                        break
-                    if fallback is None:
-                        fallback = (tc_id, asst_idx, tc_idx)
-                chosen = name_match or fallback
-                if chosen is not None:
-                    picked, a, t = chosen
-                    consumed.add((a, t))
-                    break
+                    in_order.append(tc_idx)
+                    # ``name`` is a ``str``, so only a ``str`` function name can match it.
+                    if isinstance(function_name, str):
+                        by_name.setdefault(function_name, deque()).append(tc_idx)
+                if in_order:
+                    stack.append((asst_idx, msg.tool_calls, in_order, by_name))
+                continue
+            if role != "tool" or msg.tool_call_id:
+                continue
+            picked = None
+            while stack:
+                frame_idx, tool_calls, in_order, by_name = stack[-1]
+                while in_order and (frame_idx, in_order[0]) in consumed:
+                    in_order.popleft()
+                if not in_order:
+                    stack.pop()
+                    continue
+                # Name match anywhere in this assistant, else its first remaining call,
+                # exactly as the old in-order scan did.
+                chosen = None
+                if msg.name:
+                    named = by_name.get(msg.name)
+                    if named is not None:
+                        while named and (frame_idx, named[0]) in consumed:
+                            named.popleft()
+                        if named:
+                            chosen = named.popleft()
+                if chosen is None:
+                    chosen = in_order.popleft()
+                consumed.add((frame_idx, chosen))
+                picked = tool_calls[chosen].get("id")
+                break
             if picked is None:
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
@@ -1667,6 +1714,33 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "
+        "the prompt: it swaps the python/terminal descriptions for the unsandboxed pair and adds a "
+        "sentence to the tool nudge, so a count that omits it prices a prompt the completion will "
+        "not send.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
+        "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
+    )
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
+        """Mirrors ChatCompletionRequest: the prompt builders read only the
+        bypass flag, so 'full' has to reach them the same way here."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            self.permission_mode = "full"
+        return self
 
 
 class ToolConfirmRequest(BaseModel):
