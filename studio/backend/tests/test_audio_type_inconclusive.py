@@ -51,10 +51,12 @@ def _trainer(*, audio_type, known, dataset_audio):
     return trainer
 
 
-def _run(trainer, monkeypatch):
+def _run(trainer, monkeypatch, dataset = None):
     from hub.utils import dataset_cache
 
-    monkeypatch.setattr(dataset_cache, "load_cached_hf_dataset", lambda *a, **k: _Dataset())
+    monkeypatch.setattr(
+        dataset_cache, "load_cached_hf_dataset", lambda *a, **k: dataset or _Dataset()
+    )
     monkeypatch.setattr(
         "core.training.trainer.format_and_template_dataset",
         lambda dataset, **kw: {"dataset": dataset, "detected_format": "test", "warnings": []},
@@ -120,3 +122,51 @@ def test_every_probe_site_records_whether_it_was_definitive():
     assert sites, "no probe sites found"
     for line in sites:
         assert "self._audio_type_known" in line, line.strip()
+
+
+class _TypedDataset(_Dataset):
+    """A dataset that reports a real `features` schema, as a loaded HF dataset does."""
+
+    def __init__(self, features):
+        self.features = features
+
+
+def _audio_features():
+    from datasets import Audio, Value
+
+    return {"audio": Audio(sampling_rate = 16000), "text": Value("string")}
+
+
+def _text_features():
+    from datasets import Value
+
+    return {"audio": Value("string"), "text": Value("string")}
+
+
+def test_a_text_dataset_with_a_column_named_audio_is_not_refused(monkeypatch):
+    # is_dataset_audio comes from the client, which sets it from the format check's
+    # is_audio -- and that is true on a column-NAME keyword match alone, without ever
+    # looking at the value. A text dataset with a column called `audio` holding
+    # filenames therefore arrives here flagged as audio. Refusing it would take away a
+    # text path that works, so the dataset's own schema gets the last word.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    result = _run(trainer, monkeypatch, dataset = _TypedDataset(_text_features()))
+    assert result is not None, "a text dataset was refused for having an audio-named column"
+    assert not trainer.errors
+
+
+def test_a_real_audio_column_is_still_refused(monkeypatch):
+    # The case the guard exists for: the schema confirms audio, so the run must stop
+    # rather than fall through to a text path that cannot map it.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    assert _run(trainer, monkeypatch, dataset = _TypedDataset(_audio_features())) is None
+    assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
+
+
+def test_a_dataset_that_cannot_report_a_schema_is_still_refused(monkeypatch):
+    # A DatasetDict or an iterable dataset has no usable `features`. Unknown is not
+    # "no audio here", and an unreadable model probe remains the likelier explanation,
+    # so the guard stays closed only on a positive answer.
+    trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
+    assert _run(trainer, monkeypatch, dataset = _Dataset()) is None
+    assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]

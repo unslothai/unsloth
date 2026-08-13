@@ -194,6 +194,33 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     return {"subfolder": "LLM"}
 
 
+def _dataset_has_audio_feature(dataset) -> Optional[bool]:
+    """Whether `dataset`'s own schema carries a real Audio column. None if it cannot tell.
+
+    The trainer learns "this dataset has audio" from `is_dataset_audio`, which the client
+    fills from the format check's `is_audio`. That flag is set by a column-NAME keyword
+    match (`audio|speech|wav|waveform|sound`) which never inspects the value, so a text
+    dataset with a column called `audio` holding filenames reports audio. Refusing such a
+    run would take away a text path that works today, so the loaded dataset's schema gets
+    the last word.
+
+    None for a DatasetDict, an iterable dataset, or anything without `.features`: those
+    cannot answer, and an unreadable model probe is still the more likely explanation, so
+    the caller keeps refusing unless this says False outright.
+    """
+    try:
+        from datasets.features.audio import Audio
+    except Exception:  # noqa: BLE001 - datasets missing or too old to have the feature
+        return None
+    features = getattr(dataset, "features", None)
+    if not features:
+        return None
+    try:
+        return any(isinstance(f, Audio) for f in features.values())
+    except Exception:  # noqa: BLE001 - a mapping that is not a features dict
+        return None
+
+
 class UnslothTrainer:
     """
     Unsloth Training Backend
@@ -2881,10 +2908,15 @@ class UnslothTrainer:
             # getattr: this method is also driven against lightweight stand-ins that set
             # only the attributes they exercise, and a probe that never ran is not an
             # inconclusive one, so both defaults leave the guard closed.
+            # The schema check is the tiebreaker on _is_dataset_audio, which arrives from
+            # the client and is true on a column-NAME match alone -- see
+            # _dataset_has_audio_feature. Only a positive "no Audio column here" reopens
+            # the text path; unknown still refuses.
             if (
                 not self._audio_type
                 and not getattr(self, "_audio_type_known", True)
                 and getattr(self, "_is_dataset_audio", False)
+                and _dataset_has_audio_feature(dataset) is not False
             ):
                 raise RuntimeError(
                     "Could not determine whether this model is an audio model: its "
