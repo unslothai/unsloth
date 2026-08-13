@@ -590,7 +590,13 @@ def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch)
     loaded = []
 
     class RefusedWorker:
-        def start(self, _snapshot_path, device, _dtype_name, _cancel_event = None):
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
             spawned.append(device)
             raise worker_module.SttWorkerSpawnError("spawn is not permitted here")
 
