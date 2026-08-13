@@ -192,8 +192,43 @@ def test_non_flag_token_passes_through():
         "--pooling",
         # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
+        # --agent is --tools by another name ("enable CORS proxy and ALL built-in
+        # tools", which includes exec_shell_command), and --tools-runtime says where
+        # those tools run -- a container, or another host over ssh.
+        "-ag",
+        "--agent",
+        "-no-ag",
+        "--no-agent",
+        "--tools-runtime",
+        # MCP servers are the same capability from a file or an inline blob.
+        "--mcp-servers-config",
+        "--mcp-servers-json",
+        # Unsloth terminates browser access at its own origin.
+        "--cors-origins",
+        "--cors-headers",
+        "--cors-methods",
+        "--cors-credentials",
+        "--no-cors-credentials",
+        "--media-path",
+        # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
+        "--log-file",
+        "--log-disable",
         # Slot-state dir: Studio owns it for KV persistence across idle unload.
         "--slot-save-path",
+        # These print and exit instead of serving.
+        "-h",
+        "--help",
+        "--usage",
+        "--version",
+        "--list-devices",
+        "-cl",
+        "--cache-list",
+        "--completion-bash",
+        # Aliases of already-denied UI flags; upstream ships both spellings.
+        "--webui-config",
+        "--webui-config-file",
+        "--webui-mcp-proxy",
+        "--no-webui-mcp-proxy",
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
@@ -240,8 +275,11 @@ def test_slot_save_path_is_managed_in_all_forms():
             validate_extra_args(args)
     assert is_managed_flag("--slot-save-path") is True
     assert is_managed_flag("--slot-save-path=/tmp/x") is True
-    # --slots (read-only diagnostics endpoint) stays a user choice.
+    # Endpoint exposure stays a user choice: Unsloth reads GET /props and never
+    # /slots, so neither flag can strand it.
     assert is_managed_flag("--slots") is False
+    assert is_managed_flag("--no-slots") is False
+    assert is_managed_flag("--props") is False
 
 
 @pytest.mark.parametrize(
@@ -940,3 +978,79 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
         strip_template = False,
     )
     assert out == ["--model-draft", "/custom/mtp.gguf"]
+
+
+# --- shape bounds -----------------------------------------------------------
+# Not the security boundary (the denylist is), just a floor under what reaches
+# execve, so a pasted file fails here naming the limit instead of in the child.
+
+
+def test_token_count_is_capped():
+    with pytest.raises(ValueError, match = "too many"):
+        validate_extra_args(["--verbose"] * (_lsa.MAX_EXTRA_ARG_TOKENS + 1))
+    # The cap itself still passes, so the limit is inclusive as stated.
+    assert len(validate_extra_args(["--verbose"] * _lsa.MAX_EXTRA_ARG_TOKENS)) == (
+        _lsa.MAX_EXTRA_ARG_TOKENS
+    )
+
+
+def test_total_size_is_capped():
+    with pytest.raises(ValueError, match = "too large"):
+        validate_extra_args(["--grammar", "x" * (_lsa.MAX_EXTRA_ARGS_BYTES + 1)])
+
+
+def test_a_long_single_token_is_allowed_under_the_total():
+    # A grammar or JSON schema is legitimately one long token, so the cap is on the
+    # list rather than per token.
+    schema = "x" * (_lsa.MAX_EXTRA_ARGS_BYTES // 2)
+    assert validate_extra_args(["--grammar", schema]) == ["--grammar", schema]
+
+
+def test_the_size_cap_counts_bytes_not_characters():
+    # Astral-plane characters are 4 bytes each; a character-counted cap would let
+    # through four times the argv this claims to bound.
+    big = "\U0001f600" * (_lsa.MAX_EXTRA_ARGS_BYTES // 4)
+    with pytest.raises(ValueError, match = "too large"):
+        validate_extra_args(["--grammar", big])
+
+
+@pytest.mark.parametrize("token", ["a\x00b", "a\x07b", "\x1b[31m"])
+def test_control_characters_are_rejected(token):
+    with pytest.raises(ValueError, match = "control characters"):
+        validate_extra_args([token])
+
+
+@pytest.mark.parametrize("token", ["line\nbreak", "tab\there"])
+def test_tab_and_newline_survive(token):
+    # A chat template or grammar passed inline carries both.
+    assert validate_extra_args([token]) == [token]
+
+
+# --- environment twins ------------------------------------------------------
+
+
+def test_denied_env_twins_are_scrubbed():
+    env = {
+        "LLAMA_ARG_AGENT": "1",
+        "LLAMA_ARG_TOOLS": "all",
+        "LLAMA_ARG_MCP_SERVERS_JSON": "{}",
+        "PATH": "/usr/bin",
+    }
+    removed = _lsa.scrub_denied_env(env)
+    assert set(removed) == {"LLAMA_ARG_AGENT", "LLAMA_ARG_TOOLS", "LLAMA_ARG_MCP_SERVERS_JSON"}
+    # Only the twins go.
+    assert env == {"PATH": "/usr/bin"}
+
+
+def test_scrubbing_is_a_no_op_without_the_twins():
+    env = {"PATH": "/usr/bin", "LLAMA_ARG_MLOCK": "1"}
+    assert _lsa.scrub_denied_env(env) == []
+    assert env == {"PATH": "/usr/bin", "LLAMA_ARG_MLOCK": "1"}
+
+
+def test_every_denied_env_var_names_a_denied_flag():
+    # The twins are only worth scrubbing while the flag itself is refused; this
+    # catches a group being dropped from the denylist and leaving a live back door.
+    for name in _lsa.DENIED_ENV_VARS:
+        flag = "--" + name.removeprefix("LLAMA_ARG_").lower().replace("_", "-")
+        assert is_managed_flag(flag), f"{name} has no denied flag ({flag})"

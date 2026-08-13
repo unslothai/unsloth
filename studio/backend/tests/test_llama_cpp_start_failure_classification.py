@@ -148,9 +148,7 @@ class TestUnsupportedNonDiffusionArchitecture:
 
 
 class TestOllamaAndFallback:
-    _OLLAMA_GGUF = (
-        f"/home/u/.ollama{__import__('os').sep}ollama_links" f"{__import__('os').sep}m.gguf"
-    )
+    _OLLAMA_GGUF = f"/home/u/.ollama{__import__('os').sep}ollama_links{__import__('os').sep}m.gguf"
 
     def test_ollama_compat_message_still_works(self):
         out = "llama_model_load: error loading model: key not found"
@@ -284,8 +282,7 @@ class TestMissingSharedLibrary:
         # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
         # target as "not found" and exits 127.
         out = (
-            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: "
-            "./build/bin/llama-server: not found"
+            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: ./build/bin/llama-server: not found"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
@@ -1484,3 +1481,62 @@ class TestTheRedactionHolesCodexFound:
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0
+
+
+class TestRejectedArguments:
+    """Argument parsing runs before the model is touched, so these are never a
+    bad GGUF or an OOM. The strings are what the bundled llama-server actually
+    prints, captured from it directly rather than written from memory."""
+
+    def test_an_unknown_flag_is_named(self):
+        msg = _classify("error: invalid argument: --tempp", "/models/x.gguf", "local/x", 1)
+        assert "--tempp" in msg
+        assert "extra arguments" in msg
+        # The generic diagnosis must not survive: the file and the memory are fine.
+        assert "memory" not in msg.lower()
+
+    def test_a_rejected_value_is_told_apart_from_an_unknown_flag(self):
+        # Different fix for the reader: the flag is right, the value is not.
+        msg = _classify(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--numa" in msg
+        assert "invalid value" in msg
+        assert "does not recognise" not in msg
+
+    def test_a_missing_value_keeps_llama_cpps_own_reason(self):
+        msg = _classify(
+            'error while handling argument "--top-k": expected value for argument',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--top-k" in msg
+        assert "expected value" in msg
+
+    def test_a_std_stoi_failure_is_translated(self):
+        # llama.cpp surfaces the C++ standard library's exception name verbatim.
+        # "stoi" is not an error message anyone outside libstdc++ can act on.
+        msg = _classify(
+            'error while handling argument "--top-k": stoi', "/models/x.gguf", "local/x", 1
+        )
+        assert "not a number" in msg
+        assert "stoi" not in msg
+
+    def test_an_ordinary_failure_is_untouched(self):
+        # The two new branches sit ahead of the generic diagnosis, so this pins
+        # that they do not swallow it.
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert "enough memory" in msg.lower()
+        assert "argument" not in msg.lower()
+
+    def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
+        # "invalid argument" as an errno string (EINVAL) is not llama.cpp's
+        # argument parser, and the anchored "error: invalid argument:" prefix is
+        # what keeps them apart.
+        out = "llama_model_load: error loading model: invalid argument (22)"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "does not recognise" not in msg

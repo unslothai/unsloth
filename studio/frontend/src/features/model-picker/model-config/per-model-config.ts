@@ -25,6 +25,18 @@ export interface PerModelConfig {
   nUbatch: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
+  /**
+   * Pass-through llama-server args, one argv token per entry, appended after
+   * Unsloth's own flags.
+   *
+   * Three states, and the difference is load-bearing. `undefined` means this copy
+   * never read the stored value, so a save must leave the server's alone: the
+   * overrides route preserves the field when it is omitted, which is what kept
+   * CLI-set flags alive while the panel had no control for them. `null` means the
+   * user cleared the box, which has to be sent as an explicit `[]` or the clear is
+   * silently dropped. A non-empty list is what to launch with.
+   */
+  llamaExtraArgs?: string[] | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still parse. null/absent
   // selectedGpuIds means automatic. --tensor-split is not remembered: it is bound to the GPU set.
   gpuMemoryMode?: "auto" | "manual";
@@ -176,12 +188,31 @@ const STORED_CONFIG_FIELDS = new Set([
   "nUbatch",
   "tensorParallel",
   "chatTemplateOverride",
+  "llamaExtraArgs",
   "gpuMemoryMode",
   "gpuLayers",
   "nCpuMoe",
   "selectedGpuIds",
   "selectedGpuIndexKind",
 ]);
+
+/**
+ * Keep only a list of strings, preserving the three states above.
+ *
+ * Anything that is not an array is "not loaded" (`undefined`), never "cleared":
+ * the wiping case is the one worth being careful about, since the flags it would
+ * throw away are invisible in this panel until the row reads them.
+ */
+function normalizeLlamaExtraArgs(value: unknown): string[] | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const tokens = value.filter((entry): entry is string => typeof entry === "string");
+  return tokens.length > 0 ? tokens : null;
+}
 
 function normalizeGpuFields(partial: RawConfig): {
   gpuMemoryMode?: "auto" | "manual";
@@ -483,6 +514,10 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     chatTemplateOverride: null,
+    // Absent, not null: a legacy blob predates the editor, and the server may well
+    // hold flags set from the CLI. Reading that as "cleared" would wipe them on the
+    // first save from this panel.
+    llamaExtraArgs: undefined,
     // Carry legacy GPU Memory knobs; normalizeGpuFields drops anything malformed.
     gpuMemoryMode:
       raw.gpuMemoryMode === "auto" || raw.gpuMemoryMode === "manual"
@@ -679,6 +714,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
         ? partial.chatTemplateOverride
         : null,
+    llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
     ...normalizeGpuFields(partial),
   };
 }

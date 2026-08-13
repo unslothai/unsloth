@@ -2192,6 +2192,7 @@ from models.inference import (
     LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
+    LlamaFlagCatalogResponse,
     ChatCompletionRequest,
     ChatCountTokensRequest,
     ChatCompletionChunk,
@@ -9681,6 +9682,35 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
     except Exception:
         freshness = {}
     return supports_mtp, freshness
+
+
+@router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
+async def get_llama_flags(current_subject: str = Depends(get_current_subject)):
+    """Flags the installed llama-server accepts, for the extra-arguments editor.
+
+    Cheap to call: ``probe_server_capabilities`` caches on the binary's revision, so
+    only the first call after an install or an update runs the 10s ``--help`` probe.
+    A failed probe answers ``probe_ok = false`` with no flags rather than erroring, so
+    the editor degrades to "cannot verify" instead of blocking every argument.
+    """
+    from core.inference.llama_server_args import sorted_managed_flags
+
+    try:
+        backend = get_llama_cpp_backend()
+        capabilities = type(backend).probe_server_capabilities()
+        flags = capabilities.get("flags") or {}
+        # found=False means no binary at all, which is not the same as a binary whose
+        # help would not parse; both leave the editor unable to verify.
+        probe_ok = bool(capabilities.get("found")) and bool(flags)
+    except Exception as exc:  # noqa: BLE001 -- an unverifiable flag is not a failed request
+        logger.debug(f"llama-server flag catalogue unavailable: {exc}")
+        flags = {}
+        probe_ok = False
+    return LlamaFlagCatalogResponse(
+        flags = {str(k): str(v) for k, v in flags.items()},
+        managed = sorted_managed_flags(),
+        probe_ok = probe_ok,
+    )
 
 
 @router.get("/status", response_model = InferenceStatusResponse)

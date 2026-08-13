@@ -124,6 +124,13 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;
   }
+  // The one field where absent does NOT mean "app default": the route preserves
+  // llama_extra_args it is not sent, which is what kept CLI-set flags alive while
+  // this panel had no control for them. So `undefined` (never read) stays omitted,
+  // and a cleared box has to say so with an explicit empty list.
+  if (config.llamaExtraArgs !== undefined) {
+    payload.llama_extra_args = config.llamaExtraArgs ?? [];
+  }
   // Only "manual" is a real override; "auto" is the follow-the-global default.
   if (config.gpuMemoryMode === "manual") {
     payload.gpu_memory_mode = "manual";

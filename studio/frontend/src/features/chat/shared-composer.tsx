@@ -1369,6 +1369,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                // Only when this panel has read the stored value: omitted, the load
+                // inherits it, which is what keeps CLI-set flags working.
+                ...(ownConfig.llamaExtraArgs !== undefined
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
+                  : {}),
                 // omitted when blank: a null counts as set and strips inherited -b / -ub
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
@@ -1451,6 +1457,12 @@ export function SharedComposer({
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 n_parallel: ownConfig.nParallel ?? null,
+                // Only when this panel has read the stored value: omitted, the load
+                // inherits it, which is what keeps CLI-set flags working.
+                ...(ownConfig.llamaExtraArgs !== undefined
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
+                  : {}),
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
                   : {}),

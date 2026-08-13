@@ -56,7 +56,20 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { syncModelOverride } from "../api/model-overrides";
+import {
+  type LlamaFlagCatalog,
+  loadLlamaFlagCatalog,
+} from "../api/llama-flags";
+import {
+  fetchModelOverrides,
+  modelOverrideKey,
+  syncModelOverride,
+} from "../api/model-overrides";
+import {
+  diagnoseExtraArgs,
+  formatExtraArgs,
+  parseExtraArgs,
+} from "../model-config/llama-extra-args";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -864,6 +877,7 @@ function GgufAdvancedSettings({
   gpuDevices,
   gpuLayersInputRef,
   moeLayersInputRef,
+  overrideKey,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -876,6 +890,8 @@ function GgufAdvancedSettings({
   gpuDevices: SystemGpuDevice[];
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
+  /** Which model's stored flags the extra-arguments row reads. */
+  overrideKey: string;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1170,7 +1186,183 @@ function GgufAdvancedSettings({
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
+
+      {/* Last, because it is the escape hatch for everything the rows above do not
+          cover, and because llama.cpp's last-wins parsing means these really are
+          appended after them. GGUF only: the flags are llama-server's. */}
+      {!isDiffusion && (
+        <ExtraArgsRow
+          config={config}
+          update={update}
+          overrideKey={overrideKey}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * Pass-through llama-server arguments for this model.
+ *
+ * llama-server documents 283 flags and Unsloth already emits or manages about 115
+ * of them, so the long tail is a text box rather than 168 more controls. The
+ * boundary is `validate_extra_args` on the backend, which refuses the flags Unsloth
+ * owns; this row is the same judgement shown early, plus a check against the flags
+ * THIS build documents, which a list shipped with Unsloth could not do.
+ */
+function ExtraArgsRow({
+  config,
+  update,
+  overrideKey,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  overrideKey: string;
+}) {
+  const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
+  // What is typed, which is not what is stored: the stored value is argv tokens, so
+  // the text only exists here. Seeded from the config, then owned by the box, or
+  // every re-render would re-quote what the user is halfway through typing.
+  const [text, setText] = useState(() =>
+    formatExtraArgs(config.llamaExtraArgs),
+  );
+  const adviceId = useId();
+
+  useEffect(() => {
+    let cancelled = false;
+    loadLlamaFlagCatalog().then((loaded) => {
+      if (!cancelled && loaded) {
+        setCatalog(loaded);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The one field on this page whose stored value the local config may never have
+  // seen. Everything else here is written by this panel, but llama_extra_args can be
+  // set through the overrides API (PUT /openai-auto-switch-override) with no UI
+  // involved, which is exactly why that route preserves it when omitted. Showing an
+  // empty box for a model that has flags would read as "none", and the first edit
+  // would then submit a list that silently dropped them. Fetched, not guessed.
+  //
+  // Into the text only, never through `update`: a config that has not been edited
+  // must stay `undefined` so a save omits the field and the backend keeps its copy.
+  const hydrated = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      config.llamaExtraArgs !== undefined ||
+      hydrated.current === overrideKey
+    ) {
+      return;
+    }
+    let cancelled = false;
+    // Marked before the request, not after it lands: this effect re-runs on every
+    // keystroke, and one fetch per model is the point.
+    hydrated.current = overrideKey;
+    fetchModelOverrides()
+      .then((overrides) => {
+        const stored = overrides[overrideKey]?.llama_extra_args;
+        // Only while the box is still untouched, or a slow response would land on
+        // top of what the user typed in the meantime.
+        if (
+          !cancelled &&
+          stored !== undefined &&
+          stored.length > 0 &&
+          text === ""
+        ) {
+          setText(formatExtraArgs(stored));
+        }
+      })
+      .catch(() => {
+        // Nothing to say: the box is still usable, and the load would report a real
+        // problem with the overrides service far more clearly than this row could.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [overrideKey, config.llamaExtraArgs, text]);
+
+  // Re-seed only when the stored tokens actually change (a different model, or a
+  // Reset), never on our own edits: comparing the rendered text to the box lets a
+  // user's unquoted spacing stand while still following a real change.
+  const storedText = formatExtraArgs(config.llamaExtraArgs);
+  const lastStored = useRef(storedText);
+  if (lastStored.current !== storedText) {
+    lastStored.current = storedText;
+    if (
+      parseExtraArgs(text).tokens.join("\u0000") !==
+      (config.llamaExtraArgs ?? []).join("\u0000")
+    ) {
+      setText(storedText);
+    }
+  }
+
+  const diagnostics = diagnoseExtraArgs(text, catalog);
+  const tokenCount = parseExtraArgs(text).tokens.length;
+
+  const commit = (next: string) => {
+    setText(next);
+    const { tokens } = parseExtraArgs(next);
+    // null, not [], so the panel's own "no flags" reads the same as the stored one;
+    // toApiOverride turns it into the explicit [] that clears the server's copy.
+    update({ llamaExtraArgs: tokens.length > 0 ? tokens : null });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Extra Arguments</span>
+        <InfoHint>
+          <div className="flex flex-col gap-1.5">
+            <div>
+              Passed straight to llama-server for this model, after the settings
+              above, so anything set in both is taken from here.
+            </div>
+            <div>
+              Quote a value containing spaces. Nothing runs a shell, so $HOME, ;
+              and | are ordinary characters. Flags Unsloth owns, like the model,
+              the port and the API key, are refused.
+            </div>
+          </div>
+        </InfoHint>
+      </div>
+      <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
+        <textarea
+          value={text}
+          onChange={(event) => commit(event.target.value)}
+          spellCheck={false}
+          placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
+          aria-label="Extra llama-server arguments"
+          aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
+          className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+        />
+      </div>
+      {(tokenCount > 0 || diagnostics.length > 0) && (
+        <div id={adviceId} className="space-y-1">
+          {tokenCount > 0 && (
+            <p className="text-ui-11 text-muted-foreground">
+              {tokenCount === 1 ? "1 argument" : `${tokenCount} arguments`}
+            </p>
+          )}
+          {diagnostics.map((diagnostic) => (
+            <p
+              key={diagnostic.message}
+              className={
+                diagnostic.level === "error"
+                  ? "text-ui-11 text-red-500"
+                  : diagnostic.level === "warning"
+                    ? "text-ui-11 text-amber-500"
+                    : "text-ui-11 text-muted-foreground"
+              }
+            >
+              {diagnostic.message}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1779,6 +1971,7 @@ export function ModelConfigPage({
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
+                overrideKey={modelOverrideKey(configId, target.ggufVariant)}
               />
             )}
 

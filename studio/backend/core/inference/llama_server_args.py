@@ -67,9 +67,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama.cpp binaries match.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--ui", "--no-ui"}),
-    frozenset({"--ui-config"}),
-    frozenset({"--ui-config-file"}),
-    frozenset({"--ui-mcp-proxy", "--no-ui-mcp-proxy"}),
+    frozenset({"--ui-config", "--webui-config"}),
+    frozenset({"--ui-config-file", "--webui-config-file"}),
+    frozenset({"--ui-mcp-proxy", "--webui-mcp-proxy", "--no-ui-mcp-proxy", "--no-webui-mcp-proxy"}),
     frozenset({"--models-dir"}),
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
@@ -83,11 +83,50 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
-    # Slot-state dir: Studio owns it for KV persistence across idle unload.
+    # --agent is --tools by another name: upstream documents it as "enable CORS
+    # proxy and ALL built-in tools", and that set includes exec_shell_command.
+    # Denying --tools while allowing this left the same capability one alias away.
+    frozenset({"-ag", "--agent", "-no-ag", "--no-agent"}),
+    # Where those tools run: docker:/podman: spins up a container, ssh:<target>
+    # runs them on another host entirely.
+    frozenset({"--tools-runtime"}),
+    # MCP servers are tools from a config file or an inline JSON blob; upstream
+    # says "do not enable in untrusted environments" for both.
+    frozenset({"--mcp-servers-config"}),
+    frozenset({"--mcp-servers-json"}),
+    # CORS: Unsloth terminates browser access at its own origin, so widening the
+    # child's would hand a page past the boundary the proxy exists to hold.
+    frozenset({"--cors-origins"}),
+    frozenset({"--cors-headers"}),
+    frozenset({"--cors-methods"}),
+    frozenset({"--cors-credentials", "--no-cors-credentials"}),
+    # Serves local files over the child's HTTP surface.
+    frozenset({"--media-path"}),
+    # Startup output is how _classify_llama_start_failure tells a bad GGUF from an
+    # OOM from a rejected flag; redirecting or silencing it makes every failure
+    # the same opaque one.
+    frozenset({"--log-file"}),
+    frozenset({"--log-disable"}),
+    # Slot-state dir: Studio owns it for KV persistence across idle unload. Endpoint
+    # exposure (--slots, --props) is deliberately NOT denied alongside it: Unsloth
+    # reads GET /props and never /slots, so either is the user's own call.
     frozenset({"--slot-save-path"}),
+    # These print and exit instead of serving, so the load would "succeed" with no
+    # server behind it and only time out later.
+    frozenset({"-h", "--help", "--usage"}),
+    frozenset({"--version"}),
+    frozenset({"--list-devices"}),
+    frozenset({"-cl", "--cache-list"}),
+    frozenset({"--completion-bash"}),
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
+
+# Shape bounds. Not a security boundary -- the denylist is -- but a pasted file or a
+# runaway generator should fail here, naming the limit, rather than at execve or in
+# llama-server's own parser. Generous enough that a grammar or a JSON schema fits.
+MAX_EXTRA_ARG_TOKENS = 256
+MAX_EXTRA_ARGS_BYTES = 32 * 1024
 
 
 def _flag_name(token: str) -> Optional[str]:
@@ -122,8 +161,24 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     if not args:
         return []
     out: list[str] = []
+    total_bytes = 0
     for raw in args:
         token = str(raw)
+        if len(out) >= MAX_EXTRA_ARG_TOKENS:
+            raise ValueError(
+                f"too many extra llama-server args (limit {MAX_EXTRA_ARG_TOKENS} tokens)"
+            )
+        # A grammar or JSON schema is a legitimately long single token, so the cap
+        # is on the whole list rather than per token.
+        total_bytes += len(token.encode("utf-8", "surrogatepass"))
+        if total_bytes > MAX_EXTRA_ARGS_BYTES:
+            raise ValueError(
+                f"extra llama-server args are too large (limit {MAX_EXTRA_ARGS_BYTES} bytes)"
+            )
+        # execve rejects a NUL outright; the rest would reach the child's parser as
+        # invisible characters and be blamed on the flag they are attached to.
+        if any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token):
+            raise ValueError("extra llama-server args cannot contain control characters")
         flag = _flag_name(token)
         if flag is not None and flag in _DENYLIST:
             raise ValueError(
@@ -136,6 +191,12 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
     return out
+
+
+def sorted_managed_flags() -> list[str]:
+    """Every denied flag, sorted, for a UI that wants to explain a rejection before
+    the request is made. The validator stays the authority; this is only a mirror."""
+    return sorted(_DENYLIST)
 
 
 def is_managed_flag(flag: str) -> bool:
@@ -782,6 +843,33 @@ def _env_var_locks_or_reserves(name: str, value: str) -> bool:
     if name == "LLAMA_ARG_LOAD_MODE":
         return normalized in _LOAD_MODE_MLOCK_VALUES or normalized in _LOAD_MODE_RESERVING_VALUES
     return False
+
+
+# The LLAMA_ARG_* twins of flags the denylist refuses. llama.cpp reads these before
+# argv, so a name refused in extra args is still reachable through the environment
+# Unsloth's own process inherits. Anyone who can set that environment can already do
+# worse, so this is not the boundary -- it just stops a denied flag arriving by the
+# back door and leaving no trace in the recorded command.
+DENIED_ENV_VARS: tuple[str, ...] = (
+    "LLAMA_ARG_TOOLS",
+    "LLAMA_ARG_TOOLS_RUNTIME",
+    "LLAMA_ARG_AGENT",
+    "LLAMA_ARG_MCP_SERVERS_CONFIG",
+    "LLAMA_ARG_MCP_SERVERS_JSON",
+    "LLAMA_ARG_CORS_ORIGINS",
+    "LLAMA_ARG_CORS_HEADERS",
+    "LLAMA_ARG_CORS_METHODS",
+    "LLAMA_ARG_CORS_CREDENTIALS",
+    "LLAMA_ARG_MEDIA_PATH",
+)
+
+
+def scrub_denied_env(env: dict) -> list[str]:
+    """Drop inherited ``LLAMA_ARG_*`` twins of denied flags. Returns the names removed."""
+    removed = [name for name in DENIED_ENV_VARS if name in env]
+    for name in removed:
+        env.pop(name, None)
+    return removed
 
 
 def scrub_memory_env(env: dict) -> list[str]:
