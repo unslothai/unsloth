@@ -36,6 +36,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  isPastedTextFile,
   pasteClipboardFiles,
   pasteLongTextAsFile,
   isStudioDictationAvailable,
@@ -2165,6 +2166,13 @@ const Composer: FC<{
       (attachment) => attachment.status.type === "running",
     ),
   );
+  const attachmentsAreAllPastedText = useAuiState(
+    ({ composer }) =>
+      composer.attachments.length > 0 &&
+      composer.attachments.every((attachment) =>
+        isPastedTextFile((attachment as { file?: File }).file),
+      ),
+  );
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
@@ -2510,9 +2518,7 @@ const Composer: FC<{
   );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  const canQueueCurrentPrompt =
-    composerText.trim().length > 0 &&
-    !hasAttachments &&
+  const composerAcceptsQueueing =
     !hasPendingAudio &&
     !isComposing &&
     !hasPendingAttachments &&
@@ -2520,6 +2526,12 @@ const Composer: FC<{
     !hasMaterializingAudioAttachments &&
     !disabled &&
     !overlay;
+  const canQueueCurrentPrompt =
+    composerText.trim().length > 0 && !hasAttachments && composerAcceptsQueueing;
+  // A long paste is text the composer parked in a chip, so it queues like the
+  // same text did before it attached, rather than being refused as a file.
+  const canQueuePastedTextPrompt =
+    attachmentsAreAllPastedText && composerAcceptsQueueing;
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
@@ -2983,6 +2995,57 @@ const Composer: FC<{
     [createPromptQueueTarget, referenceThreadId],
   );
 
+  // The queue carries text, and a long paste is text the composer parked in a
+  // chip, so fold it back in rather than refusing to queue it as a file.
+  const queuePastedTextPrompt = useCallback(
+    (waitForCurrentRun: boolean): boolean => {
+      const composer = aui.composer();
+      const attachments = composer.getState().attachments;
+      const files: File[] = [];
+      for (const attachment of attachments) {
+        const file = (attachment as { file?: File }).file;
+        if (file === undefined || !isPastedTextFile(file)) return false;
+        files.push(file);
+      }
+      if (files.length === 0) return false;
+
+      const attachmentIds = attachments.map((attachment) => attachment.id);
+      const textAtQueue = composer.getState().text.trim();
+      void Promise.all(files.map((file) => file.text()))
+        .then((texts) => {
+          const queuedPrompt = [textAtQueue, ...texts]
+            .filter((part) => part.trim().length > 0)
+            .join("\n\n");
+          if (queuedPrompt.length === 0) return;
+          startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
+            const state = composer.getState();
+            // Only clear the composer this prompt was queued from.
+            if (
+              state.text.trim() !== textAtQueue ||
+              state.attachments.length !== attachmentIds.length ||
+              !state.attachments.every(
+                (attachment, index) => attachment.id === attachmentIds[index],
+              )
+            ) {
+              return;
+            }
+            void composer.clearAttachments();
+            flushResourcesSync(() => {
+              composer.setText("");
+            });
+            clearStoredDraft();
+          });
+        })
+        .catch(() => {
+          toast.error("Could not queue the pasted text.", {
+            description: "Show it in the text field, then send it again.",
+          });
+        });
+      return true;
+    },
+    [aui, clearStoredDraft, startHydratedPromptQueue],
+  );
+
   const dismissWaitToast = useCallback(() => {
     if (waitToastRef.current !== null) {
       toast.dismiss(waitToastRef.current);
@@ -3326,6 +3389,12 @@ const Composer: FC<{
           return;
         }
         if (!canQueueCurrentPrompt) {
+          if (
+            canQueuePastedTextPrompt &&
+            queuePastedTextPrompt(liveThreadIsRunning || livePreStreamRunActive)
+          ) {
+            return;
+          }
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
               liveThreadIsRunning
@@ -3417,6 +3486,8 @@ const Composer: FC<{
     [
       aui,
       canQueueCurrentPrompt,
+      canQueuePastedTextPrompt,
+      queuePastedTextPrompt,
       clearStoredDraft,
       closeOverlay,
       composerText,
