@@ -855,38 +855,91 @@ def test_snapshot_copy_is_bounded_to_the_validated_size():
     assert target.getvalue() == b"validated"
 
 
-def test_snapshot_opens_the_source_in_binary_mode(rag_home, monkeypatch):
-    # Without O_BINARY the copy short-reads on Windows and the file is reported as unindexable.
-    source = rag_home / "binary-source"
-    source.mkdir()
-    document = source / "notes.md"
-    document.write_bytes(b"first line\r\nsecond line\x1athird line\r\n")
-    monkeypatch.setattr(folder_sync.os, "O_BINARY", 0x8000, raising = False)
-    seen = []
-    real_open = folder_sync.os.open
-
-    def spy(path, flags, *args, **kwargs):
-        if str(path) == str(document):
-            seen.append(flags)
-        return real_open(path, flags & ~0x8000, *args, **kwargs)
-
-    monkeypatch.setattr(folder_sync.os, "open", spy)
+def _snapshot_metadata(document: Path, **overrides) -> dict:
     stats = os.stat(document)
-    metadata = {
+    return {
         "path": str(document),
         "size_bytes": stats.st_size,
         "mtime_ns": stats.st_mtime_ns,
         "device": stats.st_dev,
         "inode": stats.st_ino,
-    }
+    } | overrides
+
+
+def test_snapshot_copies_the_source_byte_for_byte(rag_home):
+    """CRLF runs and 0x1A bytes must survive: a text-mode read would eat both."""
+    source = rag_home / "binary-source"
+    source.mkdir()
+    document = source / "notes.md"
+    payload = b"first line\r\nsecond line\x1athird line\r\n"
+    document.write_bytes(payload)
+
+    snapshot = folder_sync._snapshot(str(source), _snapshot_metadata(document))
+
+    try:
+        assert Path(snapshot).read_bytes() == payload
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
+def test_snapshot_accepts_a_source_the_scan_could_not_identify(rag_home):
+    """os.scandir reports st_dev/st_ino as 0 on Windows, so every file failed there."""
+    source = rag_home / "identity-less"
+    source.mkdir()
+    document = source / "notes.md"
+    payload = b"windows scandir reports no identity\n"
+    document.write_bytes(payload)
+    metadata = _snapshot_metadata(document, device = 0, inode = 0)
 
     snapshot = folder_sync._snapshot(str(source), metadata)
 
     try:
-        assert seen and all(flags & 0x8000 for flags in seen), seen
-        assert Path(snapshot).read_bytes() == document.read_bytes()
+        assert Path(snapshot).read_bytes() == payload
     finally:
         folder_sync._remove_snapshot(snapshot)
+
+
+def test_snapshot_still_rejects_a_changed_source_without_an_identity(rag_home):
+    source = rag_home / "identity-less-changed"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"original")
+    metadata = _snapshot_metadata(document, device = 0, inode = 0)
+    document.write_bytes(b"replaced with a longer body")
+
+    with pytest.raises(RuntimeError, match = "changed during reconciliation"):
+        folder_sync._snapshot(str(source), metadata)
+
+
+def test_snapshot_rejects_a_source_swapped_mid_copy_without_an_identity(rag_home, monkeypatch):
+    """The post-copy check compares fstat to fstat, so it still works with no scan identity."""
+    source = rag_home / "identity-less-swapped"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"stable body")
+    metadata = _snapshot_metadata(document, device = 0, inode = 0)
+    real_copy = folder_sync._copy_exact
+
+    def copy_then_touch(src, dst, size):
+        real_copy(src, dst, size)
+        with open(document, "ab") as handle:
+            handle.write(b" appended")
+
+    monkeypatch.setattr(folder_sync, "_copy_exact", copy_then_touch)
+
+    with pytest.raises(RuntimeError, match = "changed while it was copied"):
+        folder_sync._snapshot(str(source), metadata)
+
+
+def test_snapshot_compares_the_identity_when_the_scan_recorded_one(rag_home):
+    source = rag_home / "identity-kept"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"same size body")
+    metadata = _snapshot_metadata(document, inode = os.stat(document).st_ino + 1)
+
+    with pytest.raises(RuntimeError, match = "changed during reconciliation"):
+        folder_sync._snapshot(str(source), metadata)
 
 
 @requires_sqlite_vec
