@@ -4348,22 +4348,48 @@ tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 # Emit one gfx|marketing-name record per GPU, including an empty name, so device ordinals stay
 # aligned. Keep a |name fallback for APUs without a gfx token. Keep in sync with studio/setup.sh.
 _rocminfo_gpu_records() {
-    awk -F': ' '
+    awk '
+        # Field value after the FIRST colon: -F": " would truncate a name that
+        # contains ": " ("AMD Instinct MI300X OAM: 750W SKU").
+        function value(line,   v) {
+            v = line; sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        # rocminfo lists the CPU agent first, so latching the first Marketing Name
+        # reports the processor as the GPU (#7307). Hold it until the agent is
+        # classified and prefer a non-CPU one.
+        function flush() {
+            if (pending == "") return
+            if (classified && !is_cpu) { if (first == "") first = pending }
+            else if (cpu == "") cpu = pending
+            pending = ""
+        }
         /^[[:space:]]*Name:/ {
             if (is_gpu && !emitted) { print gfx "|"; printed = 1 }
-            name = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            flush()
+            name = value($0)
             is_gpu = (name ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/)
             gfx = is_gpu ? name : ""
-            emitted = 0
+            emitted = 0; classified = 0; is_cpu = 0
         }
         /^[[:space:]]*Marketing Name:/ {
-            mkt = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", mkt)
+            mkt = value($0)
             if (is_gpu) { print gfx "|" mkt; printed = 1; emitted = 1; next }
-            if (mkt != "" && first == "") first = mkt
+            pending = mkt
+            next
+        }
+        # Both label the agent and both follow Marketing Name; take whichever lands first.
+        /^[[:space:]]*Vendor Name:/ || /^[[:space:]]*Device Type:/ {
+            kind = value($0)
+            if (!classified && kind != "") { is_cpu = (kind == "CPU"); classified = 1 }
+            next
         }
         END {
             if (is_gpu && !emitted) { print gfx "|"; printed = 1 }
+            flush()
             if (!printed && first != "") print "|" first
+            else if (!printed && cpu != "") print "|" cpu
         }
     '
 }

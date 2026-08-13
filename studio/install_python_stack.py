@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import glob
+import hashlib
 import importlib.util
 import json
 import os
@@ -1438,9 +1439,25 @@ def _has_usable_nvidia_gpu() -> bool:
     that env var, so check it first and report the GPU as not usable. Unset
     means all devices visible.
     """
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cvd is not None and cvd.strip() in ("", "-1"):
+    if _cvd_hides_nvidia():
         return False
+    return _has_physical_nvidia_gpu()
+
+
+def _cvd_hides_nvidia() -> bool:
+    """True when CUDA_VISIBLE_DEVICES deliberately hides every NVIDIA device."""
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    return cvd is not None and cvd.strip() in ("", "-1")
+
+
+def _has_physical_nvidia_gpu() -> bool:
+    """Return True when NVIDIA hardware is present, ignoring visibility masks.
+
+    Counterpart to _has_usable_nvidia_gpu, for decisions that must not be swung by a
+    transient env var. Which GPU to *route work to* is the mask's business; whether a
+    host owns an NVIDIA card, and so whether its working CUDA torch may be replaced
+    wholesale, is not.
+    """
     exe = shutil.which("nvidia-smi")
     if exe:
         try:
@@ -2192,6 +2209,25 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return url
 
 
+def _recorded_non_rocm_torch_pin() -> "str | None":
+    """A deliberate non-ROCm wheel index recorded at install time, else None.
+
+    Consulted only when this run exports no pin of its own, so an env override still
+    wins. Without it the pin guards hold for exactly one run: the variable belongs to
+    the user, `unsloth studio update` never sees it, and the ROCm repair then
+    reinstalls several GB over the CPU or CUDA index they chose.
+    """
+    if _explicit_torch_index_url() is not None:
+        return None
+    try:
+        url = install_manifest.recorded_torch_index_url()
+    except Exception:
+        return None
+    if url is None:
+        return None
+    return None if _is_pip_rocm_family_leaf(_torch_index_leaf(url)) else url
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -2834,10 +2870,17 @@ class _LinuxRocmTorchPlan:
     reason: str
     install_torch: bool = True
     clear_hsa_spoof_gfx: "str | None" = None
+    # Identifies this repair so an identical one that already failed is not repeated.
+    repair_key: str = ""
 
 
-def _probe_rocm_torch() -> tuple[bool, str]:
-    """Return whether torch imports as ROCm and its version, with a hard Python timeout."""
+def _probe_rocm_torch() -> tuple[bool, str, bool]:
+    """Return (imports as ROCm, version, importable), with a hard Python timeout.
+
+    The third value separates "torch is the wrong wheel" from "torch could not be
+    probed at all" (segfault, missing runtime library, hang). Collapsing the two
+    reads a broken torch as a wrong one and reinstalls gigabytes that cannot fix it.
+    """
     try:
         probe = subprocess.run(
             [
@@ -2856,7 +2899,7 @@ def _probe_rocm_torch() -> tuple[bool, str]:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False, ""
+        return False, "", False
     lines = (
         [
             line.strip()
@@ -2867,7 +2910,66 @@ def _probe_rocm_torch() -> tuple[bool, str]:
         else []
     )
     marker, separator, version = lines[-1].partition("|") if lines else ("", "", "")
-    return bool(separator and marker), version
+    return bool(separator and marker), version, bool(separator)
+
+
+def _rocm_repair_key(index_url: str, installed_version: str, torch_importable: bool) -> str:
+    """Fingerprint a repair: the wheels to install plus the torch state that asked for it.
+
+    Hashed because the index URL may carry credentials and this is written to disk.
+    Including the observed torch state is what makes a *repeat* detectable: a repair
+    that worked changes the state, so the next run computes a different key and is
+    never blocked by this one.
+    """
+    state = (
+        f"{index_url}\n{installed_version}\n{'import-ok' if torch_importable else 'import-fail'}"
+    )
+    return hashlib.sha256(state.encode("utf-8", errors = "replace")).hexdigest()[:32]
+
+
+def _rocm_reinstall_blocked(
+    installed_version: str, torch_importable: bool, repair_key: str
+) -> "str | None":
+    """Why this ROCm reinstall must not run, or None to proceed.
+
+    Two cases, each of which force-reinstalls several GB on EVERY update while fixing
+    nothing:
+
+    1. The same repair already ran and left torch in the same state. An unimportable
+       torch reads as a wrong wheel rather than a broken one, so the repair re-arms
+       itself forever; and under setup.sh's `set -euo pipefail` a repair that cannot
+       reach download.pytorch.org turns `studio update` into a guaranteed abort.
+    2. The host owns an NVIDIA GPU that CUDA_VISIBLE_DEVICES merely hides, and torch
+       is a working CUDA build. The mask picks a card; it is not consent to replace
+       the wheels.
+    """
+    if _cvd_hides_nvidia() and _has_physical_nvidia_gpu():
+        # A CUDA local tag is only readable from a torch that imported, so this also
+        # excludes the broken-torch case without a separate importability term.
+        if _is_cuda_family_leaf(_installed_torch_local_tag(installed_version)):
+            return (
+                f"   torch {installed_version} is a working CUDA build and this host has an "
+                "NVIDIA GPU hidden by CUDA_VISIBLE_DEVICES -- leaving it alone.\n"
+                "   Unset CUDA_VISIBLE_DEVICES, or set UNSLOTH_TORCH_INDEX_URL, to choose "
+                "the ROCm wheels deliberately."
+            )
+    if repair_key and install_manifest.recorded_rocm_repair_attempt() == repair_key:
+        detail = (
+            "torch still does not import"
+            if not torch_importable
+            else f"torch is still {installed_version or 'not a ROCm build'}"
+        )
+        return (
+            f"   the same ROCm torch repair already ran and {detail} -- not repeating it.\n"
+            "   See docs.unsloth.ai/get-started/install-and-update/amd, or reinstall Studio "
+            "to retry from scratch."
+        )
+    return None
+
+
+def _installed_torch_local_tag(installed_version: str) -> str:
+    """The local version label of an installed torch ("cu128" in "2.9.0+cu128")."""
+    return installed_version.strip().lower().partition("+")[2]
 
 
 def _rocm_packages_for_index(index_url: str) -> tuple[str, str, str]:
@@ -2889,6 +2991,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
         or platform.machine().lower() not in {"x86_64", "amd64"}
         or _TORCH_BACKEND in {"cuda", "cpu", "xpu"}
         or _explicit_unknown_family_torch_index_url() is not None
+        or _recorded_non_rocm_torch_pin() is not None
     ):
         return None, False, False
 
@@ -2909,7 +3012,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
             return None, False, False
         rocm_version = (0, 0)
 
-    has_rocm_torch, installed_version = _probe_rocm_torch()
+    has_rocm_torch, installed_version, torch_importable = _probe_rocm_torch()
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     gfx_probe = _LAST_AMD_GFX_PROBE
     gfx_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
@@ -2979,6 +3082,13 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     ):
         reinstall = _GFX906_LEGACY_TAG not in installed_version
 
+    repair_key = _rocm_repair_key(desired_url, installed_version, torch_importable)
+    if reinstall and pin is None:
+        blocked = _rocm_reinstall_blocked(installed_version, torch_importable, repair_key)
+        if blocked is not None:
+            _safe_print(blocked)
+            reinstall = False
+
     # Clearing a confirmed HSA spoof and reinstalling torch are independent actions.
     # A matching per-arch wheel needs only the clear; coupling the two would download
     # and reinstall several gigabytes on every update whose parent shell restored the
@@ -2993,6 +3103,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
             reason = reason,
             install_torch = reinstall,
             clear_hsa_spoof_gfx = clear_spoof,
+            repair_key = repair_key,
         ),
         not reinstall,
         runtime_is_gfx906,
@@ -3160,6 +3271,9 @@ def _ensure_rocm_torch() -> None:
 
     plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()
 
+    if plan is None and rocm_torch_ready:
+        # Converged: forget the last attempt so a genuinely new breakage can be repaired.
+        install_manifest.clear_rocm_repair_attempt()
     if plan is not None:
         if plan.clear_hsa_spoof_gfx is not None:
             _clear_confirmed_hsa_spoof(plan.clear_hsa_spoof_gfx)
@@ -3168,6 +3282,9 @@ def _ensure_rocm_torch() -> None:
                 f"   {plan.reason} -- installing torch from "
                 f"{_strip_index_url_credentials(plan.index_url)}"
             )
+            # Recorded BEFORE the install: pip_install exits the process on failure, and
+            # an attempt that is forgotten because it failed is an attempt that repeats.
+            install_manifest.record_rocm_repair_attempt(plan.repair_key)
             pip_install(
                 plan.label,
                 "--force-reinstall",
@@ -4673,6 +4790,7 @@ def install_python_stack() -> int:
             steps_total = _TOTAL,
             package_name = package_name,
             no_torch = NO_TORCH,
+            torch_index_url = _explicit_torch_index_url(),
         )
         is None
     ):

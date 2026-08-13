@@ -40,6 +40,12 @@ NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 # the next update, which then tries to delete the venv it is running out of.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
+# Fingerprint of the last ROCm torch reinstall this venv attempted. Outside the manifest
+# for the same reason as the no-torch marker: the manifest is dropped before the very
+# dependency pass that performs the repair. Without a memory, a torch that stays broken
+# afterwards re-reads as a wrong wheel and is re-downloaded on every update (#8473).
+ROCM_REPAIR_MARKER = ".unsloth-rocm-repair"
+
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
 # Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
@@ -127,6 +133,7 @@ def write_manifest(
     steps_total: int = 0,
     package_name: str = "unsloth",
     no_torch: Optional[bool] = None,
+    torch_index_url: Optional[str] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -149,6 +156,13 @@ def write_manifest(
     # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
+    # Same contract as no_torch: UNSLOTH_TORCH_INDEX_URL / _FAMILY is the user's, and a
+    # later `unsloth studio update` never sees it, so without this the ROCm repair
+    # overwrites a deliberate CPU or CUDA index on an AMD host. EXPLICIT pins only.
+    # UNSLOTH_TORCH_BACKEND is deliberately not recorded: install.sh invents it from
+    # autodetection, so a "cpu" verdict would outlive the GPU being added.
+    if torch_index_url:
+        payload["torch_index_url"] = str(torch_index_url)
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -220,6 +234,55 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     except OSError:
         pass
     return None
+
+
+def recorded_torch_index_url(root: Optional[Path] = None) -> Optional[str]:
+    """The wheel index this venv was installed from, or None when unknown."""
+    manifest = read_manifest(root)
+    value = manifest.get("torch_index_url") if manifest is not None else None
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def rocm_repair_marker_path(root: Optional[Path] = None) -> Path:
+    return (root or venv_root()) / ROCM_REPAIR_MARKER
+
+
+def recorded_rocm_repair_attempt(root: Optional[Path] = None) -> Optional[str]:
+    """Fingerprint of the last attempted ROCm torch repair, or None."""
+    try:
+        raw = rocm_repair_marker_path(root).read_text(encoding = "utf-8")
+    except (OSError, ValueError):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    key = data.get("key") if isinstance(data, dict) else None
+    return key.strip() or None if isinstance(key, str) else None
+
+
+def record_rocm_repair_attempt(key: str, root: Optional[Path] = None) -> None:
+    """Remember a repair before performing it. Never raises.
+
+    Written first so an attempt that aborts part-way (a proxy that reaches PyPI but
+    not download.pytorch.org, and setup.sh running under `set -euo pipefail`) is still
+    remembered; otherwise the next update repeats it and aborts again.
+    """
+    try:
+        rocm_repair_marker_path(root).write_text(
+            json.dumps({"key": str(key), "attempted_at_ms": int(time.time() * 1000)}),
+            encoding = "utf-8",
+        )
+    except OSError:
+        pass
+
+
+def clear_rocm_repair_attempt(root: Optional[Path] = None) -> None:
+    """Forget the last repair once torch imports as ROCm. Never raises."""
+    try:
+        rocm_repair_marker_path(root).unlink(missing_ok = True)
+    except OSError:
+        pass
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:

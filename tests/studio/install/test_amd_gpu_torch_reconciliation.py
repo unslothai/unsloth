@@ -213,8 +213,13 @@ def _plan(
     *,
     imports_as_rocm = False,
     version = "2.11.0+cpu",
+    importable = None,
     **state,
 ):
+    # Unset means "the version string alone decides": a blank one is what an
+    # unimportable torch reports.
+    if importable is None:
+        importable = imports_as_rocm or bool(version)
     defaults = {
         "NO_TORCH": False,
         "IS_LINUX": True,
@@ -230,8 +235,24 @@ def _plan(
         "rocm_version": (7, 2),
         "installed_rocm_family": None,
         "selected_strix_result": None,
+        "recorded_attempt": None,
+        "recorded_pin": None,
+        "cvd_hides_nvidia": False,
+        "physical_nvidia": False,
     }
     defaults.update(state)
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "recorded_rocm_repair_attempt",
+        lambda *_a, **_k: defaults["recorded_attempt"],
+    )
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "recorded_torch_index_url",
+        lambda *_a, **_k: defaults["recorded_pin"],
+    )
+    monkeypatch.setattr(stack, "_cvd_hides_nvidia", lambda: defaults["cvd_hides_nvidia"])
+    monkeypatch.setattr(stack, "_has_physical_nvidia_gpu", lambda: defaults["physical_nvidia"])
     monkeypatch.setattr(stack, "NO_TORCH", defaults["NO_TORCH"])
     monkeypatch.setattr(stack, "IS_LINUX", defaults["IS_LINUX"])
     monkeypatch.setattr(stack, "_TORCH_BACKEND", defaults["_TORCH_BACKEND"])
@@ -247,7 +268,7 @@ def _plan(
     monkeypatch.setattr(
         stack, "_installed_rocm_wheel_family", lambda: defaults["installed_rocm_family"]
     )
-    monkeypatch.setattr(stack, "_probe_rocm_torch", lambda: (imports_as_rocm, version))
+    monkeypatch.setattr(stack, "_probe_rocm_torch", lambda: (imports_as_rocm, version, importable))
     monkeypatch.setattr(
         stack, "_detect_amd_gfx_codes", lambda **_kwargs: list(defaults["gfx_devices"])
     )
@@ -604,3 +625,325 @@ def test_summary_reports_an_explicit_non_rocm_backend_separately():
     assert src.index("PyTorch GPU use is disabled by the explicit") < src.index(
         "Check that the amdgpu kernel driver"
     )
+
+
+# ── An unimportable torch must not re-arm the repair forever (#8473) ──
+
+ROCMINFO_APU_GPU_WITHOUT_GFX = """\
+*******
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 7940HS w/ Radeon 780M Graphics
+  Marketing Name:          AMD Ryzen 9 7940HS w/ Radeon 780M Graphics
+  Vendor Name:             CPU
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    AMD Radeon Graphics
+  Marketing Name:          AMD Radeon 780M Graphics
+  Vendor Name:             AMD
+  Device Type:             GPU
+"""
+
+ROCMINFO_NAME_WITH_EMBEDDED_COLON = """\
+*******
+Agent 1
+*******
+  Name:                    gfx942
+  Marketing Name:          AMD Instinct MI300X OAM: 750W SKU
+  Vendor Name:             AMD
+  Device Type:             GPU
+"""
+
+
+def _probe_with(
+    monkeypatch,
+    *,
+    returncode = 0,
+    stdout = b"",
+    raises = None,
+):
+    def fake_run(*_args, **_kwargs):
+        if raises is not None:
+            raise raises
+        result = dataclasses.make_dataclass("R", ["returncode", "stdout"])
+        return result(returncode, stdout)
+
+    monkeypatch.setattr(stack.subprocess, "run", fake_run)
+    return stack._probe_rocm_torch()
+
+
+def test_probe_reports_a_healthy_rocm_torch_as_importable(monkeypatch):
+    assert _probe_with(monkeypatch, stdout = b"6.3.42131|2.7.0+rocm6.3\n") == (
+        True,
+        "2.7.0+rocm6.3",
+        True,
+    )
+
+
+def test_probe_reports_a_cpu_wheel_as_importable_but_not_rocm(monkeypatch):
+    assert _probe_with(monkeypatch, stdout = b"|2.9.0+cpu\n") == (False, "2.9.0+cpu", True)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"returncode": -6},
+        {"returncode": 1},
+        {"raises": OSError("no interpreter")},
+        {"raises": subprocess.TimeoutExpired(cmd = "python", timeout = 90)},
+    ],
+    ids = ["segfault", "import-error", "oserror", "timeout"],
+)
+def test_probe_reports_an_unrunnable_torch_as_not_importable(monkeypatch, kwargs):
+    """A torch that aborts, raises or hangs is BROKEN, not the wrong wheel."""
+    assert _probe_with(monkeypatch, **kwargs)[2] is False
+
+
+def test_an_unimportable_torch_is_repaired_on_the_first_attempt(monkeypatch):
+    plan = _plan(monkeypatch, version = "", importable = False)
+    assert plan is not None and plan.install_torch is True
+    assert plan.repair_key
+
+
+def test_the_same_failed_repair_is_not_repeated(monkeypatch):
+    """Without this the fast path force-reinstalls GB on every `studio update`, forever."""
+    first = _plan(monkeypatch, version = "", importable = False)
+    repeat = _plan(monkeypatch, version = "", importable = False, recorded_attempt = first.repair_key)
+    assert repeat is None
+
+
+def test_a_repair_that_changed_the_installed_torch_is_still_attempted(monkeypatch):
+    """The key covers the observed state, so a moved-on host is never blocked by it."""
+    stale = _plan(monkeypatch, version = "2.9.0+cpu").repair_key
+    assert _plan(monkeypatch, version = "2.10.0+cpu", recorded_attempt = stale) is not None
+
+
+def test_an_unrelated_recorded_attempt_does_not_block_a_repair(monkeypatch):
+    assert _plan(monkeypatch, version = "", importable = False, recorded_attempt = "0" * 32)
+
+
+def test_the_repair_key_is_not_the_raw_index_url(monkeypatch):
+    """It is written to disk and a pinned index may carry credentials."""
+    plan = _plan(monkeypatch, version = "")
+    assert "://" not in plan.repair_key and plan.index_url not in plan.repair_key
+
+
+def test_the_attempt_is_recorded_before_the_install_runs():
+    """pip_install exits the process on failure; an unrecorded attempt is a repeated one."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    block = source[source.index("def _ensure_rocm_torch()") :]
+    assert block.index("record_rocm_repair_attempt(plan.repair_key)") < block.index(
+        "pip_install(\n"
+    )
+
+
+def test_a_converged_host_forgets_the_last_attempt():
+    """Otherwise a later, genuinely new breakage in the same state stays unrepairable."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    block = source[source.index("def _ensure_rocm_torch()") :]
+    assert "if plan is None and rocm_torch_ready:" in block
+    assert "install_manifest.clear_rocm_repair_attempt()" in block
+
+
+def test_the_repair_ledger_survives_the_manifest_being_dropped(tmp_path):
+    """It records an attempt made DURING the pass that deletes the manifest."""
+    import install_manifest
+
+    install_manifest.record_rocm_repair_attempt("abc123", root = tmp_path)
+    install_manifest.write_manifest(root = tmp_path, req_root = tmp_path)
+    install_manifest.remove_manifest(root = tmp_path)
+    assert install_manifest.recorded_rocm_repair_attempt(root = tmp_path) == "abc123"
+    install_manifest.clear_rocm_repair_attempt(root = tmp_path)
+    assert install_manifest.recorded_rocm_repair_attempt(root = tmp_path) is None
+
+
+# ── A deliberate non-ROCm pin must outlive the run that set it ──
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        "https://download.pytorch.org/whl/cpu",
+        "https://download.pytorch.org/whl/cu128",
+        "https://mirror.internal/simple",
+    ],
+    ids = ["cpu", "cuda", "custom"],
+)
+def test_a_recorded_non_rocm_pin_survives_a_later_update(monkeypatch, pin):
+    """UNSLOTH_TORCH_INDEX_URL is the user's, so `studio update` never sees it."""
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    assert _plan(monkeypatch, recorded_pin = pin) is None
+
+
+@pytest.mark.parametrize(
+    "pin",
+    ["https://download.pytorch.org/whl/rocm6.3", "https://download.pytorch.org/whl/gfx1151"],
+    ids = ["rocm", "gfx"],
+)
+def test_a_recorded_rocm_pin_still_allows_the_repair(monkeypatch, pin):
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    assert _plan(monkeypatch, recorded_pin = pin) is not None
+
+
+def test_this_runs_rocm_pin_overrides_a_recorded_cpu_one(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    assert _plan(monkeypatch, recorded_pin = "https://download.pytorch.org/whl/cpu") is not None
+
+
+def test_write_manifest_records_an_explicit_pin(tmp_path):
+    import install_manifest
+    install_manifest.write_manifest(
+        root = tmp_path,
+        req_root = tmp_path,
+        torch_index_url = "https://download.pytorch.org/whl/cpu",
+    )
+    assert (
+        install_manifest.recorded_torch_index_url(root = tmp_path)
+        == "https://download.pytorch.org/whl/cpu"
+    )
+
+
+def test_write_manifest_omits_an_absent_pin(tmp_path):
+    """Absent means unknown; a recorded value must never be a guess."""
+    import install_manifest
+
+    install_manifest.write_manifest(root = tmp_path, req_root = tmp_path)
+    manifest = install_manifest.read_manifest(root = tmp_path)
+    assert "torch_index_url" not in manifest
+    assert install_manifest.recorded_torch_index_url(root = tmp_path) is None
+
+
+def test_the_installer_records_the_explicit_pin_and_not_the_detected_backend():
+    """install.sh invents UNSLOTH_TORCH_BACKEND from autodetection; freezing it would
+    outlive the host it described."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "torch_index_url = _explicit_torch_index_url()," in source
+    manifest_source = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+    assert "torch_backend" not in manifest_source
+
+
+# ── A hidden NVIDIA GPU must not cost the user a working CUDA torch ──
+
+
+def test_the_physical_probe_ignores_the_visibility_mask(monkeypatch):
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        stack.subprocess,
+        "run",
+        lambda *_a, **_k: dataclasses.make_dataclass("R", ["returncode", "stdout"])(
+            0, "GPU 0: NVIDIA Fake (UUID: GPU-x)\n"
+        ),
+    )
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    assert stack._has_physical_nvidia_gpu() is True
+    # The mask still hides it from the routing question, which #6183 pinned.
+    assert stack._has_usable_nvidia_gpu() is False
+
+
+def test_a_hidden_nvidia_gpu_keeps_a_working_cuda_torch(monkeypatch):
+    """CUDA_VISIBLE_DEVICES=-1 is the ordinary "run on CPU" idiom, not consent to
+    replace several GB of working CUDA wheels with ROCm ones."""
+    assert (
+        _plan(
+            monkeypatch,
+            version = "2.9.0+cu128",
+            cvd_hides_nvidia = True,
+            physical_nvidia = True,
+        )
+        is None
+    )
+
+
+def test_a_hidden_nvidia_gpu_does_not_protect_an_unimportable_torch(monkeypatch):
+    assert (
+        _plan(
+            monkeypatch,
+            version = "",
+            importable = False,
+            cvd_hides_nvidia = True,
+            physical_nvidia = True,
+        )
+        is not None
+    )
+
+
+def test_a_hidden_nvidia_gpu_does_not_protect_a_cpu_wheel(monkeypatch):
+    """#6183's mixed-host routing is untouched: only a CUDA build is defended."""
+    assert (
+        _plan(
+            monkeypatch,
+            version = "2.9.0+cpu",
+            cvd_hides_nvidia = True,
+            physical_nvidia = True,
+        )
+        is not None
+    )
+
+
+def test_cuda_torch_on_a_host_with_no_nvidia_hardware_is_still_repaired(monkeypatch):
+    """A venv poisoned with CUDA wheels on an AMD-only box must still be fixed."""
+    assert (
+        _plan(
+            monkeypatch,
+            version = "2.9.0+cu128",
+            cvd_hides_nvidia = True,
+            physical_nvidia = False,
+        )
+        is not None
+    )
+
+
+def test_an_unmasked_host_is_unaffected(monkeypatch):
+    assert _plan(monkeypatch, version = "2.9.0+cu128", physical_nvidia = True) is not None
+
+
+# ── The marketing-name fallback must never name the CPU (#7307) ──
+
+
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
+def test_a_gpu_agent_without_a_gfx_token_beats_the_cpu_agent(tmp_path, script, fn):
+    """rocminfo lists the CPU first, so latching the FIRST marketing name reports the
+    processor as the GPU -- the very bug this file exists to fix."""
+    assert _run_gpu_records(tmp_path, script, fn, ROCMINFO_APU_GPU_WITHOUT_GFX) == (
+        "|AMD Radeon 780M Graphics"
+    )
+
+
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
+def test_a_marketing_name_containing_a_colon_is_not_truncated(tmp_path, script, fn):
+    assert _run_gpu_records(tmp_path, script, fn, ROCMINFO_NAME_WITH_EMBEDDED_COLON) == (
+        "gfx942|AMD Instinct MI300X OAM: 750W SKU"
+    )
+
+
+def test_both_copies_of_the_record_helper_stay_identical():
+    install_body = _extract_function(INSTALL_SH, "_rocminfo_gpu_records")
+    setup_body = _extract_function(SETUP_SH, "_setup_rocminfo_gpu_records")
+    assert install_body.split("{", 1)[1] == setup_body.split("{", 1)[1]
+
+
+def test_the_record_helper_does_not_split_on_the_first_colon_space():
+    for script, fn in RECORD_HELPERS:
+        body = _extract_function(script, fn)
+        assert "awk -F': '" not in body, f"{script.name}: -F': ' truncates an embedded ': '"
+        assert "sub(/^[^:]*:[[:space:]]*/" in body
+
+
+# ── The repair and the report must see the same hardware ──
+
+
+def test_the_rocm_probe_environment_is_seeded_before_the_repair_probe():
+    """On WSL2 ROCDXG a later export leaves the repairing half and the reporting half
+    disagreeing about the same machine."""
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    export = src.index('export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"')
+    path_append = src.index('PATH="$PATH:/opt/rocm/bin"')
+    probe = src.index("--rocm-fast-path-needs-repair")
+    summary = src.index("# ── GPU detection summary")
+    assert export < probe < summary
+    assert path_append < probe
