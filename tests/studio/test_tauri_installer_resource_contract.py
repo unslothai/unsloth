@@ -62,6 +62,6 @@ def test_windows_upgrade_removes_the_installer_it_no_longer_ships() -> None:
     for macro in ("NSIS_HOOK_PREINSTALL", "NSIS_HOOK_PREUNINSTALL"):
         assert f"!macro {macro}" in hooks, f"hooks.nsh must define {macro}"
         body = hooks.split(f"!macro {macro}", 1)[1].split("!macroend", 1)[0]
-        assert 'Delete "$INSTDIR\\install.sh"' in body, (
-            f"{macro} must remove the install.sh a pre-split release left behind"
-        )
+        assert (
+            'Delete "$INSTDIR\\install.sh"' in body
+        ), f"{macro} must remove the install.sh a pre-split release left behind"
