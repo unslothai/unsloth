@@ -3420,3 +3420,147 @@ def test_a_comprehension_target_shadows_only_the_comprehension():
     assert _high(after), "the alias is back after the comprehension"
     other_target = f"{prelude}xs = [run(marshal.loads(x)) for x in cb]\n"
     assert _high(other_target), "a different target shadows nothing"
+
+
+def test_a_lambda_parameter_shadows_the_alias_over_its_body():
+    # A lambda is a scope like any other function, so `(lambda run: run(x))(cb)`
+    # calls the argument and not the `from builtins import exec as run` above
+    # it. Only `def` and `class` headers were read for parameters, which left an
+    # ordinary callback an unconditional false HIGH - and HIGH fails the scan.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    for params in ("run", "*run", "a, run", "a = 1, *, run", "run, **kw"):
+        payload = f"{prelude}cb = (lambda {params}: run(marshal.loads(BLOB)))(model.exec)\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`lambda {params}` shadows the alias"
+
+    # A module alias is shadowed the same way.
+    module = "import builtins as b\nimport marshal\n"
+    shadowed = f"{module}cb = (lambda b: b.exec(marshal.loads(BLOB)))(model)\n"
+    assert _high(shadowed, "pkg/_infer.py") == [], "the parameter is the receiver in the body"
+
+    # The parameter list is not the body: a default is evaluated where the
+    # lambda is written, so the alias still resolves there.
+    default = f"{prelude}cb = (lambda run = run(marshal.loads(BLOB)): run)()\n"
+    assert _high(default), "a default value runs in the enclosing scope"
+
+    # A different parameter shadows nothing, and neither does the lambda reach
+    # past its own body.
+    other = f"{prelude}cb = (lambda x: run(marshal.loads(BLOB)))(1)\n"
+    assert _high(other), "a different parameter leaves the alias alone"
+    after = f"{prelude}cb = (lambda run: run)(1)\nrun(marshal.loads(BLOB))\n"
+    assert _high(after), "the alias is back after the lambda"
+    sibling = f"{prelude}cb = [(lambda run: run)(1), run(marshal.loads(BLOB))]\n"
+    assert _high(sibling), "the body ends at the comma, not at the bracket"
+
+
+def test_re_arming_an_alias_keeps_what_the_earlier_rebinding_decided():
+    # `import builtins as b` ... `b = model` ... `b.eval(x)` ... `import
+    # builtins as b` calls `model.eval`: the re-arm at the end of the file
+    # cannot reach back over the call above it. Dropping the whole cancellation
+    # record instead of ending it at the re-arm read that as the builtin.
+    prelude = "import builtins as b\nimport marshal\n"
+    call = "b.eval(marshal.loads(BLOB))\n"
+    for rearm in ("import builtins as b\n", "b = __import__('builtins')\n"):
+        cancelled = f"{prelude}b = model\n{call}{rearm}"
+        assert _high(cancelled, "pkg/_infer.py") == [], f"the call is `model.eval` before {rearm!r}"
+
+        # Below the re-arm the name is the module again, and a rebinding after
+        # that cancels it once more.
+        live = f"{prelude}b = model\n{rearm}{call}"
+        assert _high(live), f"the call below {rearm!r} runs the builtin"
+        again = f"{prelude}b = model\n{rearm}b = model\n{call}"
+        assert _high(again, "pkg/_infer.py") == [], "the second rebinding cancels the re-arm"
+
+    # And a call written before the rebinding is untouched by either.
+    before = f"{prelude}{call}b = model\nimport builtins as b\n"
+    assert _high(before), "a call above the rebinding still runs the builtin"
+
+
+def test_the_builtin_parked_on_an_attribute_is_still_a_finding():
+    # `holder.eval = eval` then `holder.eval(payload)` runs the builtin, and the
+    # call site is the same three tokens as `model.eval()` - restricting
+    # attribute calls to the builtins module is what keeps that clean, so the
+    # assignment is where this route has to be read or it is a bypass.
+    marshal_blob = "import marshal\n"
+    for value in ("eval", "builtins.eval", "run"):
+        payload = (
+            f"{marshal_blob}import builtins\nfrom builtins import eval as run\n"
+            f"holder.eval = {value}\nholder.eval(marshal.loads(BLOB))\n"
+        )
+        assert _high(payload), f"`holder.eval = {value}` hands over the builtin"
+    parked_exec = f"{marshal_blob}holder.exec = exec\nholder.exec(marshal.loads(BLOB))\n"
+    assert _high(parked_exec), "`holder.exec = exec` hands over the builtin"
+
+    # An ordinary method assigned to an attribute is not the builtin, and
+    # neither is a method of that name declared or called.
+    other = f"{marshal_blob}holder.eval = model.eval\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(other, "pkg/_infer.py") == [], "`model.eval` is a method, not the builtin"
+    inference = f"{marshal_blob}model = torch.load(marshal.loads(BLOB))\nmodel.eval()\n"
+    assert _high(inference, "pkg/_infer.py") == [], "`model.eval()` is ordinary inference"
+
+
+def test_a_self_assignment_inside_a_function_is_still_a_local():
+    # `run = run` in a function makes `run` local for the whole body, so the
+    # statement itself raises `UnboundLocalError` and no call in there can reach
+    # a module-level alias. Exempting the shape outright - which is right at
+    # module level, where it rebinds the name to its own value - left the call
+    # below it a false HIGH.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    local = f"{prelude}def go():\n    run = run\n    return run(marshal.loads(BLOB))\n"
+    assert _high(local, "pkg/_infer.py") == [], "`run = run` makes `run` a local of `go`"
+    above = f"{prelude}def go():\n    run(marshal.loads(BLOB))\n    run = run\n"
+    assert _high(above, "pkg/_infer.py") == [], "the local covers the lines above it too"
+
+    # `global` is what stops an assignment creating a local, and at module level
+    # there is no local to make - both still run the builtin.
+    declared = (
+        f"{prelude}def go():\n    global run\n    run = run\n"
+        "    return run(marshal.loads(BLOB))\n"
+    )
+    assert _high(declared), "`global run` keeps the module-level alias"
+    module_level = f"{prelude}run = run\nrun(marshal.loads(BLOB))\n"
+    assert _high(module_level), "`run = run` at module level rebinds nothing"
+
+    # A class body resolves a name it assigns outward, so the methods under it
+    # still see the module-level alias.
+    class_body = (
+        f"{prelude}class C:\n    run = run\n\n"
+        "    def go(self):\n        return run(marshal.loads(BLOB))\n"
+    )
+    assert _high(class_body), "a class attribute does not shadow the global"
+
+    # A sibling function is untouched by it.
+    sibling = f"{prelude}def go():\n    run = run\n\n\ndef other():\n    run(marshal.loads(BLOB))\n"
+    assert _high(sibling), "one function's local is not its sibling's"
+
+
+def test_scope_containment_stays_linear_on_hostile_source():
+    # A member of sibling functions that each import and call the same alias
+    # asks one containment question per call against one span per function, and
+    # walking the spans for each made that quadratic: 16,000 such functions fit
+    # in about 1.1 MiB and took 4.8 s, on members allowed up to 64 MiB. Measured
+    # on this shape before the fix: 0.45 s at N=4,000 and 1.41 s at N=8,000
+    # (3.1x per doubling); after, 0.22 s and 0.43 s (2.0x). The assertion is the
+    # growth rate, so a slow runner moves both together.
+    def hostile(n):
+        return "".join(
+            f"def f{i}():\n    from builtins import eval as run\n    return run(DATA)\n"
+            for i in range(n)
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            spans = list(sp.RE_EXEC_EVAL.finditer(src))
+            out.append(time.monotonic() - start)
+        # Each function imports the alias itself, so every call is the builtin
+        # and none of them may be lost to the index.
+        assert len(spans) == src.count("return run(DATA)"), "every aliased call must be found"
+        return min(out)
+
+    small = best_of(hostile(4_000))
+    large = best_of(hostile(8_000))
+    assert (
+        large < 2.6 * small
+    ), f"scope containment grows faster than the input: {small:.2f}s -> {large:.2f}s"

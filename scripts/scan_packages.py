@@ -1231,6 +1231,100 @@ def _comprehension_shadows(stmt: list, candidates: frozenset, offsets, local_sha
     return
 
 
+def _lambda_shadows(stmt: list, candidates: frozenset, offsets, local_shadows: dict) -> None:
+    """Record where a lambda parameter hides an alias of the same name.
+
+    A lambda is a scope like any other function, so `(lambda run:
+    run(marshal.loads(x)))(model.eval)` calls the argument and not the `from
+    builtins import exec as run` written above it. Only `def` and `class`
+    headers were read for parameters, which left that an unconditional false
+    HIGH - and HIGH is what fails the scan.
+
+    The span starts after the `:` that ends the parameter list, because a
+    default is evaluated where the lambda is written and not in its body, and
+    ends where the body does: the first comma or unmatched closing bracket at
+    the depth the `lambda` sits at, or the end of the statement.
+    """
+    for tok in stmt:
+        if tok.type == tokenize.NAME and tok.string in candidates:
+            break
+    else:
+        return
+    for j, tok in enumerate(stmt):
+        if tok.type != tokenize.NAME or tok.string != "lambda":
+            continue
+        names, colon = _lambda_params(stmt, j, candidates)
+        if not names:
+            continue
+        end = _lambda_body_end(stmt, colon)
+        if end <= colon:
+            continue
+        span = (offsets.of(*stmt[colon].end), offsets.of(*stmt[end].end))
+        for name in names:
+            local_shadows.setdefault(name, []).append(span)
+
+
+def _lambda_params(stmt: list, at: int, candidates: frozenset) -> "tuple[set, int]":
+    """The parameters of the lambda at `at` that shadow an alias, and its colon.
+
+    A parameter is a name that opens an item of the list: `*`, `**` and `/` are
+    punctuation between them, and everything after a `=` is a default expression
+    evaluated in the enclosing scope. A nested `lambda` in a default carries the
+    next depth-0 colon, so the walk stops there rather than reading the outer
+    parameter list past its own end.
+    """
+    names: set = set()
+    depth = 0
+    expect = True
+    k = at + 1
+    while k < len(stmt):
+        tok = stmt[k]
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                depth += 1
+            elif tok.string in _CLOSERS:
+                if not depth:
+                    break
+                depth -= 1
+            elif not depth:
+                if tok.string == ":":
+                    return names, k
+                if tok.string == ",":
+                    expect = True
+                elif tok.string == "=":
+                    expect = False
+        elif tok.type == tokenize.NAME and not depth:
+            if tok.string == "lambda":
+                break
+            if expect:
+                if tok.string in candidates:
+                    names.add(tok.string)
+                expect = False
+        k += 1
+    return set(), -1
+
+
+def _lambda_body_end(stmt: list, colon: int) -> int:
+    """The last token of the body of the lambda whose colon is at `colon`."""
+    depth = 0
+    end = colon
+    k = colon + 1
+    while k < len(stmt):
+        tok = stmt[k]
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                depth += 1
+            elif tok.string in _CLOSERS:
+                if not depth:
+                    break
+                depth -= 1
+            elif not depth and tok.string == ",":
+                break
+        end = k
+        k += 1
+    return end
+
+
 def _self_assigned(stmt: list) -> "set | None":
     """The names `stmt` assigns to themselves, or None if it is not that shape.
 
@@ -1460,11 +1554,11 @@ class _Aliases:
         # An alias only a function-local import binds is not the module anywhere
         # else in the file: `def a(): from builtins import exec as run` leaves
         # the `run(...)` in a sibling function its own name, not the builtin.
-        self.scoped_imports = scoped_imports or {}
+        self.scoped_imports = _index_scopes(scoped_imports) if scoped_imports else {}
         # An alias a function assigns is that function's local over its whole
         # body: `def f(): run(BLOB); run = model` raises `UnboundLocalError`
         # rather than reaching the module-level `run`.
-        self.local_shadows = local_shadows or {}
+        self.local_shadows = _index_scopes(local_shadows) if local_shadows else {}
         self.safe_receivers = frozenset(self.live_receivers - set(cancel))
         self.safe_funcs = frozenset(self.live_funcs - set(cancel))
         # `__import__` is a builtin, so it means the loader in any file; the
@@ -1524,6 +1618,24 @@ def _cancel_add(cancel: dict, opened: dict, levels: list, name: str, at: int, co
         levels.append((col, [(name, entry)]))
 
 
+def _cancel_rearm(opened: dict, name: str, at: int) -> None:
+    """End `name`'s open cancellation spans at `at`, keeping what they decided.
+
+    A statement that puts the module back in the name - `import builtins as b`,
+    `b = __import__('builtins')` - stops the earlier rebinding deciding anything
+    BELOW it, and nothing above it. Dropping the record outright instead read
+    `b = model` ... `b.eval(x)` ... `import builtins as b` as the builtin, a
+    false HIGH on a file that re-imports an alias further down.
+
+    The entries stay in their `levels` group, so the block that opened them
+    closes them again later; `_cancel_close` keeps the earlier end because a
+    span that has one is already ended.
+    """
+    for entry in opened.pop(name, ()):
+        if entry[2] is None:
+            entry[2] = at
+
+
 def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
     """End the spans whose block a statement at `at`, indent `col`, has left.
 
@@ -1535,7 +1647,10 @@ def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
     """
     while levels and levels[-1][0] > col:
         for name, entry in levels.pop()[1]:
-            entry[2] = at
+            # A span a re-arm already ended keeps that end: the block closing
+            # later must not stretch it back over the calls in between.
+            if entry[2] is None:
+                entry[2] = at
             stack = opened.get(name)
             if stack:
                 # The deepest span recorded for the name is the one in this
@@ -1604,17 +1719,39 @@ def _shadow_scope(scope: list, names) -> None:
     scope[6] |= shadow
 
 
-def _in_scope(spans: list, start: int) -> bool:
-    """Whether offset `start` sits inside one of `spans`.
+def _index_scopes(by_name: dict) -> dict:
+    """`by_name`, with each span list turned into what `_in_scope` bisects.
 
-    Walked rather than bisected: the spans nest, so containment is not the
-    rightmost-match test a bisection answers, and a file binds a builtins alias
-    in approximately no scopes at all.
+    A member holding N sibling functions that each import and call the same
+    alias leaves N spans on the name and asks N containment questions, and
+    walking the list for each was quadratic - 16,000 such functions fit in
+    under 1 MiB and took seconds, on members allowed up to 64 MiB.
+
+    The spans nest, so the last one starting at or before an offset is not
+    necessarily the one that contains it: an outer scope still can. Carrying the
+    running maximum of the ends alongside the starts answers that in one
+    comparison - if no span starting at or before the offset reaches past it,
+    none contains it.
     """
-    for at, end in spans:
-        if at <= start < end:
-            return True
-    return False
+    indexed: dict = {}
+    for name, spans in by_name.items():
+        starts: list = []
+        reach: list = []
+        furthest = 0
+        for at, end in sorted(spans):
+            if end > furthest:
+                furthest = end
+            starts.append(at)
+            reach.append(furthest)
+        indexed[name] = (starts, reach)
+    return indexed
+
+
+def _in_scope(indexed: tuple, start: int) -> bool:
+    """Whether offset `start` sits inside one of the spans `_index_scopes` built."""
+    starts, reach = indexed
+    i = bisect.bisect_right(starts, start)
+    return bool(i) and reach[i - 1] > start
 
 
 def _declares_global(spans: list, start: int) -> "tuple | None":
@@ -1819,6 +1956,30 @@ def _fstring_spans(
         out.append(_Span(base + span.start(), base + span.end()))
 
 
+def _names_builtin(value: list, receivers: frozenset, funcs: frozenset, aliases: _Aliases) -> bool:
+    """Whether `value` is the exec/eval builtin itself rather than some object.
+
+    The three spellings that hand the function over: the bare builtin, a file
+    alias of it (`from builtins import eval as run`), and an attribute of the
+    module (`builtins.eval`). `model.eval` is a method of an object and is not
+    one, which is what keeps `holder.eval = model.eval` off the report.
+    """
+    if len(value) == 1 and value[0].type == tokenize.NAME:
+        return value[0].string in _EXEC_NAMES or value[0].string in funcs
+    if (
+        len(value) >= 3
+        and value[-1].type == tokenize.NAME
+        and value[-1].string in _EXEC_NAMES
+        and value[-2].type == tokenize.OP
+        and value[-2].string == "."
+    ):
+        at, _alias = _receiver_start(
+            value, len(value) - 2, receivers, aliases.loaders, None, aliases.loader_modules
+        )
+        return at is not None
+    return False
+
+
 def _statement_spans(
     stmt: list, aliases: _Aliases, offsets: _Offsets, out: list, positional: bool
 ) -> None:
@@ -1841,11 +2002,24 @@ def _statement_spans(
         if not direct and tok.string not in funcs:
             continue
         nxt = stmt[j + 1]
-        if nxt.type != tokenize.OP or nxt.string != "(":
-            continue
         prev = stmt[j - 1] if j else None
+        attribute = prev is not None and prev.type == tokenize.OP and prev.string == "."
+        if nxt.type != tokenize.OP or nxt.string != "(":
+            if direct and attribute and nxt.type == tokenize.OP and nxt.string == "=":
+                # `holder.eval = eval` parks the builtin on an attribute, and
+                # the `holder.eval(payload)` below it is the same three tokens
+                # as `model.eval()` - the call site cannot tell them apart, and
+                # reading it as the builtin is the false positive this rule
+                # exists to remove. The assignment is the one place the builtin
+                # is named outright, so that is where the route is recorded: a
+                # file that hands `exec` or `eval` to an attribute has used it,
+                # whatever it does with it afterwards.
+                value = _strip_parens(_split_top(stmt, "=")[-1])
+                if value and _names_builtin(value, receivers, funcs, aliases):
+                    out.append(_Span(offsets.of(*tok.start), offsets.of(*value[-1].end)))
+            continue
         alias = None
-        if prev is not None and prev.type == tokenize.OP and prev.string == ".":
+        if attribute:
             # An attribute. Only the builtins module reaches the builtin this
             # way; `run` aliases the function, so `obj.run(...)` is not it.
             if not direct:
@@ -2378,8 +2552,7 @@ class _ExecEvalPattern:
                             bound: set = set()
                             _collect_import_bindings(stmt, bound, bound, None)
                             for name in bound:
-                                cancel.pop(name, None)
-                                opened.pop(name, None)
+                                _cancel_rearm(opened, name, at)
                                 for scope in scopes:
                                     # The import re-arms the alias, so the body
                                     # is no longer shadowing a name it only
@@ -2404,6 +2577,7 @@ class _ExecEvalPattern:
                                 by_value |= bound
                         continue
                     _comprehension_shadows(stmt, candidates, offsets, local_shadows)
+                    _lambda_shadows(stmt, candidates, offsets, local_shadows)
                     _collect_rebindings(stmt, rebound, candidates, scoped)
                     if scoped:
                         # Recorded one indent deeper than the header, which is
@@ -2437,7 +2611,16 @@ class _ExecEvalPattern:
                         continue
                     same = _self_assigned(stmt)
                     if same:
-                        # `b = b` leaves the alias exactly as it was.
+                        # `b = b` leaves the alias exactly as it was - at module
+                        # level. Inside a function it is still an assignment, so
+                        # Python makes the name that function's local over the
+                        # whole body and the statement itself raises
+                        # `UnboundLocalError`; no call in there can reach the
+                        # module-level alias, above the line or below it. So the
+                        # name is dropped from the rebindings and recorded as a
+                        # local, rather than left as neither.
+                        if scopes and opens is None and not in_class:
+                            _shadow_scope(scopes[-1], same)
                         rebound -= same
                         if not rebound:
                             continue
@@ -2448,9 +2631,9 @@ class _ExecEvalPattern:
                         # `b = load()` ... `b = __import__('builtins')` ...
                         # `b.exec(BLOB)` runs the builtin. Checked only for a
                         # statement that does rebind an alias, which is rare.
+                        rearmed = offsets.of(*stmt[-1].end)
                         for name in aliased:
-                            cancel.pop(name, None)
-                            opened.pop(name, None)
+                            _cancel_rearm(opened, name, rearmed)
                             for scope in scopes:
                                 # The body puts the module back in the name, so
                                 # it is no longer shadowing an alias it only
