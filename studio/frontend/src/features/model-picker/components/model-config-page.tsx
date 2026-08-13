@@ -466,9 +466,9 @@ function VramBudgetRow() {
             </div>
             <div>
               Applies to every model, not just this one, and takes effect on the
-              next load. Default {defaultPercent}%. At 100% a load still leaves
-              512 MiB per card, the same margin llama.cpp keeps for its own
-              fitter.
+              next load. Default {defaultPercent}%. Even at 100% a load leaves a
+              margin on each card, up to the 512 MiB llama.cpp keeps for its own
+              fitter, and never more than the default would have reserved.
             </div>
           </div>
         }
