@@ -3550,9 +3550,7 @@ def _preflight_merge_disk(
         # Sizing is decided separately, above: a compressed export really is
         # cast to two bytes by `unsloth_generic_save`, so it keeps that sizing
         # whether or not there is an adapter to merge.
-        guard_runs_here = is_peft and (
-            compressed is not None or bool(writer_runs_merge_guard)
-        )
+        guard_runs_here = is_peft and (compressed is not None or bool(writer_runs_merge_guard))
         merge_here = need if guard_runs_here else 0
         if torchao is not None:
             # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
