@@ -10209,6 +10209,31 @@ class LlamaCppBackend:
             f"\n\n{marker}" in text for marker in LlamaCppBackend._DIAGNOSTICS_MARKERS
         )
 
+    # Ceiling on how far the tail window is widened for redaction. A real
+    # credential is far below this; the cap stops a pathological environment
+    # value from turning a bounded slice into a scan of everything the child
+    # ever printed.
+    _MAX_SECRET_SCAN_CHARS = 262144
+
+    @staticmethod
+    def _max_secret_len(extra: Sequence[Optional[str]] = ()) -> int:
+        """Longest value _scrub_secret_values could be asked to match, capped."""
+        longest = 0
+        for literal in extra:
+            if literal:
+                longest = max(longest, len(literal))
+        try:
+            from utils.prebuilt.child_env import URL_USERINFO_RE, is_secret_env_name
+
+            for name, value in os.environ.items():
+                if not value or len(value) <= longest:
+                    continue
+                if is_secret_env_name(name) or URL_USERINFO_RE.search(value):
+                    longest = len(value)
+        except Exception:  # noqa: BLE001 - a narrower window still redacts most
+            pass
+        return min(longest, LlamaCppBackend._MAX_SECRET_SCAN_CHARS)
+
     @staticmethod
     def _with_startup_diagnostics(
         message: str,
@@ -10232,7 +10257,18 @@ class LlamaCppBackend:
         # Slice before filtering: _drain_stdout keeps an unterminated line
         # whole, so a runaway progress line would otherwise be walked
         # character by character just to throw all but the last 2000 away.
-        raw = (output or "")[-LlamaCppBackend._STARTUP_TAIL_CHARS * 4 :]
+        #
+        # Widened by the longest secret we could be asked to redact. The
+        # scrubber matches a whole value, so a credential longer than this
+        # window (a PEM key or a service-account blob dumped by a wrapper) was
+        # cut by the slice, and the surviving suffix matched neither the
+        # literal nor any token shape -- so it reached the API error. A shorter
+        # secret cannot straddle the boundary: if its end is inside a window
+        # wider than the secret, so is its start.
+        _window = LlamaCppBackend._STARTUP_TAIL_CHARS * 4 + LlamaCppBackend._max_secret_len(
+            extra_secrets
+        )
+        raw = (output or "")[-_window:]
         # Control characters (progress bars, colour codes) would corrupt the
         # API error; keep newlines and tabs, which carry the structure.
         tail = "".join(ch for ch in raw if ch in "\n\t" or ch.isprintable()).strip()

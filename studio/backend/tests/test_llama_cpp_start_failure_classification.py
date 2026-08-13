@@ -12,6 +12,7 @@ generic "invalid file or out of memory" message is misleading (issue
 
 from __future__ import annotations
 
+import os
 import sys
 import types as _types
 from pathlib import Path
@@ -1205,3 +1206,39 @@ class TestQuotedShortSecrets:
     def test_a_non_secret_short_value_is_still_untouched(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_PORT", "8080")
         assert "8080" in _classify('{"UNSLOTH_PORT": "8080"}', "/m.gguf", "u/x", 1)
+
+
+class TestASecretLongerThanTheTailWindow:
+    """The pre-slice window cut long credentials in half.
+
+    _scrub_secret_values matches a whole value, so a secret longer than the
+    8000-character prefilter lost its head to the slice and the surviving
+    suffix matched neither the literal nor any token shape. A secret SHORTER
+    than the window cannot straddle it: if its end is inside a window wider
+    than the secret, so is its start.
+    """
+
+    def test_a_long_key_does_not_reach_the_message(self, monkeypatch):
+        secret = "A" * 12000 + "TAILMARKER"
+        monkeypatch.setenv("MY_PRIVATE_KEY", secret)
+        out = "noise " * 100 + "dump: MY_PRIVATE_KEY=" + secret + "\nfatal: boom"
+        msg = _classify(out, "/m.gguf", "u/x", 1)
+        assert "TAILMARKER" not in msg
+        assert "AAAA" not in msg
+
+    def test_a_long_minted_api_key_does_not_reach_the_message(self, monkeypatch):
+        key = "k" * 9000 + "MINTEDMARK"
+        out = "x" * 5000 + " --api-key " + key + "\nfatal: boom"
+        msg = _classify(out, "/m.gguf", "u/x", 1, None, secrets = (key,))
+        assert "MINTEDMARK" not in msg
+
+    def test_the_tail_is_still_bounded(self, monkeypatch):
+        monkeypatch.setenv("MY_PRIVATE_KEY", "A" * 12000)
+        msg = _classify("z" * 400000 + "\nfatal: boom", "/m.gguf", "u/x", 1)
+        assert len(msg) < 4000
+
+    def test_no_secret_means_the_window_is_unchanged(self, monkeypatch):
+        for name in list(os.environ):
+            if "SECRET" in name or "PRIVATE" in name or "PASSWORD" in name:
+                monkeypatch.delenv(name, raising = False)
+        assert LlamaCppBackend._max_secret_len(()) >= 0
