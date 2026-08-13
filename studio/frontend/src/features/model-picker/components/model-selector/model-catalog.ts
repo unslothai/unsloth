@@ -960,6 +960,32 @@ export function pickDefaultArtifact(
   )[0];
 }
 
+/**
+ * Whether ONE curated artifact loads on this device, by the rule `pickDefaultArtifact` routes
+ * with, since a row click loads that exact artifact.
+ *
+ * System RAM is not part of a discrete-GPU budget: a pipeline goes wholly on the card unless the
+ * catalog states a measured offload tier, which is what `offloadFitTiers` is for. A unified-memory
+ * host reports RAM and no GPU, and there the RAM is the card.
+ *
+ * Undefined where nothing can be judged, so the caller shows no verdict rather than a wrong one:
+ * an unknown budget, an id the catalog does not carry, a GGUF quant ladder (it self-fits via
+ * `pickDefaultQuant`), or an artifact with no stated size.
+ */
+export function curatedArtifactFitsDevice(
+  repoId: string,
+  catalog: CatalogGroup[],
+  budget: DeviceBudget,
+): boolean | undefined {
+  const artifact = artifactForRepoId(repoId, catalog)?.artifact;
+  if (!artifact || artifact.format === "gguf") return undefined;
+  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
+  if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(artifact, budget);
+  if (artifact.approxSizeGb === undefined) return undefined;
+  const deviceGb = budget.gpuGb > 0 ? budget.gpuGb : budget.systemRamGb;
+  return artifact.approxSizeGb <= deviceGb * 0.7;
+}
+
 /** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an artifact provides them. */
 export function catalogGroupFitsDevice(
   group: CatalogGroup,

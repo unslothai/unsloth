@@ -20,6 +20,7 @@ import {
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
   groupForRepoId,
@@ -325,6 +326,31 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
     }
   }
 }
+
+// ── curatedArtifactFitsDevice ──────────────────────────────────────────────────
+
+const WAN = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"; // 30 GB, no offload tiers
+const H3 = "MiniMaxAI/MiniMax-H3"; // 145 GB, tiers at 74/140 and 123/80
+const fitsCurated = (id: string, gpuGb: number, systemRamGb: number) =>
+  curatedArtifactFitsDevice(id, VIDEO_CATALOG, { gpuGb, systemRamGb });
+
+// The resident 70% rule, on the card alone. RAM is not a discrete GPU's budget: a pipeline with
+// no measured tier is placed wholly on the card, so 64 GB of RAM does not rescue a 12 GB one.
+assert.equal(fitsCurated(WAN, 48, 0), true);
+assert.equal(fitsCurated(WAN, 40, 0), false);
+assert.equal(fitsCurated(WAN, 12, 64), false);
+// A unified-memory host reports RAM and no GPU, and there the RAM is the card.
+assert.equal(fitsCurated(WAN, 0, 64), true);
+// Nothing to judge against: no verdict rather than a scary one.
+assert.equal(fitsCurated(WAN, 0, 0), undefined);
+// Measured offload tiers override the 70% rule, in both directions. 123/80 is the case the
+// generic size test gets wrong: 0.7 * (123 + 80) is 142, under 145, yet the tier was measured.
+assert.equal(fitsCurated(H3, 74, 140), true);
+assert.equal(fitsCurated(H3, 123, 80), true);
+assert.equal(fitsCurated(H3, 74, 100), false);
+// A GGUF ladder self-fits via pickDefaultQuant, and an unknown id is not ours to judge.
+assert.equal(fitsCurated("unsloth/MiniMax-H3-GGUF", 12, 64), undefined);
+assert.equal(fitsCurated("someone/not-in-the-catalog", 12, 64), undefined);
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 

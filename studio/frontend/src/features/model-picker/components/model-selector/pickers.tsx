@@ -126,7 +126,9 @@ import {
 import {
   AUDIO_CATALOG,
   type CatalogGroup,
+  type DeviceBudget,
   artifactForRepoId,
+  curatedArtifactFitsDevice,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
   curatedSizeBytesFor,
@@ -737,6 +739,14 @@ function isRuntimeLoadedModel(
 // follow the UI font scale, and collapse below the picker's full width.
 // min-w-min means a width is the column held open, not a clamp: an outsized
 // badge grows its own slot rather than spilling over the next one.
+/** A GPU inventory in the shape the catalog's fit rules take. */
+function artifactBudget(gpu: {
+  memoryTotalGb: number;
+  systemRamAvailableGb: number;
+}): DeviceBudget {
+  return { gpuGb: gpu.memoryTotalGb, systemRamGb: gpu.systemRamAvailableGb };
+}
+
 const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
@@ -3145,7 +3155,7 @@ export function HubModelPicker({
     // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
     // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
     // be a different install (Vulkan llama.cpp) or the sum of several cards.
-    const pipelineBudget = loadScopedGpu(gpu, Boolean(task));
+    const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
     // Community rows come from their own listing; without them folded in here
     // they render with no size or VRAM chip.
     for (const r of [
@@ -3190,17 +3200,20 @@ export function HubModelPicker({
         });
         continue;
       }
-      // A curated pipeline is judged on the size the catalog states, the same precedence
-      // hfModelFitsDevice uses. The QLoRA estimator below reads a diffusion pipeline as a
+      // A curated pipeline is judged by the catalog, which knows its resident size and any
+      // measured offload tier. The QLoRA estimator below reads a diffusion pipeline as a
       // language model it can 4-bit quantize: Wan 2.2 TI2V is 30 GB, and 5B params says 5.9.
-      const curatedBytes = catalog
-        ? (r.curatedSizeBytes ?? curatedSizeBytesFor(r.id, catalog))
-        : r.curatedSizeBytes;
-      if (curatedBytes) {
+      const curatedFits = catalog
+        ? curatedArtifactFitsDevice(r.id, catalog, pipelineBudget)
+        : undefined;
+      if (curatedFits !== undefined) {
+        const curatedBytes = catalog
+          ? (r.curatedSizeBytes ?? curatedSizeBytesFor(r.id, catalog))
+          : undefined;
         map.set(r.id, {
           meta,
-          status: exceedsSize(curatedBytes, pipelineBudget) ? "exceeds" : null,
-          est: Math.round(curatedBytes / 1024 ** 3),
+          status: curatedFits ? null : "exceeds",
+          est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
         });
         continue;
       }
@@ -4270,10 +4283,26 @@ export function HubModelPicker({
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
+    const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
     for (const id of filteredRecommendedIds) {
       // GGUF fit is size-based and badged elsewhere; skip the qlora estimate.
       if (isKnownGgufRepo(id)) continue;
       const totalParams = recommendedParamCountById.get(id) ?? paramsFromId(id);
+      // Same verdict the unfiltered list gives this row: searching for a model must not change
+      // what it says about the device. paramsFromId reads "5B" out of the Wan id on its own, so
+      // the estimator answers here even where the catalog is the only real source of a size.
+      const curatedFits = catalog
+        ? curatedArtifactFitsDevice(id, catalog, pipelineBudget)
+        : undefined;
+      if (catalog && curatedFits !== undefined) {
+        const curatedBytes = curatedSizeBytesFor(id, catalog);
+        map.set(id, {
+          est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
+          status: curatedFits ? null : "exceeds",
+          detail: totalParams ? formatCompact(totalParams) : null,
+        });
+        continue;
+      }
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
         const status = gpu.available
@@ -4284,7 +4313,14 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [filteredRecommendedIds, recommendedParamCountById, isKnownGgufRepo, gpu]);
+  }, [
+    filteredRecommendedIds,
+    recommendedParamCountById,
+    isKnownGgufRepo,
+    catalog,
+    task,
+    gpu,
+  ]);
 
   const searchHasMore =
     hasMore || (communityDiscoveryEnabled && communityQuerySearch.hasMore);

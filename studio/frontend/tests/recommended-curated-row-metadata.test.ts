@@ -232,25 +232,31 @@ test("every pipeline tag the Images picker lists reads as image generation", () 
   }
 });
 
-test("a curated pipeline's fit comes from its size, not the QLoRA estimator", () => {
-  const text = declarationText("recommendedMeta");
-  // The curated size has to be consulted BEFORE estimateLoadingVram, which assumes a language
-  // model it can 4-bit quantize and reads the 30 GB Wan 2.2 TI2V pipeline as 5.9 GB.
-  const curatedAt = text.indexOf("curatedSizeBytes");
-  const estimatorAt = text.indexOf("estimateLoadingVram");
-  assert.ok(curatedAt >= 0, "recommendedMeta ignores the curated size");
-  assert.ok(estimatorAt >= 0, "recommendedMeta no longer estimates VRAM at all");
-  assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs before the curated size");
-});
+// Both lists that badge a Recommended row: the unfiltered one and the searched one. A model
+// must not change what it says about the device just because it was searched for.
+for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
+  test(`${declaration} asks the catalog about a curated pipeline`, () => {
+    const text = declarationText(declaration);
+    // The catalog knows the resident size and any measured offload tier. estimateLoadingVram
+    // assumes a language model it can 4-bit quantize, and reads the 30 GB Wan 2.2 TI2V
+    // pipeline as 5.9 GB, so it must not be what answers for these rows.
+    const curatedAt = text.indexOf("curatedArtifactFitsDevice");
+    const estimatorAt = text.indexOf("estimateLoadingVram");
+    assert.ok(curatedAt >= 0, `${declaration} ignores the curated fit`);
+    assert.ok(estimatorAt >= 0, `${declaration} no longer estimates VRAM at all`);
+    assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs first");
+    // A task load puts the whole pipeline on one device, and torch is not the GGUF backend's
+    // inventory, so the budget is the load-scoped one the list's own fit filter uses.
+    assert.match(text, /artifactBudget\(loadScopedGpu\(gpu, Boolean\(task\)\)\)/);
+  });
+}
 
-test("a curated pipeline's fit is judged on the device it loads into", () => {
-  const text = declarationText("recommendedMeta");
-  // A task load puts the whole pipeline on one device, and torch is not the GGUF backend's
-  // inventory, so the badge has to use the same budget the list's own fit filter uses.
-  assert.match(text, /loadScopedGpu\(gpu, Boolean\(task\)\)/);
-  assert.match(text, /exceedsSize\(curatedBytes, pipelineBudget\)/);
-  // GGUF rows keep the inference backend's budget, which is what they load through.
-  assert.match(text, /exceedsSize\(sizeBytes, inferenceGpu\)/);
+test("GGUF rows keep the inference backend's budget", () => {
+  // They load through llama.cpp, so its inventory is the right one for them.
+  assert.match(
+    declarationText("recommendedMeta"),
+    /exceedsSize\(sizeBytes, inferenceGpu\)/,
+  );
 });
 
 test("capabilities fall back to the curated catalog", () => {
