@@ -13,23 +13,16 @@ running. Stdlib only (back-end imports are lazy) so it is safe to import early.
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
-
-import signal
-
-import secrets
-
-import logging
-
-import hashlib
-
 import errno
-
+import hashlib
 import json
+import logging
 import os
 import platform
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -37,6 +30,7 @@ import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 

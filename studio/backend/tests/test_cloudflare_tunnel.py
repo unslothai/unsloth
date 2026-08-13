@@ -8,12 +8,11 @@ loads via spec_from_file_location without the studio venv. run.py defaults are
 checked by AST so we never import its heavy deps (uvicorn/structlog).
 """
 
-import subprocess
-
 import ast
 import importlib.util
 import io
 import os
+import subprocess
 import sys
 import tarfile
 import threading
