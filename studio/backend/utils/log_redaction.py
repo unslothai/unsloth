@@ -137,8 +137,7 @@ _SCHEME_RE = re.compile(r"(?i)\b(Bearer)(\s+)(" + _CREDENTIAL + r")")
 # and an anchored pair test on a value that opened with one never matched, so
 # the session cookie gating these very endpoints went out in the clear.
 _COOKIE_RE = re.compile(
-    r"(?i)\b(?P<key>(?:set-)?cookie)"
-    r"(?P<sep>[\"']?\s*[:=]\s*(?P<q>[\"'])?)(?P<val>\S.*)$",
+    r"(?i)\b(?P<key>(?:set-)?cookie)(?P<sep>[\"']?\s*[:=]\s*(?P<q>[\"'])?)(?P<val>\S.*)$",
     re.MULTILINE,
 )
 
