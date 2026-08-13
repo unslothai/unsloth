@@ -150,6 +150,44 @@ def exercise_permission_mode_controls(page, shoot):
         expect(item).to_be_visible()
         item.click()
 
+    def set_legacy_confirm(legacy_value):
+        page.evaluate(
+            """(legacyValue) => {
+                localStorage.removeItem("unsloth_chat_permission_mode");
+                if (legacyValue === null) {
+                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+                } else {
+                    localStorage.setItem(
+                        "unsloth_chat_confirm_tool_calls",
+                        legacyValue,
+                    );
+                }
+            }""",
+            legacy_value,
+        )
+
+    # The level is an installation setting, mirrored through /api/chat/settings,
+    # so "fresh profile" is no longer "fresh browser": the cross-browser step
+    # runs this block three times against ONE install, and runs two and three
+    # would otherwise open on the level run one left behind. Refuse the
+    # hydrating GET, with no local level either, which is the state a first-ever
+    # browser on a never-configured install is in. Everything up to the end of
+    # the migration loop reads the level, so the whole stretch is held there.
+    def refuse_settings_hydration(route):
+        if route.request.method == "GET":
+            route.fulfill(
+                status = 503,
+                content_type = "application/json",
+                body = json.dumps({"detail": "hydration disabled for this step"}),
+            )
+        else:
+            route.continue_()
+
+    page.route("**/api/chat/settings", refuse_settings_hydration)
+    set_legacy_confirm(None)
+    page.reload(wait_until = "domcontentloaded")
+    expect(pill).to_be_visible()
+
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
     menu = open_menu()
@@ -180,47 +218,15 @@ def exercise_permission_mode_controls(page, shoot):
         fail(f"permission pill is clipped in compact layout: {box!r}")
     page.set_viewport_size({"width": 1280, "height": 900})
 
-    def set_legacy_confirm(legacy_value):
-        page.evaluate(
-            """(legacyValue) => {
-                localStorage.removeItem("unsloth_chat_permission_mode");
-                if (legacyValue === null) {
-                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
-                } else {
-                    localStorage.setItem(
-                        "unsloth_chat_confirm_tool_calls",
-                        legacyValue,
-                    );
-                }
-            }""",
-            legacy_value,
-        )
-
-    # Legacy setting migration: true -> ask, false -> off, absent -> auto.
-    #
-    # The level is an installation setting, mirrored through /api/chat/settings,
-    # so a level the install has already stored wins over whatever this browser
-    # holds and hydration writes it back over the local copy. The legacy
-    # derivation governs exactly one state: a profile the install has never
-    # stored a level for. Fail the hydrating GET to hold that state for the
-    # length of the loop, or the second reload asserts against a level the first
-    # one seeded and the case reads as a migration bug.
-    def refuse_settings_hydration(route):
-        if route.request.method == "GET":
-            route.fulfill(
-                status = 503,
-                content_type = "application/json",
-                body = json.dumps({"detail": "hydration disabled for this step"}),
-            )
-        else:
-            route.continue_()
-
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto. Still
+    # under the refused hydration above: a stored level wins over the local
+    # derivation, so without it the second reload would assert against the level
+    # the first one seeded and read as a migration bug.
     migration_cases = (
         ("true", "Ask for approval"),
         ("false", "Run automatically"),
         (None, "Approve for me"),
     )
-    page.route("**/api/chat/settings", refuse_settings_hydration)
     try:
         for legacy_value, expected_label in migration_cases:
             set_legacy_confirm(legacy_value)
