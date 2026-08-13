@@ -199,6 +199,7 @@ def assert_video_precision_available(
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
+    gpu_ordinal: Optional[int] = None,
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -216,8 +217,13 @@ def assert_video_precision_available(
     te_mode = normalize_te_quant(text_encoder_quant)
     if pinned is None and te_mode is None:
         return
-    # One probe for both checks (it reads the live device).
-    target = resolve_diffusion_device_target()
+    # One probe for both checks, asked of the card THIS load will use: the default one can be a
+    # different generation, refusing a scheme the selected card supports or passing one it cannot.
+    target = (
+        resolve_diffusion_device_target()
+        if gpu_ordinal is None
+        else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+    )
     # A modular-workflow family (MiniMax-H3) never reaches the memory plan the offload refusals
     # below reason about: load_pipeline hands it to _load_h3_modular_pipeline, which always uses
     # the ComponentsManager auto CPU offload and PINS a pre-quantized denoiser resident, so
@@ -1275,6 +1281,7 @@ class VideoBackend:
             model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            gpu_ordinal = gpu_ordinal,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -1358,6 +1365,9 @@ class VideoBackend:
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
                 speed_mode = kwargs.get("speed_mode"),
                 h3_task = kwargs.get("h3_task"),
+                # This decides the file set AND the memory policy, so it has to read the card the
+                # pipeline will land on: the default one can be larger or smaller than the pick.
+                gpu_ordinal = kwargs.get("gpu_ordinal"),
             )
             skip_transformer_weights = self._denoiser_prequant_verified(
                 fam,
@@ -2020,6 +2030,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str],
         speed_mode: Optional[str],
         h3_task: Optional[str],
+        gpu_ordinal: Optional[int] = None,
     ) -> Optional[str]:
         """The auto denoiser fallback, resolved BEFORE anything is downloaded, or None.
 
@@ -2039,7 +2050,7 @@ class VideoBackend:
                 return None
             import torch
 
-            target = self._device_target()
+            target = self._device_target(gpu_ordinal)
             dtype = target.dtype
             if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
                 dtype = torch.float32

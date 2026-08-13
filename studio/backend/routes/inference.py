@@ -22128,6 +22128,26 @@ def _guard_diffusion_load_against_training() -> None:
     )
 
 
+async def _selected_gpu_ordinal(gpu_ids) -> Optional[int]:
+    """The torch ordinal for a request's ``gpu_ids``, or None when there is nothing to honour.
+
+    Physical ids have no applicator off CUDA / ROCm, which the request contract says to ignore
+    rather than refuse, so the resolver only runs once the target reports a CUDA device. Raises
+    ValueError for a bad pick, which every caller maps to a 400.
+    """
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
+
+    if not gpu_ids:
+        return None
+    device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+    if device != "cuda":
+        return None
+    return await asyncio.to_thread(resolve_selected_cuda_ordinal, gpu_ids)
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -22191,6 +22211,8 @@ async def diffusion_download_plan(
                     # anything is measured, and an offloaded transformer skips the dense quant.
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    # Judged on the card this pick would load on, as the loader does.
+                    gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids),
                 )
             else:
                 _assert_native_precision_unset(
@@ -22314,8 +22336,7 @@ async def load_diffusion_model(
         # Refuse a bad pick before anything is evicted or staged; begin_load re-checks, but only
         # after the arbiter has taken the GPU. Only on CUDA / ROCm: physical ids have no applicator
         # on XPU / MPS / CPU, which the request contract says to ignore rather than 400.
-        if request.gpu_ids and device == "cuda":
-            await asyncio.to_thread(resolve_selected_cuda_ordinal, request.gpu_ids)
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
 
         def _preflight(target):
             # Gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
@@ -22353,6 +22374,7 @@ async def load_diffusion_model(
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = getattr(request, "memory_mode", None),
                 cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                gpu_ordinal = gpu_ordinal,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
             # The native engine accepts both knobs for interface parity and ignores them. It was
@@ -22402,6 +22424,7 @@ async def load_diffusion_model(
                     text_encoder_quant = request.text_encoder_quant,
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    gpu_ordinal = gpu_ordinal,
                 )
 
         def _start_engine_load():
