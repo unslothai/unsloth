@@ -1004,7 +1004,13 @@ class TestTheDyldReasonIsBounded:
             "  Reason: tried: " + "'a' (" * 20000
         )
         start = time.perf_counter()
-        msg = _classify(out, "/models/x.gguf", "local/x", 1, "/Users/me/.unsloth/llama.cpp/build/bin/llama-server")
+        msg = _classify(
+            out,
+            "/models/x.gguf",
+            "local/x",
+            1,
+            "/Users/me/.unsloth/llama.cpp/build/bin/llama-server",
+        )
         assert time.perf_counter() - start < 1.0
         assert "libllama.dylib" in msg
 
@@ -1014,7 +1020,13 @@ class TestTheDyldReasonIsBounded:
             "  Reason: tried: '/Users/me/.unsloth/llama.cpp/build/bin/libggml-base.dylib' "
             "(mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64'))"
         )
-        msg = _classify(out, "/models/x.gguf", "local/x", 1, "/Users/me/.unsloth/llama.cpp/build/bin/llama-server")
+        msg = _classify(
+            out,
+            "/models/x.gguf",
+            "local/x",
+            1,
+            "/Users/me/.unsloth/llama.cpp/build/bin/llama-server",
+        )
         assert "architecture" in msg
 
 
@@ -1045,11 +1057,15 @@ class TestOnlyDyldsOwnOutputIsReadAsDyld:
         assert "diffusion" in _classify(out, "/m.gguf", "u/x", 1, self._BIN)
 
     def test_metadata_does_not_beat_status_127(self):
-        msg = _classify("wrapper says Library not loaded: libx.so", "/m.gguf", "u/x", 127, self._BIN)
+        msg = _classify(
+            "wrapper says Library not loaded: libx.so", "/m.gguf", "u/x", 127, self._BIN
+        )
         assert "status 127" in msg
 
     def test_metadata_does_not_beat_signal_15(self):
-        msg = _classify("wrapper says Library not loaded: libx.so", "/m.gguf", "u/x", -15, self._BIN)
+        msg = _classify(
+            "wrapper says Library not loaded: libx.so", "/m.gguf", "u/x", -15, self._BIN
+        )
         assert "signal 15" in msg
 
     def test_metadata_does_not_claim_a_too_new_macos(self):
@@ -1069,10 +1085,7 @@ class TestOnlyDyldsOwnOutputIsReadAsDyld:
         assert "libllama.dylib" in _classify(out, "/m.gguf", "u/x", 1, self._BIN)
 
     def test_the_older_bare_dyld_prefix_is_framing_too(self):
-        out = (
-            "dyld: Library not loaded: @rpath/libllama.dylib\n"
-            "  Reason: image not found\n"
-        )
+        out = "dyld: Library not loaded: @rpath/libllama.dylib\n  Reason: image not found\n"
         assert "libllama.dylib" in _classify(out, "/m.gguf", "u/x", 1, self._BIN)
 
 

@@ -9459,7 +9459,6 @@ class LlamaCppBackend:
             return True
         try:
             from utils.llama_cpp_update import _llama_install_root
-
             return _llama_install_root(binary) is not None
         except Exception:
             return True
