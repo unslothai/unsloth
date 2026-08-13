@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Colab helpers for Unsloth Studio. Uses Colab's built-in proxy."""
+"""Colab/Kaggle helpers for Unsloth Studio. Uses Colab's built-in proxy."""
 
 from pathlib import Path
+import os
 import sys
 
 # Seed platform._sys_version_cache before attrs->rich->structlog->platform crash on conda Python.
@@ -147,26 +148,89 @@ def _colab_credentials_still_valid(username: str, password: str) -> bool:
         return False
 
 
+def _is_kaggle_runtime() -> bool:
+    """True on a Kaggle notebook kernel (secret store, ephemeral /kaggle/working)."""
+    try:
+        from cloudflare_tunnel import running_on_kaggle
+        return bool(running_on_kaggle())
+    except Exception:
+        return bool(
+            os.environ.get("KAGGLE_KERNEL_RUN_TYPE")
+            or os.environ.get("KAGGLE_URL_BASE")
+            or os.path.isdir("/kaggle/working")
+        )
+
+
+def _is_hosted_notebook() -> bool:
+    """True on Colab or Kaggle, where Studio is launched from a notebook cell."""
+    return _is_colab_runtime() or _is_kaggle_runtime()
+
+
+_KAGGLE_SECRET_ENV = (
+    ("CLOUDFLARE_TUNNEL_TOKEN", ("CLOUDFLARE_TUNNEL_TOKEN",)),
+    ("CLOUDFLARE_TUNNEL_URL", ("CLOUDFLARE_TUNNEL_URL",)),
+    ("UNSLOTH_STUDIO_ADMIN_PASSWORD", ("UNSLOTH_STUDIO_ADMIN_PASSWORD", "ADMIN_PASSWORD")),
+    ("UNSLOTH_STUDIO_AUTH_TOKEN", ("UNSLOTH_STUDIO_AUTH_TOKEN",)),
+)
+
+
+def _apply_kaggle_secrets() -> None:
+    """Copy Kaggle Add-ons → Secrets into env so Studio can reuse them every session.
+
+    Skips names already set in the environment. Missing secrets are ignored so a
+    partial store still works.
+    """
+    if not _is_kaggle_runtime():
+        return
+    try:
+        from kaggle_secrets import UserSecretsClient
+        client = UserSecretsClient()
+    except Exception:
+        return
+    for env_name, secret_names in _KAGGLE_SECRET_ENV:
+        if (os.environ.get(env_name) or "").strip():
+            continue
+        for secret_name in secret_names:
+            try:
+                value = client.get_secret(secret_name)
+            except Exception:
+                continue
+            if value and str(value).strip():
+                os.environ[env_name] = str(value).strip()
+                break
+
+
+def _has_named_tunnel_token() -> bool:
+    try:
+        from cloudflare_tunnel import named_tunnel_token
+        return bool(named_tunnel_token())
+    except Exception:
+        return bool((os.environ.get("CLOUDFLARE_TUNNEL_TOKEN") or "").strip())
+
+
 def _colab_wants_cloudflare(cloudflare: "bool | None") -> bool:
     """Resolve whether to open a Cloudflare tunnel.
 
-    ``None`` auto-enables on real Colab (the in-cell proxy embed is often blank);
-    pass ``False`` to opt out.
+    ``None`` auto-enables on real Colab (the in-cell proxy embed is often blank)
+    and on Kaggle when a named-tunnel token is present; pass ``False`` to opt out.
     """
     if cloudflare is not None:
         return cloudflare
+    if _is_kaggle_runtime() and _has_named_tunnel_token():
+        return True
     return _is_colab_runtime()
 
 
 def _finalize_colab_admin_password() -> "tuple[str, str] | None":
-    """Clear the bootstrap-password gate on Colab so Cloudflare tunnels can start.
+    """Clear the bootstrap-password gate on Colab/Kaggle so Cloudflare tunnels can start.
 
-    Returns ``(username, password)`` for display in the notebook. On first run the
-    random admin password is finalized; on later runs (e.g. after interrupt) the
-    stored credentials are re-displayed so the Cloudflare link stays usable.
-    Anyone who can read this cell already controls the runtime.
+    Returns ``(username, password)`` for display in the notebook. A persistent
+    ``UNSLOTH_STUDIO_ADMIN_PASSWORD`` (Kaggle secret) is preferred over a random
+    bootstrap password. On first Colab run the random admin password is finalized;
+    on later runs the stored credentials are re-displayed. Anyone who can read
+    this cell already controls the runtime.
     """
-    if not _is_colab_runtime():
+    if not _is_hosted_notebook():
         return None
     try:
         from auth.storage import (
@@ -174,6 +238,7 @@ def _finalize_colab_admin_password() -> "tuple[str, str] | None":
             ensure_default_admin,
             generate_bootstrap_password,
             get_bootstrap_password,
+            persistent_admin_password,
             requires_password_change,
             update_password,
         )
@@ -186,6 +251,10 @@ def _finalize_colab_admin_password() -> "tuple[str, str] | None":
     try:
         ensure_default_admin()
         username = DEFAULT_ADMIN_USERNAME
+        persistent = persistent_admin_password()
+        if persistent:
+            _store_colab_login_credentials(username, persistent)
+            return username, persistent
         if not requires_password_change(username):
             creds = _load_colab_login_credentials()
             if creds is not None and _colab_credentials_still_valid(username, creds[1]):
@@ -623,6 +692,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
+    _apply_kaggle_secrets()
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
 
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.

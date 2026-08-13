@@ -1,14 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Free Cloudflare quick tunnel for Unsloth's 0.0.0.0 launches.
+"""Cloudflare tunnel helper for Unsloth launches.
 
-The raw http://<ip>:<port> is often unreachable (https-vs-http, blocked ports,
-closed security groups); a cloudflared quick tunnel gives a free
-https://*.trycloudflare.com URL that works anywhere, with no account or domain.
+Two modes:
 
-Best-effort throughout: any failure collapses to "no URL" and Unsloth keeps
-running. Stdlib only (back-end imports are lazy) so it is safe to import early.
+* Named (private) tunnel: set ``CLOUDFLARE_TUNNEL_TOKEN`` to a Cloudflare
+  remotely-managed tunnel token (``cloudflared tunnel run --token``). Optionally
+  set ``CLOUDFLARE_TUNNEL_URL`` to the stable public hostname so Studio can
+  advertise it. Used on Kaggle via the secret store; quick tunnels are refused
+  there so a rotating ``*.trycloudflare.com`` link is never published.
+* Quick tunnel: ``cloudflared tunnel --url`` mints a free
+  ``https://*.trycloudflare.com`` URL with no account. Best-effort: any failure
+  collapses to "no URL" and Unsloth keeps running (except ``--secure``).
+
+Stdlib only (back-end imports are lazy) so it is safe to import early.
 """
 
 from __future__ import annotations
@@ -30,6 +36,14 @@ from typing import Callable, Optional, Tuple
 #   failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel"
 # and must never be mistaken for a usable tunnel URL.
 _URL_RE = re.compile(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com")
+# Named tunnels log the configured hostname, not trycloudflare.com. Ignore
+# Cloudflare's own API hosts so a failure line cannot be mistaken for a URL.
+_NAMED_URL_RE = re.compile(
+    r"https://(?!api\.(?:trycloudflare|cloudflare)\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+)
+
+_NAMED_TOKEN_ENV = "CLOUDFLARE_TUNNEL_TOKEN"
+_NAMED_URL_ENV = "CLOUDFLARE_TUNNEL_URL"
 
 # cloudflared logs this once per edge connection it establishes. Until at least
 # one appears the quick-tunnel URL returns Cloudflare error 1033 (HTTP 530), so
@@ -71,6 +85,61 @@ _EDGE_PROBE_RETRY_DELAY = 0.5
 _EDGE_WAIT_MAX = 15.0
 # A network that blocks the edge blocks every attempt, so stop spending the wait.
 _EDGE_MAX_UNREACHABLE = 2
+
+
+def named_tunnel_token() -> Optional[str]:
+    """Cloudflare named-tunnel token from the environment, or None."""
+    token = (os.environ.get(_NAMED_TOKEN_ENV) or "").strip()
+    return token or None
+
+
+def named_tunnel_url() -> Optional[str]:
+    """Stable public URL for a named tunnel (``CLOUDFLARE_TUNNEL_URL``), or None."""
+    raw = (os.environ.get(_NAMED_URL_ENV) or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = "https://" + raw
+    return raw.rstrip("/")
+
+
+def running_on_kaggle() -> bool:
+    """True in a Kaggle notebook kernel (secret store + ephemeral disk)."""
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"):
+        return True
+    return os.path.isdir("/kaggle/working")
+
+
+def _cloudflared_cmd(
+    binary: str,
+    port: int,
+    *,
+    protocol: Optional[str] = None,
+    token: Optional[str] = None,
+) -> list:
+    """cloudflared argv: named ``run --token`` when *token* is set, else quick tunnel."""
+    if token:
+        cmd = [
+            binary,
+            "tunnel",
+            "--no-autoupdate",
+            "--url",
+            f"http://localhost:{port}",
+            "run",
+            "--token",
+            token,
+        ]
+    else:
+        cmd = [
+            binary,
+            "tunnel",
+            "--url",
+            f"http://localhost:{port}",
+            "--no-autoupdate",
+        ]
+    if protocol:
+        cmd += ["--protocol", protocol]
+    return cmd
 
 
 def _windows_hidden_kwargs() -> dict:
@@ -399,10 +468,11 @@ def _process_exited(proc: subprocess.Popen) -> bool:
 
 
 class CloudflareTunnel:
-    """A cloudflared quick tunnel to http://localhost:<port>. Best-effort throughout.
+    """A cloudflared tunnel to http://localhost:<port>. Best-effort throughout.
 
     Use localhost (not the wildcard bind) as the tunnel origin so cloudflared's
-    upstream stays local-only.
+    upstream stays local-only. Pass *token* for a private named tunnel; omit it
+    for a free trycloudflare.com quick tunnel.
     """
 
     def __init__(
@@ -410,34 +480,37 @@ class CloudflareTunnel:
         port: int,
         binary: str,
         protocol: Optional[str] = None,
+        token: Optional[str] = None,
+        advertised_url: Optional[str] = None,
     ):
         self.port = port
         self.binary = binary
         # None lets cloudflared pick its default (quic, with its own http2
         # fallback); set to "http2" to force it when quic is blocked.
         self.protocol = protocol
+        self.token = token
+        self.advertised_url = advertised_url
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._stopped = False
         self._url_event = threading.Event()
         self._ready_event = threading.Event()
-        self.url: Optional[str] = None
+        self.url: Optional[str] = advertised_url
         self.ready = False
         self.error: Optional[str] = None
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
         self._runtime_active = False
+        if advertised_url:
+            self._url_event.set()
 
     def start(self) -> None:
-        cmd = [
+        cmd = _cloudflared_cmd(
             self.binary,
-            "tunnel",
-            "--url",
-            f"http://localhost:{self.port}",
-            "--no-autoupdate",
-        ]
-        if self.protocol:
-            cmd += ["--protocol", self.protocol]
+            self.port,
+            protocol = self.protocol,
+            token = self.token,
+        )
         with self._lock:
             # A stop() that landed before us (e.g. a shutdown in the caller's
             # register->start window) marks the tunnel stopped; spawning now would
@@ -475,14 +548,15 @@ class CloudflareTunnel:
         ).start()
 
     def _reader(self, proc: subprocess.Popen) -> None:
-        # Drain cloudflared's output: capture the first trycloudflare URL and the
-        # first edge-connection registration, and keep draining so it never
-        # blocks on a full pipe.
+        # Drain cloudflared's output: capture the first public URL and the first
+        # edge-connection registration, and keep draining so it never blocks on a
+        # full pipe. Named tunnels may already have advertised_url set.
+        url_re = _NAMED_URL_RE if self.token else _URL_RE
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
                     if self.url is None:
-                        match = _URL_RE.search(line)
+                        match = url_re.search(line)
                         if match:
                             self.url = match.group(0)
                             self._url_event.set()
@@ -763,8 +837,13 @@ def start_studio_tunnel(
     managed_by: str = "launch",
     admission: Optional[Tuple[int, int]] = None,
 ) -> Optional[str]:
-    """Start a quick tunnel and return its public URL once it is actually
+    """Start a Cloudflare tunnel and return its public URL once it is actually
     serving, or None (best-effort).
+
+    Named tunnel: ``CLOUDFLARE_TUNNEL_TOKEN`` selects ``cloudflared tunnel run
+    --token`` (private, stable hostname). Quick tunnel: a free
+    ``https://*.trycloudflare.com`` URL. Kaggle refuses the quick tunnel so a
+    rotating public link is never published without a token.
 
     Waits for cloudflared to both mint the URL and register an edge connection,
     then fetches /api/health over the public URL, so the caller never advertises
@@ -822,12 +901,29 @@ def start_studio_tunnel(
             _set_failed(generation, managed_by, port, "cloudflared is unavailable")
             return None
 
+        token = named_tunnel_token()
+        advertised = named_tunnel_url()
+        if not token and running_on_kaggle():
+            _set_failed(
+                generation,
+                managed_by,
+                port,
+                "Kaggle requires CLOUDFLARE_TUNNEL_TOKEN for a private named tunnel",
+            )
+            return None
+
         for protocol in (None, "http2"):
             with _active_lock:
                 if _shutdown_requested or generation != _tunnel_generation:
                     _active_tunnel = None
                     return None
-                tunnel = CloudflareTunnel(port, binary, protocol = protocol)
+                tunnel = CloudflareTunnel(
+                    port,
+                    binary,
+                    protocol = protocol,
+                    token = token,
+                    advertised_url = advertised,
+                )
                 prior, _active_tunnel = _active_tunnel, tunnel
             if prior is not None and prior.stop() is False:
                 with _active_lock:
@@ -842,7 +938,10 @@ def start_studio_tunnel(
                 url = tunnel.wait_for_ready(timeout)
                 registered = url is not None
                 if url and not verify_public_url(url):
-                    url = None
+                    # Named tunnels use a pre-provisioned hostname; a slow DNS
+                    # probe must not hide a registered private tunnel.
+                    if not token:
+                        url = None
             except Exception:
                 url = None
             if url:

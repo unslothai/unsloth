@@ -4,6 +4,7 @@
 """Regression coverage for Colab iframe embedding (#7344)."""
 
 import inspect
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -244,6 +245,7 @@ def test_finalize_colab_admin_password_clears_bootstrap_gate(monkeypatch):
         generate_bootstrap_password = MagicMock(return_value = "alpha-beta-gamma"),
         requires_password_change = MagicMock(return_value = True),
         update_password = MagicMock(return_value = True),
+        persistent_admin_password = MagicMock(return_value = None),
     )
     auth_pkg = types.ModuleType("auth")
     auth_pkg.storage = storage
@@ -296,6 +298,7 @@ def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
         generate_bootstrap_password = MagicMock(),
         requires_password_change = MagicMock(return_value = False),
         update_password = MagicMock(),
+        persistent_admin_password = MagicMock(return_value = None),
     )
     auth_pkg = types.ModuleType("auth")
     auth_pkg.storage = storage
@@ -326,6 +329,7 @@ def test_finalize_colab_admin_password_drops_stale_cached_credentials(monkeypatc
         generate_bootstrap_password = MagicMock(),
         requires_password_change = MagicMock(return_value = False),
         update_password = MagicMock(),
+        persistent_admin_password = MagicMock(return_value = None),
     )
     auth_pkg = types.ModuleType("auth")
     auth_pkg.storage = storage
@@ -619,3 +623,65 @@ def test_show_and_embed_still_embeds_when_show_link_fails(monkeypatch):
     colab._show_and_embed(8888)
 
     assert calls == ["kernel_iframe"]
+
+
+def test_kaggle_wants_cloudflare_when_named_token_present(monkeypatch):
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: False)
+    monkeypatch.setattr(colab, "_is_kaggle_runtime", lambda: True)
+    monkeypatch.setattr(colab, "_has_named_tunnel_token", lambda: True)
+    assert colab._colab_wants_cloudflare(None) is True
+    monkeypatch.setattr(colab, "_has_named_tunnel_token", lambda: False)
+    assert colab._colab_wants_cloudflare(None) is False
+
+
+def test_apply_kaggle_secrets_copies_store_into_env(monkeypatch):
+    monkeypatch.setattr(colab, "_is_kaggle_runtime", lambda: True)
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_TOKEN", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_ADMIN_PASSWORD", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_AUTH_TOKEN", raising = False)
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_URL", raising = False)
+
+    class _Client:
+        def get_secret(self, name):
+            return {
+                "CLOUDFLARE_TUNNEL_TOKEN": "tunnel-token",
+                "CLOUDFLARE_TUNNEL_URL": "https://studio.example.com",
+                "UNSLOTH_STUDIO_ADMIN_PASSWORD": "admin-pass-from-secret",
+                "UNSLOTH_STUDIO_AUTH_TOKEN": "sk-unsloth-persist",
+            }[name]
+
+    fake_mod = types.ModuleType("kaggle_secrets")
+    fake_mod.UserSecretsClient = lambda: _Client()
+    monkeypatch.setitem(sys.modules, "kaggle_secrets", fake_mod)
+    colab._apply_kaggle_secrets()
+    assert os.environ["CLOUDFLARE_TUNNEL_TOKEN"] == "tunnel-token"
+    assert os.environ["CLOUDFLARE_TUNNEL_URL"] == "https://studio.example.com"
+    assert os.environ["UNSLOTH_STUDIO_ADMIN_PASSWORD"] == "admin-pass-from-secret"
+    assert os.environ["UNSLOTH_STUDIO_AUTH_TOKEN"] == "sk-unsloth-persist"
+
+
+def test_finalize_uses_persistent_admin_password(monkeypatch):
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: False)
+    monkeypatch.setattr(colab, "_is_kaggle_runtime", lambda: True)
+    stored: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        colab,
+        "_store_colab_login_credentials",
+        lambda username, password: stored.append((username, password)),
+    )
+    storage = SimpleNamespace(
+        DEFAULT_ADMIN_USERNAME = "unsloth",
+        ensure_default_admin = MagicMock(),
+        get_bootstrap_password = MagicMock(),
+        generate_bootstrap_password = MagicMock(),
+        requires_password_change = MagicMock(return_value = True),
+        update_password = MagicMock(),
+        persistent_admin_password = MagicMock(return_value = "kaggle-admin-pass"),
+    )
+    auth_pkg = types.ModuleType("auth")
+    auth_pkg.storage = storage
+    with patch.dict("sys.modules", {"auth": auth_pkg, "auth.storage": storage}):
+        result = colab._finalize_colab_admin_password()
+    assert result == ("unsloth", "kaggle-admin-pass")
+    storage.update_password.assert_not_called()
+    assert stored == [("unsloth", "kaggle-admin-pass")]

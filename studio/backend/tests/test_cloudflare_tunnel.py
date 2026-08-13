@@ -1508,3 +1508,67 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "requested but failed to start" in out
     assert "reachable from the public internet" in out
     assert "local network only" not in out
+
+
+def test_cloudflared_cmd_named_uses_token():
+    cmd = ct._cloudflared_cmd("/bin/cloudflared", 8888, token = "eyJtest")
+    assert cmd[:3] == ["/bin/cloudflared", "tunnel", "--no-autoupdate"]
+    assert "--url" in cmd and "http://localhost:8888" in cmd
+    assert cmd[cmd.index("run") + 1 : cmd.index("run") + 3] == ["--token", "eyJtest"]
+
+
+def test_cloudflared_cmd_quick_has_no_token():
+    cmd = ct._cloudflared_cmd("/bin/cloudflared", 8888)
+    assert "--token" not in cmd
+    assert "run" not in cmd
+    assert "--url" in cmd
+
+
+def test_named_tunnel_url_normalizes_https(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_TUNNEL_URL", "studio.example.com/")
+    assert ct.named_tunnel_url() == "https://studio.example.com"
+    monkeypatch.setenv("CLOUDFLARE_TUNNEL_URL", "https://studio.example.com")
+    assert ct.named_tunnel_url() == "https://studio.example.com"
+
+
+def test_named_reader_keeps_advertised_url():
+    t = ct.CloudflareTunnel(
+        8080,
+        "/bin/cloudflared",
+        token = "tok",
+        advertised_url = "https://studio.example.com",
+    )
+    t._reader(_fake_proc("INF Registered tunnel connection connIndex=0 protocol=http2\n"))
+    assert t.url == "https://studio.example.com"
+    assert t.ready is True
+    assert t.wait_for_ready(0) == t.url
+
+
+def test_named_reader_parses_custom_hostname():
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared", token = "tok")
+    t._reader(
+        _fake_proc(
+            "INF |  https://unsloth.example.com  |\n"
+            "INF Registered tunnel connection connIndex=0 protocol=http2\n"
+        )
+    )
+    assert t.url == "https://unsloth.example.com"
+    assert t.ready is True
+
+
+def test_start_studio_tunnel_kaggle_refuses_quick(monkeypatch):
+    monkeypatch.setattr(ct, "running_on_kaggle", lambda: True)
+    monkeypatch.delenv("CLOUDFLARE_TUNNEL_TOKEN", raising = False)
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    ct._tunnel_state = "off"
+    ct._active_tunnel = None
+    ct._accepting_starts = True
+    spawned = []
+    monkeypatch.setattr(
+        ct.subprocess,
+        "Popen",
+        lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(AssertionError("quick tunnel")),
+    )
+    assert ct.start_studio_tunnel(8080) is None
+    assert spawned == []
+    assert "CLOUDFLARE_TUNNEL_TOKEN" in (ct.get_studio_tunnel_status().get("error") or "")

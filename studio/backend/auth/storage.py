@@ -21,6 +21,11 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
+# Operator-supplied credentials (Kaggle secrets / env). Applied on each boot so
+# ephemeral notebook disks can reuse the same admin password and API key.
+_ADMIN_PASSWORD_ENV = "UNSLOTH_STUDIO_ADMIN_PASSWORD"
+_AUTH_TOKEN_ENV = "UNSLOTH_STUDIO_AUTH_TOKEN"
+
 # Single source for the password policy; models/auth.py ChangePasswordRequest
 # and the terminal prompt both enforce it. Keep the unsloth_cli mirror in sync.
 MIN_PASSWORD_LENGTH = 8
@@ -743,12 +748,32 @@ def load_jwt_secret() -> str:
 def ensure_default_admin() -> bool:
     """Seed the default admin account on first startup.
 
-    Uses a randomly generated diceware passphrase as the bootstrap password.
+    Uses a randomly generated diceware passphrase as the bootstrap password,
+    unless ``UNSLOTH_STUDIO_ADMIN_PASSWORD`` is set (Kaggle / persistent secret).
     Returns True when the default admin was created in this call.
     """
+    persistent_pw = persistent_admin_password()
     if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is not None:
         _load_bootstrap_password()
+        if persistent_pw:
+            apply_persistent_admin_password(persistent_pw)
+        apply_persistent_api_key()
         return False
+
+    if persistent_pw:
+        try:
+            create_initial_user(
+                username = DEFAULT_ADMIN_USERNAME,
+                password = persistent_pw,
+                jwt_secret = secrets.token_urlsafe(64),
+                must_change_password = False,
+            )
+            apply_persistent_api_key()
+            return True
+        except sqlite3.IntegrityError:
+            apply_persistent_admin_password(persistent_pw)
+            apply_persistent_api_key()
+            return False
 
     bootstrap_pw = generate_bootstrap_password()
     try:
@@ -758,8 +783,10 @@ def ensure_default_admin() -> bool:
             jwt_secret = secrets.token_urlsafe(64),
             must_change_password = True,
         )
+        apply_persistent_api_key()
         return True
     except sqlite3.IntegrityError:
+        apply_persistent_api_key()
         return False
 
 
@@ -1036,6 +1063,96 @@ def clear_desktop_secret() -> None:
 # ---------------------------------------------------------------------------
 
 API_KEY_PREFIX = "sk-unsloth-"
+
+
+def persistent_admin_password() -> Optional[str]:
+    """Admin password from ``UNSLOTH_STUDIO_ADMIN_PASSWORD``, or None if unset/too short."""
+    password = (os.environ.get(_ADMIN_PASSWORD_ENV) or "").strip()
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return None
+    return password
+
+
+def persistent_api_key() -> Optional[str]:
+    """API key from ``UNSLOTH_STUDIO_AUTH_TOKEN`` (must be ``sk-unsloth-...``)."""
+    raw_key = (os.environ.get(_AUTH_TOKEN_ENV) or "").strip()
+    if not raw_key.startswith(API_KEY_PREFIX):
+        return None
+    return raw_key
+
+
+def apply_persistent_admin_password(password: Optional[str] = None) -> bool:
+    """Set the default admin password from env without requiring a UI change.
+
+    Returns True when the stored password now matches *password*. Does not
+    rotate the JWT secret when the password is already correct.
+    """
+    password = password if password is not None else persistent_admin_password()
+    if not password:
+        return False
+    from .hashing import verify_password
+
+    row = get_user_and_secret(DEFAULT_ADMIN_USERNAME)
+    if row is None:
+        return False
+    salt, pwd_hash, _jwt, must_change = row[0], row[1], row[2], row[3]
+    if verify_password(password, salt, pwd_hash):
+        if must_change:
+            conn = get_connection()
+            try:
+                conn.execute(
+                    "UPDATE auth_user SET must_change_password = 0 WHERE username = ?",
+                    (DEFAULT_ADMIN_USERNAME,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            clear_bootstrap_password()
+        return True
+    return bool(update_password(DEFAULT_ADMIN_USERNAME, password))
+
+
+def ensure_api_key_from_raw(
+    raw_key: str,
+    *,
+    username: str = DEFAULT_ADMIN_USERNAME,
+    name: str = "kaggle-secret",
+) -> bool:
+    """Insert *raw_key* if missing so a Kaggle secret can authenticate every session.
+
+    Returns True when the key is valid in the database afterwards.
+    """
+    if not raw_key or not raw_key.startswith(API_KEY_PREFIX):
+        return False
+    if validate_api_key(raw_key):
+        return True
+    key_hash = _pbkdf2_api_key(raw_key)
+    key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO api_keys
+                (username, key_prefix, key_hash, name, created_at, expires_at, is_internal)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+            """,
+            (username, key_prefix, key_hash, name, now, None),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass
+    finally:
+        conn.close()
+    return validate_api_key(raw_key) is not None
+
+
+def apply_persistent_api_key() -> bool:
+    """Seed ``UNSLOTH_STUDIO_AUTH_TOKEN`` into the api_keys table if set."""
+    raw_key = persistent_api_key()
+    if not raw_key:
+        return False
+    return ensure_api_key_from_raw(raw_key)
 
 
 def create_api_key(

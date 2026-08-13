@@ -28,6 +28,8 @@ def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
 
     monkeypatch.setattr(storage, "_credential_encryption_key_cache", None)
+    monkeypatch.delenv("UNSLOTH_STUDIO_ADMIN_PASSWORD", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_AUTH_TOKEN", raising = False)
     yield
 
 
