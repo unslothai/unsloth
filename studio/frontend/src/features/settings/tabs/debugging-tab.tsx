@@ -28,6 +28,10 @@ import {
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
+
+// Generous next to a 1s poll: this is the "this request will never answer"
+// backstop, not a latency budget. A remote tunnel can legitimately be slow.
+const POLL_TIMEOUT_MS = 20_000;
 // How often the picker rescans for log files that did not exist when the tab
 // was opened. Slower than the poll, since it is a directory walk rather than a
 // tail read.
@@ -133,12 +137,28 @@ export function DebuggingTab() {
     async (signal?: AbortSignal) => {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
+      // A request that never settles would otherwise pin inFlightRef forever:
+      // the timer keeps firing, every poll returns at the guard above, and the
+      // pane freezes with no error because the catch never runs. A suspended
+      // laptop or a dropped tunnel is enough. AbortSignal.any would be the tidy
+      // way to combine this with the caller's signal, but it is Safari 17.4,
+      // above this project's 16.4 floor, so the two are linked by hand.
+      const localAbort = new AbortController();
+      const timeout = window.setTimeout(
+        () => localAbort.abort(),
+        POLL_TIMEOUT_MS,
+      );
+      const relay = () => localAbort.abort();
+      signal?.addEventListener("abort", relay);
       try {
         const page = await loadDebugLog({
           sourceId,
           cursor: cursorRef.current,
-          signal,
+          signal: localAbort.signal,
         });
+        // A manual refresh in flight while the user switches source would
+        // otherwise land the old file's lines and path under the new pick.
+        if (sourceId && page.sourceId && page.sourceId !== sourceId) return;
         cursorRef.current = page.cursor;
         if (page.realpath) setRealpath(page.realpath);
         setDropped(page.droppedBytes > 0);
@@ -157,6 +177,8 @@ export function DebuggingTab() {
       } catch (error) {
         await onPollFailed(error, signal);
       } finally {
+        window.clearTimeout(timeout);
+        signal?.removeEventListener("abort", relay);
         inFlightRef.current = false;
       }
     },
@@ -319,7 +341,7 @@ export function DebuggingTab() {
           ref={paneRef}
           onScroll={onScroll}
           data-testid="debug-log-pane"
-          className="h-72 w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
+          className="h-72 w-full overflow-auto [overflow-anchor:none] whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
         >
           {text || t("settings.debugging.empty")}
         </pre>
