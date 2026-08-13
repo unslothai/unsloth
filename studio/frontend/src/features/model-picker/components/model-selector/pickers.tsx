@@ -62,7 +62,6 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
-import { BulbIcon } from "@/lib/bulb-icon";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -124,7 +123,6 @@ import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
   detectCapabilities,
-  hasAnyCapability,
 } from "./model-capabilities";
 import {
   AUDIO_CATALOG,
@@ -479,23 +477,11 @@ const CAPABILITY_BADGES: {
     ),
   },
   {
-    key: "vision",
-    title: "Reads images",
-    Glyph: (props) => (
-      <HugeiconsIcon icon={ViewIcon} strokeWidth={1.8} {...props} />
-    ),
-  },
-  {
     key: "audio",
     title: "Generates audio",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
     ),
-  },
-  {
-    key: "reasoning",
-    title: "Reasoning",
-    Glyph: (props) => <BulbIcon {...props} />,
   },
 ];
 
@@ -512,34 +498,33 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
 );
 
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every
-// column after it lined up. Three is what fits without eating into the name.
+// column after it lined up.
 const MAX_CAPABILITY_BADGES = 3;
 
-function CapabilityIcons({
-  caps,
-  omit,
-}: {
-  caps: ModelCapabilities;
-  /** A capability another badge on the same row already draws, so it is not drawn twice. */
-  omit?: keyof ModelCapabilities;
-}) {
+/** The glyphs this row actually draws, so the caller can size the slot and skip an empty one. */
+function visibleCapabilityBadges(
+  caps: ModelCapabilities,
+  scope: readonly (keyof ModelCapabilities)[] | null,
+) {
+  return CAPABILITY_BADGES.filter(
+    (b) => caps[b.key] && (scope?.includes(b.key) ?? true),
+  ).slice(0, MAX_CAPABILITY_BADGES);
+}
+
+function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   const scope = useContext(CapabilityScope);
   return (
     <>
-      {CAPABILITY_BADGES.filter(
-        (b) => caps[b.key] && b.key !== omit && (scope?.includes(b.key) ?? true),
-      )
-        .slice(0, MAX_CAPABILITY_BADGES)
-        .map(({ key, title, Glyph }) => (
-          <span
-            key={key}
-            title={title}
-            aria-label={title}
-            className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
-          >
-            <Glyph className="size-3" />
-          </span>
-        ))}
+      {visibleCapabilityBadges(caps, scope).map(({ key, title, Glyph }) => (
+        <span
+          key={key}
+          title={title}
+          aria-label={title}
+          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+        >
+          <Glyph className="size-3" />
+        </span>
+      ))}
     </>
   );
 }
@@ -756,9 +741,9 @@ const META_COLUMN = {
   quant: "min-[560px]:w-[7.2em]",
   // One capability / vision / downloaded badge. Used where the picker's scope allows at most one.
   badge: "min-w-min min-[560px]:w-[24px]",
-  // Room for MAX_CAPABILITY_BADGES glyphs (18px each, gap-1). Reserved at the maximum wherever
-  // that many can appear: sized for one, a row with three shifted every column after it.
-  badgeWide: "min-w-min min-[560px]:w-[62px]",
+  // Room for the pair a chat row can carry, a generation glyph plus audio (18px each, gap-1).
+  // Sized for one, such a row shifted every column after it.
+  badgeWide: "min-w-min min-[560px]:w-[40px]",
   // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
   vram: "min-w-min min-[560px]:w-[4em]",
   // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
@@ -857,10 +842,11 @@ function ModelRow({
   const paramLabel = parsed.param ?? extractParamLabel(name) ?? null;
   // Use the passed-in capabilities (tag-aware) or infer from the repo name.
   const caps = capabilities ?? detectCapabilities({ id: label });
-  const showCaps = hasAnyCapability(caps);
-  // Only hold the wide slot open where more than one glyph can actually land. The Images and
-  // Video pickers draw at most one, so reserving three there is dead space on every row.
   const capabilityScope = useContext(CapabilityScope);
+  const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
+  const showCaps = capabilityBadges.length > 0;
+  // Only hold the wide slot open where more than one glyph can land. The Images and Audio pickers
+  // draw none and Video draws one, so reserving the pair there is dead space on every row.
   const badgeColumn =
     capabilityScope && capabilityScope.length <= 1
       ? META_COLUMN.badge
@@ -962,17 +948,13 @@ function ModelRow({
               badgeColumn,
             )}
           >
-            {showCaps && (
-              <CapabilityIcons caps={caps} omit={showVision ? "vision" : undefined} />
-            )}
+            {showCaps && <CapabilityIcons caps={caps} />}
             {showVision && <VisionBadge />}
             {downloaded && !loaded ? <DownloadedBadge /> : null}
           </span>
         ) : (
           <>
-            {showCaps && (
-              <CapabilityIcons caps={caps} omit={showVision ? "vision" : undefined} />
-            )}
+            {showCaps && <CapabilityIcons caps={caps} />}
             {showVision && <VisionBadge />}
             {loaded && (
               <DotTag

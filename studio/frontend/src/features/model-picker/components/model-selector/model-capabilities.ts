@@ -105,10 +105,3 @@ export function detectCapabilities(opts: {
     videoGen,
   };
 }
-
-/** True when at least one capability is present (worth rendering a badge). */
-export function hasAnyCapability(caps: ModelCapabilities): boolean {
-  return (
-    caps.vision || caps.reasoning || caps.audio || caps.imageGen || caps.videoGen
-  );
-}
