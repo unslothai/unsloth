@@ -41,6 +41,7 @@ import {
   type RemoteAccessRequestAxis,
   type RemoteAccessStatus,
   openRemoteAccessLoginWindow,
+  remoteAccessAuthorizationAction,
   remoteAccessAuthorizationShouldOpen,
   remoteAccessAuthorizationView,
   remoteAccessAutoStartKind,
@@ -72,7 +73,9 @@ import { openLink } from "@/lib/open-link";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
+  ArrowUpRight01Icon,
   Copy01Icon,
+  Delete02Icon,
   Globe02Icon,
   QrCodeIcon,
 } from "@hugeicons/core-free-icons";
@@ -235,6 +238,10 @@ function stateDotClass(state?: RemoteAccessStatus["state"]): string {
   return state === "error" ? "bg-red-500" : "bg-muted-foreground";
 }
 
+function ExternalArrow() {
+  return <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />;
+}
+
 function openAuthorizedRemoteLink(
   url: string | null,
   authorized: boolean,
@@ -266,16 +273,45 @@ function CustomAuthorizationAction({
   onConfirm: () => void;
 }) {
   const t = useT();
-  if (authorized) {
+  const action = remoteAccessAuthorizationAction(
+    authorized,
+    loginUrl,
+    authorizationCurrent,
+  );
+  if (action !== "confirm") {
+    // Cloudflare has to hand back the authorization URL before there is anything
+    // to open, so the wait is shown rather than left as a button that looks ready
+    // and does nothing. Once the URL exists this is a real link, so it can be
+    // opened, copied or moved to another browser like any other.
+    if (action === "preparing") {
+      return (
+        <Button type="button" disabled={true}>
+          <Loader2Icon
+            aria-hidden="true"
+            className="size-3.5 shrink-0 animate-spin"
+          />
+          {t("settings.general.remoteAccess.openCloudflare")}
+        </Button>
+      );
+    }
     return (
-      <Button
-        type="button"
-        disabled={!(loginUrl && authorizationCurrent)}
-        onClick={() =>
-          openAuthorizedRemoteLink(loginUrl, authorizationCurrent, openTauri)
-        }
-      >
-        {t("settings.general.remoteAccess.openCloudflare")}
+      <Button asChild={true} type="button">
+        <a
+          // "open" is reached only with a URL; the fallback is for the type.
+          href={loginUrl ?? undefined}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(event) => {
+            if (!isTauri) {
+              return;
+            }
+            event.preventDefault();
+            openAuthorizedRemoteLink(loginUrl, authorizationCurrent, openTauri);
+          }}
+        >
+          {t("settings.general.remoteAccess.openCloudflare")}
+          <ExternalArrow />
+        </a>
       </Button>
     );
   }
@@ -804,6 +840,7 @@ function CustomTunnelSetup({
                 >
                   <a href={CLOUDFLARE_DNS_URL} target="_blank" rel="noreferrer">
                     {t("settings.general.remoteAccess.openCloudflareDns")}
+                    <ExternalArrow />
                   </a>
                 </Button>
               ) : null}
@@ -880,13 +917,14 @@ function CustomTunnelIdentity({
             <Button
               type="button"
               size="sm"
-              variant="ghost"
-              className="shrink-0 text-destructive hover:text-destructive"
+              variant="outline"
+              className="shrink-0 text-destructive hover:text-destructive hover:border-destructive/60"
               disabled={
                 remoteAccessCustomActionsDisabled(status, busy !== null) ||
                 teardownDisconnectsOrigin
               }
             >
+              <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
               {t("settings.general.remoteAccess.removeAction")}
             </Button>
           </AlertDialogTrigger>
@@ -920,6 +958,7 @@ function CustomTunnelIdentity({
                     rel="noreferrer"
                   >
                     {t("settings.general.remoteAccess.openCloudflareTunnels")}
+                    <ExternalArrow />
                   </a>
                 </Button>
               </div>
@@ -938,6 +977,7 @@ function CustomTunnelIdentity({
                 >
                   <a href={CLOUDFLARE_DNS_URL} target="_blank" rel="noreferrer">
                     {t("settings.general.remoteAccess.openCloudflareDns")}
+                    <ExternalArrow />
                   </a>
                 </Button>
               </div>

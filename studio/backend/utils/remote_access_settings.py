@@ -376,6 +376,16 @@ def remote_access_status(app_state) -> dict:
         status.update(state = "stopping", managed_by = "settings", url = None, error = None)
     elif starting and status["state"] in {"off", "error"}:
         status.update(state = "starting", managed_by = "settings", url = None, error = None)
+    # A custom tunnel serves as soon as its connector registers, but the link is
+    # withheld until the hostname resolves, and online is what a caller reads as
+    # "there is a URL". Reporting online with nothing to offer left the wait for
+    # DNS with no state of its own; it is the last step of starting.
+    elif (
+        status["state"] == "online"
+        and status.get("kind") == "custom"
+        and status.get("dns") != "resolved"
+    ):
+        status.update(state = "starting")
 
     intent = getattr(app_state, "remote_access_intent", "disabled")
     is_colab = bool(getattr(app_state, "remote_access_is_colab", False))

@@ -215,6 +215,48 @@ def test_remote_access_preference_updates_serialize_method_and_auto_start(monkey
 
 
 @pytest.mark.parametrize(
+    "state,kind,dns,expected",
+    [
+        ("online", "custom", "pending", "starting"),
+        ("online", "custom", "unknown", "starting"),
+        ("online", "custom", "resolved", "online"),
+        # A temporary tunnel offers its URL as soon as it serves, so it has no
+        # resolution to wait for.
+        ("online", "temporary", "unknown", "online"),
+        # Only a tunnel that reached online is waiting on its hostname. One that
+        # never started, or failed, has no link pending and must keep its state.
+        ("off", "custom", "unknown", "off"),
+        ("error", "custom", "pending", "error"),
+    ],
+)
+def test_a_custom_tunnel_is_starting_until_its_hostname_resolves(
+    monkeypatch, state, kind, dns, expected
+):
+    # Online is what a caller reads as "there is a URL", and the link is withheld
+    # until the hostname resolves, so that wait belongs to starting.
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "_get_remote_access_preferences", lambda: (kind, False))
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": state,
+            "url": "https://studio.example.com",
+            "error": None,
+            "managed_by": "settings",
+            "kind": kind,
+            "dns": dns,
+        },
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+
+    status = remote_access.remote_access_status(_state(intent = "enabled"))
+    assert status["state"] == expected
+
+
+@pytest.mark.parametrize(
     "tunnel_state,operation,expected_block",
     [
         ("off", "idle", "custom_tunnel_not_configured"),

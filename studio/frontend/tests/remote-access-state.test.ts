@@ -14,6 +14,7 @@ import {
   normalizeRemoteAccessStatus,
   openRemoteAccessLoginWindow,
   remoteAccessAuthorizationShouldOpen,
+  remoteAccessAuthorizationAction,
   remoteAccessAuthorizationView,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
@@ -241,21 +242,31 @@ test("connection progress reports only the current step", () => {
   );
   assert.equal(remoteAccessIsReady(temporary), false);
 
+  // Still starting: the connector serves, but the hostname has not resolved, so
+  // the backend withholds online until there is a link to offer.
   const custom = normalizeRemoteAccessStatus(
     apiStatus({
-      state: "online",
+      state: "starting",
       kind: "custom",
       // biome-ignore lint/style/useNamingConvention: API schema
       connector_registered: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       tunnel_serving: false,
-      dns: "pending",
+      // The hostname is not watched until the tunnel serves, so nothing is
+      // known about it yet while the link is still opening.
+      dns: "unknown",
     }),
   );
   assert.equal(remoteAccessProgressStep(custom), "openingLink");
   assert.equal(remoteAccessIsReady(custom), false);
 
-  const ready = { ...custom, tunnelServing: true, dns: "resolved" as const };
+  const ready = {
+    ...custom,
+    state: "online" as const,
+    tunnelServing: true,
+    dns: "resolved" as const,
+    url: "https://studio.example.com",
+  };
   assert.equal(remoteAccessProgressStep(ready), null);
   assert.equal(remoteAccessIsReady(ready), true);
   assert.equal(
@@ -263,8 +274,15 @@ test("connection progress reports only the current step", () => {
     "disconnecting",
   );
 
+  // Serving, so the URL is published and the hostname is being watched; the
+  // reported state stays starting until it resolves.
   assert.equal(
-    remoteAccessProgressStep({ ...custom, tunnelServing: true }),
+    remoteAccessProgressStep({
+      ...custom,
+      tunnelServing: true,
+      dns: "pending",
+      url: "https://studio.example.com",
+    }),
     "checkingHostname",
   );
 });
@@ -282,15 +300,23 @@ test("the header preserves lifecycle status and details only Starting", () => {
     owner: null,
     step: "connecting",
   });
+  // Online is reported only once there is a link, so it has nothing left to
+  // narrate. A stop names itself.
   assert.deepEqual(
     remoteAccessHeaderStatus({
       ...starting,
       state: "online",
       kind: "custom",
       connectorRegistered: true,
-      tunnelServing: false,
+      tunnelServing: true,
+      dns: "resolved",
+      url: "https://studio.example.com",
     }),
     { state: "online", owner: null, step: null },
+  );
+  assert.equal(
+    remoteAccessHeaderStatus({ ...starting, state: "stopping" }).step,
+    null,
   );
   assert.equal(
     remoteAccessHeaderStatus({ ...starting, managedBy: "launch" }).owner,
@@ -302,6 +328,26 @@ test("the header preserves lifecycle status and details only Starting", () => {
     step: null,
   });
   assert.equal(en.settings.general.remoteAccess.stopAction, "Stop");
+});
+
+test("the authorization action waits for the URL before offering a link", () => {
+  // Before confirming there is only the confirm button; after it, Cloudflare
+  // still has to return a URL, and only then is there a link to offer.
+  assert.equal(remoteAccessAuthorizationAction(false, null, false), "confirm");
+  assert.equal(
+    remoteAccessAuthorizationAction(false, "https://cloudflare.test/a", true),
+    "confirm",
+  );
+  assert.equal(remoteAccessAuthorizationAction(true, null, true), "preparing");
+  // A URL left over from a superseded attempt is not this one to open.
+  assert.equal(
+    remoteAccessAuthorizationAction(true, "https://cloudflare.test/a", false),
+    "preparing",
+  );
+  assert.equal(
+    remoteAccessAuthorizationAction(true, "https://cloudflare.test/a", true),
+    "open",
+  );
 });
 
 test("the saved method is authoritative even when Custom is configured", () => {

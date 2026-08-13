@@ -213,6 +213,22 @@ export function remoteAccessSetupDialogShouldOpen(
   );
 }
 
+export type RemoteAccessAuthorizationAction = "confirm" | "preparing" | "open";
+
+export function remoteAccessAuthorizationAction(
+  authorized: boolean,
+  loginUrl: string | null,
+  authorizationCurrent: boolean,
+): RemoteAccessAuthorizationAction {
+  if (!authorized) {
+    return "confirm";
+  }
+  // Cloudflare has to hand back the authorization URL before there is anything
+  // to open, so the wait is its own state rather than a button that looks ready
+  // and does nothing.
+  return loginUrl && authorizationCurrent ? "open" : "preparing";
+}
+
 export function remoteAccessHeaderStatus(status: RemoteAccessStatus | null) {
   return {
     state: status?.state ?? null,
@@ -315,14 +331,7 @@ export function remoteAccessProgressStep(
   if (status?.state === "stopping") {
     return "disconnecting";
   }
-  if (
-    status?.state !== "starting" &&
-    !(
-      status?.kind === "custom" &&
-      status.state === "online" &&
-      !remoteAccessIsReady(status)
-    )
-  ) {
+  if (status?.state !== "starting") {
     return null;
   }
   if (status.kind === "custom") {
