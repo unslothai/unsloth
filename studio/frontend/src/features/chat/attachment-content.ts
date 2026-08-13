@@ -24,8 +24,10 @@ const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
 const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT): [^\n]*\]\n/;
-const TAGGED_ATTACHMENT_TEXT_RE =
-  /^<attachment name=[^\n]*>\n([\s\S]*)\n<\/attachment>$/;
+const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
+const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
+// Both wrappers start on the first line, so only a prefix is matched against.
+const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
@@ -183,21 +185,46 @@ async function readBoundedText(
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview
-// unwraps the adapter's header or tag rather than showing it to the user.
+// unwraps the adapter's header or tag rather than showing it to the user. The
+// stored payload has no size limit, so the wrapper is matched on a prefix and
+// only the capped body is copied out.
 export function parseAttachmentText(raw: string): AttachmentText {
-  const labelled = raw.match(LABELLED_ATTACHMENT_TEXT_RE);
+  const head = raw.slice(0, MAX_ATTACHMENT_WRAPPER_LENGTH);
+
+  const labelled = head.match(LABELLED_ATTACHMENT_TEXT_RE);
   if (labelled) {
     return {
       label: labelled[1] as AttachmentTextLabel,
-      text: raw.slice(labelled[0].length),
-      truncated: false,
+      ...sliceAttachmentBody(raw, labelled[0].length, raw.length),
     };
   }
-  const tagged = raw.match(TAGGED_ATTACHMENT_TEXT_RE);
-  if (tagged) {
-    return { label: null, text: tagged[1], truncated: false };
+
+  const tagOpen = head.match(ATTACHMENT_TAG_OPEN_RE);
+  if (tagOpen && raw.endsWith(ATTACHMENT_TAG_CLOSE)) {
+    return {
+      label: null,
+      ...sliceAttachmentBody(
+        raw,
+        tagOpen[0].length,
+        raw.length - ATTACHMENT_TAG_CLOSE.length,
+      ),
+    };
   }
-  return { label: null, text: raw, truncated: false };
+
+  return { label: null, ...sliceAttachmentBody(raw, 0, raw.length) };
+}
+
+function sliceAttachmentBody(
+  raw: string,
+  start: number,
+  end: number,
+): { text: string; truncated: boolean } {
+  const bodyEnd = Math.max(start, end);
+  const cappedEnd = Math.min(bodyEnd, start + MAX_PREVIEW_TEXT_LENGTH);
+  return {
+    text: raw.slice(start, cappedEnd),
+    truncated: cappedEnd < bodyEnd,
+  };
 }
 
 export function truncateAttachmentPreviewText(text: string): {

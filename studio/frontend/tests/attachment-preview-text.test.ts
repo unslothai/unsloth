@@ -197,3 +197,33 @@ test("readAttachmentText reports truncation even when the slice extracts no text
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
   }
 });
+
+// Stored payloads have no size limit, so unwrapping must copy at most the
+// capped body rather than the whole attachment.
+test("parseAttachmentText caps the body it copies out of a wrapper", () => {
+  const body = "d".repeat(300_000);
+  const tagged = parseAttachmentText(
+    `<attachment name=huge.txt>\n${body}\n</attachment>`,
+  );
+  assert.equal(tagged.label, null);
+  assert.equal(tagged.text.length, 200_000);
+  assert.equal(tagged.truncated, true);
+
+  const labelled = parseAttachmentText(`[PDF: huge.pdf]\n${body}`);
+  assert.equal(labelled.label, "PDF");
+  assert.equal(labelled.text.length, 200_000);
+  assert.equal(labelled.truncated, true);
+
+  const bare = parseAttachmentText(body);
+  assert.equal(bare.text.length, 200_000);
+  assert.equal(bare.truncated, true);
+});
+
+test("parseAttachmentText keeps an unterminated tag as plain text", () => {
+  const parsed = parseAttachmentText("<attachment name=notes.txt>\nbody");
+  assert.deepEqual(parsed, {
+    label: null,
+    text: "<attachment name=notes.txt>\nbody",
+    truncated: false,
+  });
+});
