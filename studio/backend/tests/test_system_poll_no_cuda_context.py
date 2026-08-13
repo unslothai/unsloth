@@ -275,6 +275,101 @@ def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
     assert result["index_kind"] == "physical"
 
 
+# ========== ROCm APU totals ==========
+
+# props.total_memory and the hipMemGetInfo total are the same number everywhere
+# except a unified-memory APU, where props reports the dedicated carve-out and
+# hipMemGetInfo the GTT-spanning pool. This module already treats the larger GTT
+# figure as authoritative (_apply_unified_memory_correction adopts it over
+# amd-smi's), so the inventory must not quietly hand back the carve-out and
+# budget a 128 GiB Strix Halo as ~8 GiB.
+
+_APU_CARVE_OUT = 8 * 1024**3
+_APU_GTT_TOTAL = 100 * 1024**3
+
+
+class _FakeApuProps(_FakeProps):
+    def __init__(self, total = _APU_CARVE_OUT):
+        super().__init__("AMD Radeon 8060S Graphics", total)
+        self.gcnArchName = "gfx1151"  # Strix Halo
+        self.is_integrated = 1
+
+
+def _apu_mod(gtt_total = _APU_GTT_TOTAL, *, carve_out = _APU_CARVE_OUT):
+    mod = types.SimpleNamespace()
+    mod.get_device_properties = lambda o: _FakeApuProps(carve_out)
+    mod.mem_get_info = lambda o: (gtt_total - (2 << 30), gtt_total)
+    mod.memory_allocated = lambda o: 1 << 30
+    return mod
+
+
+def test_rocm_apu_inventory_keeps_the_gtt_total(monkeypatch):
+    mod = _apu_mod()
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "rocm_windows_free_is_untrusted", lambda: False)
+
+    inventory = hw._torch_get_device_inventory([0])
+    occupancy = hw._torch_get_per_device_info([0])
+
+    assert inventory[0]["total_gb"] == occupancy[0]["total_gb"] == 100.0
+    assert inventory[0]["total_gb"] != round(_APU_CARVE_OUT / (1024**3), 2)
+
+
+def test_rocm_discrete_inventory_stays_context_free(monkeypatch):
+    # Only APUs pay for mem_get_info. An MI300X must keep the free path.
+    def _boom(*a, **k):
+        raise AssertionError("mem_get_info would create a primary context")
+
+    mod = _fake_mod([191505498112], names = ["MI300X"])
+    mod.mem_get_info = _boom
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 178.35
+
+
+def test_an_apu_shaped_name_on_cuda_stays_context_free(monkeypatch):
+    # The carve-out only exists on ROCm, so IS_ROCM gates the whole probe.
+    mod = _apu_mod()
+    mod.mem_get_info = lambda o: pytest.fail("no ROCm here, so no reason to pay for a context")
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 8.0
+
+
+def test_rocm_apu_keeps_the_carve_out_when_the_driver_total_fails(monkeypatch):
+    # Degraded, not dropped: the device still has to appear in the inventory.
+    mod = _apu_mod()
+
+    def _fail(o):
+        raise RuntimeError("hipMemGetInfo unavailable")
+
+    mod.mem_get_info = _fail
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    assert [d["total_gb"] for d in hw._torch_get_device_inventory([0])] == [8.0]
+
+
+def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):
+    # The sysfs-first path compares the overlay's total against the inventory's.
+    # With the carve-out there the two would agree and the overlay would adopt
+    # sysfs, shrinking the APU. Against the GTT total it declines, as documented.
+    mod = _apu_mod()
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(hw, "platform", types.SimpleNamespace(system = lambda: "Linux"))
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(hw, "_rocm_visibility_mask_active", lambda: False)
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 8.0)}
+    )
+
+    inventory = hw._torch_get_device_inventory([0])
+    probe = [{"index": d["index"], "vram_total_gb": d["total_gb"]} for d in inventory]
+    assert hw._rocm_system_wide_vram_by_index(probe) == {}
+
+
 # ========== clear_gpu_cache ==========
 
 

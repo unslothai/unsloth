@@ -1130,6 +1130,30 @@ def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int
     return min(free_bytes, max(0, total_bytes - reserved)), total_bytes
 
 
+def _rocm_props_total_is_carve_out(props: Any) -> bool:
+    """True when ``props.total_memory`` understates what torch can actually use.
+
+    On a unified-memory ROCm APU the two totals are NOT the same number:
+    ``props.total_memory`` is the dedicated carve-out while ``hipMemGetInfo``'s
+    total spans the GTT pool, which is the figure the rest of this module treats
+    as authoritative (_apply_unified_memory_correction adopts it over amd-smi's
+    for exactly this reason). Reporting the carve-out would undo that correction
+    and budget a 128 GiB Strix Halo as ~8 GiB. There is no context-free source for
+    the GTT total, so only APUs pay mem_get_info; every discrete device keeps the
+    free inventory. Same classifier the training worker and the llama.cpp backend
+    use, so all three agree on what an APU is.
+    """
+    if not IS_ROCM:
+        return False
+    try:
+        from core.training.worker import _rocm_classify_unified_memory
+
+        return _rocm_classify_unified_memory(props)[1]
+    except Exception as e:
+        logger.debug("ROCm unified-memory classification failed: %s", e)
+        return False
+
+
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:
     """Per-GPU name and total VRAM only, without creating a driver context.
 
@@ -1141,8 +1165,9 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     occupancy come here instead of _torch_get_per_device_info.
 
     ``props.total_memory`` is the same number ``mem_get_info`` returns as its total
-    half, so totals are unchanged. ``used_gb`` is always None, the value this
-    module already uses for "telemetry unavailable".
+    half everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), so
+    totals are unchanged. ``used_gb`` is always None, the value this module already
+    uses for "telemetry unavailable".
     """
     mod, _ = _torch_get_device_module()
     if mod is None:
@@ -1153,12 +1178,20 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
         try:
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
+            total_bytes = props.total_memory
+            if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
+                try:
+                    total_bytes = mod.mem_get_info(ordinal)[1]
+                except Exception as e:
+                    # Keep the carve-out rather than dropping the device: an
+                    # understated total still beats no device at all.
+                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             devices.append(
                 {
                     "index": phys_idx,
                     "visible_ordinal": ordinal,
                     "name": props.name,
-                    "total_gb": round(props.total_memory / (1024**3), 2),
+                    "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": None,
                 }
             )
