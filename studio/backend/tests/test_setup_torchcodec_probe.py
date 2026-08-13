@@ -21,6 +21,7 @@ _STUDIO = Path(__file__).resolve().parents[2]
 _SETUP_SH = _STUDIO / "setup.sh"
 _SETUP_PS1 = _STUDIO / "setup.ps1"
 
+
 def _shipped_sh_probe() -> str:
     """The probe body as setup.sh ships it. Read, not copied: a copy would keep
     passing while the installer that actually runs on a user's machine drifted."""
@@ -82,7 +83,9 @@ def test_an_unloadable_torchcodec_is_distinguished_from_an_absent_one():
     assert loadable == "ok"
 
     unloadable = _probe(
-        _raising("RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')")
+        _raising(
+            "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
+        )
     )
     assert unloadable == "ffmpeg"
 
