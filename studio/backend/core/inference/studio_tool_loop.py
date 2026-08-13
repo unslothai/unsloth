@@ -69,6 +69,11 @@ _TOOL_BUDGET_EXHAUSTED = (
 
 _TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
 
+_TOOL_CANCELLED = (
+    "Studio stopped this tool call before it returned, so there is no result. "
+    "The tool may have already done part of its work."
+)
+
 _TOOL_TRUNCATED = (
     "Studio did not execute this tool call because the provider stopped mid-call at its "
     "output limit."
@@ -156,6 +161,13 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     try:
         parsed = json.loads(arguments or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = {"_raw": arguments}
+    except RecursionError:
+        # Deeply nested but syntactically valid JSON blows the interpreter's
+        # stack rather than failing to decode, and RecursionError is not a
+        # ValueError. Uncaught it escapes the loop after the provider's delta
+        # was already relayed, so the client gets a server error mid-stream
+        # instead of a call that was simply refused.
         parsed = {"_raw": arguments}
     if not isinstance(parsed, dict):
         parsed = {"value": parsed}
@@ -1016,7 +1028,17 @@ async def stream_with_studio_tools(
                         yield _SSE_KEEPALIVE
                     else:
                         yield _sse(event)
-                result = outcome.get("result", "")
+                if "result" in outcome:
+                    result = outcome["result"]
+                elif cancel_event.is_set():
+                    # Stopped before the tool returned. Defaulting to "" here
+                    # would record a successful empty result and paint a normal
+                    # tool_end, so the transcript would claim a tool ran and
+                    # produced nothing, when in truth it was abandoned partway
+                    # and its side effects may already have happened.
+                    result = _TOOL_CANCELLED
+                else:
+                    result = ""
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported back to the model

@@ -441,6 +441,26 @@ def provider_runs_local_tools(provider_type: str | None) -> bool:
     return bool(info and info.get("studio_tools"))
 
 
+def provider_model_runs_local_tools(provider_type: str | None, model: str | None) -> bool:
+    """``provider_runs_local_tools`` narrowed to one model.
+
+    Gemini's image models are the exception the provider-wide flag cannot
+    express: ``_stream_gemini`` sets ``text_tools_allowed = False`` for them and
+    emits no ``functionDeclarations``, so the catalog never reaches the model.
+    Advertising the capability there lights up the MCP and Docs pills and then
+    completes the turn as if the user had selected nothing, which is worse than
+    not offering them.
+    """
+    if not provider_runs_local_tools(provider_type):
+        return False
+    if provider_type == "gemini" and isinstance(model, str):
+        # Same test _stream_gemini applies, kept in step with it deliberately.
+        model_lc = model.lower()
+        if "-image" in model_lc or "nano-banana" in model_lc:
+            return False
+    return True
+
+
 def provider_hosted_tools(provider_type: str | None) -> frozenset[str]:
     """Built-in tool names this provider executes on its own side.
 

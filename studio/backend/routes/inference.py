@@ -2368,6 +2368,7 @@ from core.inference.providers import (
     get_provider_info,
     hosted_only_tools,
     provider_hosted_tools,
+    provider_model_runs_local_tools,
     provider_runs_local_tools,
     validate_provider_base_url,
 )
@@ -11437,7 +11438,12 @@ async def _proxy_to_external_provider(
     # stream), so a non-streaming request still cannot honour confirm_tool_calls
     # and must still be refused below rather than silently proxied without it.
     studio_tool_loop = (
-        provider_runs_local_tools(provider_type)
+        # Model-aware: Gemini's image models drop the function catalog inside the
+        # native translator, so entering the loop for them would advertise tools
+        # the model is never shown and finish as if none were selected.
+        provider_model_runs_local_tools(
+            provider_type, payload.external_model or payload.model
+        )
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
         # A selection of purely hosted names is the provider's tool envelope, not
