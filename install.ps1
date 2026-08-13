@@ -1539,7 +1539,16 @@ exit 0
             # without starting Studio. Bypass for that case only, and without -WindowStyle
             # Hidden, since the hidden window beside a bypassed policy is the pair the
             # detections key on. A console window on a UNC profile beats nothing launching.
-            if ($launcherPs1 -like "\\*") {
+            # A mapped drive (H:, Z:) resolves to the same share and the same zone, so it needs
+            # the same treatment; DriveInfo on the root reports Network for both.
+            $launcherIsRemote = $launcherPs1 -like "\\*"
+            if (-not $launcherIsRemote) {
+                try {
+                    $launcherIsRemote = ([System.IO.DriveInfo]::new(
+                        [System.IO.Path]::GetPathRoot($launcherPs1))).DriveType -eq 'Network'
+                } catch {}
+            }
+            if ($launcherIsRemote) {
                 $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
             }
 
@@ -2667,8 +2676,8 @@ exit 0
             }
             # Run it where it landed, before the destination is touched. A host can have a
             # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
-            # copying first would leave the user with neither. A policy scoped by path is covered
-            # by the second probe and the restore below.
+            # copying first would leave the user with neither. A policy scoped to the destination
+            # path is not covered here: the caller's fallback handles it.
             if ((Get-UvExecutableVerdict -Path $stagedUv) -eq "failed") {
                 substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false

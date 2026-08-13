@@ -1729,7 +1729,9 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
-        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
+        # Only lines that touch a path count: `UV_CACHE=/opt/uv` is not a PATH entry, and
+        # taking it for one leaves the next shell unable to resolve uv.
+        if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null | grep -iF path \
             | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"

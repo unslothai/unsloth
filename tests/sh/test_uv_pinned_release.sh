@@ -967,14 +967,39 @@ else
     bad "a different fish entry does not suppress this one"
 fi
 
+# A profile that merely NAMES the directory is not a profile that puts it on PATH:
+# `UV_CACHE=$HOME/.local/bin` must not suppress the export, or the next shell finds no uv.
+_mh="$WORK/mention_home"
+mkdir -p "$_mh/.local/bin"
+printf 'UV_CACHE="$HOME/.local/bin"\n' > "$_mh/.profile"
+(
+    set +e
+    step() { :; }
+    HOME="$_mh"; export HOME
+    SHELL="/bin/bash"; export SHELL
+    unset ZSH_VERSION
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT="none"
+    _UNSLOTH_LOGIN_PATH="/usr/bin:/bin"
+    # shellcheck disable=SC1090
+    . "$WORK/path_guard.sh"
+) >/dev/null 2>&1 || true
+if grep -q 'export PATH=' "$_mh/.profile"; then
+    ok "a non-PATH mention of the directory does not suppress the export"
+else
+    bad "a non-PATH mention of the directory does not suppress the export"
+fi
+
 # A launcher on a UNC share is a remote script to PowerShell, and RemoteSigned refuses an
 # unsigned one, so a roaming profile would get a shortcut that exits without starting Studio.
+# A mapped drive is the same share and the same zone, so it must take the same branch.
 _ps1="$SCRIPT_DIR/../../install.ps1"
-if grep -q 'if ($launcherPs1 -like "\\\\\*")' "$_ps1" \
+if grep -q '\$launcherIsRemote = \$launcherPs1 -like "\\\\\*"' "$_ps1" \
+   && grep -q "DriveType -eq 'Network'" "$_ps1" \
    && grep -q '"-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""' "$_ps1"; then
-    ok "a UNC launcher gets a policy that can actually load it"
+    ok "a UNC or mapped-drive launcher gets a policy that can actually load it"
 else
-    bad "a UNC launcher gets a policy that can actually load it"
+    bad "a UNC or mapped-drive launcher gets a policy that can actually load it"
 fi
 
 # The DEFAULT install puts uv in ~/.local/bin, so the all-profile write must not be gated on the

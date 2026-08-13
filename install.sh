@@ -5470,9 +5470,11 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
-    # Comments stripped first: a commented-out old export is not an active entry, and taking it
-    # for one leaves the next shell with no uv at all.
-    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null | grep -qE "$_plp_pattern"; then
+    # Comments stripped first, then only lines that touch a path: a commented-out old export is
+    # not an active entry, and neither is `UV_CACHE=/opt/uv`. Taking either for one leaves the
+    # next shell with no uv at all.
+    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
+        | grep -iF path | grep -qE "$_plp_pattern"; then
         echo '' >> "$_SHELL_PROFILE"
         echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
         echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
