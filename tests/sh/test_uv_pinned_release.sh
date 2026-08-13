@@ -570,6 +570,23 @@ else
     ok "an unpinned architecture declines so the fallback runs"
 fi
 
+
+# An interrupted install must not leave the pinned path's temporaries behind: the work
+# directory holds a ~40 MB unpacked archive, and the staging file sits inside a directory that
+# is on PATH. The helper's own cleanup only runs when it returns normally, so both have to be
+# reachable from the signal and exit traps.
+_cleanup_body=$(awk '/^_cleanup_install_temporaries\(\) \{/,/^\}/' "$INSTALL_SH")
+if printf '%s' "$_cleanup_body" | grep -q '_UIP_WORK' && printf '%s' "$_cleanup_body" | grep -q '_UIP_STAGE'; then
+    ok "the pinned uv temporaries are removed by the interrupt cleanup"
+else
+    bad "the pinned uv temporaries are removed by the interrupt cleanup"
+fi
+if grep -q '^_UIP_WORK=""' "$INSTALL_SH" && grep -q '_UIP_WORK="\$_uip_work"' "$INSTALL_SH" \
+   && grep -q '_UIP_STAGE="\$_uip_stage"' "$INSTALL_SH"; then
+    ok "the pinned uv temporaries are published to the trap as they are created"
+else
+    bad "the pinned uv temporaries are published to the trap as they are created"
+fi
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
