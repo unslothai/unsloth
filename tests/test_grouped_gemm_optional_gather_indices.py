@@ -132,9 +132,15 @@ def test_forward_matches_the_dummy_index_workaround():
 
 
 @requires_cuda
-def test_backward_matches_the_dummy_index_workaround():
+@pytest.mark.parametrize("topk", [1, 2, 4])
+def test_backward_matches_the_dummy_index_workaround(topk):
     """`grouped_gemm_dX` sized its output off `gather_indices.shape[0]`, so the
-    backward pass has to be exercised separately from the forward."""
+    backward pass has to be exercised separately from the forward.
+
+    Parametrised on topk because at topk = 1 the replacement (`M_total`) and the
+    thing it replaces coincide, so that case alone cannot tell a correct fix from
+    one that only holds when dX's `[NUM_TOKENS * TOPK, K]` output is `M_total`.
+    """
     grads = {}
     for name, gather_indices in (
         ("none", None),
@@ -146,7 +152,7 @@ def test_backward_matches_the_dummy_index_workaround():
             X = X,
             W = W,
             m_sizes = m_sizes,
-            topk = 1,
+            topk = topk,
             gather_indices = gather_indices,
             permute_x = False,
             permute_y = False,
@@ -154,6 +160,7 @@ def test_backward_matches_the_dummy_index_workaround():
         ).sum().backward()
         grads[name] = (X.grad, W.grad)
 
+    assert grads["none"][0].shape == grads["dummy"][0].shape
     assert torch.equal(grads["none"][0], grads["dummy"][0])
     assert torch.equal(grads["none"][1], grads["dummy"][1])
 
