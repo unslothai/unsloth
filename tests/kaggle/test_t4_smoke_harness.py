@@ -3232,7 +3232,11 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
     script = next(s for s in steps if s.get("id") == "ref")["run"]
 
-    def drive(unsloth_ref, ls_remote, fetch_exit = 0):
+    def drive(
+        unsloth_ref,
+        ls_remote,
+        fetch_exit = 0,
+    ):
         work = tmp_path / f"case{abs(hash((unsloth_ref, ls_remote, fetch_exit)))}"
         stub = work / "bin"
         stub.mkdir(parents = True)
@@ -3265,9 +3269,7 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
         )
         done = subprocess.run(["bash", "-c", script], env = env, capture_output = True, text = True)
         assert done.returncode == 0, done.stderr
-        written = dict(
-            line.split("=", 1) for line in out.read_text().splitlines() if "=" in line
-        )
+        written = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
         return written, log.read_text(encoding = "utf-8")
 
     sha = "a" * 40

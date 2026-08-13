@@ -799,7 +799,11 @@ def _drive_one_kernel(monkeypatch, tmp_path, fake_run):
     return code, json.loads((tmp_path / "launch_result.json").read_text(encoding = "utf-8"))
 
 
-def _refusing_run(returncode: int, message: str, succeed_from: int = 10**6):
+def _refusing_run(
+    returncode: int,
+    message: str,
+    succeed_from: int = 10**6,
+):
     """A `subprocess.run` whose deletes fail until the nth attempt."""
     calls: list[str] = []
 
