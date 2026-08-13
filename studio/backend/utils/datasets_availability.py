@@ -76,16 +76,29 @@ def _is_arm64_windows() -> bool:
 _UNAVAILABLE_MSG = _ARM64_WINDOWS_MSG if _is_arm64_windows() else _GENERIC_MSG
 
 
-def _probe() -> bool:
-    # find_spec, not import: an absent datasets is the expected state here, and
-    # importing it to find out would cost a multi-second pyarrow load on every
-    # environment that does have it.
+def _spec_present(name: str) -> bool:
     try:
-        return importlib.util.find_spec("datasets") is not None
+        return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         # ValueError: a namespace-package shadow leaves __spec__ None. Either way
         # the library cannot be used, which is what this answers.
         return False
+
+
+def _probe() -> bool:
+    # find_spec, not import: an absent datasets is the expected state here, and
+    # importing it to find out would cost a multi-second pyarrow load on every
+    # environment that does have it.
+    #
+    # pyarrow as well as datasets, because the two go missing independently. This
+    # tier exists precisely because pyarrow has no win_arm64 wheel, and a pass that
+    # installs datasets and then dies building pyarrow (or an environment migrated
+    # out of the tier halfway) leaves the distribution on disk with its storage
+    # engine gone. `import datasets` pulls pyarrow eagerly -- datasets/__init__.py
+    # reaches arrow_dataset -- so find_spec("datasets") alone answers True for an
+    # environment where the very first `from datasets import ...` still raises
+    # ModuleNotFoundError, which is the 500 this gate is here to replace.
+    return _spec_present("datasets") and _spec_present("pyarrow")
 
 
 DATASETS_AVAILABLE: bool = _probe()

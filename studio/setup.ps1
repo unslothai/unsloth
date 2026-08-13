@@ -3270,7 +3270,13 @@ $ReusedSetupPython = Resolve-ReusedSetupPython
 # install.ps1 exports UNSLOTH_NO_DATASETS for its own run only, so without the marker
 # an update would judge a tier venv by the full-install rule and refuse the very
 # environment it just built. Mirrors install_manifest.recorded_no_datasets().
-$NoDatasetsMode = ($env:UNSLOTH_NO_DATASETS -eq "1")
+# The same canonical truthy set install.ps1 and install_manifest.NO_TORCH_TRUTHY use.
+# An exact -eq "1" comparison read UNSLOTH_NO_DATASETS=true/yes/on as "off": install.ps1
+# accepted the value and kept the native ARM64 interpreter, then the arch gate below --
+# with no marker yet on a fresh install -- rejected that very interpreter and aborted
+# setup, against an opt-in the user had stated explicitly.
+$NoDatasetsMode = ($null -ne $env:UNSLOTH_NO_DATASETS) -and
+    (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())
 if (-not $NoDatasetsMode -and $ReusedSetupPython) {
     try {
         # <venv>\Scripts\python.exe -> <venv>
@@ -3384,6 +3390,20 @@ if (-not $PythonOk -and $HasPython) {
                 $PythonOk = $true
             }
         }
+    }
+}
+
+# Windows on ARM, no reusable interpreter, and every candidate rejected on
+# architecture: $HasPython is still true, so the winget branch below -- which is
+# guarded by `-not $HasPython` and is the only thing that would install the x64
+# build -- was skipped, and setup hard-exited with "No supported Python (3.11-3.13)"
+# on a machine that has a perfectly supported 3.12. A present-but-unusable
+# interpreter is no usable Python, so say so and let the bootstrap run.
+if (-not $PythonOk -and $HasPython -and (Get-HostMachineArch) -eq "arm64" -and -not $NoDatasetsMode) {
+    $_barePythonSource = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if ($_barePythonSource -and -not (Test-CompatibleSetupPythonArch $_barePythonSource)) {
+        substep "windows on arm: the Python on PATH is a native ARM64 build, which cannot resolve the stack"
+        $HasPython = $false
     }
 }
 

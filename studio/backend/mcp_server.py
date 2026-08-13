@@ -137,6 +137,14 @@ def create_studio_mcp() -> FastMCP:
         """
         from models import TrainingStartRequest
         from routes.training import start_training as start
+        from utils.datasets_availability import require_datasets_http
+
+        # /train/start carries require_datasets_http as a FastAPI dependency, and a
+        # direct call like this one never executes it. Without this the ARM64
+        # inference-only tier accepts an MCP training job and the spawned trainer dies
+        # on `import datasets` instead, so the tool reports a started run that cannot
+        # exist. Same 503 the HTTP route raises; FastMCP renders the HTTPException.
+        require_datasets_http()
 
         request = TrainingStartRequest.model_validate(config)
         # Pass via_api_key explicitly (a direct call leaves it a Depends object).

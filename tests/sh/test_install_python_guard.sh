@@ -313,6 +313,26 @@ case "$(sh "$_GATE" 3.14 2>&1 || true)" in
     *) assert_eq "3.14 says why it is unproven" "yes" "no" ;;
 esac
 
+# 3.15+ is not "unproven", it is impossible: pyproject.toml declares
+# requires-python = ">=3.9,<3.15", so uv refuses the unsloth package itself there
+# whatever wheels exist. Warning and continuing recreated the late resolver failure
+# this gate was added to replace.
+assert_eq "3.15 is rejected, not merely warned about" \
+    "rejected" "$(run_python_gate 3.15)"
+assert_eq "3.16 is rejected" \
+    "rejected" "$(run_python_gate 3.16)"
+assert_eq "4.0 is rejected" \
+    "rejected" "$(run_python_gate 4.0)"
+case "$(sh "$_GATE" 3.15 2>&1 || true)" in
+    *requires-python*) assert_eq "the 3.15 rejection names requires-python" "yes" "yes" ;;
+    *) assert_eq "the 3.15 rejection names requires-python" "yes" "no" ;;
+esac
+# The ceiling the message quotes has to be the one pyproject.toml actually declares.
+case "$(grep -m1 '^requires-python' "$SCRIPT_DIR/../../pyproject.toml")" in
+    *'<3.15'*) assert_eq "pyproject still pins the ceiling this gate enforces" "yes" "yes" ;;
+    *) assert_eq "pyproject still pins the ceiling this gate enforces" "yes" "no" ;;
+esac
+
 rm -f "$_GATE"
 
 echo

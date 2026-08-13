@@ -1099,9 +1099,12 @@ class TestArm64SkipListParity:
         win_arm64 wheel at any version, so a resolver failure here is not a pin bump."""
         expected = {
             "datasets",
-            "trl",
             "sqlite-vec",
             "tiktoken",
+            # extras.txt is the one step installed WITH dependency resolution, and
+            # openai-whisper declares tiktoken, so filtering the direct tiktoken line
+            # alone let uv resolve it transitively and source-build it anyway.
+            "openai-whisper",
             "hf-transfer",
             "ddgs",
             "pandas",
@@ -1111,6 +1114,24 @@ class TestArm64SkipListParity:
             "tensorboard",
         }
         assert self._python_set() == expected
+
+    def test_trl_is_not_skipped(self):
+        """trl is a py3-none-any wheel that installs on ARM64, every step that
+        installs it is a --no-deps step so it cannot pull datasets back in, and
+        unsloth/models/_utils.py imports it unconditionally. Skipping it made
+        `from unsloth import FastLanguageModel` -- line 6 of the Studio inference
+        worker -- raise ModuleNotFoundError in a tier that advertises chat."""
+        assert "trl" not in self._python_set()
+        assert "trl" not in self._powershell_list()
+
+    def test_whisper_is_skipped_so_tiktoken_cannot_return(self):
+        """The skip list is only as good as the transitive closure it excludes."""
+        assert "openai-whisper" in self._python_set()
+        assert "openai-whisper" in self._powershell_list()
+        extras = (
+            REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt"
+        ).read_text(encoding = "utf-8")
+        assert "openai-whisper" in extras
 
     @staticmethod
     def _requirement_names(text: str) -> dict[str, str]:

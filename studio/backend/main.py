@@ -185,6 +185,7 @@ from utils.native_tls import activate_native_tls
 # Cheap and import-safe without the library present: find_spec only, no datasets import.
 from utils.datasets_availability import (
     datasets_available,
+    require_datasets_http,
     unavailable_detail as datasets_unavailable_detail,
 )
 
@@ -1371,8 +1372,23 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
-app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
-app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+# Both gated for the same reason as /api/hub/datasets. /api/datasets is the retained
+# compatibility alias an older client still calls, and it reaches the same formatting
+# service and its lazy `from datasets import Dataset, load_dataset`; Data Recipes reads
+# seeds through pandas and `datasets.load_dataset`, and this tier ships neither. Without
+# the dependency each answers 500 plus a traceback where the tier promises a stated 503.
+app.include_router(
+    datasets_router,
+    prefix = "/api/datasets",
+    tags = ["datasets"],
+    dependencies = [Depends(require_datasets_http)],
+)
+app.include_router(
+    data_recipe_router,
+    prefix = "/api/data-recipe",
+    tags = ["data-recipe"],
+    dependencies = [Depends(require_datasets_http)],
+)
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])

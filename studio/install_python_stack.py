@@ -3724,9 +3724,15 @@ def _extras_sdist_only_packages() -> tuple[str, ...]:
 # Every one of these is a compiled package with no win_arm64 wheel at any version,
 # verified against PyPI, and every one of them already degrades at runtime:
 #   datasets   - pyarrow's only route into the stack; training needs it, chat does not
-#   trl        - requires datasets unconditionally, so it follows datasets out
 #   sqlite-vec - RAG; storage/rag_db.py already sets RAG_AVAILABLE = False without it
 #   tiktoken   - reached only through transformers/data-designer, never imported here
+#   openai-whisper
+#              - pure Python itself, but extras.txt is the one step installed WITH
+#                dependency resolution and openai-whisper declares tiktoken, so
+#                filtering the direct tiktoken line does not keep tiktoken out: uv
+#                resolves it transitively and source-builds it (no win_arm64 wheel at
+#                any version), aborting the run. Dropping Whisper drops speech-to-text
+#                in this tier; keeping it drops the whole install.
 #   hf-transfer- download accelerator; the hub paths already force it off (hub/services/
 #                download_lifecycle.py sets HF_HUB_ENABLE_HF_TRANSFER=0)
 #   ddgs       - web search; pulls brotli, which has no win_arm64 wheel either. The one
@@ -3734,11 +3740,19 @@ def _extras_sdist_only_packages() -> tuple[str, ...]:
 #   pandas     - only the 3.0 line has win_arm64 wheels and studio.txt pins 2.3.3 on
 #                purpose, so drop it rather than lift a pin across a major. Its callers
 #                are Data Recipes, which need datasets and are unavailable here anyway
+# trl is deliberately NOT here. It is a py3-none-any wheel, it installs on ARM64,
+# and every step that installs it (extras-no-deps.txt, no-torch-runtime.txt) is a
+# --no-deps step, so it cannot drag datasets back in. Its own `trl/__init__.py` is a
+# _LazyModule with no eager `datasets` reference, so `from trl import __version__`
+# imports without the library present. That import is not optional: unsloth/models/
+# _utils.py runs it unconditionally, so `from unsloth import FastLanguageModel` --
+# the first line of studio/backend/core/inference/inference.py -- raises
+# ModuleNotFoundError without trl, and this tier advertises chat.
 NO_DATASETS_SKIP_PACKAGES = {
     "datasets",
-    "trl",
     "sqlite-vec",
     "tiktoken",
+    "openai-whisper",
     "hf-transfer",
     "ddgs",
     "pandas",

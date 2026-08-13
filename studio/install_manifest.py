@@ -57,6 +57,27 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "no-torch-runtime.txt",
     "single-env/data-designer-deps.txt",
     "single-env/data-designer.txt",
+    # Lifts the pins that predate their package's first win_arm64 wheel (pymupdf, av,
+    # scikit-learn, cryptography). On the ARM64 tier this file DECIDES the installed
+    # version, so leaving it untracked lets a --local edit change what the next pass
+    # would install while requirement_digests() still reports the environment current.
+    "single-env/overrides-win-arm64.txt",
+)
+
+# Entries in studio.txt that the ARM64 inference-only tier deliberately never
+# installs, so verification must not demand them back. Kept in step with
+# install_python_stack.NO_DATASETS_SKIP_PACKAGES, which is the full list; only the
+# members that studio.txt actually names matter here, because studio.txt is the one
+# file verify_install() checks. Canonical (PEP 503) names.
+NO_DATASETS_OMITTED_REQUIREMENTS: Tuple[str, ...] = (
+    "datasets",
+    "pandas",
+    "sqlite-vec",
+    "ddgs",
+    "trl",
+    "tiktoken",
+    "hf-transfer",
+    "tensorboard",
 )
 
 # The import chain studio/backend/run.py walks on startup.
@@ -333,7 +354,9 @@ def _version_satisfies(version: str, specifier: str) -> bool:
 
 
 def missing_requirements(
-    req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
+    req_file: Optional[Path] = None,
+    installed: Optional[Dict[str, str]] = None,
+    omit: Optional[Tuple[str, ...]] = None,
 ) -> List[str]:
     """Distribution names that are missing or outside their required versions.
 
@@ -342,6 +365,9 @@ def missing_requirements(
 
     `installed` (canonical distribution name -> version) checks a venv other
     than the one running this code, which importlib.metadata cannot see.
+
+    `omit` names distributions this install tier never installs, so their absence
+    is the intended state rather than a broken venv.
     """
     from importlib.metadata import PackageNotFoundError, distribution
 
@@ -351,12 +377,15 @@ def missing_requirements(
     except OSError:
         return []
 
+    omitted = {_canonical(name) for name in (omit or ())}
     missing: List[str] = []
     for line in lines:
         parsed = _parse_requirement_line(line)
         if parsed is None:
             continue
         name, marker, specifier = parsed
+        if _canonical(name) in omitted:
+            continue
         if not _marker_applies(marker):
             continue
         if installed is not None:
@@ -392,10 +421,21 @@ def verify_install(
     would answer for the venv the caller happens to be running in.
     """
     reqs = req_root or requirements_root()
-    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
+    manifest = read_manifest(root)
+
+    # The ARM64 inference-only tier omits studio.txt entries with no win_arm64 wheel
+    # (datasets, pandas, sqlite-vec, ddgs) on purpose. Demanding them back here would
+    # report `studio_deps_missing` on every single verification of a perfectly
+    # complete tier install: `studio setup` would force another dependency pass each
+    # invocation, and verify-install / the desktop preflight would reject it. Read the
+    # tier the install actually recorded, not the platform, so an environment moved
+    # between tiers is judged by the rule it was built under.
+    omit = NO_DATASETS_OMITTED_REQUIREMENTS if recorded_no_datasets(root) else None
+    missing = missing_requirements(
+        reqs / BOOT_REQUIREMENT_FILE, installed = installed, omit = omit
+    )
     deps_ok = not missing
 
-    manifest = read_manifest(root)
     manifest_ok = False
     reason: Optional[str] = None
 

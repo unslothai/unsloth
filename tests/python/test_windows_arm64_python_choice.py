@@ -223,7 +223,10 @@ def test_setup_refuses_an_arm64_environment_with_an_actionable_message():
     source = SETUP_PS1.read_text(encoding = "utf-8")
     index = source.index("Environment uses ARM64 Python")
     message = source[index - 1500 : index + 200]
-    assert "python.org" in message or "install.ps1" in message
+    # The whole URL, not the bare host: a hostname substring test is what CodeQL's
+    # incomplete-URL-sanitization query flags (alert 808), and the command the user
+    # is told to paste is the thing worth pinning anyway.
+    assert "irm https://unsloth.ai/install.ps1 | iex" in message
     assert "UNSLOTH_NO_DATASETS" in message
 
 
@@ -256,7 +259,7 @@ def test_setup_reads_the_tier_marker_not_just_the_env_var():
     marker, `unsloth studio update` on a tier install would judge it by the
     full-install rule and refuse the environment the installer had just built."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
-    index = source.index("$NoDatasetsMode = ($env:UNSLOTH_NO_DATASETS")
+    index = source.index("$NoDatasetsMode = (")
     block = source[index : index + 900]
     assert ".unsloth-no-datasets" in block
     # And it has to come after the venv interpreter is resolved, or there is no
@@ -325,3 +328,153 @@ def test_lifts_do_not_apply_on_an_x64_host():
     assert "datasets==" not in out
     assert "pymupdf==1.27.2.3" in out
     assert "pymupdf>=1.28.2" not in out
+
+
+# ── The inference-only tier picks NATIVE ARM64, and picks it deliberately ──
+
+
+def _tier_resolver_script(installed: list[tuple[str, str]]) -> str:
+    """Find-CompatiblePython verbatim, with the tier on and the x64 swap skipped.
+
+    install.ps1 skips the swap entirely under $script:ArmInferenceOnly, so whatever
+    the resolver returns IS the interpreter the venv is built with.
+    """
+    script = _resolver_script(installed, can_download = False)
+    script = script.replace(
+        '$PythonVersion = "3.13"',
+        '$PythonVersion = "3.13"\n$script:ArmInferenceOnly = $true',
+        1,
+    )
+    swap = """$found = Find-CompatiblePython
+if ($found -and $found.Arch -ne "x86_64") {
+    $x64 = Install-X64Python
+    if ($x64) { $found = $x64 }
+}"""
+    assert swap in script
+    return script.replace(swap, "$found = Find-CompatiblePython")
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        # The case that made this a bug: the py launcher hands out an x64 build first.
+        # Returning it immediately produced an EMULATED install with the training
+        # packages stripped out -- the disadvantages of both tiers, when opting in is
+        # precisely a choice to keep the native interpreter.
+        ([("3.13", "x86_64"), ("3.13", "arm64")], "3.13|arm64"),
+        # Native build of the requested minor wins outright.
+        ([("3.13", "arm64"), ("3.13", "x86_64")], "3.13|arm64"),
+        # Requested minor is x64-only: a native build of a lower-priority supported
+        # minor is what the tier is for.
+        ([("3.13", "x86_64"), ("3.11", "arm64")], "3.11|arm64"),
+        # Nothing native anywhere: still returns something rather than failing.
+        ([("3.13", "x86_64")], "3.13|x86_64"),
+    ],
+)
+def test_inference_only_tier_prefers_the_native_interpreter(installed, expected):
+    assert _pwsh(_tier_resolver_script(installed)) == expected
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_x64only_is_never_answered_with_arm64_in_the_tier():
+    """-X64Only is Install-X64Python's own last resort. Answering it with the native
+    build would make the bootstrap report success and change nothing."""
+    script = _tier_resolver_script([("3.13", "arm64"), ("3.11", "x86_64")]).replace(
+        "$found = Find-CompatiblePython", "$found = Find-CompatiblePython -X64Only"
+    )
+    assert _pwsh(script) == "3.11|x86_64"
+
+
+def test_fresh_tier_branch_installs_the_cli_runtime_dependencies():
+    """--no-deps leaves unsloth without typer, and unsloth_cli/__init__.py imports it
+    at module scope: `& $UnslothExe studio setup` would exit ModuleNotFoundError
+    before install_python_stack.py could install anything. The two other --no-deps
+    branches already lay down no-torch-runtime.txt for exactly this reason."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    index = source.index('"install unsloth (arm64 inference-only)"')
+    branch = source[index : source.index("} elseif ($StudioLocalInstall)", index)]
+    assert "Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)" in branch
+    assert "--no-deps -r $NoTorchReq" in branch
+    runtime = (
+        REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
+    ).read_text(encoding = "utf-8")
+    assert "typer" in runtime
+
+
+def test_no_datasets_env_override_is_restored():
+    """`irm ... | iex` runs in the CALLER's process, so the fallback's
+    $env:UNSLOTH_NO_DATASETS = "1" outlived the installer and pinned the session to
+    the tier -- including the x64 retry the failure message itself asks for."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "$script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS" in source
+    assert source.index("$script:PreviousNoDatasetsEnv = ") < source.index(
+        '$env:UNSLOTH_NO_DATASETS = "1"'
+    )
+    restore = source[source.index("if ($script:HadPreviousNoDatasetsEnv)") :][:400]
+    assert "$env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv" in restore
+    assert "Remove-Item Env:UNSLOTH_NO_DATASETS" in restore
+
+
+SETUP_PS1_FILE = REPO_ROOT / "studio" / "setup.ps1"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", "True"),
+        ("true", "True"),
+        ("TRUE", "True"),
+        ("yes", "True"),
+        ("on", "True"),
+        (" on ", "True"),
+        ("0", "False"),
+        ("", "False"),
+        ("maybe", "False"),
+    ],
+)
+def test_setup_accepts_every_documented_truthy_no_datasets_value(value, expected):
+    """install.ps1 accepts 1/true/yes/on and keeps the native ARM64 interpreter on
+    any of them. An exact -eq "1" here read the rest as "off", and with no marker
+    yet on a fresh install the arch gate then rejected that very interpreter and
+    aborted setup, against an opt-in the user had stated explicitly."""
+    source = SETUP_PS1_FILE.read_text(encoding = "utf-8")
+    index = source.index("$NoDatasetsMode = (")
+    expression = source[index : source.index("$HasPython = ", index)]
+    script = (
+        f'$env:UNSLOTH_NO_DATASETS = "{value}"\n'
+        "$ReusedSetupPython = $null\n"
+        f"{expression}\n"
+        "Write-Output $NoDatasetsMode"
+    )
+    assert _pwsh(script) == expected
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_setup_treats_an_unset_no_datasets_variable_as_off():
+    source = SETUP_PS1_FILE.read_text(encoding = "utf-8")
+    index = source.index("$NoDatasetsMode = (")
+    expression = source[index : source.index("$HasPython = ", index)]
+    script = (
+        "Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue\n"
+        "$ReusedSetupPython = $null\n"
+        f"{expression}\n"
+        "Write-Output $NoDatasetsMode"
+    )
+    assert _pwsh(script) == "False"
+
+
+def test_setup_bootstraps_x64_when_only_a_native_python_is_on_path():
+    """With a supported native ARM64 python on PATH, $PythonOk was false and
+    $HasPython true, so the winget branch -- guarded by `-not $HasPython`, and the
+    only thing that would install the x64 build -- was skipped and setup hard-exited
+    with 'No supported Python (3.11-3.13)' on a machine that has a supported 3.12."""
+    source = SETUP_PS1_FILE.read_text(encoding = "utf-8")
+    index = source.index("if (-not $PythonOk -and $HasPython -and (Get-HostMachineArch) -eq")
+    block = source[index : source.index("if ($PythonOk) {", index)]
+    assert "Test-CompatibleSetupPythonArch" in block
+    assert "$HasPython = $false" in block
+    assert "-not $NoDatasetsMode" in block
+    # And it has to run BEFORE the branch it unblocks.
+    assert index < source.index("elseif (-not $HasPython) {")

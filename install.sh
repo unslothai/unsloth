@@ -462,6 +462,17 @@ if [ -n "$_USER_PYTHON" ]; then
                         echo "   with a bare dependency name instead of this message." >&2
                         echo "   Re-run without --python to use the default, or pass a supported version." >&2
                         exit 1
+                    elif [ "$_req_minor" -ge 15 ]; then
+                        # Not "untested" but impossible: pyproject.toml declares
+                        # requires-python = ">=3.9,<3.15", so uv refuses the unsloth
+                        # package itself on 3.15+ whatever wheels exist. Warning and
+                        # continuing recreates the late resolver failure this gate was
+                        # added to replace. Bump both together when the pin moves.
+                        echo "❌ ERROR: Python $_USER_PYTHON is not supported by Unsloth (requires-python is >=3.9,<3.15)." >&2
+                        echo "   uv cannot install the unsloth package on it at all, so the run would" >&2
+                        echo "   fail during resolution instead of here." >&2
+                        echo "   Re-run without --python to use the default, or pass 3.11-3.13." >&2
+                        exit 1
                     elif [ "$_req_minor" -gt 13 ]; then
                         echo "⚠️  WARNING: Python $_USER_PYTHON is newer than the tested range (3.11-3.13)." >&2
                         echo "   Some wheels may not exist yet for it; 3.13 is the safe choice." >&2

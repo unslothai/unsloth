@@ -381,6 +381,15 @@ function Install-UnslothStudio {
         (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())) {
         $script:ArmInferenceOnly = $true
     }
+    # The ARM64 fallback below sets $env:UNSLOTH_NO_DATASETS to hand the tier to
+    # `studio setup`. `irm ... | iex` runs all of this in the CALLER's PowerShell
+    # process, so without a restore that assignment outlives the installer: the
+    # recovery this very script prints -- install x64 Python, re-run in the same
+    # terminal -- would then re-enter the tier and ignore the new interpreter.
+    # Restored next to UNSLOTH_STUDIO_HOME and the other handoff variables, after
+    # the setup call that is the only thing that reads it.
+    $script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS
+    $script:HadPreviousNoDatasetsEnv = ($null -ne $script:PreviousNoDatasetsEnv)
     # The entry above is skipped for one reason: it cannot `import torch`. A
     # -NoTorch install never imports it, so refusing the interpreter would send a
     # locked-down GGUF-only machine into winget/python.org recovery it may not be
@@ -2094,7 +2103,19 @@ exit 0
         # -X64Only still forces the search (Install-X64Python's last resort). Otherwise
         # the inference-only tier keeps the native interpreter: choosing that tier IS
         # choosing native ARM64 over an emulated x64 build.
-        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64" -and -not $script:ArmInferenceOnly)
+        $armHost = ((Get-HostMachineArch) -eq "arm64")
+        $preferX64 = $X64Only -or ($armHost -and -not $script:ArmInferenceOnly)
+        # The tier has to RANK too, not accept the first candidate. On a box where the
+        # py launcher hands out an emulated x64 build first, returning it immediately
+        # produced an emulated install with the training packages stripped out -- the
+        # disadvantages of both tiers, when the whole point of opting in is to keep the
+        # native ARM64 interpreter. Never under -X64Only: that switch is
+        # Install-X64Python's own last resort and must not be answered with ARM64.
+        $preferArm64 = $armHost -and $script:ArmInferenceOnly -and -not $X64Only
+        # Whether an early return is allowed at all. Off means collect every candidate
+        # and choose on architecture below.
+        $rankByArch = $preferX64 -or $preferArm64
+        $wantedArch = if ($preferArm64) { "arm64" } else { "x86_64" }
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
@@ -2119,7 +2140,7 @@ exit 0
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
@@ -2148,7 +2169,7 @@ exit 0
                         # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
@@ -2159,7 +2180,7 @@ exit 0
         # a same-minor x64 install that is neither preferred nor on PATH never becomes a
         # candidate. `-3.12-64` cannot disambiguate (deprecated, it only means "not
         # 32-bit"), so enumerate every registration with -0p and probe each path.
-        if ($preferX64) {
+        if ($rankByArch) {
             foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
                 if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
                 $listed = @()
@@ -2191,11 +2212,22 @@ exit 0
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
         }
+        # The tier sweeps every supported minor for a native build before settling for
+        # an emulated one. Outside it, the same cross-minor search is Install-X64Python's
+        # job (it re-runs this function with -X64Only); the tier skips that swap
+        # entirely, so without this an ARM64 3.11 next to an x64 3.13 still produced an
+        # emulated install with the training packages removed.
+        if ($preferArm64) {
+            foreach ($minor in $minors) {
+                $native = $candidates | Where-Object { $_.Version -eq $minor -and $_.Arch -eq "arm64" } | Select-Object -First 1
+                if ($native) { return $native }
+            }
+        }
         foreach ($minor in $minors) {
             $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
             if ($sameMinor.Count -eq 0) { continue }
-            $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
-            if ($x64) { return $x64 }
+            $wanted = $sameMinor | Where-Object { $_.Arch -eq $wantedArch } | Select-Object -First 1
+            if ($wanted) { return $wanted }
             if (-not $X64Only) { return $sameMinor[0] }
         }
         if (-not $X64Only -and $candidates.Count -gt 0) { return $candidates[0] }
@@ -4250,9 +4282,13 @@ exit 0
     # (tests/python/test_cross_platform_parity.py compares the two): every one of
     # these is a compiled package with no win_arm64 wheel at any version, and every
     # one already degrades at runtime rather than being load-bearing.
+    # trl is deliberately absent: it is a pure-Python wheel that installs on ARM64,
+    # every step that installs it is a --no-deps step so it cannot pull datasets back
+    # in, and unsloth/models/_utils.py imports it unconditionally -- dropping it makes
+    # `from unsloth import FastLanguageModel` fail in a tier that advertises chat.
     $script:ArmInferenceSkipPackages = @(
-        "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas",
-        "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard"
+        "datasets", "sqlite-vec", "tiktoken", "openai-whisper", "hf-transfer", "ddgs",
+        "pandas", "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard"
     )
 
     # Pins that predate their package's first win_arm64 wheel, rewritten in place.
@@ -4489,6 +4525,19 @@ exit 0
                 # Same pydantic-with-deps trick as the no-torch branch: under --no-deps
                 # pydantic and pydantic-core drift apart and fail pydantic's own check.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
+            }
+            if ($baseInstallExit -eq 0) {
+                # --no-deps above installed unsloth WITHOUT its declared dependencies,
+                # and pydantic is not one of the ones that matter first: the `unsloth`
+                # console script imports typer at the top of unsloth_cli/__init__.py, so
+                # `& $UnslothExe studio setup` below would exit ModuleNotFoundError
+                # before install_python_stack.py could install anything. The two other
+                # --no-deps branches already lay down no-torch-runtime.txt for exactly
+                # this reason; the ARM filter drops the entries with no win_arm64 wheel.
+                $NoTorchReq = Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)
+                if ($NoTorchReq) {
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install arm64 inference-only runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                }
             }
         } elseif ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
@@ -4891,6 +4940,14 @@ exit 0
             $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+        }
+        # Set by the ARM64 fallback, and only for this run. Leaving it behind in a
+        # piped-to-iex shell pins the caller to the inference-only tier for the rest
+        # of the session, including the x64 retry the failure message asks for.
+        if ($script:HadPreviousNoDatasetsEnv) {
+            $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
+        } else {
+            Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
         }
         # ...and the copy this function holds goes with it, rather than sitting in the frame for
         # the rest of a long install.

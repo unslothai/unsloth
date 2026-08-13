@@ -223,3 +223,127 @@ class TestHealthVerdict:
         source = frontend.read_text(encoding = "utf-8")
         assert '"datasets_unavailable"' in source
         assert "x64" in source
+
+
+class TestProbeRequiresPyarrow:
+    """``datasets`` on disk is not the same as ``datasets`` importable.
+
+    pyarrow is the whole reason this tier exists -- no win_arm64 wheel at any
+    version -- so the environment where the distribution is present and its storage
+    engine is not is the expected failure, not an exotic one: a pass that installed
+    datasets and then died building pyarrow leaves exactly that. ``import datasets``
+    reaches pyarrow eagerly through arrow_dataset, so probing the name alone
+    published "available" for an install whose first ``from datasets import ...``
+    still raises ModuleNotFoundError -- the 500 this gate replaces.
+    """
+
+    @staticmethod
+    def _probe_with(present: set[str]) -> bool:
+        def fake_find_spec(name: str):
+            return object() if name in present else None
+
+        with mock.patch.object(
+            datasets_availability.importlib.util, "find_spec", side_effect = fake_find_spec
+        ):
+            return datasets_availability._probe()
+
+    def test_datasets_without_pyarrow_is_unavailable(self):
+        assert self._probe_with({"datasets"}) is False
+
+    def test_pyarrow_without_datasets_is_unavailable(self):
+        assert self._probe_with({"pyarrow"}) is False
+
+    def test_both_present_is_available(self):
+        assert self._probe_with({"datasets", "pyarrow"}) is True
+
+    def test_neither_present_is_unavailable(self):
+        assert self._probe_with(set()) is False
+
+    def test_probe_still_never_imports_datasets(self):
+        """The pyarrow check must stay a find_spec too: importing either to find
+        out costs the multi-second load this module exists to avoid."""
+        source = (_BACKEND / "utils" / "datasets_availability.py").read_text(encoding = "utf-8")
+        assert "import pyarrow" not in source
+        assert '_spec_present("pyarrow")' in source
+
+
+class TestCompatibilityRoutersAreGated:
+    """The gate has to cover every mount that reaches the library, not just the
+    newest one. ``/api/datasets`` is the retained compatibility alias an older
+    client still calls and it reaches the same formatting service; Data Recipes
+    reads seeds through pandas and ``datasets.load_dataset``. Both were mounted
+    ungated, so both answered 500 where the tier promises 503."""
+
+    @staticmethod
+    def _mount(name: str) -> str:
+        """Exactly one include_router() call. A window wide enough to spill into the
+        next mount would read that one's dependency as this one's."""
+        source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+        index = source.index(f"app.include_router(\n    {name},")
+        return source[index : source.index("\n)", index)]
+
+    @pytest.mark.parametrize("router", ["datasets_router", "data_recipe_router"])
+    def test_legacy_router_carries_the_dependency(self, router):
+        assert "Depends(require_datasets_http)" in self._mount(router)
+
+    def test_import_example_route_is_gated(self):
+        """_materialize_hf_dataset() runs `from datasets import load_dataset`, so
+        an ungated import surfaces as a 502 rather than the tier's 503."""
+        source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
+        index = source.index('"/diffusion/dataset/import-example"')
+        assert "require_datasets_http" in source[index : index + 300]
+
+    def test_mcp_start_training_enforces_the_gate(self):
+        """mcp_server calls start_training() directly, so FastAPI never runs the
+        decorator dependency: the tool accepted a job whose trainer then died on
+        `import datasets`."""
+        source = (_BACKEND / "mcp_server.py").read_text(encoding = "utf-8")
+        index = source.index("async def start_training(")
+        body = source[index : source.index("async def stop_training(", index)]
+        assert "require_datasets_http()" in body
+
+
+class TestChatOnlyVerdictDoesNotHideModels:
+    """`datasets_unavailable` disables Train, and nothing else.
+
+    Every other chat-only reason is a statement about the runtime, and the picker
+    reasonably hides non-GGUF rows on one. This tier keeps torch and Transformers
+    and advertises chat, so reusing the same verdict made ordinary safetensors
+    models unselectable on an install that can run them."""
+
+    @staticmethod
+    def _adapter() -> str:
+        path = (
+            _BACKEND.parent / "frontend" / "src" / "features" / "chat" / "api" / "chat-adapter.ts"
+        )
+        return path.read_text(encoding = "utf-8")
+
+    def test_format_filter_exempts_datasets_unavailable(self):
+        source = self._adapter()
+        index = source.index("function chatOnlyLimitsModelFormats()")
+        body = source[index : source.index("\n}", index)]
+        assert 'chatOnlyReason !== "datasets_unavailable"' in body
+
+    @pytest.mark.parametrize(
+        "fn", ["function runsOnThisPlatform(", "function cachedModelsRunOnThisPlatform("]
+    )
+    def test_filters_route_through_the_exemption(self, fn):
+        source = self._adapter()
+        index = source.index(fn)
+        body = source[index : source.index("\n}", index)]
+        assert "chatOnlyLimitsModelFormats()" in body
+        assert "isChatOnly()" not in body
+
+    def test_sidebar_disables_data_recipes_in_the_tier(self):
+        """Every Data Recipes seed path reads pandas or datasets.load_dataset, and
+        this tier ships neither: an enabled entry that only fails on click is worse
+        than a greyed-out one with a reason."""
+        source = (
+            _BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        ).read_text(encoding = "utf-8")
+        index = source.index("const datasetsUnavailable =")
+        assert 'chatOnlyReason === "datasets_unavailable"' in source[index : index + 200]
+        recipes = source[source.index("    recipes: {") :]
+        recipes = recipes[: recipes.index("\n    },")]
+        assert "disabled: datasetsUnavailable" in recipes
+        assert "recipesDisabledHint" in recipes
