@@ -24,23 +24,20 @@ import pytest
 def _stub_if_missing(name, attrs):
     """Register a stub module for a dep the backend pytest job does not install.
 
-    Same helper, and the same reason, as in test_trainer_stdout_quiet.py,
-    test_training_preflight.py and test_training_progress_callback.py:
-    core.training.trainer imports unsloth (and through it unsloth_zoo) and trl at module
-    scope, while the pytest matrix in studio-backend-ci.yml installs studio.txt plus torch
-    and transformers and stops there. The heavier repo-cpu-tests job beside it is the one
-    that installs unsloth_zoo, and it runs the REPO-ROOT tests/, not this tree. Unstubbed,
-    this module fails COLLECTION, which takes down the whole job on all four interpreters
-    rather than failing one test. Real installs are left alone, so a developer box still
-    exercises the genuine import. __spec__ = None keeps the trainer's own
-    _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    Same helper and reason as test_trainer_stdout_quiet.py: core.training.trainer imports
+    unsloth (and through it unsloth_zoo) and trl at module scope, while the pytest matrix in
+    studio-backend-ci.yml installs studio.txt plus torch and transformers and deliberately
+    stops there, because the repo-cpu-tests job beside it is the one that installs
+    unsloth_zoo, for the REPO-ROOT tests/ tree. Unstubbed, this module fails COLLECTION and
+    takes the whole job down. A real install is left alone. __spec__ = None keeps the
+    trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
     """
     if name in sys.modules:
         return
     try:
         importlib.import_module(name)
         return
-    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
         pass
     mod = types.ModuleType(name)
     mod.__spec__ = None
@@ -62,12 +59,11 @@ from core.training.trainer import UnslothTrainer  # noqa: E402
 import transformers  # noqa: E402
 
 # transformers 5 rebuilds sys.modules["transformers"] as a fresh lazy facade the first time an
-# attribute resolves through a submodule import, so the object an earlier `import transformers`
-# bound is no longer the one `from transformers import AutoProcessor` reads. A stub written onto
-# the stale object is invisible to the trainer, which then makes the real network call the
-# no-outbound-network fixture blocks. Resolving both names once, here, settles the replacement
-# before any test patches them. It shows up only with unsloth stubbed out: a real `import
-# unsloth` resolves them long before collection reaches this module.
+# attribute resolves through a submodule import, so an object bound by an earlier `import
+# transformers` is not the one `from transformers import AutoProcessor` reads, and a stub on the
+# stale one is invisible to the trainer, which then makes a real network call. Resolving both
+# names once here settles that before any test patches them. Only visible with unsloth stubbed:
+# a real `import unsloth` resolves them long before collection reaches this module.
 transformers.AutoProcessor  # noqa: B018
 transformers.AutoTokenizer  # noqa: B018
 transformers = sys.modules["transformers"]

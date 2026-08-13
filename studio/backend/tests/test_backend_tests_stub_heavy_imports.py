@@ -3,25 +3,20 @@
 
 """No test module in this tree may import a backend module that needs unsloth without stubbing first.
 
-``core/training/trainer.py`` imports ``unsloth`` (and through it ``unsloth_zoo``) and ``trl`` at
-module scope, and it is not the only one: ``core/inference/inference.py`` does the same. The
-``pytest`` matrix in ``.github/workflows/studio-backend-ci.yml`` installs studio.txt plus torch
-and transformers and deliberately stops there. The heavier ``repo-cpu-tests`` job beside it does
-install ``unsloth_zoo``, but it runs the REPO-ROOT ``tests/`` tree, not this one, so nothing here
-can lean on that.
+``core/training/trainer.py`` and ``core/inference/inference.py`` import ``unsloth`` (and through
+it ``unsloth_zoo``) and ``trl`` at module scope. The ``pytest`` matrix in
+``.github/workflows/studio-backend-ci.yml`` installs studio.txt plus torch and transformers and
+deliberately stops there: the ``repo-cpu-tests`` job beside it is the one that installs
+``unsloth_zoo``, and it runs the REPO-ROOT ``tests/`` tree, not this one.
 
-The consequence is worse than one skipped test: an unstubbed module fails COLLECTION, and a
-collection error takes down the entire job on all four Python versions. That happened when
-``test_trainer_stdout_quiet.py`` landed, and again with ``test_audio_type_inconclusive.py``,
-whose module-scope ``from core.training.trainer import ...`` turned every job in the matrix into
-``ImportError: Unsloth: Please install unsloth_zoo`` at collection time.
+An unstubbed module fails COLLECTION, which takes the entire job down on all four Python
+versions, as ``test_trainer_stdout_quiet.py`` and then ``test_audio_type_inconclusive.py`` did.
 
-The earlier version of this guard hardcoded ``core.training.trainer`` as the one import to watch,
-so a test that reached the same ``import unsloth`` through any other backend module was invisible
-to it. The set is now derived from the backend sources: every module that imports a heavy package
-at module scope, plus everything that imports one of those at module scope, transitively. It is a
-source check rather than a runtime one because on a box where the real packages ARE installed the
-import succeeds and proves nothing.
+The earlier version of this guard hardcoded ``core.training.trainer``, so a test reaching the
+same ``import unsloth`` through any other backend module was invisible to it. The set is now
+derived from the backend sources: every module importing a heavy package at module scope, closed
+transitively over the backend's own module-scope imports. Source check rather than runtime,
+because where the real packages ARE installed the import succeeds and proves nothing.
 """
 
 from __future__ import annotations
@@ -34,17 +29,14 @@ _TESTS_DIR = Path(__file__).resolve().parent
 _BACKEND = _TESTS_DIR.parent
 
 # Top-level packages the backend pytest job does not install. `unsloth` is the one that raises
-# (its _gpu_init insists on unsloth_zoo); the other two are listed because a module that pulls
-# them in at module scope is unimportable there for the same reason.
+# (its _gpu_init insists on unsloth_zoo); the other two are unimportable there for the same reason.
 _HEAVY_PACKAGES = ("unsloth", "unsloth_zoo", "trl")
 
-# Not part of the backend's own import graph: the test tree itself, vendored third-party code,
-# and unsloth_compiled_cache, which is a gitignored runtime artifact directory.
+# Outside the backend's own import graph (unsloth_compiled_cache is a gitignored artifact dir).
 _SKIP_TOP_LEVEL = frozenset({"tests", "vendor", "unsloth_compiled_cache"})
 
-# What a module must stub before such an import. Naming `unsloth` is enough to prove intent: a
-# module that stubs it and forgets `trl` fails loudly at collection on CI, whereas a module that
-# stubs nothing is the silent case this guard exists to catch.
+# Naming `unsloth` is enough to prove intent: a module that stubs it and forgets `trl` fails
+# loudly at collection, whereas one that stubs nothing is the silent case this guard catches.
 _REQUIRED_STUB = "unsloth"
 
 
@@ -60,10 +52,9 @@ def _module_name(path: Path) -> str:
 def _module_scope_imports(tree: ast.Module, package: str) -> set[str]:
     """Absolute dotted names imported at module scope only.
 
-    An import inside a function or a ``try`` is already lazy or already guarded, and neither can
-    break collection, so only ``tree.body`` is walked. Both the module and the module.attr form
-    of a ``from X import Y`` are recorded, because ``from core.training import trainer`` names a
-    module while ``from core.training.trainer import UnslothTrainer`` names an attribute of one.
+    An import inside a function or a ``try`` is already lazy or guarded and cannot break
+    collection, so only ``tree.body`` is walked. Both the module and the module.attr form of a
+    ``from X import Y`` are recorded, since either can be the one naming the module.
     """
     names: set[str] = set()
     for node in tree.body:
@@ -88,11 +79,10 @@ def _needs_heavy(names: set[str]) -> bool:
 
 @lru_cache(maxsize = 1)
 def _heavy_backend_modules() -> frozenset[str]:
-    """Backend modules that cannot be imported unless unsloth/unsloth_zoo/trl are installed.
+    """Backend modules unimportable unless unsloth/unsloth_zoo/trl are installed.
 
-    Seeded with the modules importing one of those directly at module scope, then closed over
-    the backend's own module-scope imports, so a module that merely re-exports one of them is
-    caught too.
+    Seeded with the direct module-scope importers, then closed over the backend's own
+    module-scope imports so a module that merely re-exports one is caught too.
     """
     imports: dict[str, set[str]] = {}
     for path in sorted(_BACKEND.rglob("*.py")):
@@ -131,8 +121,8 @@ def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | N
 def _stubs_before(source: str, line: int | None) -> bool:
     """Whether a stub call naming ``unsloth`` appears at module scope BEFORE ``line``.
 
-    Order is the whole point. A stub registered afterwards is registered after the real import
-    has already been attempted and raised, so it changes nothing."""
+    Order is the whole point: a stub registered afterwards lands after the real import has
+    already been attempted and raised."""
     if line is None:
         return True
     head = "\n".join(source.splitlines()[: line - 1])
