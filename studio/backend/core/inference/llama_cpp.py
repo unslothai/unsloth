@@ -4931,6 +4931,9 @@ class LlamaCppBackend:
             # sits with its flag.
             current_flags: list[str] = []
             current_desc: list[str] = []
+            # Flag -> whether its declaration shows a value placeholder.
+            takes_value: dict[str, bool] = {}
+            current_takes_value = False
             for line in help_text.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("-") and not line.startswith(" "):
@@ -4939,8 +4942,33 @@ class LlamaCppBackend:
                         desc = " ".join(current_desc)
                         for f in current_flags:
                             blocks[f] = desc
+                            takes_value[f] = current_takes_value
                     current_flags = []
                     current_desc = [stripped]
+                    # Whether the flag takes a value at all, which is what tells
+                    # "--verbose foo" (a typo llama-server refuses) from "--numa
+                    # distribute". A placeholder follows its flag by a SINGLE space
+                    # ("--threads N"); the description sits in an aligned column two
+                    # or more spaces away. Only the yes/no is taken from this: how
+                    # many values, and of what shape, is not worth guessing at from
+                    # help text that wraps.
+                    current_takes_value = False
+                    _previous_end = None
+                    for _match in re.finditer(r"\S+", stripped):
+                        _token = _match.group()
+                        _flag_shaped = _token.startswith("-") and re.match(
+                            r"-{1,2}[A-Za-z][A-Za-z0-9_-]*,?$", _token
+                        )
+                        if _flag_shaped:
+                            _previous_end = _match.end()
+                            continue
+                        # The first token that is not an alias: a placeholder when it
+                        # is one space away, the description when it is further.
+                        current_takes_value = (
+                            _previous_end is not None
+                            and _match.start() - _previous_end == 1
+                        )
+                        break
                     # Extract long-form flag tokens from the DECLARATION
                     # prefix only (comma-separated aliases). Stop at the
                     # first non-flag token so flag references inside
@@ -4966,6 +4994,7 @@ class LlamaCppBackend:
                 desc = " ".join(current_desc)
                 for f in current_flags:
                     blocks[f] = desc
+                    takes_value[f] = current_takes_value
 
             def _is_real(flag: str) -> bool:
                 """True if the flag exists AND is not a removal stub."""
@@ -5111,6 +5140,11 @@ class LlamaCppBackend:
             # argument has been removed would otherwise read as supporting it,
             # and the editor would stay quiet about a flag the load then refuses.
             "flags": {flag: desc for flag, desc in blocks.items() if _is_real(flag)},
+            # The flags that take no value, so the editor can tell "--verbose foo"
+            # (a typo llama-server refuses) from "--numa distribute".
+            "switch_flags": sorted(
+                flag for flag, takes in takes_value.items() if not takes and _is_real(flag)
+            ),
             # Whether --help actually succeeded. A run that exits nonzero after
             # printing part of its help still leaves a non-empty catalogue, and a
             # caller that equated "parsed something" with "read the whole thing"

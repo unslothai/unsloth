@@ -62,9 +62,8 @@ import {
   loadManagedLlamaFlags,
 } from "../api/llama-flags";
 import {
-  fetchModelOverrides,
+  fetchLoadExtraArgs,
   modelOverrideKey,
-  resolveStoredExtraArgs,
   syncModelOverride,
 } from "../api/model-overrides";
 import {
@@ -153,6 +152,9 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.nUbatch != null ||
     config.tensorParallel ||
     config.chatTemplateOverride != null ||
+    // Hidden flags can change what the model does, so a panel that opens collapsed
+    // over them says "defaults" about a load that is anything but.
+    (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
@@ -1477,7 +1479,9 @@ export function ModelConfigPage({
   );
   // Until the switch is used anywhere, a model carrying non-default advanced values opens the
   // section itself. Frozen at mount so editing a field back to its default cannot close it.
-  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(configState));
+  const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
+    hasNonDefaultAdvanced(configState),
+  );
   // Frozen like the rest of the auto-open decision, so editing the width does not
   // reopen the section the user just closed.
   const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
@@ -1637,8 +1641,13 @@ export function ModelConfigPage({
     // A last-resort release, so a request that never settles cannot disable Load for
     // good: past this a load behaves as it did before the feature.
     const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
-    Promise.all([fetchModelOverrides(), loadManagedLlamaFlags()])
-      .then(([overrides, managed]) => {
+    Promise.all([
+      // Resolved by the backend, which owns the rules: the local resolver stays as
+      // the fallback for a backend that predates the parameter.
+      fetchLoadExtraArgs(loadId, configId, target.ggufVariant, keys),
+      loadManagedLlamaFlags(),
+    ])
+      .then(([resolvedArgs, managed]) => {
         // Marked here rather than before the request: StrictMode replays the effect
         // (setup, cleanup, setup), so a key marked up front would leave the first
         // fetch cancelled and the second setup returning early, and the box would
@@ -1656,8 +1665,8 @@ export function ModelConfigPage({
         // Without this, an install upgraded across a denylist change stops loading a
         // model that worked the day before.
         const stored = sanitizeStoredExtraArgs(
-          resolveStoredExtraArgs(overrides, keys),
-          managed ?? new Set<string>(),
+          resolvedArgs,
+          managed?.managed ?? new Set<string>(),
         );
         if (stored.length === 0) {
           return;
@@ -1671,8 +1680,12 @@ export function ModelConfigPage({
           extraArgsAreLoadable(
             diagnoseExtraArgs(formatExtraArgs(stored), {
               flags: {},
-              managed: managed ?? new Set<string>(),
-              // Nothing was checked against a binary, so no flag may be called a typo.
+              managed: managed?.managed ?? new Set<string>(),
+              // Read without the probe, so nothing here knows which flags are
+              // switches, and nothing may be called a typo either.
+              switches: new Set<string>(),
+              maxBytes: managed?.maxBytes ?? 0,
+              windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
               probeOk: false,
             }),
           ),
@@ -1684,6 +1697,11 @@ export function ModelConfigPage({
             ? { ...current, llamaExtraArgs: stored }
             : current,
         );
+        // The frozen snapshot above was taken before this answer arrived, so without
+        // this a model whose arguments live only on the server opens looking like
+        // every default. An explicit preference still wins: this only feeds the
+        // fallback.
+        setAutoOpenAdvanced(true);
       })
       .catch(() => {
         // Nothing to say: the panel is still usable, and the load would report a

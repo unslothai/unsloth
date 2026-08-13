@@ -180,6 +180,46 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
 }
 
 /**
+ * The pass-through arguments the LOAD of this model would apply.
+ *
+ * Asked of the server rather than worked out here, because the resolution is
+ * Python's: casefold is not toLowerCase (Straße and STRASSE are one path to the
+ * loader and two to a browser), and an ambiguous fold deliberately matches nothing.
+ * A client mirroring those rules can only approximate them, and the approximation
+ * shows up as a cold load launching without arguments an API load applies.
+ *
+ * Falls back to resolving locally against the whole map when the backend predates
+ * the parameter, which is the same answer in every case but the exotic ones.
+ */
+export async function fetchLoadExtraArgs(
+  loadId: string,
+  aliasId: string,
+  ggufVariant?: string | null,
+  fallbackKeys: readonly string[] = [],
+): Promise<string[]> {
+  const query = new URLSearchParams({ model_id: loadId, alias_id: aliasId });
+  if (ggufVariant) {
+    query.set("gguf_variant", ggufVariant);
+  }
+  const res = await authFetch(`${OVERRIDES_URL}?${query.toString()}`);
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to load saved model settings"),
+    );
+  }
+  const body = (await res.json()) as {
+    overrides?: ApiModelOverrides;
+    resolved?: ApiModelOverride | null;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    resolved_key?: string | null;
+  };
+  if (body.resolved !== undefined) {
+    return body.resolved?.llama_extra_args ?? [];
+  }
+  return resolveStoredExtraArgs(body.overrides ?? {}, fallbackKeys);
+}
+
+/**
  * Translate the UI's per-model config into the backend's schema. Only fields the user set are
  * sent: an absent field reads as "app default", so nulls would pin defaults and stop the model
  * following later global changes. A `null` config clears the entry. Exported so the backfill

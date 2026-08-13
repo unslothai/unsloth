@@ -86,6 +86,57 @@ export type ExtraArgsParse = {
  * Mirrors drop_managed_flags: a flag takes its value with it, or llama-server reads
  * the orphan as a positional model path.
  */
+/**
+ * What ``subprocess.list2cmdline`` would put on a Windows command line for these.
+ *
+ * A port of CPython's rule, because that is the exact serializer Popen uses there
+ * and it is not a sum of lengths: an argument needing quotes has each backslash run
+ * before a quote doubled, so an escape-heavy grammar can grow by half again.
+ */
+export function windowsCommandLength(tokens: readonly string[]): number {
+  const result: string[] = [];
+  for (const token of tokens) {
+    if (result.length > 0) {
+      result.push(" ");
+    }
+    // Quoted only for whitespace or emptiness, as CPython does: a token that merely
+    // contains a quote is not quoted, though its backslashes still double.
+    const needQuote = token.includes(" ") || token.includes("\t") || token === "";
+    if (needQuote) {
+      result.push('"');
+    }
+    let backslashes = 0;
+    for (const character of token) {
+      if (character === "\\") {
+        backslashes += 1;
+        continue;
+      }
+      if (character === '"') {
+        result.push("\\".repeat(backslashes * 2));
+        backslashes = 0;
+        result.push('\\"');
+        continue;
+      }
+      if (backslashes > 0) {
+        result.push("\\".repeat(backslashes));
+        backslashes = 0;
+      }
+      result.push(character);
+    }
+    if (backslashes > 0) {
+      result.push("\\".repeat(backslashes));
+      // And once more inside the quotes, or the run would escape the closing one.
+      if (needQuote) {
+        result.push("\\".repeat(backslashes));
+      }
+    }
+    if (needQuote) {
+      result.push('"');
+    }
+  }
+  return result.join("").length;
+}
+
 /** Whether this token's value is the NEXT token rather than part of itself. */
 function takesNextToken(
   token: string,
@@ -485,12 +536,26 @@ export function diagnoseExtraArgs(
   // The other half of the backend's bounds. A grammar or a JSON schema is one long
   // token, so a payload can sit well inside the token cap and still be refused on
   // size; without this the Load button starts a request that cannot succeed.
+  // The host's own limit when it has told us one: it is smaller on Windows, where
+  // the whole command line shares a single 32767-character budget.
+  const maxBytes = catalog?.maxBytes || EXTRA_ARGS_MAX_BYTES;
   const bytes = TEXT_ENCODER.encode(tokens.join("")).length;
-  if (bytes > EXTRA_ARGS_MAX_BYTES) {
+  if (bytes > maxBytes) {
     out.push({
       level: "error",
-      message: `Arguments are too large: ${bytes} bytes, limit ${EXTRA_ARGS_MAX_BYTES}.`,
+      message: `Arguments are too large: ${bytes} bytes, limit ${maxBytes}.`,
     });
+  }
+  // And on Windows, what the quoting makes of them: a backslash run before a quote
+  // doubles, so bytes alone do not say whether the launch fits.
+  if (catalog?.windowsCommandBudget) {
+    const quoted = windowsCommandLength(tokens);
+    if (quoted > catalog.windowsCommandBudget) {
+      out.push({
+        level: "error",
+        message: `Arguments are too long for a Windows command line: ${quoted} characters after quoting, limit ${catalog.windowsCommandBudget}.`,
+      });
+    }
   }
 
   // The backend refuses any token carrying one, and a command copied out of
@@ -532,9 +597,14 @@ export function diagnoseExtraArgs(
     pendingValues =
       token.includes("=") || flag !== token.trim()
         ? 0
-        : TWO_VALUE_FLAGS.has(flag)
-          ? 2
-          : 1;
+        : // A flag THIS build documents as taking no value claims none, so the next
+          // bare token has no owner. Only when the catalogue actually knows the
+          // flag: an unverified one keeps the benefit of the doubt.
+          catalog?.switches.has(flag)
+          ? 0
+          : TWO_VALUE_FLAGS.has(flag)
+            ? 2
+            : 1;
   }
 
   const seen = new Set<string>();

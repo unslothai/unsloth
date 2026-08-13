@@ -324,3 +324,47 @@ def test_the_windows_check_measures_what_popen_would_write(monkeypatch):
     # Same list, other platforms: no such limit, so no refusal.
     monkeypatch.setattr(_lsa.sys, "platform", "linux", raising = False)
     assert _lsa.validate_extra_args(["--grammar", value])
+
+
+def test_the_loader_and_the_panel_resolve_the_same_row(monkeypatch):
+    # The panel used to mirror these rules in the browser, where casefold is only
+    # approximated by toLowerCase and an ambiguous fold is easy to get wrong. Both
+    # sides now go through this, so what a panel shows and what a load applies cannot
+    # disagree.
+    import utils.openai_auto_switch_settings as oas
+
+    stored = {
+        "/models/Foo.gguf:Q4_K_M": {"llama_extra_args": ["--numa", "distribute"]},
+        "unsloth/model-gguf": {"llama_extra_args": ["--top-k", "20"]},
+    }
+    monkeypatch.setattr(oas, "get_model_overrides", lambda: dict(stored))
+
+    # The load path before the advertised alias, and variant-qualified first. The
+    # path keeps its case (POSIX), while the quant folds, which is the rule a browser
+    # mirroring this kept getting subtly wrong.
+    key, override = oas.resolve_override_for_load(
+        "/models/Foo.gguf", "unsloth/model-gguf", "q4_k_m"
+    )
+    assert override["llama_extra_args"] == ["--numa", "distribute"]
+    assert key == "/models/Foo.gguf:Q4_K_M"
+
+    # With no such row, the alias answers.
+    key, override = oas.resolve_override_for_load(
+        "/models/other.gguf", "unsloth/model-gguf", None
+    )
+    assert override["llama_extra_args"] == ["--top-k", "20"]
+
+
+def test_the_candidate_order_is_the_loaders_own():
+    from utils.openai_auto_switch_settings import override_lookup_candidates
+
+    assert override_lookup_candidates("local/x", "alias/x", "Q4") == [
+        "local/x:Q4",
+        "alias/x:Q4",
+        "local/x",
+        "alias/x",
+    ]
+    # A loose .gguf also answers to the filename-label key an early build wrote.
+    candidates = override_lookup_candidates("/models/gemma-3-270m-it-Q4_K_M.gguf")
+    assert candidates[0] == "/models/gemma-3-270m-it-Q4_K_M.gguf"
+    assert any(key.endswith(":Q4_K_M") for key in candidates), candidates

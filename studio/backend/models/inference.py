@@ -847,6 +847,27 @@ class LlamaFlagCatalogResponse(BaseModel):
         default_factory = list,
         description = "Flags Unsloth Studio owns; validate_extra_args rejects these outright",
     )
+    switch_flags: list[str] = Field(
+        default_factory = list,
+        description = (
+            "Flags this build documents as taking no value, so an editor can tell "
+            "'--verbose foo' (which llama-server refuses) from '--numa distribute'"
+        ),
+    )
+    max_bytes: int = Field(
+        0,
+        description = (
+            "Size limit validate_extra_args applies on THIS host; smaller on Windows, "
+            "where the whole command line shares one 32767-character budget"
+        ),
+    )
+    windows_command_budget: int = Field(
+        0,
+        description = (
+            "Characters the quoted command may take on Windows, or 0 elsewhere. An "
+            "editor mirrors it because the quoting can double a backslash-heavy value."
+        ),
+    )
     probe_ok: bool = Field(
         False,
         description = (

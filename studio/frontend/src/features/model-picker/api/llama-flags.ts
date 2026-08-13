@@ -9,6 +9,16 @@ export type LlamaFlagCatalog = {
   flags: Record<string, string>;
   /** Flags Unsloth manages; the load refuses these outright. */
   managed: ReadonlySet<string>;
+  /** Flags this build documents as taking no value ("--verbose", "--jinja"). */
+  switches: ReadonlySet<string>;
+  /** Size limit this host applies, which is smaller on Windows. */
+  maxBytes: number;
+  /**
+   * Characters the quoted command may take on Windows, or 0 elsewhere. Mirrored
+   * because the quoting can double a backslash-heavy value, so bytes alone do not
+   * say whether the launch will fit.
+   */
+  windowsCommandBudget: number;
   /**
    * False when `--help` could not be read. Nothing may then be reported as a typo:
    * an unverifiable flag is not a wrong one.
@@ -19,6 +29,12 @@ export type LlamaFlagCatalog = {
 type ApiLlamaFlagCatalog = {
   flags?: Record<string, string>;
   managed?: string[];
+  // biome-ignore lint/style/useNamingConvention: API schema
+  switch_flags?: string[];
+  // biome-ignore lint/style/useNamingConvention: API schema
+  max_bytes?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  windows_command_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   probe_ok?: boolean;
 };
@@ -41,8 +57,15 @@ let cachedAt = 0;
 // and writes the previous backend's flags back for the whole TTL.
 let catalogGeneration = 0;
 
-let inFlightManaged: Promise<ReadonlySet<string> | null> | null = null;
-let cachedManaged: ReadonlySet<string> | null = null;
+/** What a caller gets without paying for the --help probe. */
+export type LlamaManagedFlags = {
+  managed: ReadonlySet<string>;
+  maxBytes: number;
+  windowsCommandBudget: number;
+};
+
+let inFlightManaged: Promise<LlamaManagedFlags | null> | null = null;
+let cachedManaged: LlamaManagedFlags | null = null;
 
 /** Drop the cache, for a caller that knows the binary just changed. */
 export function invalidateLlamaFlagCatalog(): void {
@@ -63,12 +86,12 @@ export function invalidateLlamaFlagCatalog(): void {
  * denied since the list was saved stays in the request for as long as it runs.
  * Cached for the session: unlike the flag map, it describes this build of Studio.
  */
-export function loadManagedLlamaFlags(): Promise<ReadonlySet<string> | null> {
+export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
   if (cachedManaged) {
     return Promise.resolve(cachedManaged);
   }
   if (cachedCatalog) {
-    return Promise.resolve(cachedCatalog.managed);
+    return Promise.resolve(cachedCatalog);
   }
   inFlightManaged ??= (async () => {
     try {
@@ -81,7 +104,11 @@ export function loadManagedLlamaFlags(): Promise<ReadonlySet<string> | null> {
       const body = (await res.json()) as ApiLlamaFlagCatalog;
       // An older backend answers the route without the parameter and returns its
       // full catalogue, which carries the same list.
-      cachedManaged = new Set(body.managed ?? []);
+      cachedManaged = {
+        managed: new Set(body.managed ?? []),
+        maxBytes: body.max_bytes ?? 0,
+        windowsCommandBudget: body.windows_command_budget ?? 0,
+      };
       return cachedManaged;
     } catch {
       return null;
@@ -113,6 +140,11 @@ export function loadLlamaFlagCatalog(): Promise<LlamaFlagCatalog | null> {
       const catalog: LlamaFlagCatalog = {
         flags: body.flags ?? {},
         managed: new Set(body.managed ?? []),
+        switches: new Set(body.switch_flags ?? []),
+        // An older backend sends neither, and 0 reads as "no limit of my own",
+        // leaving the editor's own default in charge.
+        maxBytes: body.max_bytes ?? 0,
+        windowsCommandBudget: body.windows_command_budget ?? 0,
         probeOk: Boolean(body.probe_ok),
       };
       if (generation !== catalogGeneration) {

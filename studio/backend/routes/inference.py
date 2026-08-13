@@ -5537,23 +5537,15 @@ async def _maybe_auto_switch_model(
                         # cached repo has no path entry and resolves on the second try; an
                         # early build keyed a loose .gguf by its filename label, so
                         # "<path>:LABEL" is read too, after the bare path used today.
-                        file_variant = None
-                        if not variant and target_id.lower().endswith(".gguf"):
-                            from hub.utils.gguf import extract_quant_label
-                            file_variant = extract_quant_label(os.path.basename(target_id))
-                        override = {}
-                        for override_key in (
-                            f"{target_id}:{variant}" if variant else None,
-                            f"{override_id}:{variant}" if variant else None,
-                            target_id,
-                            f"{target_id}:{file_variant}" if file_variant else None,
-                            override_id,
-                        ):
-                            if not override_key:
-                                continue
-                            override = get_model_override(override_key)
-                            if override:
-                                break
+                        from utils.openai_auto_switch_settings import (
+                            resolve_override_for_load,
+                        )
+
+                        # The candidate order above, kept in one place so the panel
+                        # showing a user what a load will apply reads the same row.
+                        _override_key, override = resolve_override_for_load(
+                            target_id, override_id, variant
+                        )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                         load_kwargs.update(
                             model_override_load_kwargs(
@@ -8001,6 +7993,18 @@ async def _load_model_impl(
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         placement = await _prepare_load_placement(config, request, extra_llama_args)
+        if placement.diffusion_kind is True and extra_llama_args:
+            # The visual runner builds its own command and appends none of these, so
+            # keeping them would record a load as running arguments the process never
+            # received, and the panel would then show and remember them. This is the
+            # authoritative classification: the caller only had staged metadata, which
+            # can be inconclusive for a GGUF it has not finished downloading.
+            logger.info(
+                "Dropping %d extra llama-server arg(s) for %s: the diffusion runner takes none.",
+                len(extra_llama_args),
+                model_log_label,
+            )
+            extra_llama_args = []
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
         if config.is_gguf:
@@ -9704,7 +9708,21 @@ async def get_llama_flags(
     stored list before it becomes an explicit request: making that wait on a cold
     ``--help`` would leave a legacy flag in the request for as long as the probe runs.
     """
-    from core.inference.llama_server_args import sorted_managed_flags
+    from core.inference.llama_server_args import (
+        WINDOWS_COMMAND_LIMIT,
+        WINDOWS_COMMAND_RESERVE,
+        max_extra_args_bytes,
+        sorted_managed_flags,
+    )
+
+    # What this host refuses on size, so an editor draws the same line rather than
+    # letting a 25 KiB grammar through to a 400.
+    limits = {
+        "max_bytes": max_extra_args_bytes(),
+        "windows_command_budget": (
+            WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_RESERVE if sys.platform == "win32" else 0
+        ),
+    }
 
     if managed_only:
         return LlamaFlagCatalogResponse(
@@ -9712,6 +9730,7 @@ async def get_llama_flags(
             managed = sorted_managed_flags(),
             # No probe was attempted, so nothing here can say a flag is a typo.
             probe_ok = False,
+            **limits,
         )
     try:
         backend = get_llama_cpp_backend()
@@ -9721,6 +9740,7 @@ async def get_llama_flags(
         # stall every other request on the first open of the panel after an update.
         capabilities = await asyncio.to_thread(type(backend).probe_server_capabilities)
         flags = capabilities.get("flags") or {}
+        switch_flags = list(capabilities.get("switch_flags") or ())
         # Three ways to be unverifiable, and the editor treats them alike: no binary
         # (found=False), a --help that did not parse (empty catalogue), and a --help
         # that exited nonzero after printing part of itself. The last one is why the
@@ -9735,11 +9755,14 @@ async def get_llama_flags(
     except Exception as exc:  # noqa: BLE001 -- an unverifiable flag is not a failed request
         logger.debug(f"llama-server flag catalogue unavailable: {exc}")
         flags = {}
+        switch_flags = []
         probe_ok = False
     return LlamaFlagCatalogResponse(
         flags = {str(k): str(v) for k, v in flags.items()},
         managed = sorted_managed_flags(),
+        switch_flags = [str(flag) for flag in switch_flags],
         probe_ok = probe_ok,
+        **limits,
     )
 
 

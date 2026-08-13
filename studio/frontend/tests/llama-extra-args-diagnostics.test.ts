@@ -37,6 +37,11 @@ const CATALOG: LlamaFlagCatalog = {
     "--agent",
     "--ctx-size",
   ]),
+  // What this build says takes no value, so "--verbose foo" reads as the typo
+  // llama-server calls it.
+  switches: new Set(["--verbose"]),
+  maxBytes: 32 * 1024,
+  windowsCommandBudget: 0,
   probeOk: true,
 };
 
@@ -106,6 +111,10 @@ test("nothing is called unknown when the probe failed", () => {
   const unverified: LlamaFlagCatalog = {
     flags: {},
     managed: CATALOG.managed,
+    // Nothing was read from the binary, so nothing is known to be a switch either.
+    switches: new Set<string>(),
+    maxBytes: 32 * 1024,
+    windowsCommandBudget: 0,
     probeOk: false,
   };
   assert.deepEqual(
@@ -448,6 +457,58 @@ test("a value with no flag in front of it is an error", () => {
   );
 });
 
+test("a value after a switch is the typo llama-server calls it", () => {
+  // -v, --verbose, --log-verbose is declared with no value in this build's help, and
+  // "--verbose foo" exits with "error: invalid argument: foo".
+  const out = diagnoseExtraArgs("--verbose foo", CATALOG);
+  assert.ok(
+    out.some((d) => d.level === "error" && d.message.includes("belongs to no flag")),
+    JSON.stringify(out),
+  );
+  // A flag that does take one is untouched, and an unverified build says nothing:
+  // only what the catalogue actually declares is acted on.
+  assert.ok(
+    !diagnoseExtraArgs("--numa distribute", CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+});
+
+test("the size limits are the host's, not this file's", () => {
+  // Windows caps extras lower, because the whole command line shares one 32767
+  // character budget, and the editor has to draw the same line the load does.
+  const windows: LlamaFlagCatalog = {
+    ...CATALOG,
+    maxBytes: 24 * 1024,
+    windowsCommandBudget: 24575,
+  };
+  const big = `--grammar ${"x".repeat(25 * 1024)}`;
+  assert.ok(
+    diagnoseExtraArgs(big, windows).some(
+      (d) => d.level === "error" && d.message.includes("24576"),
+    ),
+  );
+  // The same input is fine where the host allows 32 KiB.
+  assert.ok(!diagnoseExtraArgs(big, CATALOG).some((d) => d.level === "error"));
+});
+
+test("what the quoting makes of an argument counts on Windows", () => {
+  // list2cmdline doubles a backslash run before a quote, so bytes alone do not say
+  // whether the launch fits. Same rule as the backend's own check.
+  const windows: LlamaFlagCatalog = {
+    ...CATALOG,
+    maxBytes: 24 * 1024,
+    windowsCommandBudget: 24575,
+  };
+  const escaped = `${"\\".repeat(10)}"`.repeat(2000);
+  assert.ok(escaped.length < 24 * 1024);
+  assert.ok(
+    diagnoseExtraArgs(`--grammar ${JSON.stringify(escaped)}`, windows).some(
+      (d) => d.level === "error" && d.message.includes("after quoting"),
+    ),
+  );
+});
+
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 
@@ -483,14 +544,17 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // comes from local storage, so the only way the box can show what is actually
   // set is to ask. An empty box would read as "no flags" and the first edit would
   // submit a list that dropped them.
-  assert.match(body, /fetchModelOverrides\(\)/);
+  // Resolved by the backend, whose folding rules are the ones the load applies.
+  assert.match(body, /fetchLoadExtraArgs\(loadId, configId, target\.ggufVariant, keys\)/);
   // Through the resolver, not a literal lookup: the backend folds identities and
   // falls back from repo:QUANT to the bare repo before it reads a row.
-  assert.match(body, /resolveStoredExtraArgs\(overrides, keys\)/);
+  // The candidate keys still travel, as the fallback for a backend that predates
+  // the resolving parameter.
+  assert.match(body, /modelOverrideKey\(loadId, target\.ggufVariant\)/);
   // And through the denylist first: hydrating makes the stored list an explicit
   // request, which /load validates strictly rather than dropping a newly denied
   // flag the way the carry-over paths do.
-  assert.match(body, /sanitizeStoredExtraArgs\( resolveStoredExtraArgs/);
+  assert.match(body, /sanitizeStoredExtraArgs\( resolvedArgs,/);
   // Into the config, not only the textarea. The load sends what the config holds,
   // and the route's omission path inherits from a resident process rather than
   // from this stored override, so a box that filled without the config would show
@@ -512,12 +576,12 @@ test("hydration is not gated behind the advanced disclosure", () => {
   // so the fetch belongs in the parent that always mounts.
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
   const rowBody = row.slice(0, row.indexOf("\n}\n"));
-  assert.doesNotMatch(rowBody, /fetchModelOverrides/);
+  assert.doesNotMatch(rowBody, /fetchLoadExtraArgs/);
   const advanced = pageSource.slice(
     pageSource.indexOf("function GgufAdvancedSettings("),
     pageSource.indexOf("export function ModelConfigPage("),
   );
-  assert.doesNotMatch(advanced, /fetchModelOverrides/);
+  assert.doesNotMatch(advanced, /fetchLoadExtraArgs/);
 });
 
 test("the row does not withdraw its objection when it unmounts", () => {
@@ -589,7 +653,7 @@ test("the panel's own Load goes through the runtime, which sends them too", () =
   );
   assert.match(
     runtime,
-    /isGguf && loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \} : \{\}/,
+    /isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \} : \{\}/,
   );
 });
 

@@ -722,6 +722,58 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
     ]
 
 
+def override_lookup_candidates(
+    load_id: str,
+    alias_id: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> list[str]:
+    """The keys a load tries, in order, when looking for its stored override.
+
+    Variant-qualified before bare, and the LOAD PATH before the advertised alias: the
+    settings UI keys a local row by the path it loads from, while the alias is a
+    derived id, so reading the alias first lets an older entry shadow a fresh save.
+    An early build keyed a loose ``.gguf`` by its filename label, which is why the
+    ``<path>:LABEL`` spelling is tried too.
+
+    Shared so the auto-switch loader and anything showing the user what a load will
+    apply cannot drift apart.
+    """
+    file_variant = None
+    if not variant and load_id.lower().endswith(".gguf"):
+        from hub.utils.gguf import extract_quant_label
+
+        file_variant = extract_quant_label(os.path.basename(load_id))
+    ordered = [
+        f"{load_id}:{variant}" if variant else None,
+        f"{alias_id}:{variant}" if alias_id and variant else None,
+        load_id,
+        f"{load_id}:{file_variant}" if file_variant else None,
+        alias_id,
+    ]
+    seen: list[str] = []
+    for key in ordered:
+        if key and key not in seen:
+            seen.append(key)
+    return seen
+
+
+def resolve_override_for_load(
+    load_id: str,
+    alias_id: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> tuple[Optional[str], dict]:
+    """``(key, override)`` the load would apply, or ``(None, {})``.
+
+    Resolution belongs here rather than in a client: the folding rules are Python's
+    (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing.
+    """
+    for key in override_lookup_candidates(load_id, alias_id, variant):
+        override = get_model_override(key)
+        if override:
+            return resolve_model_override_key(key) or key, override
+    return None, {}
+
+
 def resolve_model_override_key(model_id: str) -> Optional[str]:
     """The stored key an override lookup for ``model_id`` would actually hit.
 

@@ -730,6 +730,12 @@ class ModelOverridePayload(BaseModel):
 
 class ModelOverridesResponse(BaseModel):
     overrides: dict[str, dict]
+    # Filled only when the caller named a model: the entry ITS load would apply,
+    # resolved here rather than in the browser. The folding rules are Python's
+    # (casefold is not toLowerCase, and an ambiguous fold matches nothing on
+    # purpose), so a client mirroring them can only approximate.
+    resolved: Optional[dict] = None
+    resolved_key: Optional[str] = None
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -1051,9 +1057,29 @@ def update_openai_auto_switch(
 
 @router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def get_openai_auto_switch_overrides(
+    model_id: Optional[str] = None,
+    alias_id: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
 ) -> ModelOverridesResponse:
-    return ModelOverridesResponse(overrides = get_model_overrides())
+    """Every stored override, and optionally the one a named model's load would use.
+
+    The resolution is the loader's own (``resolve_override_for_load``), so what a
+    panel shows and what a load applies cannot disagree.
+    """
+    resolved_key: Optional[str] = None
+    resolved: Optional[dict] = None
+    if model_id:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+
+        resolved_key, resolved = resolve_override_for_load(
+            model_id, alias_id, gguf_variant
+        )
+    return ModelOverridesResponse(
+        overrides = get_model_overrides(),
+        resolved = resolved,
+        resolved_key = resolved_key,
+    )
 
 
 def _bare_model_id(model_id: str) -> Optional[str]:

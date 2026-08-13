@@ -1089,7 +1089,7 @@ export function useChatModelRuntime() {
                     // so omitting it approves a different command: during training
                     // that means approving the switch, unloading the resident model,
                     // and having /load refuse the target with the real arguments.
-                    ...(loadLlamaExtraArgs !== undefined
+                    ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
                       ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                       : {}),
                   }
@@ -1290,8 +1290,11 @@ export function useChatModelRuntime() {
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
               // Sent only once known, and [] is the explicit "launch with none":
-              // the flags are llama-server's, so a transformers load never carries them.
-              ...(isGguf && loadLlamaExtraArgs !== undefined
+              // the flags are llama-server's, so a transformers load never carries
+              // them, and neither does a diffusion GGUF: that one is GGUF-shaped but
+              // runs through the visual runner, which builds its command without
+              // these, so sending them would record arguments the process never got.
+              ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                 : {}),
               // omitted when blank: a null counts as set and strips inherited -b / -ub
