@@ -175,6 +175,8 @@ def _adapter_state(**over) -> dict:
         "parameters": 4325376,
         "non_finite_tensors": [],
         "nonzero_tensors": 224,
+        "b_tensors": 112,
+        "nonzero_b_tensors": 112,
     }
     state.update(over)
     return state
@@ -209,8 +211,33 @@ def test_an_all_zero_adapter_is_a_failure():
     """lora_B starts at zero, so an all-zero file is an untrained adapter."""
     from run_t4_smoke import saved_adapter_failures
 
-    failures = saved_adapter_failures(_adapter_state(nonzero_tensors = 0))
-    assert failures and "every saved tensor is zero" in failures[0]
+    failures = saved_adapter_failures(_adapter_state(nonzero_tensors = 0, nonzero_b_tensors = 0))
+    assert failures and "saved lora_B matrices is zero" in failures[0]
+
+
+def test_an_adapter_whose_b_matrices_are_all_zero_is_a_failure():
+    """The A matrices alone keep `nonzero_tensors` up, and prove nothing.
+
+    peft initialises lora_A randomly, so it is nonzero before a single step.
+    Counting every tensor therefore accepted an adapter whose B matrices were
+    all zero, which contributes exactly nothing: the update goes through B.
+    """
+    from run_t4_smoke import saved_adapter_failures
+
+    failures = saved_adapter_failures(
+        _adapter_state(nonzero_tensors = 112, b_tensors = 112, nonzero_b_tensors = 0)
+    )
+    assert failures and "saved lora_B matrices is zero" in failures[0]
+
+
+def test_an_adapter_with_no_b_matrices_at_all_is_unusable_rather_than_fine():
+    """Dropped B matrices, or a peft naming change: either way, no reading."""
+    from run_t4_smoke import saved_adapter_failures
+
+    failures = saved_adapter_failures(
+        _adapter_state(nonzero_tensors = 112, b_tensors = 0, nonzero_b_tensors = 0)
+    )
+    assert failures and "is a lora_B matrix" in failures[0]
 
 
 def test_a_missing_adapter_config_is_a_failure():
@@ -220,7 +247,12 @@ def test_a_missing_adapter_config_is_a_failure():
 
 
 def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
-    """End to end through the real writer, no GPU and no model."""
+    """End to end through the real writer, no GPU and no model.
+
+    The first file here is the exact artifact the old count accepted: a
+    random lora_A beside a lora_B that never left zero. One nonzero tensor
+    out of two, and an adapter that reloads to the base model.
+    """
     pytest.importorskip("safetensors")
     import torch
     from safetensors.torch import save_file
@@ -238,12 +270,29 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     state = verify_saved_adapter(tmp_path)
     assert state["tensors"] == 2
     assert state["nonzero_tensors"] == 1
+    assert state["b_tensors"] == 1
+    assert state["nonzero_b_tensors"] == 0
     assert state["config_readable"] is True
-    assert saved_adapter_failures(state) == []
+    failures = saved_adapter_failures(state)
+    assert failures and "saved lora_B matrices is zero" in failures[0]
+
+    # The same file with a B matrix an optimizer moved, which is the only
+    # difference between an adapter that carries training and one that does
+    # not.
+    save_file(
+        {
+            "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
+            "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": torch.ones(8, 16) * 0.01,
+        },
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    trained = verify_saved_adapter(tmp_path)
+    assert trained["nonzero_b_tensors"] == 1
+    assert saved_adapter_failures(trained) == []
 
     save_file({"a.lora_B.weight": torch.zeros(4, 4)}, str(tmp_path / "adapter_model.safetensors"))
     failures = saved_adapter_failures(verify_saved_adapter(tmp_path))
-    assert failures and "every saved tensor is zero" in failures[0]
+    assert failures and "saved lora_B matrices is zero" in failures[0]
 
 
 # ------------------------------------------ run_t4_smoke.py: the reference
@@ -665,6 +714,39 @@ def test_gptoss_measures_compilation_across_training_only():
     assert failures and any("eager" in f for f in failures)
 
 
+@pytest.mark.parametrize("value", ["0", "", None, "true"])
+def test_gptoss_requires_the_forcing_to_be_on_rather_than_merely_recorded(value):
+    """`"0"` is what the loader writes on its ordinary branch.
+
+    models/loader.py sets UNSLOTH_FORCE_FLOAT32 to "0" BEFORE deciding whether
+    to force and only overwrites it with "1" when the forcing fires, and every
+    production consumer reads it as `== "1"`. A truthiness check therefore
+    accepts the one regression this leg uniquely covers: forcing switched off,
+    fp16 and bf16 both still false, and the leg green.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(
+        precision = {
+            "fp16": False,
+            "bf16": False,
+            "force_float32_env": value,
+            "custom_dtype_env": None,
+        }
+    )
+    failures = failures_for(result, _gptoss_args())
+    assert failures and any("UNSLOTH_FORCE_FLOAT32" in f for f in failures), failures
+
+
+def test_gptoss_refuses_a_compile_check_that_has_no_baseline():
+    """A post-training read with no pre-training one to subtract."""
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(compile = {"available": True, "unique_graphs": 32})
+    failures = failures_for(result, _gptoss_args())
+    assert failures and any("pre-training dynamo counters" in f for f in failures)
+
+
 def test_gptoss_compile_counters_report_a_delta():
     from run_gptoss_t4 import compile_counters
 
@@ -874,6 +956,95 @@ def test_the_zero_initialised_b_matrices_are_what_make_the_comparison_safe():
     after["b_abs_sum"] = 0.5
     assert adapter_update(before, after)["changed"] is True
     assert adapter_update(before, before)["changed"] is False
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
+    """The strongest possible pass, produced by the worst possible run.
+
+    `NaN != finite` and `inf != finite` both read as "the adapter changed",
+    so a run whose optimizer corrupted the weights reported `applied` on
+    exactly the no-telemetry path this module exists to decide, while
+    generation still returned text.
+    """
+    from training_evidence import adapter_fingerprint, adapter_update, update_verdict
+
+    class _Corrupt:
+        def __init__(self, b):
+            self._b = b
+
+        def named_parameters(self):
+            return iter(
+                [
+                    ("base.layers.0.q_proj.lora_A.default.weight", _Tensor(4.0)),
+                    ("base.layers.0.q_proj.lora_B.default.weight", _Tensor(self._b)),
+                ]
+            )
+
+    before = adapter_fingerprint(_Corrupt(0.0))
+    after = adapter_fingerprint(_Corrupt(bad))
+    assert after["ok"] is False
+    assert after["non_finite"] is True
+    assert "lora_B" in after["error"]
+
+    update = adapter_update(before, after)
+    assert update["ok"] is False
+    assert update["non_finite"] is True
+
+    # And it beats a healthy grad_norm, which says nothing about weights that
+    # went non-finite two steps after it was logged.
+    healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
+    assert update_verdict(healthy, update)["verdict"] == "non_finite"
+    assert update_verdict([], update)["verdict"] == "non_finite"
+
+
+@pytest.mark.parametrize("field", ["abs_sum", "b_abs_sum"])
+def test_a_non_finite_sum_is_refused_by_the_comparison_as_well(field):
+    """Checked where the exact `!=` happens, not only where it was summed."""
+    from training_evidence import adapter_update, update_verdict
+
+    before = {"ok": True, "tensors": 4, "abs_sum": 1.0, "b_abs_sum": 0.0}
+    after = dict(before, **{field: float("nan")})
+    verdict = adapter_update(before, after)
+    assert verdict["ok"] is False
+    assert verdict["non_finite"] is True
+    assert update_verdict([], verdict)["verdict"] == "non_finite"
+
+
+def test_a_non_finite_adapter_turns_both_legs_red():
+    """The verdict has to reach a failure string, or it is not a check."""
+    from run_gptoss_t4 import failures_for as gptoss_failures
+    from run_grpo_t4 import failures_for as grpo_failures
+
+    corrupt = {
+        "ok": False,
+        "non_finite": True,
+        "error": "1 of 4 LoRA tensors hold non-finite weights",
+    }
+    gptoss = gptoss_failures(_gptoss_result(adapter_update = corrupt), _gptoss_args())
+    assert gptoss and any("non-finite weights" in f for f in gptoss)
+    grpo = grpo_failures(_grpo_result(adapter_update = corrupt), _grpo_args())
+    assert grpo and any("non-finite weights" in f for f in grpo)
+
+
+def test_a_verdict_neither_leg_has_been_taught_about_is_still_a_failure():
+    """`elif != "applied"`, not `elif == "unverifiable"`.
+
+    A verdict added to training_evidence.py and not wired here would
+    otherwise be a silent pass, which is the disease the module treats.
+    """
+    import run_gptoss_t4
+    import run_grpo_t4
+
+    unknown = {"verdict": "something_new", "detail": "d", "grad_norms": []}
+    for module, args in ((run_gptoss_t4, _gptoss_args()), (run_grpo_t4, _grpo_args())):
+        original = module.update_verdict
+        module.update_verdict = lambda *a, **k: unknown
+        try:
+            result = _gptoss_result() if module is run_gptoss_t4 else _grpo_result()
+            assert module.failures_for(result, args), module.__name__
+        finally:
+            module.update_verdict = original
 
 
 def test_two_fingerprints_over_different_tensor_counts_are_not_compared():

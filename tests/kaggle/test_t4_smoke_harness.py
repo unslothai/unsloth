@@ -922,6 +922,64 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
     assert verdict["deviations"][0]["field"] == "grad_norm"
 
 
+def test_matching_infinite_grad_norms_are_within_band(tmp_path):
+    """An fp16 overflow logs infinity as readily as NaN, and the same sign on
+    both sides is the unchanged case. abs(inf - inf) is NaN, so this has to be
+    decided before the division rather than by it."""
+    from run_t4_smoke import check_reference
+
+    inf = float("inf")
+    ref = _write_reference(
+        tmp_path / "ref.json", [{"step": 1, "loss": 10.0, "grad_norm": inf}], max_steps = 1
+    )
+    verdict = check_reference(
+        [{"step": 1, "loss": 10.0, "grad_norm": inf}], ref, 0.10, 0.05, max_steps = 1
+    )
+    assert verdict["status"] == "ok"
+    assert verdict["deviations"] == []
+
+
+@pytest.mark.parametrize(
+    ("ref_value", "obs_value"),
+    [
+        (float("inf"), 5.0),
+        (5.0, float("inf")),
+        (float("inf"), float("-inf")),
+        (float("-inf"), float("inf")),
+        (float("-inf"), 5.0),
+    ],
+)
+def test_an_overflow_that_appeared_or_cleared_is_out_of_band(tmp_path, ref_value, obs_value):
+    """Every infinite pairing divides to NaN, and NaN > tol is False.
+
+    abs(inf - 1.0) / inf and abs(inf - inf) / inf are both NaN, so each of
+    these used to be accepted -- and max(worst, NaN) returns worst, so
+    worst_rel did not even record that anything odd had been seen. The pairing
+    that matters most is the last one to reach here: a step that was finite in
+    the reference and now overflows.
+    """
+    from run_t4_smoke import check_reference
+
+    ref = _write_reference(
+        tmp_path / "ref.json", [{"step": 1, "loss": 10.0, "grad_norm": ref_value}], max_steps = 1
+    )
+    verdict = check_reference(
+        [{"step": 1, "loss": 10.0, "grad_norm": obs_value}], ref, 0.10, 0.05, max_steps = 1
+    )
+    assert verdict["status"] == "out_of_band"
+    assert verdict["deviations"][0]["field"] == "grad_norm"
+
+
+def test_an_infinite_loss_against_a_finite_reference_is_out_of_band(tmp_path):
+    """Loss, not just grad_norm: the field the band check exists for."""
+    from run_t4_smoke import check_reference
+
+    ref = _write_reference(tmp_path / "ref.json", [{"step": 1, "loss": 10.0}], max_steps = 1)
+    verdict = check_reference([{"step": 1, "loss": float("inf")}], ref, 0.10, 0.05, max_steps = 1)
+    assert verdict["status"] == "out_of_band"
+    assert verdict["deviations"][0]["field"] == "loss"
+
+
 def test_a_field_that_stopped_being_logged_is_out_of_band(tmp_path):
     from run_t4_smoke import check_reference
 
@@ -1415,6 +1473,101 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
                     not missing
                 ), f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
                 carried = bound
+
+
+def _drive_run_cell(
+    tmp_path,
+    monkeypatch,
+    *,
+    returncode,
+    report_text = None,
+    stderr = "",
+):
+    """Execute the generated run cell against a stubbed child process.
+
+    The cell is the only thing standing between a payload that died and a
+    launcher that sees nothing, so it is executed rather than pattern
+    matched. Only the hardcoded /kaggle path is rewritten.
+    """
+    import contextlib
+    import io
+    import types
+
+    payload = _payload_notebooks(_build(tmp_path, "control"))["t4_control.ipynb"]
+    source = _cell(payload, 3)
+    outdir = tmp_path / "payload_out"
+    assert "/kaggle/working/t4_out_control" in source
+    source = source.replace("/kaggle/working/t4_out_control", str(outdir))
+
+    def fake_run(cmd, *a, **kw):
+        outdir.mkdir(parents = True, exist_ok = True)
+        if report_text is not None:
+            (outdir / "t4_smoke_report.json").write_text(report_text, encoding = "utf-8")
+        return types.SimpleNamespace(returncode = returncode, stdout = "", stderr = stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        exec(compile(source, "run_cell", "exec"), {"__name__": "__main__"})  # noqa: S102
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(exist_ok = True)
+    (evidence / "kernel.log").write_text(buffer.getvalue(), encoding = "utf-8")
+    from launch import extract_reports
+
+    return buffer.getvalue(), extract_reports(evidence)
+
+
+def test_the_re_emitted_report_is_one_line_the_launcher_can_parse(tmp_path, monkeypatch):
+    """The recovery path has to survive the file it is recovering.
+
+    Every payload writes t4_smoke_report.json INDENTED, and the launcher
+    scans whole lines for the prefix, so echoing the file verbatim handed it
+    a lone `{` to decode. The one case this fallback exists for -- the
+    payload's own compact line having fallen out of the retained stdout tail
+    -- was the one case it could not recover.
+    """
+    written = json.dumps(
+        {"label": "control", "model": "unsloth/Qwen2.5-0.5B-Instruct", "passed": True},
+        indent = 2,
+    )
+    assert "\n" in written
+    stdout, reports = _drive_run_cell(tmp_path, monkeypatch, returncode = 0, report_text = written)
+    assert len(reports) == 1, stdout
+    assert reports[0]["passed"] is True
+    assert reports[0]["model"] == "unsloth/Qwen2.5-0.5B-Instruct"
+
+
+@pytest.mark.parametrize("returncode", [139, 1, -9])
+def test_a_payload_that_crashed_without_a_report_is_reported_as_failed(
+    tmp_path, monkeypatch, returncode
+):
+    """A segfault, an abort or an OOM kill is a VERDICT, not lost evidence.
+
+    No report at all is `infra` at the launcher and one missing report of two
+    is `partial`, and both leave the workflow green -- so the hard GPU
+    regressions this job exists to catch were accepted silently, while this
+    cell held the definitive nonzero exit status the whole time.
+    """
+    stdout, reports = _drive_run_cell(
+        tmp_path, monkeypatch, returncode = returncode, stderr = "CUDA error: an illegal memory access"
+    )
+    assert "NO USABLE REPORT WRITTEN" in stdout
+    assert len(reports) == 1, stdout
+    assert reports[0]["passed"] is False
+    assert reports[0]["returncode"] == returncode
+    assert reports[0]["label"] == "control"
+    assert any(str(returncode) in f for f in reports[0]["failures"])
+    assert "illegal memory access" in reports[0]["stderr_tail"]
+
+
+def test_an_unreadable_report_file_is_a_failure_rather_than_a_silence(tmp_path, monkeypatch):
+    """A truncated write is the same situation as no write at all."""
+    stdout, reports = _drive_run_cell(
+        tmp_path, monkeypatch, returncode = 0, report_text = '{"label": "control", "pas'
+    )
+    assert "REPORT UNREADABLE" in stdout
+    assert len(reports) == 1 and reports[0]["passed"] is False
 
 
 def test_the_sources_are_materialised_before_the_first_install(tmp_path):
@@ -2431,6 +2584,11 @@ def _gptoss_ok() -> dict:
             "unique_graphs": 32,
             "calls_captured": 779,
             "graph_breaks_total": 2,
+            # The delta is what the assertion reads. A reading without one is
+            # a reading with no baseline, which is its own failure below.
+            "unique_graphs_delta": 30,
+            "calls_captured_delta": 700,
+            "graph_breaks_total_delta": 2,
         },
         "generated": "analysis... assistantfinal 4",
     }
@@ -2457,13 +2615,37 @@ def test_a_gptoss_run_that_never_compiled_is_a_failure():
     report = _gptoss_ok()
     report["compile"] = {
         "available": True,
-        "unique_graphs": 0,
-        "calls_captured": 0,
+        "unique_graphs": 32,
+        "calls_captured": 779,
         "graph_breaks_total": 0,
+        "unique_graphs_delta": 0,
     }
     failures = failures_for(report, _Args())
     assert any("zero graphs" in f for f in failures), failures
     # And it is a knob, so a future leg can cover something else.
+    assert failures_for(report, _Args(require_compile = False)) == []
+
+
+def test_a_compile_check_with_no_baseline_is_refused_rather_than_assumed():
+    """The pre-training read failed and the post-training one did not.
+
+    No baseline means no subtraction, and the absolute count that is left
+    behind is the LOADER's: on this leg it is nonzero before training starts.
+    Falling back to it passed a training path that ran entirely eager, in
+    exactly the diagnostic failure where the two cannot be told apart.
+    """
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_gptoss_t4 import failures_for
+
+    report = _gptoss_ok()
+    report["compile"] = {
+        "available": True,
+        "unique_graphs": 32,
+        "calls_captured": 779,
+        "graph_breaks_total": 2,
+    }
+    failures = failures_for(report, _Args())
+    assert any("pre-training dynamo counters" in f for f in failures), failures
     assert failures_for(report, _Args(require_compile = False)) == []
 
 

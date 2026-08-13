@@ -65,22 +65,43 @@ def adapter_fingerprint(model) -> dict:
     Returns ``{"ok": False, "error": ...}`` rather than raising, on anything
     at all. ``ok`` false means the question could not be answered here, not
     that the answer was no.
+
+    A non-finite sum is the one refusal that is NOT "could not answer". A
+    LoRA weight that has gone NaN or infinite is a broken run, and left as a
+    number it is the strongest possible pass: ``NaN != finite`` and
+    ``inf != finite`` both read as "the adapter changed", so the corrupted
+    run reports an applied update on exactly the no-telemetry path this
+    module was written to decide. It is flagged with ``non_finite`` so
+    ``update_verdict`` can call it what it is instead of comparing it.
     """
     try:
         total = 0.0
         b_total = 0.0
         tensors = 0
+        non_finite: list[str] = []
         for name, param in model.named_parameters():
             lowered = name.lower()
             if LORA_MARKER not in lowered:
                 continue
             tensors += 1
             value = float(param.detach().float().abs().sum().item())
+            if not _is_finite(value):
+                non_finite.append(name)
             total += value
             if LORA_B_MARKER in lowered:
                 b_total += value
         if not tensors:
             return {"ok": False, "error": "no parameter name carries a LoRA marker"}
+        if non_finite:
+            return {
+                "ok": False,
+                "non_finite": True,
+                "tensors": tensors,
+                "error": (
+                    f"{len(non_finite)} of {tensors} LoRA tensors hold non-finite "
+                    f"weights: {sorted(non_finite)[:10]}"
+                ),
+            }
         return {"ok": True, "tensors": tensors, "abs_sum": total, "b_abs_sum": b_total}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
@@ -105,9 +126,25 @@ def adapter_update(before, after) -> dict:
     if not (before.get("ok") and after.get("ok")):
         return {
             "ok": False,
+            "non_finite": bool(before.get("non_finite") or after.get("non_finite")),
             "error": before.get("error")
             or after.get("error")
             or "the adapter was not fingerprinted",
+        }
+    # Checked again on this side, not only where the sums were taken: an
+    # exact `!=` on a NaN is the most confident "it changed" this file can
+    # produce, so the comparison refuses to run on one whatever produced it.
+    unusable = [
+        f"{side}.{key}={reading[key]}"
+        for side, reading in (("before", before), ("after", after))
+        for key in ("abs_sum", "b_abs_sum")
+        if not _is_finite(reading.get(key))
+    ]
+    if unusable:
+        return {
+            "ok": False,
+            "non_finite": True,
+            "error": f"the adapter fingerprints are not finite ({', '.join(unusable)})",
         }
     if before.get("tensors") != after.get("tensors"):
         return {
@@ -132,7 +169,7 @@ def adapter_update(before, after) -> dict:
 
 def update_verdict(metrics, adapter = None) -> dict:
     """Was an optimizer update applied? ``applied`` / ``not_applied`` /
-    ``unverifiable``.
+    ``non_finite`` / ``unverifiable``.
 
     The adapter reading wins where it exists, because it is the thing the
     grad norms are a proxy FOR: gradients that flowed into weights nobody
@@ -143,6 +180,16 @@ def update_verdict(metrics, adapter = None) -> dict:
     failure at the call sites. Not because nothing was applied, which is
     unknown, but because the leg's whole claim is that it exercised the
     training path and it can no longer show that it did.
+
+    ``non_finite`` is decided FIRST and beats a healthy grad_norm, because it
+    is the one adapter reading that is an answer rather than a refusal. A
+    finite norm logged at step 1 says nothing about weights that went NaN at
+    step 3, and the trained adapter is the artifact the leg exists to
+    produce.
+
+    Every call site treats anything other than ``applied`` as a failure, so a
+    verdict added here cannot be silently dropped by one that has not been
+    taught about it yet.
     """
     rows = metrics or []
     norms = [row.get("grad_norm") for row in rows if row.get("grad_norm") is not None]
@@ -150,6 +197,12 @@ def update_verdict(metrics, adapter = None) -> dict:
     weights = adapter if isinstance(adapter, dict) else {}
     moved = weights.get("changed") if weights.get("ok") else None
 
+    if weights.get("non_finite"):
+        return {
+            "verdict": "non_finite",
+            "detail": str(weights.get("error") or "the adapter holds non-finite weights"),
+            "grad_norms": norms,
+        }
     if moved is False:
         return {
             "verdict": "not_applied",

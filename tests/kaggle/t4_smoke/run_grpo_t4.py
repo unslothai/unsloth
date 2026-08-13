@@ -502,7 +502,17 @@ def failures_for(result: dict, args) -> list[str]:
             f"skips the step it overflowed on, so this run generated, scored and "
             f"updated nothing."
         )
-    elif update["verdict"] == "unverifiable":
+    elif update["verdict"] == "non_finite":
+        failures.append(
+            f"the adapter holds non-finite weights after training: {update['detail']}. "
+            f"An optimizer step landed and produced NaN or infinity, which is a "
+            f"broken run rather than an untrained one, and generation still returns "
+            f"text either way."
+        )
+    elif update["verdict"] != "applied":
+        # Not `== "unverifiable"`. Anything this file has not been taught
+        # about is a failure here rather than a silent pass, which is the
+        # whole disease training_evidence.py exists to treat.
         failures.append(
             f"whether the optimizer applied anything could not be established: "
             f"{update['detail']}. Every other number this leg reports is produced "

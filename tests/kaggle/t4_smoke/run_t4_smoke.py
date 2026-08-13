@@ -93,6 +93,7 @@ from determinism import (  # noqa: E402
     set_all_seeds_fast,
     set_deterministic_algorithms,
 )
+from training_evidence import LORA_B_MARKER  # noqa: E402
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
     flatten_versions,
@@ -443,10 +444,14 @@ def verify_saved_adapter(adapter_dir) -> dict:
     modes worth naming -- unreadable, empty, non-finite, all zero -- are all
     visible in the tensors themselves.
 
-    ``nonzero_tensors`` is the load-bearing one. ``lora_B`` is zero at
-    initialisation and only becomes non-zero once an optimizer update has been
-    applied and saved, so an all-zero file is an untrained adapter that would
-    reload without complaint.
+    ``nonzero_b_tensors`` is the load-bearing one, and it is counted over the
+    B matrices SPECIFICALLY. ``lora_B`` is zero at initialisation and only
+    becomes non-zero once an optimizer update has been applied and saved,
+    which is what makes it evidence; ``lora_A`` is randomly initialised and
+    is already nonzero before a single step. Counting every tensor therefore
+    passed an adapter whose B matrices were all zero or dropped entirely --
+    an adapter whose output is still zero through B, so reloading it restores
+    the base model exactly.
 
     Returns a dict; never raises. ``saved_adapter_failures`` turns it into a
     verdict, so the pass/fail rule stays testable without a GPU.
@@ -487,14 +492,19 @@ def verify_saved_adapter(adapter_dir) -> dict:
 
     non_finite: list[str] = []
     nonzero = 0
+    b_tensors = 0
+    nonzero_b = 0
     total = 0
     for name, tensor in tensors.items():
         try:
+            is_b = LORA_B_MARKER in name.lower()
+            b_tensors += int(is_b)
             floating = tensor.is_floating_point()
             if floating and not bool(tensor.isfinite().all()):
                 non_finite.append(name)
             if bool(tensor.count_nonzero()):
                 nonzero += 1
+                nonzero_b += int(is_b)
             total += int(tensor.numel())
         except Exception as exc:  # noqa: BLE001
             non_finite.append(f"{name}: {type(exc).__name__}")
@@ -502,6 +512,8 @@ def verify_saved_adapter(adapter_dir) -> dict:
     state["parameters"] = total
     state["non_finite_tensors"] = non_finite[:10]
     state["nonzero_tensors"] = nonzero
+    state["b_tensors"] = b_tensors
+    state["nonzero_b_tensors"] = nonzero_b
     return state
 
 
@@ -528,11 +540,27 @@ def saved_adapter_failures(state: dict) -> list[str]:
         failures.append(
             f"the saved adapter holds non-finite weights: {state['non_finite_tensors']}"
         )
-    if not state.get("nonzero_tensors"):
+    # The B matrices, not the tensor count. lora_A is randomly initialised and
+    # is nonzero before training starts, so a file whose B matrices were all
+    # zero or were dropped on the way out still had nonzero tensors in it and
+    # was accepted -- while producing exactly nothing, since the adapter's
+    # contribution goes through B.
+    b_tensors = state.get("b_tensors")
+    if not b_tensors:
         failures.append(
-            f"every saved tensor is zero across all {state['tensors']} of them. lora_B "
-            f"starts at zero, so this adapter carries no training at all and reloading "
-            f"it would restore the base model."
+            f"not one of the {state['tensors']} saved tensors is a lora_B matrix "
+            f"({state.get('files')}), so this file cannot say whether training "
+            f"reached the adapter. lora_B is the only weight in here that starts "
+            f"at a known value, and without it the reading is unusable rather "
+            f"than good."
+        )
+    elif not state.get("nonzero_b_tensors"):
+        failures.append(
+            f"every one of the {b_tensors} saved lora_B matrices is zero (of "
+            f"{state['tensors']} tensors, {state.get('nonzero_tensors')} nonzero). "
+            f"lora_B starts at zero and only an applied optimizer step moves it, so "
+            f"this adapter contributes nothing and reloading it would restore the "
+            f"base model."
         )
     return failures
 
@@ -843,6 +871,31 @@ def check_reference(
                             "observed": cur[field],
                             "relative": None,
                             "note": "the fp16 scaler skip pattern moved: NaN on one side only",
+                        }
+                    )
+                continue
+            # Infinities, for the same reason and one step further along. An
+            # fp16 overflow logs infinity as readily as NaN, so the committed
+            # reference genuinely holds them, and every pairing an infinity
+            # can take part in divides to NaN: abs(inf - inf) / inf, and
+            # abs(inf - 1.0) / inf alike. NaN > rel_tol is False and
+            # max(worst, NaN) returns worst, so the entry was accepted AND
+            # left no trace in worst_rel -- including the pairing that matters
+            # most, a step that used to be finite and now overflows. Equal
+            # signed infinities are the unchanged case; everything else is a
+            # deviation, decided before the division.
+            cur_inf = new in (float("inf"), float("-inf"))
+            ref_inf = ref_val in (float("inf"), float("-inf"))
+            if cur_inf or ref_inf:
+                if new != ref_val:
+                    verdict["deviations"].append(
+                        {
+                            "step": cur.get("step"),
+                            "field": field,
+                            "reference": old[field],
+                            "observed": cur[field],
+                            "relative": None,
+                            "note": "an infinity on one side only, or opposite infinities",
                         }
                     )
                 continue

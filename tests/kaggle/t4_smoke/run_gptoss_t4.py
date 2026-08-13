@@ -445,7 +445,17 @@ def failures_for(result: dict, args) -> list[str]:
             f"is the adapter it started with and this leg measured a forward pass "
             f"rather than LoRA training"
         )
-    elif update["verdict"] == "unverifiable":
+    elif update["verdict"] == "non_finite":
+        failures.append(
+            f"the adapter holds non-finite weights after training: {update['detail']}. "
+            f"gpt-oss is in the FORCE_FLOAT32 list precisely because reduced "
+            f"precision through these weights produces infinities, so this is that "
+            f"failure landing in the adapter rather than in the loss"
+        )
+    elif update["verdict"] != "applied":
+        # Not `== "unverifiable"`. Anything this file has not been taught
+        # about is a failure here rather than a silent pass, which is the
+        # whole disease training_evidence.py exists to treat.
         failures.append(
             f"whether the optimizer applied anything could not be established: "
             f"{update['detail']}. LoRA training on this path is the only thing "
@@ -477,10 +487,18 @@ def failures_for(result: dict, args) -> list[str]:
                     f"fp16 autocast through these weights produces infinities, so this "
                     f"is the patch having stopped firing, not a slow pass."
                 )
-            elif not precision.get("force_float32_env"):
+            elif precision.get("force_float32_env") != "1":
+                # The exact string, not truthiness. The loader writes "0" into
+                # this variable on its normal branch before deciding whether
+                # to force (models/loader.py), so a nonempty check accepts the
+                # regression it is here to catch: forcing switched off, fp16
+                # and bf16 both still false, and the leg green. Every
+                # production consumer reads it as `== "1"`.
                 failures.append(
-                    f"UNSLOTH_FORCE_FLOAT32 was not set: {precision}. The float32 path "
-                    f"is the only thing this leg covers that nothing else in CI does."
+                    f'UNSLOTH_FORCE_FLOAT32 is not "1": {precision}. The loader sets '
+                    f'it to "0" and only writes "1" when the forcing actually fired, '
+                    f"and the float32 path is the only thing this leg covers that "
+                    f"nothing else in CI does."
                 )
 
     if args.require_compile:
@@ -488,12 +506,23 @@ def failures_for(result: dict, args) -> list[str]:
         # The DELTA across training, not the process-global total. The total
         # is nonzero the moment the loader has compiled anything, so a
         # training path that fell back to eager entirely used to satisfy it.
-        graphs = compiled.get("unique_graphs_delta", compiled.get("unique_graphs", 0))
+        graphs = compiled.get("unique_graphs_delta")
         if not compiled.get("available"):
             failures.append(
                 "torch._dynamo counters were unreadable, so whether "
                 "torch.compile engaged could not be established: "
                 f"{compiled.get('error')}"
+            )
+        elif graphs is None:
+            # No baseline read means no subtraction, and falling back to the
+            # absolute count here would assert on a number the LOADER made
+            # nonzero. That turns the one diagnostic failure where training
+            # cannot be isolated into the case most likely to pass.
+            failures.append(
+                "the pre-training dynamo counters were not readable, so what "
+                "training itself compiled cannot be separated from what loading the "
+                "model compiled, and this leg requires compilation: "
+                f"{compiled}"
             )
         elif graphs < 1:
             failures.append(
