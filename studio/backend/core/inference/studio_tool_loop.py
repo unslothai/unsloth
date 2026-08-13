@@ -275,6 +275,33 @@ class _Turn:
     text: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
+    # Results from tools the PROVIDER ran during this turn, keyed by call id so a
+    # repeated end event cannot record the same result twice.
+    hosted_results: dict[str, dict[str, str]] = field(default_factory = dict)
+
+    def note_hosted_tool_event(self, event: Any) -> None:
+        """Record a provider-side tool result carried on ``_toolEvent``.
+
+        These reach the client as their own frames but are not part of the
+        assistant message this loop replays, so when a hosted tool and a local
+        call land in the same turn the follow-up request loses whatever the
+        provider just produced. Studio's own events do not come through here:
+        the loop writes those as a top-level ``type``, so ``_toolEvent`` is
+        unambiguously the provider's side.
+        """
+        if not isinstance(event, dict) or event.get("type") != "tool_end":
+            return
+        call_id = event.get("tool_call_id")
+        result = event.get("result")
+        if not isinstance(call_id, str) or not call_id:
+            return
+        if not isinstance(result, str) or not result.strip():
+            return
+        name = event.get("tool_name")
+        self.hosted_results[call_id] = {
+            "name": name if isinstance(name, str) and name else "tool",
+            "result": result,
+        }
 
     def merge_structured(self, raw_calls: list[Any]) -> None:
         for raw_call in raw_calls:
@@ -678,6 +705,7 @@ async def stream_with_studio_tools(
                 extra = delta.get("extra_content")
                 if isinstance(extra, dict):
                     turn.reasoning_extra = extra
+                turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
 
@@ -1071,6 +1099,23 @@ async def stream_with_studio_tools(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
+        if turn.hosted_results:
+            # A tool the provider ran itself in this same turn. Its output went
+            # to the client as its own frame but is not otherwise part of this
+            # message, so without this the follow-up request drops what the
+            # model just produced and it answers from the local results alone.
+            # Replayed as text rather than as native items: the shape differs
+            # per provider (Gemini codeExecutionResult, an OpenAI image call),
+            # while every provider can read its own prior turn's prose.
+            hosted_text = "\n\n".join(
+                f"[{entry['name']} result]\n{entry['result']}"
+                for entry in turn.hosted_results.values()
+            )
+            assistant_message["content"] = (
+                f"{assistant_message['content']}\n\n{hosted_text}"
+                if assistant_message["content"]
+                else hosted_text
+            )
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:
