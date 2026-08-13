@@ -22247,9 +22247,7 @@ async def diffusion_download_plan(
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
-            gpu_ordinal = await _selected_gpu_ordinal(
-                request.gpu_ids, allow_ranking = not training
-            )
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(

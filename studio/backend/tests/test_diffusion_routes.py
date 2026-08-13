@@ -2369,7 +2369,8 @@ def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(cl
     backend = diffusion_module.get_diffusion_backend()
     planned: dict = {}
     monkeypatch.setattr(
-        backend, "download_plan",
+        backend,
+        "download_plan",
         lambda model_path, **kwargs: (planned.update(kwargs), {"entries": [], "total_bytes": 0})[1],
         raising = False,
     )

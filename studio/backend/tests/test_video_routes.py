@@ -1701,7 +1701,8 @@ def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_ca
     monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _resolve)
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
-        backend, "download_plan",
+        backend,
+        "download_plan",
         lambda *a, **k: pytest.fail("a refused GPU pick must not reach the planner"),
         raising = False,
     )

@@ -910,11 +910,11 @@ def test_the_placed_ordinal_records_the_card_an_automatic_load_used(monkeypatch)
     _install(monkeypatch, torch, studio_device = "cuda")
 
     automatic = dd.resolve_diffusion_device_target()
-    assert automatic.ordinal is None                 # the target itself stays un-indexed
-    assert dd.placed_cuda_ordinal(automatic) == 3    # but the card is known
+    assert automatic.ordinal is None  # the target itself stays un-indexed
+    assert dd.placed_cuda_ordinal(automatic) == 3  # but the card is known
 
     selected = dd.resolve_diffusion_device_target(ordinal = 1)
-    assert dd.placed_cuda_ordinal(selected) == 1     # a selection needs no observation
+    assert dd.placed_cuda_ordinal(selected) == 1  # a selection needs no observation
 
     # Nothing to record off CUDA: there is no thread-local device to put back.
     cpu_torch = _make_torch(cuda_available = False)
@@ -946,8 +946,7 @@ def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
     # The download-plan routes must not open a CUDA context while a trainer holds the cards, but
     # validating and translating the ids costs none, so that still happens: a bad pick is refused
     # at the plan, and the single-card selection the UI sends still resolves.
-    torch = _make_torch(cuda_available = True, device_count = 4,
-                        free_vram_by_index = {0: 1, 1: 2})
+    torch = _make_torch(cuda_available = True, device_count = 4, free_vram_by_index = {0: 1, 1: 2})
     probed: list = []
     torch.cuda.mem_get_info = lambda index = None: (probed.append(index), (1, 2))[1]
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -958,7 +957,7 @@ def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 4)
 
     assert dd.resolve_selected_cuda_ordinal([2], allow_ranking = False) == 2
-    assert probed == []                                  # no free-VRAM probe, so no CUDA context
+    assert probed == []  # no free-VRAM probe, so no CUDA context
     assert dd.resolve_selected_cuda_ordinal([0, 1], allow_ranking = False) is None
     assert probed == []
     with pytest.raises(ValueError):
