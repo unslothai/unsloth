@@ -37,8 +37,10 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   pasteClipboardFiles,
+  extractYoutubeVideoId,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
+  YoutubeTranscriptPrompt,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -2096,8 +2098,14 @@ const Composer: FC<{
   );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
+  // A pasted YouTube link offers a transcript attachment above the composer.
+  const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+      if (extractYoutubeVideoId(pastedText)) {
+        setYoutubeLink(pastedText.trim());
+      }
       pasteClipboardFiles(
         event,
         async (files) => {
@@ -2115,6 +2123,12 @@ const Composer: FC<{
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
+  // Derived, not cleared in an effect: the offer retracts as soon as the link
+  // leaves the draft, which also covers sending.
+  const youtubeOfferUrl =
+    youtubeLink !== null && composerText.includes(youtubeLink)
+      ? youtubeLink
+      : null;
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3600,6 +3614,12 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      {youtubeOfferUrl && !isDictating && !disabled ? (
+        <YoutubeTranscriptPrompt
+          url={youtubeOfferUrl}
+          onClose={() => setYoutubeLink(null)}
+        />
+      ) : null}
       {isTauri ? (
         // Phase 1 native model owns Tauri local-path drops. Restore browser
         // attachment drops in Tauri once Phase 1d adds token bridging.
