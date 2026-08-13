@@ -34,7 +34,10 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
-import { normalizeStoredRagAutoInject } from "../utils/mirrored-chat-settings";
+import {
+  loadShadowOwnsMirroredSetting,
+  normalizeStoredRagAutoInject,
+} from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
 import {
   chatModelLifecycleGate,
@@ -1608,7 +1611,7 @@ type ChatRuntimeStore = {
 
 type PersistedChatSettings = Awaited<
   ReturnType<typeof loadChatSettingsWithLegacyImport>
->;
+>["settings"];
 type PersistedInferenceParams = NonNullable<
   PersistedChatSettings["inferenceParams"]
 >;
@@ -1898,9 +1901,11 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
-    // Both describe the running model through a loaded* shadow this loop cannot set, and
-    // the load path reads the preference from the cache cacheHydratedSettings refreshes.
-    if (key === "speculativeType" || key === "gpuMemoryMode") {
+    // Both describe the running model through a loaded* shadow this loop cannot
+    // set, so skip them while a shadow owns them. With none resident the store
+    // field is what the next load reads and then persists back, so the server's
+    // preference has to land here or the load overwrites it with a default.
+    if (loadShadowOwnsMirroredSetting(key, state)) {
       continue;
     }
     // A load sets this from the model's own capability, and only a load sets
@@ -2113,7 +2118,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     settingsHydrationPromise = (async () => {
       const hydrationVersions = getSettingsHydrationVersions();
       try {
-        const settings = await loadChatSettingsWithLegacyImport();
+        const { settings, fromServer } = await loadChatSettingsWithLegacyImport();
         let applied = false;
         set((state) => {
           if (state.settingsHydrated) {
@@ -2134,7 +2139,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (applied) {
           cacheHydratedSettings(settings, hydrationVersions);
           mirroredSettingsHydrated = true;
-          backfillMirroredSettings(settings);
+          // Only an authoritative read says a mirrored field is unset on the
+          // server. A GET that fell back to legacy storage knows nothing about
+          // it, and backfilling then pushes this browser's stale values over
+          // whatever another browser wrote.
+          if (fromServer) backfillMirroredSettings(settings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
         }
@@ -2370,7 +2379,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // stale persisted local id would race the freshly-loaded model. See
       // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      if (isExternalModelId(modelId)) {
+      // Codex runs deep research, so clamp only the external providers that
+      // cannot. saveBool now reaches the backend, and clamping on every external
+      // id would write the preference off for every browser on the install.
+      const clampsDeepResearch = externalCheckpointRefusesDeepResearch(modelId);
+      if (clampsDeepResearch) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
       // Clear stale per-turn usage on model change; the relaxed external-provider
@@ -2396,7 +2409,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
       }
       const nextGgufVariant = ggufVariant ?? null;
-      const nextDeepResearchEnabled = isExternalModelId(modelId)
+      const nextDeepResearchEnabled = clampsDeepResearch
         ? false
         : state.deepResearchEnabled;
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
@@ -2437,9 +2450,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to an external provider disables Deep Research, which only
-        // applies to the local base model.
-        ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
+        // Switching to an external provider that cannot run Deep Research
+        // disables it; a local model or Codex keeps the preference.
+        ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
     }),
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished

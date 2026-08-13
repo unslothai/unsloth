@@ -159,6 +159,26 @@ export function normalizeStoredRagAutoInject(
   return raw === "false" ? "off" : "auto";
 }
 
+/**
+ * Whether a resident model's own baseline currently owns a mirrored setting.
+ * speculativeType and gpuMemoryMode are each written with a loaded* shadow that
+ * hydration cannot set, so moving the editable half alone while a shadow holds
+ * the other splits the pair. With no shadow the stored preference is the one the
+ * next load reads, and hydration has to apply it or the load sends a default and
+ * persists that default back over the server's value.
+ */
+export function loadShadowOwnsMirroredSetting(
+  key: string,
+  shadows: {
+    loadedSpeculativeType: string | null;
+    loadedGpuMemoryMode: "auto" | "manual" | null;
+  },
+): boolean {
+  if (key === "speculativeType") return shadows.loadedSpeculativeType !== null;
+  if (key === "gpuMemoryMode") return shadows.loadedGpuMemoryMode !== null;
+  return false;
+}
+
 /** Whether `settings` carries none of the mirrored values. */
 export function hasNoMirroredSettings(
   settings: PersistedChatSettings,

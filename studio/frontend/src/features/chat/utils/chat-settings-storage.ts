@@ -394,7 +394,18 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   return settings;
 }
 
-export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatSettings> {
+export interface LoadedChatSettings {
+  settings: PersistedChatSettings;
+  /**
+   * The GET answered, so a mirrored field missing from `settings` is missing on
+   * the server too. False when the read fell back to this browser's legacy
+   * storage: nothing is then known about the server, and treating every field
+   * as absent would back this browser's stale values over another's.
+   */
+  fromServer: boolean;
+}
+
+export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSettings> {
   let dbSettings: PersistedChatSettings;
   try {
     dbSettings = sanitizeChatSettings(await getChatSettings());
@@ -403,7 +414,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
     if (isEmptyChatSettings(legacySettings)) {
       throw error;
     }
-    return legacySettings;
+    return { settings: legacySettings, fromServer: false };
   }
 
   const legacySettings = loadLegacyChatSettings();
@@ -412,18 +423,24 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
       !isEmptyChatSettings(dbSettings) ||
       isEmptyChatSettings(legacySettings)
     ) {
-      return dbSettings;
+      return { settings: dbSettings, fromServer: true };
     }
     try {
-      return sanitizeChatSettings(await saveChatSettingsPatch(legacySettings));
+      return {
+        settings: sanitizeChatSettings(
+          await saveChatSettingsPatch(legacySettings),
+        ),
+        fromServer: true,
+      };
     } catch {
-      return legacySettings;
+      // The GET still answered (empty), so absence remains authoritative.
+      return { settings: legacySettings, fromServer: true };
     }
   }
 
   if (isEmptyChatSettings(legacySettings)) {
     markLegacySettingsImportDone();
-    return dbSettings;
+    return { settings: dbSettings, fromServer: true };
   }
 
   const mergedSettings = {
@@ -439,9 +456,9 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
       await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
-    return savedSettings;
+    return { settings: savedSettings, fromServer: true };
   } catch {
-    return mergedSettings;
+    return { settings: mergedSettings, fromServer: true };
   }
 }
 

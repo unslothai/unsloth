@@ -3,15 +3,18 @@
 
 // speculativeType and gpuMemoryMode describe the model that is actually running, and every
 // writer sets them together with a loaded* shadow. The settings GET resolves after the
-// first inference status on a cold boot, so hydrating the editable half on its own leaves
-// the pair split: the repair guard in apply-inference-status-to-store only fires while the
-// shadow is null, gpuMemoryEditsPending is the inequality itself, and both keys sit in the
-// model-config editor's React key. The store cannot be imported here (a .tsx barrel in its
-// graph), so these pin the source the way the other chat-runtime-store tests do.
+// first inference status on a cold boot, so hydrating the editable half while a shadow
+// holds the other splits the pair. With nothing resident the opposite is true: the load
+// path reads the store field (use-chat-model-runtime captures stateBeforeUnload), sends it
+// and then persists it back, so a skipped hydration writes the local default over the
+// server's preference. The predicate is tested for real here; the store itself cannot be
+// imported (a .tsx barrel in its graph), so the wiring is pinned against the source.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { loadShadowOwnsMirroredSetting } from "../src/features/chat/utils/mirrored-chat-settings.ts";
 
 const store = readFileSync(
   new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
@@ -26,6 +29,11 @@ function slice(from: string, to: string): string {
   return store.slice(start, end);
 }
 
+const NO_MODEL = {
+  loadedSpeculativeType: null,
+  loadedGpuMemoryMode: null,
+} as const;
+
 // Dropping them instead would make scalarSettingMutationVersions[key] += 1 produce NaN and
 // leave hydration permanently unable to match a version for either key.
 test("both keys stay in the scalar setting list", () => {
@@ -37,25 +45,74 @@ test("both keys stay in the scalar setting list", () => {
   assert.match(keys, /"gpuMemoryMode",/);
 });
 
-test("hydration skips the two keys a model load owns", () => {
+test("a resident model's shadow owns its half of the pair", () => {
+  assert.equal(
+    loadShadowOwnsMirroredSetting("speculativeType", {
+      ...NO_MODEL,
+      loadedSpeculativeType: "mtp",
+    }),
+    true,
+  );
+  assert.equal(
+    loadShadowOwnsMirroredSetting("gpuMemoryMode", {
+      ...NO_MODEL,
+      loadedGpuMemoryMode: "manual",
+    }),
+    true,
+  );
+  // Each key answers for its own shadow only.
+  assert.equal(
+    loadShadowOwnsMirroredSetting("gpuMemoryMode", {
+      ...NO_MODEL,
+      loadedSpeculativeType: "mtp",
+    }),
+    false,
+  );
+});
+
+// The regression: with no shadow, hydration must apply the server's value, or the next
+// load captures the local default and the successful-load persist writes it back.
+test("with nothing resident the stored preference still hydrates", () => {
+  assert.equal(
+    loadShadowOwnsMirroredSetting("speculativeType", NO_MODEL),
+    false,
+  );
+  assert.equal(loadShadowOwnsMirroredSetting("gpuMemoryMode", NO_MODEL), false);
+});
+
+test("every other mirrored setting hydrates unconditionally", () => {
+  for (const key of ["permissionMode", "ragMode", "toolsEnabled"]) {
+    assert.equal(
+      loadShadowOwnsMirroredSetting(key, {
+        loadedSpeculativeType: "mtp",
+        loadedGpuMemoryMode: "manual",
+      }),
+      false,
+    );
+  }
+});
+
+test("hydration defers to the shadow check, not the key name", () => {
   const hydrate = slice(
     "function getHydratedSettingsState(",
     "function setScalarSettingVersion<",
   );
-  assert.match(
+  assert.match(hydrate, /loadShadowOwnsMirroredSetting\(key, state\)/);
+  // An unconditional skip is the bug: it strands the server's preference.
+  assert.doesNotMatch(
     hydrate,
-    /if \(key === "speculativeType" \|\| key === "gpuMemoryMode"\) \{\s*continue;/,
+    /if \(key === "speculativeType" \|\| key === "gpuMemoryMode"\)/,
   );
-  // The skip has to precede the write, or the field moves before anything can stop it.
+  // The check has to precede the write, or the field moves before anything can stop it.
   assert.ok(
-    hydrate.indexOf('key === "speculativeType"') <
+    hydrate.indexOf("loadShadowOwnsMirroredSetting") <
       hydrate.indexOf("[key] = value;"),
-    "the skip runs after hydration has already written the field",
+    "the shadow check runs after hydration has already written the field",
   );
 });
 
-// The load path reads the standing preference from localStorage, which cacheHydratedSettings
-// refreshes from the same payload, so skipping the store write loses no preference.
+// The load path reads the standing preference from localStorage on a model switch, which
+// cacheHydratedSettings refreshes from the same payload.
 test("the mirrored cache still carries both preferences", () => {
   const mirrored = slice("const MIRRORED_SETTINGS = {", "\n} satisfies Partial<");
   assert.match(mirrored, /speculativeType: \{ storageKey: CHAT_SPECULATIVE_TYPE_KEY/);
