@@ -419,6 +419,11 @@ export const en = {
         launchAtLogin: "Run Unsloth at login",
         launchAtLoginDescription:
           "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+
+        closeToTray: "Close to system tray",
+        closeToTrayDescription:
+          "Keep Unsloth and its server running in the background when you close the main window.",
+        closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },

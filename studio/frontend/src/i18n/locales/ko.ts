@@ -416,6 +416,11 @@ export const ko = {
         launchAtLogin: "로그인 시 Unsloth 실행",
         launchAtLoginDescription:
           "로그인하면 Unsloth를 백그라운드에서 시작합니다. 열기 전까지 메뉴 막대 또는 시스템 트레이에 남아 있습니다.",
+
+        closeToTray: "시스템 트레이로 닫기",
+        closeToTrayDescription:
+          "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
+        closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },

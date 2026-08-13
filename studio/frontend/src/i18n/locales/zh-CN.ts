@@ -403,6 +403,11 @@ export const zhCN = {
         launchAtLogin: "登录时运行 Unsloth",
         launchAtLoginDescription:
           "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+
+        closeToTray: "关闭到系统托盘",
+        closeToTrayDescription:
+          "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
+        closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },

@@ -409,6 +409,11 @@ export const ja = {
         launchAtLogin: "ログイン時に Unsloth を起動",
         launchAtLoginDescription:
           "ログイン時に Unsloth をバックグラウンドで起動します。開くまでメニューバーまたはシステムトレイに常駐します。",
+
+        closeToTray: "システムトレイに格納して閉じる",
+        closeToTrayDescription:
+          "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",
+        closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
