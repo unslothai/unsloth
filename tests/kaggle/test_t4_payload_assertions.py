@@ -744,9 +744,7 @@ def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        adapter_update = _moved(
-            changed = False, abs_sum_after = 100.0, b_abs_sum_after = 0.0
-        ),
+        adapter_update = _moved(changed = False, abs_sum_after = 100.0, b_abs_sum_after = 0.0),
     )
     failures = failures_for(result, _gptoss_args())
     assert any("no optimizer update was applied" in f for f in failures), failures
@@ -769,7 +767,6 @@ def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():
 
 def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
     from run_grpo_t4 import failures_for
-
     result = _grpo_result(
         metrics = [{"step": s, "loss": 0.0} for s in (1, 2, 3)],
         adapter_update = _moved(),

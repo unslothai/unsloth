@@ -1800,8 +1800,8 @@ def test_the_workflow_tells_the_gate_which_label_arrived():
     decide = next(s for s in steps if s.get("id") == "decide")
     assert decide["env"]["EVENT_ACTION"] == "${{ github.event.action }}"
     assert decide["env"]["EVENT_LABEL"] == "${{ github.event.label.name }}"
-    assert "--event-action \"$EVENT_ACTION\"" in decide["run"]
-    assert "--event-label \"$EVENT_LABEL\"" in decide["run"]
+    assert '--event-action "$EVENT_ACTION"' in decide["run"]
+    assert '--event-label "$EVENT_LABEL"' in decide["run"]
     # Label names are free text. They travel through the environment rather
     # than being interpolated into the shell, as does the raw label list.
     assert "${{ github.event.label.name }}" not in decide["run"]
@@ -1851,13 +1851,17 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
     script = next(s for s in steps if s.get("id") == "ref")["run"]
 
-    def drive(unsloth_ref, ls_remote, head = "headsha"):
+    def drive(
+        unsloth_ref,
+        ls_remote,
+        head = "headsha",
+    ):
         work = tmp_path / f"case{abs(hash((unsloth_ref, ls_remote)))}"
         stub = work / "bin"
         stub.mkdir(parents = True)
         # `git` answers with whatever ls-remote is supposed to have said, and
         # `sleep` returns at once so the retry loop costs nothing.
-        (stub / "git").write_text('#!/bin/sh\nprintf \'%s\' "$LS_OUT"\n')
+        (stub / "git").write_text("#!/bin/sh\nprintf '%s' \"$LS_OUT\"\n")
         (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
         for name in ("git", "sleep"):
             (stub / name).chmod(0o755)
@@ -1871,13 +1875,9 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
             HEAD_SHA = head,
             LS_OUT = ls_remote,
         )
-        done = subprocess.run(
-            ["bash", "-c", script], env = env, capture_output = True, text = True
-        )
+        done = subprocess.run(["bash", "-c", script], env = env, capture_output = True, text = True)
         assert done.returncode == 0, done.stderr
-        return dict(
-            line.split("=", 1) for line in out.read_text().splitlines() if "=" in line
-        )
+        return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
 
     # No input: the head SHA under test, which is also the tree checked out.
     assert drive("", "") == {"ref": "headsha"}
@@ -1887,9 +1887,9 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
     # An annotated tag lists the tag object first; the COMMIT is what pip can
     # check out, and it is on the ^{} line.
     tag, commit = "aaaa" + "0" * 36, "bbbb" + "0" * 36
-    assert drive(
-        "v1.2", f"{tag}\trefs/tags/v1.2\n{commit}\trefs/tags/v1.2^{{}}\n"
-    ) == {"ref": commit}
+    assert drive("v1.2", f"{tag}\trefs/tags/v1.2\n{commit}\trefs/tags/v1.2^{{}}\n") == {
+        "ref": commit
+    }
     # A full commit is already immutable, and ls-remote answers nothing for
     # one, so it must not be sent there at all.
     assert drive("f" * 40, "") == {"ref": "f" * 40}
@@ -2078,9 +2078,7 @@ def test_the_harness_and_the_package_under_test_are_one_snapshot():
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     ref_step = next(s for s in steps if s.get("id") == "ref")
-    assert (
-        ref_step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
-    )
+    assert ref_step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     assert "ref=$HEAD_SHA" in ref_step["run"]
 
 

@@ -105,7 +105,9 @@ def adapter_update(before, after) -> dict:
     if not (before.get("ok") and after.get("ok")):
         return {
             "ok": False,
-            "error": before.get("error") or after.get("error") or "the adapter was not fingerprinted",
+            "error": before.get("error")
+            or after.get("error")
+            or "the adapter was not fingerprinted",
         }
     if before.get("tensors") != after.get("tensors"):
         return {

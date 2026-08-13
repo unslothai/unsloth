@@ -620,9 +620,7 @@ def test_a_push_that_runs_out_of_wall_clock_is_a_recorded_failure(monkeypatch):
     assert deleted == pushed["attempts"][:-1]
 
 
-def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(
-    monkeypatch, tmp_path
-):
+def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monkeypatch, tmp_path):
     """The case that costs quota: kernel 1 is up when kernel 2's push hangs.
 
     Nothing caught that exception, so `main()` exited without `release()` and
