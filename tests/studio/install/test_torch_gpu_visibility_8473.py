@@ -165,6 +165,8 @@ def _run_block(
     run_env.pop("UNSLOTH_TORCH_INDEX_URL", None)
     run_env.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
     run_env.pop("UNSLOTH_TORCH_BACKEND", None)
+    for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "UNSLOTH_NO_TORCH"):
+        run_env.pop(_mask, None)
     run_env.update(env or {})
     run_env["PATH"] = (
         str(stub_bin) if not with_timeout else f"{stub_bin}{os.pathsep}{run_env.get('PATH', '')}"
@@ -213,7 +215,12 @@ def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
     # as a conditional: llama.cpp is a separate stack, and with the Vulkan bundle the backend
     # fills inference_gpu from get_vulkan_inference_gpu_info() and the monitor shows that card's
     # real VRAM, so promising a CPU-only Studio and a "--" readout would be false there.
-    assert "SUB|Training and GPU inference are unavailable; chat and GGUF still work.|ERR" in out
+    # "PyTorch", because a false torch.cuda.is_available() says nothing about llama.cpp: a
+    # CUDA / HIP / Vulkan GGUF bundle still offloads to the same card.
+    assert (
+        "SUB|PyTorch training and GPU inference are unavailable; chat and GGUF still work.|ERR"
+        in out
+    )
     # Not "runs on CPU": hardware.py leaves CHAT_ONLY true on the fallback and disables
     # Train/Export, so promising CPU training is the opposite of what happens. Same sentence
     # the XPU-runtime-unavailable arm above already uses.
@@ -435,6 +442,83 @@ def test_a_gpu_backend_or_no_backend_is_still_reconciled(block, tmp_path, backen
         env = {"UNSLOTH_TORCH_BACKEND": backend},
     )
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"HIP_VISIBLE_DEVICES": "-1"},
+        {"HIP_VISIBLE_DEVICES": ""},
+        {"ROCR_VISIBLE_DEVICES": "-1"},
+        {"HIP_VISIBLE_DEVICES": " -1 "},
+    ],
+)
+def test_a_hidden_amd_gpu_is_not_a_broken_one(block, tmp_path, env):
+    """The KFD sysfs fallback reads the kernel topology and ignores the mask, so a user who
+    deliberately hid every AMD device still gets the GPU announced and a torch that correctly
+    sees nothing. _setup_cvd_hides_nvidia already keeps the masked NVIDIA host out; this is
+    the missing AMD half, not a new policy."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize("env", [{"HIP_VISIBLE_DEVICES": "0"}, {"ROCR_VISIBLE_DEVICES": "1,0"}])
+def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
+    """Only a hide-ALL mask. Selecting a device is the opposite of hiding one, and muting
+    there would silence every host that pins its GPU."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_an_empty_hip_mask_shadows_rocr(block, tmp_path):
+    """First-set-wins, like the runtime: an empty HIP mask hides everything even when ROCR
+    names a device, so reading ROCR first would report a host that torch cannot see by
+    request."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"HIP_VISIBLE_DEVICES": "", "ROCR_VISIBLE_DEVICES": "0"},
+    )
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+@pytest.mark.parametrize("marker", ["env", "manifest", "file"])
+def test_a_no_torch_install_never_launches_the_interpreter(block, tmp_path, marker):
+    """A GGUF-only install has no torch to reconcile. setup.ps1 already excludes it through
+    $NoTorchMode; without the POSIX half every update paid for an `import torch` that could
+    only fail, and a no-torch venv carrying a user-added CPU torch got the red mismatch."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    env = {}
+    if marker == "env":
+        env = {"UNSLOTH_NO_TORCH": "1"}
+    elif marker == "manifest":
+        (venv / "unsloth_install_manifest.json").write_text(
+            '{"schema": 1, "no_torch": true}', encoding = "utf-8"
+        )
+    else:
+        (venv / ".unsloth-no-torch").write_text("", encoding = "utf-8")
+    result = _run_block(block, venv, tmp_path, nvidia = True, env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+def test_a_torch_install_is_not_read_as_no_torch(block, tmp_path):
+    """The manifest key is false on every normal install, and matching the key name alone
+    would mute the whole feature."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    (venv / "unsloth_install_manifest.json").write_text(
+        '{"schema": 1, "no_torch": false}', encoding = "utf-8"
+    )
+    result = _run_block(block, venv, tmp_path, nvidia = True)
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
 
 
 def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):

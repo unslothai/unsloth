@@ -5202,7 +5202,7 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu"
         substep "torch $($_gpuVisibility.TorchVersion), device_count $($_gpuVisibility.DeviceCount), torch.version.hip $_gpuCheckHip" "Red"
         # Named so the report matches what the user is about to see, rather than leaving them to
         # find it and file it as a second, separate bug.
-        substep "Training and GPU inference are unavailable; chat and GGUF still work." "Red"
+        substep "PyTorch training and GPU inference are unavailable; chat and GGUF still work." "Red"
         substep "If the Live monitor shows VRAM `"--`" and `"No visible GPU`", that is this, not a second bug." "Red"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "Red"
     } elseif (-not $_gpuVisibility.Answered) {

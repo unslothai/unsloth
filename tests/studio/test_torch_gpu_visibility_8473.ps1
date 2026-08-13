@@ -143,7 +143,10 @@ Check "it names what the user will see"   ($report -match 'No visible GPU')
 Check "it does not promise a CPU-only Studio" (-not ($report -match 'Studio will run CPU-only'))
 # hardware.py leaves CHAT_ONLY true on the CPU fallback and disables Train/Export, so
 # "training will run on CPU" was the opposite of what happens. Same wording as the XPU arm.
-Check "it claims only what torch answered" ($report -match 'Training and GPU inference are unavailable; chat and GGUF still work')
+Check "it claims only what torch answered" ($report -match 'PyTorch training and GPU inference are unavailable; chat and GGUF still work')
+# "PyTorch", because a false torch.cuda.is_available() says nothing about llama.cpp: a CUDA /
+# HIP / Vulkan GGUF bundle still offloads to the same card.
+Check "the claim is scoped to torch"      (-not ($report -match '(?<!PyTorch )training and GPU inference are unavailable'))
 Check "it does not promise CPU training" (-not ($report -match 'will run on CPU'))
 Check "the monitor line is conditional"   ($report -match 'If the Live monitor shows VRAM')
 Check "chat and GGUF are exempted"        ($report -match 'chat and GGUF still work')

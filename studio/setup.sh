@@ -1949,9 +1949,45 @@ _setup_gpucheck_pin_leaf=$(printf '%s' "${_setup_gpucheck_pin##*/}" | tr '[:uppe
 # uname or ROCm-version gate) and the CPU wheel it asked for. install.sh already explains that
 # fallback on screen, so reporting it again in red and asking for an issue is wrong. Only the
 # exact "cpu": unset is the normal standalone `studio update` state and must still be checked.
+#
+# Returns 0 when the AMD visibility mask hides every device ("" or "-1"), so torch is meant to
+# see nothing. Mirrors _setup_cvd_hides_nvidia, which already keeps a masked NVIDIA host out of
+# _setup_nvidia_usable; the AMD side has no equivalent because the KFD sysfs fallback reads the
+# kernel topology and ignores the mask, so the summary announces the card either way and only
+# this can tell a hidden GPU from a broken one. First-set-wins, like the runtime: an empty HIP
+# mask shadows ROCR rather than deferring to it.
+_setup_amd_mask_hides_all() {
+    if [ "${HIP_VISIBLE_DEVICES+set}" = "set" ]; then
+        _setup_amd_mask=$(printf '%s' "$HIP_VISIBLE_DEVICES" | tr -d '[:space:]')
+    elif [ "${ROCR_VISIBLE_DEVICES+set}" = "set" ]; then
+        _setup_amd_mask=$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '[:space:]')
+    else
+        return 1
+    fi
+    [ -z "$_setup_amd_mask" ] || [ "$_setup_amd_mask" = "-1" ]
+}
+_setup_gpucheck_masked=false
+if [ "$_setup_amd_detected" = true ] && _setup_amd_mask_hides_all; then
+    _setup_gpucheck_masked=true
+fi
+# A GGUF-only install has no torch to reconcile, so it should not pay for an interpreter launch
+# every update. setup.ps1 already excludes it via $NoTorchMode; this is the POSIX half, reading
+# the same two durable records install_manifest writes (the manifest key, then the marker).
+_setup_gpucheck_no_torch=false
+case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _setup_gpucheck_no_torch=true ;; esac
+if [ "$_setup_gpucheck_no_torch" = false ] && [ -f "$VENV_DIR/unsloth_install_manifest.json" ] \
+    && grep -qE '"no_torch"[[:space:]]*:[[:space:]]*(true|"(1|true|yes|on)")' \
+        "$VENV_DIR/unsloth_install_manifest.json" 2>/dev/null; then
+    _setup_gpucheck_no_torch=true
+fi
+if [ "$_setup_gpucheck_no_torch" = false ] && [ -f "$VENV_DIR/.unsloth-no-torch" ]; then
+    _setup_gpucheck_no_torch=true
+fi
 if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } \
     && [ "$_setup_gpucheck_pin_leaf" != "cpu" ] \
-    && [ "${UNSLOTH_TORCH_BACKEND:-}" != "cpu" ]; then
+    && [ "${UNSLOTH_TORCH_BACKEND:-}" != "cpu" ] \
+    && [ "$_setup_gpucheck_masked" = false ] \
+    && [ "$_setup_gpucheck_no_torch" = false ]; then
     case "${UNSLOTH_SKIP_TORCH_GPU_CHECK:-}" in
         1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
         *) _setup_skip_torch_check=false ;;
@@ -2019,7 +2055,7 @@ if { [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; } 
         substep "torch ${_setup_torch_ver:-unknown}, device_count ${_setup_torch_devices:-0}, torch.version.hip ${_setup_torch_hip:-none}" "$C_ERR"
         # Named so the report matches what the user is about to see, instead of
         # leaving them to discover it and file it as a second, separate bug.
-        substep "Training and GPU inference are unavailable; chat and GGUF still work." "$C_ERR"
+        substep "PyTorch training and GPU inference are unavailable; chat and GGUF still work." "$C_ERR"
         substep "If the Live monitor shows VRAM \"--\" and \"No visible GPU\", that is this, not a second bug." "$C_ERR"
         substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
     elif [ "$_setup_torch_probe_answered" = true ]; then
