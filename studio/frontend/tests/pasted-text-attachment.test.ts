@@ -21,6 +21,7 @@ import {
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextFileName,
+  pastedTextOf,
   pastedTextPreview,
   shouldAttachPastedText,
 } from "../src/features/chat/utils/pasted-text.ts";
@@ -136,6 +137,17 @@ test("pasted text files are recognised by identity", () => {
     false,
   );
   assert.equal(isPastedTextFile(undefined), false);
+});
+
+test("the pasted text is kept beside the file, not re-read from it", () => {
+  // Draft autosave runs on a keystroke, so it cannot await File.text().
+  const text = `Deploy log\n${"line\n".repeat(200)}`;
+  assert.equal(pastedTextOf(createPastedTextFile(text)), text);
+  assert.equal(
+    pastedTextOf(new File(["hi"], "notes.txt", { type: "text/plain" })),
+    undefined,
+  );
+  assert.equal(pastedTextOf(undefined), undefined);
 });
 
 test("the sent wrapper is what marks a paste after the File is gone", () => {

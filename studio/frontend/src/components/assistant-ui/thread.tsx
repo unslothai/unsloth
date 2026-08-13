@@ -141,6 +141,11 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
+  composerPasteDraftKey,
+  createPastedTextFile,
+  pastedTextOf,
+  readPasteDraft,
+  writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
   type PromptQueueRunFailedEventDetail,
@@ -2173,6 +2178,16 @@ const Composer: FC<{
         isPastedTextFile((attachment as { file?: File }).file),
       ),
   );
+  // Identities only: draft autosave keys off this, and the bodies behind it can
+  // be megabytes.
+  const pastedTextDraftSignature = useAuiState(({ composer }) =>
+    composer.attachments
+      .filter((attachment) =>
+        isPastedTextFile((attachment as { file?: File }).file),
+      )
+      .map((attachment) => attachment.id)
+      .join(","),
+  );
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
@@ -2540,15 +2555,53 @@ const Composer: FC<{
   // previous thread's composer contents.
   const draftThreadId = referenceThreadId;
   const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
+  // A pasted attachment is a File held in memory only, so without its own slot
+  // an unsent paste is the one draft a reload throws away.
+  const pasteDraftKey = draftThreadId
+    ? composerPasteDraftKey(draftThreadId)
+    : null;
   const lastDraftKeyRef = useRef(draftKey);
+  const lastPasteDraftKeyRef = useRef<string | null>(null);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
-    if (composer.getState().isEditing) {
-      composer.setText(draft);
+    if (!composer.getState().isEditing) return;
+    composer.setText(draft);
+    // The composer outlives a thread switch, so restore only into one that
+    // holds no paste already; the stored draft keeps until it can come back.
+    if (
+      composer
+        .getState()
+        .attachments.some((attachment) =>
+          isPastedTextFile((attachment as { file?: File }).file),
+        )
+    ) {
+      return;
     }
-  }, [draftKey, aui]);
+    for (const text of pasteDraftKey ? readPasteDraft(pasteDraftKey) : []) {
+      void composer.addAttachment(createPastedTextFile(text));
+    }
+  }, [draftKey, pasteDraftKey, aui]);
+  // Keyed on the paste identities, never their bodies, so typing beside a
+  // megabyte paste does not rewrite it to localStorage every 300ms.
+  useEffect(() => {
+    if (lastPasteDraftKeyRef.current !== pasteDraftKey) {
+      // The restore above has not landed for this key yet; writing now would
+      // clear the very draft it is about to put back.
+      lastPasteDraftKeyRef.current = pasteDraftKey;
+      return;
+    }
+    if (!pasteDraftKey) return;
+    const pastes = aui
+      .composer()
+      .getState()
+      .attachments.flatMap((attachment) => {
+        const text = pastedTextOf((attachment as { file?: File }).file);
+        return text === undefined ? [] : [text];
+      });
+    writePasteDraft(pasteDraftKey, pastes);
+  }, [pastedTextDraftSignature, pasteDraftKey, aui]);
   useEffect(() => {
     // After a thread switch composerText can still hold the previous
     // thread's text; skip that cycle so it isn't saved under the new key.
@@ -2566,9 +2619,11 @@ const Composer: FC<{
   // Without this the restore effect above puts the sent text back when the
   // runtime rebinds on the first message.
   const draftKeyRef = useRef(draftKey);
+  const pasteDraftKeyRef = useRef(pasteDraftKey);
   useEffect(() => {
     draftKeyRef.current = draftKey;
-  }, [draftKey]);
+    pasteDraftKeyRef.current = pasteDraftKey;
+  }, [draftKey, pasteDraftKey]);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -2577,6 +2632,10 @@ const Composer: FC<{
     const key = draftKeyRef.current;
     if (key) {
       writeComposerDraft(key, "");
+    }
+    const pasteKey = pasteDraftKeyRef.current;
+    if (pasteKey) {
+      writePasteDraft(pasteKey, []);
     }
   }, []);
   // react-textarea-autosize re-measures only on value change or window resize,

@@ -33,6 +33,8 @@ type ClipboardTextPasteEvent = {
 // Identity separates a pasted blob from a .txt the user attached. A sent
 // message keeps no File, so the wrapper below carries it over instead.
 const pastedTextFiles = new WeakSet<File>();
+// The text as pasted, so draft autosave never re-reads the File on a keystroke.
+const pastedTextByFile = new WeakMap<File, string>();
 
 function countLines(text: string): number {
   let lines = 1;
@@ -96,12 +98,18 @@ export function createPastedTextFile(text: string): File {
     lastModified: Date.now(),
   });
   pastedTextFiles.add(file);
+  pastedTextByFile.set(file, text);
   return file;
 }
 
 /** A live File must match by identity: the name no longer marks a paste. */
 export function isPastedTextFile(file: File | undefined): boolean {
   return file !== undefined && pastedTextFiles.has(file);
+}
+
+/** What was pasted, without a `File.text()` round trip. */
+export function pastedTextOf(file: File | undefined): string | undefined {
+  return file === undefined ? undefined : pastedTextByFile.get(file);
 }
 
 /**

@@ -153,6 +153,7 @@ export {
   pasteLongTextAsFile,
   pastedTextContentBytes,
   pastedTextContentPreview,
+  pastedTextOf,
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
@@ -192,8 +193,11 @@ export {
 export {
   clearNewChatDraft,
   composerDraftKey,
+  composerPasteDraftKey,
   readComposerDraft,
+  readPasteDraft,
   writeComposerDraft,
+  writePasteDraft,
 } from "./utils/composer-draft";
 export {
   CONVERSATION_MARKDOWN_FORMAT,
