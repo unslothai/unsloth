@@ -4873,13 +4873,9 @@ def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypat
 
 
 def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, monkeypatch):
-    """``xdg-open`` is absent on a headless host, and ``Popen`` raises the same
-    ``FileNotFoundError`` for a missing LAUNCHER as for a missing target.
-
-    Conflating them tells a user whose files are sitting right there that the
-    chat has no folder, and sends them looking for a bug in the chat rather
-    than installing a file manager.
-    """
+    """``xdg-open`` is absent on a headless host, and ``Popen`` then raises the
+    same ``FileNotFoundError`` as a missing target. Conflating them tells a user
+    whose files are right there that the chat has no folder."""
     import asyncio
 
     from fastapi import HTTPException
@@ -4906,11 +4902,10 @@ def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, mo
 
 
 def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
-    """A tool can replace its own sandbox with a regular file between the
-    route's isdir check and the open, and the file branch names the parent,
-    which here is the root holding every other chat's sandbox. The route says
-    up front that it only ever reveals a directory, rather than re-checking and
-    losing the same race again."""
+    """A tool can replace its own sandbox with a file between the route's isdir
+    check and the open, and the file branch names the parent, here the root
+    holding every other chat's. The route says up front that it only reveals a
+    directory rather than re-checking and losing the same race."""
     import asyncio
     import inspect
 
@@ -4942,12 +4937,9 @@ def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
 
 
 def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, monkeypatch):
-    """An id with a slash cannot travel in a path segment, because ASGI decodes
-    ``%2F`` before routing, so the client sends ``/sandbox/_/reveal?session=``.
-
-    The listing route already reads it; this one has to agree, or every chat
-    with an id the router cannot carry silently reveals the wrong folder.
-    """
+    """ASGI decodes ``%2F`` before routing, so a slashed id travels as
+    ``/sandbox/_/reveal?session=``. The listing route already reads it and this
+    one must agree, or such a chat silently reveals the wrong folder."""
     import asyncio
 
     from routes import inference
@@ -5037,11 +5029,9 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
 
 
 def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
-    """The new POST route sits on the same path the download route matches with
-    ``{filename:path}``. It is POST-only, so a file called ``reveal`` is still
-    reachable -- and that is worth pinning, because widening the method list
-    later would silently take it away.
-    """
+    """The POST route shares the path the download route matches with
+    ``{filename:path}``. Being POST-only keeps a file called ``reveal``
+    reachable, which widening the method list later would silently undo."""
     from routes.inference import router
 
     scope = {
@@ -5060,10 +5050,8 @@ def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
 
 
 def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, monkeypatch):
-    """The helper this PR moved had one caller before it. That caller must
-    behave exactly as it did at the merge base, including for the symlinked
-    entries a Hugging Face cache is made of.
-    """
+    """The moved helper's one prior caller must behave as at the merge base,
+    including for the symlinked entries an HF cache is made of."""
     import asyncio
 
     from routes import models

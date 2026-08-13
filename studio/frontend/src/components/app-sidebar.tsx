@@ -336,16 +336,15 @@ function preloadSilently(request: Promise<unknown>): void {
 // "New" pill for recent tabs. Same recipe as the brand "beta" badge.
 /**
  * "Open chat folder" for a browser session, where the backend's file manager is
- * not the user's. Radix's `disabled` takes the row's pointer events away, and a
- * tooltip under a dropdown is blocked while the menu owns the screen, so the
- * row stays enabled, refuses the select itself, and drives a controlled tooltip
- * off a pointer-events-none anchor (as the MCP rows do).
+ * not the user's. Radix's `disabled` takes the row's pointer events away and a
+ * tooltip is blocked while the menu owns the screen, so the row stays enabled,
+ * refuses the select itself, and drives a controlled tooltip off a
+ * pointer-events-none anchor (as the MCP rows do).
  *
- * The reason is carried twice over. The tooltip hangs off an aria-hidden
- * anchor, so it is decoration a screen reader never reaches, and it opens on
- * hover, which a touch device does not have: `title` gives the row itself an
- * accessible description, and selecting it (a tap, or Enter) opens the hint
- * instead of doing nothing at all.
+ * The reason is carried twice: the tooltip hangs off an aria-hidden anchor and
+ * opens on hover, which a screen reader never reaches and a touch device does
+ * not have, so `title` describes the row itself and selecting it (tap or Enter)
+ * opens the hint rather than doing nothing.
  */
 function OpenChatFolderUnavailableItem() {
   const [hintOpen, setHintOpen] = useState(false);
@@ -1847,24 +1846,17 @@ export function AppSidebar() {
                   onSelect={() => {
                     void (async () => {
                       try {
-                        // A chat moved between projects keeps the sandbox it wrote to,
-                        // so its own history names the folder, not current membership.
-                        // Every pane is read: a compare row moved into a project can
-                        // still hold one folder per pane, and there is no single
-                        // folder to offer for it.
-                        // Deliberately not caught per pane: a read that failed
-                        // is not a chat that never ran a tool, and treating it
-                        // as one falls back to current membership -- the very
-                        // answer the recorded id exists to override. Let it
-                        // reach the report below instead.
+                        // A chat moved between projects keeps the sandbox it
+                        // wrote to, so its own history names the folder, not
+                        // current membership. Every pane is read, since a
+                        // compare row can hold one folder per pane.
                         // One at a time, not Promise.all: this file's export
-                        // contract forbids a concurrent await here (a native
-                        // save dialog per item cannot race), and a compare row
-                        // has two panes, so there is nothing to win. A read
-                        // that fails stops the loop and is reported below,
-                        // rather than being read as "never ran a tool" and
-                        // falling back to the current scope -- the very answer
-                        // the recorded id exists to override.
+                        // contract forbids a concurrent await here, and two
+                        // panes win nothing. A failed read stops the loop and
+                        // is reported below rather than being caught per pane,
+                        // which would read as "never ran a tool" and fall back
+                        // to current membership, the answer the recorded id
+                        // exists to override.
                         const ids =
                           threadIds.length > 0 ? threadIds : [item.id];
                         const recorded: (string | undefined)[] = [];
@@ -1878,14 +1870,12 @@ export function AppSidebar() {
                         let distinct = [...new Set(recorded.filter(Boolean))];
                         if (distinct.length === 0 && item.projectId) {
                           // Chats stored before results carried a session
-                          // recorded nothing, so one that ran while it was
-                          // loose and has since joined a project would be sent
-                          // to the project workspace instead of its own
-                          // folder. Its thread sandbox is the only other
-                          // candidate we can name, and files in it are this
-                          // chat's. Only in this direction: a chat moved OUT
-                          // of a project wrote under project-<id>, and nothing
-                          // retains which project that was.
+                          // recorded nothing, so one that ran loose and has
+                          // since joined a project would be sent to the project
+                          // workspace. Its thread sandbox is the only other
+                          // candidate, and files there are this chat's. Only in
+                          // this direction: a chat moved OUT wrote under
+                          // project-<id>, and nothing retains which one.
                           const held: string[] = [];
                           for (const threadId of ids) {
                             if (await sandboxHasFiles(threadId)) {

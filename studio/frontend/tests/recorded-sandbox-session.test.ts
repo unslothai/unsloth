@@ -134,11 +134,9 @@ test("a result without a session id is skipped rather than read as one", () => {
 });
 
 test("a run that created no files still names the sandbox it ran in", () => {
-  // The backend emits no __FILES__ envelope when the call changed nothing AND
-  // when a concurrent call shared the directory (_created_file_sentinels'
-  // `shared` guard), so a run that DID write files can arrive bare. The
-  // adapter wraps python and terminal results either way, and this is the
-  // shape it writes: no images, no files, but the session it ran in.
+  // No __FILES__ envelope is emitted when the call changed nothing AND when a
+  // concurrent call shared the directory, so a run that DID write files can
+  // arrive bare. The adapter wraps python and terminal results either way.
   const messages = [
     {
       id: "m2",
@@ -164,8 +162,8 @@ test("a run that created no files still names the sandbox it ran in", () => {
 });
 
 test("content that is not an array is skipped rather than thrown on", () => {
-  // Legacy rows and imported chats carry a plain string here, and this runs
-  // from a menu handler: throwing would take the click, not just the answer.
+  // Legacy and imported chats carry a plain string here, and this runs from a
+  // menu handler: throwing would take the click, not just the answer.
   const messages = [
     { id: "m1", threadId: "t", role: "user", createdAt: 1, content: "hello" },
     { id: "m2", threadId: "t", role: "assistant", createdAt: 2, content: null },
@@ -218,9 +216,8 @@ test("a tool-result shaped part is not mistaken for a tool call", () => {
 });
 
 test("a long history answers from the newest message without walking it all", () => {
-  // The scan runs on a menu click, over a chat that can hold thousands of
-  // turns. It walks backwards, so the answer is the newest recorded session
-  // and the cost is one part when the latest message carries it.
+  // Runs on a menu click over a chat of thousands of turns. Walking backwards
+  // makes it one part when the newest message carries the answer.
   const messages: Message[] = [];
   for (let i = 0; i < 5000; i += 1) {
     messages.push({

@@ -235,32 +235,23 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
 def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     """Open the OS file manager with *path* selected (best effort per platform).
 
-    Raises ``FileNotFoundError`` when the target is already gone: the Linux
-    branch falls back to the parent directory, so a path deleted between the
-    caller's check and this call would open the directory holding it, which for
-    a sandbox is the root holding every other chat's.
+    Raises ``FileNotFoundError`` when the target is gone: the Linux branch falls
+    back to the parent, which for a sandbox is the root holding every other
+    chat's.
 
-    ``expect_dir`` says the caller only ever reveals a directory, and refuses
-    everything else: a target swapped for a regular file takes the file branch
-    on every platform, and that branch names the enclosing directory, which for
-    a sandbox is the root holding every other chat's. A symlink is refused too,
-    and that is the whole reason this is one ``lstat`` rather than a couple of
-    ``Path`` predicates. ``is_dir()`` follows links, so a sandbox swapped for a
-    link to somewhere else passes it and the launcher opens the target; asking
-    for the link's OWN type answers both questions in a single syscall, leaving
-    no window between them. (``is_dir(follow_symlinks = False)`` would say the
-    same thing but only on 3.13+, and this runs on 3.10.)
-
-    Off by default: the cached-model reveal legitimately points at a file, and
-    at a symlinked one, since a Hugging Face cache snapshot is a link farm.
+    ``expect_dir`` refuses anything that is not a real directory, symlinks
+    included, since both would take the file branch and name that same parent.
+    One ``lstat`` answers type and link-ness together, leaving no window between
+    the checks (``is_dir()`` follows links; ``follow_symlinks = False`` is 3.13+
+    only, and this runs on 3.10). Off by default: the cached-model reveal points
+    at a file, and a symlinked one, as an HF cache snapshot is a link farm.
     """
     import stat as stat_module
     import subprocess
 
     if expect_dir:
         try:
-            # No-follow, and the only stat this branch takes.
-            entry = os.lstat(path)
+            entry = os.lstat(path)  # No-follow, and the only stat here.
         except OSError as exc:
             raise FileNotFoundError(str(path)) from exc
         if not stat_module.S_ISDIR(entry.st_mode):
@@ -269,13 +260,10 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     else:
         if not path.exists():
             raise FileNotFoundError(str(path))
-        # Decided ONCE and then only read. Each branch used to re-stat, so a
-        # swap landing between two of them could still take a path the guard
-        # above had already ruled out.
+        # Decided ONCE and then only read; each branch used to re-stat.
         is_dir = path.is_dir()
         is_file = not is_dir and path.is_file()
         if not is_dir and not is_file:
-            # Neither, so nothing to show and no parent worth widening to.
             raise FileNotFoundError(str(path))
 
     target = str(path)

@@ -23,9 +23,8 @@ test("a path-safe session id reveals through its own path segment", () => {
 });
 
 test("an id the router cannot carry moves to the query, after the verb", () => {
-  // ASGI decodes %2F before a route matches, so an id with a slash cannot ride
-  // in the path. The suffix has to land BEFORE the query or the backend sees
-  // /sandbox/_?session=...%2Freveal and answers the listing route instead.
+  // ASGI decodes %2F before matching, so a slashed id cannot ride in the path.
+  // The suffix must land BEFORE the query or the backend answers the listing.
   assert.equal(
     sandboxRevealPath("thread/with/slashes"),
     "/api/inference/sandbox/_/reveal?session=thread%2Fwith%2Fslashes",
@@ -75,9 +74,8 @@ test("a body that is not JSON leaves the status as the only thing to report", as
 });
 
 test("an old backend with no reveal route rejects rather than resolving silently", async () => {
-  // The desktop app updates on its own schedule, so a new bundle can meet a
-  // backend that predates this route. It answers 405, because the download
-  // route claims the same path for GET/HEAD.
+  // A self-updating desktop bundle can meet a backend predating this route.
+  // It answers 405: the download route claims the same path for GET/HEAD.
   globalThis.fetch = (async () =>
     respond(
       405,
@@ -108,9 +106,8 @@ const SIDEBAR = readFileSync(
 
 test("a failed history read is reported, not mistaken for a chat that ran no tools", () => {
   // No React renderer here, so this asserts on source, like ~50 sibling tests.
-  // Catching per pane would make a read failure indistinguishable from "never
-  // ran a tool", and the handler falls back to current project membership --
-  // which is the answer the recorded session id exists to override.
+  // A per-pane catch makes a failed read look like "never ran a tool", and the
+  // fallback is project membership, the answer the recorded id overrides.
   const start = SIDEBAR.indexOf("const recorded: (string | undefined)[] = [];");
   const end = SIDEBAR.indexOf("let distinct = ");
   assert.ok(start !== -1 && end > start, "the read block moved");
@@ -123,9 +120,8 @@ test("a failed history read is reported, not mistaken for a chat that ran no too
 });
 
 test("a sandbox holding files is told apart from one that was never written", async () => {
-  // The probe that recovers a legacy chat's folder. A sandbox that does not
-  // exist walks to nothing, so the backend answers 200 with an empty list
-  // rather than an error, and both cases have to read as "not this one".
+  // The legacy-folder probe. A missing sandbox lists as 200 with an empty
+  // array rather than an error, so both cases must read as "not this one".
   globalThis.fetch = (async () =>
     ({
       ok: true,
@@ -144,10 +140,9 @@ test("a sandbox holding files is told apart from one that was never written", as
 });
 
 test("a probe that could not be answered is reported, not read as an empty folder", async () => {
-  // "No sandbox" already arrives as a 200 with an empty list, so a non-OK is
-  // something else: a backend or storage failure. Reading it as "no files"
-  // would send the caller on to the current project scope and open a
-  // different workspace, with nothing said about the failure.
+  // "No sandbox" is already a 200 with an empty list, so a non-OK is a backend
+  // or storage failure. Reading it as "no files" would fall through to the
+  // current project scope and open a different workspace, silently.
   globalThis.fetch = (async () =>
     ({
       ok: false,
@@ -160,9 +155,8 @@ test("a probe that could not be answered is reported, not read as an empty folde
 });
 
 test("the legacy probe runs only for a chat now inside a project", () => {
-  // A chat moved OUT of a project wrote under project-<id> and nothing retains
-  // which project that was, so there is no candidate to probe in that
-  // direction and the request would be spent for nothing.
+  // A chat moved OUT of a project wrote under project-<id>, and nothing retains
+  // which one, so there is no candidate to probe in that direction.
   const block = SIDEBAR.slice(
     SIDEBAR.indexOf("let distinct = [...new Set(recorded.filter(Boolean))];"),
     SIDEBAR.indexOf("if (distinct.length > 1)"),
@@ -172,12 +166,11 @@ test("the legacy probe runs only for a chat now inside a project", () => {
 });
 
 test("a sandbox tool result is wrapped even when it carries no envelope", () => {
-  // chat-adapter.ts cannot be imported here (it reaches JSX barrels), so this
-  // asserts on source. The branch matters because the session id is the only
-  // record of WHERE a call ran: the backend suppresses __FILES__ when a
-  // concurrent call shared the directory, so a run that did write files can
-  // still arrive bare, and a chat moved afterwards would then fall back to its
-  // current scope and name a folder it never wrote to.
+  // chat-adapter.ts reaches JSX barrels and cannot be imported, so this asserts
+  // on source. The session id is the only record of WHERE a call ran, and the
+  // backend suppresses __FILES__ when a concurrent call shared the directory,
+  // so a run that did write files can arrive bare and a moved chat would then
+  // name a folder from its current scope that it never wrote to.
   const adapter = readFileSync(
     fileURLToPath(
       new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -199,10 +192,9 @@ test("a sandbox tool result is wrapped even when it carries no envelope", () => 
 });
 
 test("the sandbox reads stay off Promise.all, as the export contract requires", () => {
-  // tests/studio/test_desktop_reliability_frontend_contract.py forbids
-  // `await Promise.all(` anywhere in this file: every batch here ends in a
-  // native save dialog, and concurrent ones race each other and lose
-  // cancellation. Asserted from this side too, so the reason travels with the
-  // code rather than only with the Python guard that fails the build.
+  // test_desktop_reliability_frontend_contract.py forbids `await Promise.all(`
+  // here: every batch ends in a native save dialog, and concurrent ones race
+  // and lose cancellation. Asserted from this side so the reason travels with
+  // the code, not only with the Python guard that fails the build.
   assert.ok(!SIDEBAR.includes("await Promise.all("));
 });

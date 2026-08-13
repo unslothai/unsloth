@@ -15700,9 +15700,8 @@ async def reveal_sandbox_dir(
 ):
     """Open this chat's sandbox directory in the OS file manager.
 
-    The file manager is the backend host's, so this is only meaningful when the
-    backend runs on the user's own machine; the desktop app is the case it is
-    offered in.
+    The file manager is the backend host's, so this only means anything when the
+    backend runs on the user's own machine, which is the desktop app.
     """
     await _authenticate_header_or_query(request, token)
 
@@ -15712,7 +15711,7 @@ async def reveal_sandbox_dir(
         sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
         if not os.path.isdir(sandbox_dir):
             # One more resolve, as the listing does: the legacy move can rename
-            # the tree into place between resolving it and looking at it.
+            # the tree into place between resolving it and looking.
             sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
         return sandbox_dir if os.path.isdir(sandbox_dir) else None
 
@@ -15727,16 +15726,13 @@ async def reveal_sandbox_dir(
 
     try:
         # expect_dir: a sandbox is always a directory, and a running tool can
-        # replace its own with a file. Without this the reveal would take the
-        # file branch and show the parent, which here is the root holding every
-        # other chat's sandbox.
+        # replace its own with a file, which would take the file branch and show
+        # the parent, here the root holding every other chat's sandbox.
         await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir), expect_dir = True)
     except FileNotFoundError:
-        # Two different things raise this: the sandbox going between resolving
-        # it and opening it, and Popen failing to find the file manager itself
-        # on a host that has none. Only the first is "this chat has no folder";
-        # reporting the second that way sends the user looking for a missing
-        # chat instead of a missing xdg-open.
+        # Two things raise this: the sandbox going between resolve and open, and
+        # Popen not finding the file manager at all. Only the first is "no
+        # folder"; the second reported that way hides a missing xdg-open.
         if os.path.isdir(sandbox_dir):
             logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
             raise HTTPException(status_code = 500, detail = "Failed to open file manager")

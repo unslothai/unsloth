@@ -3,16 +3,10 @@
 
 """Every platform branch of ``reveal_in_file_manager``, and how each one fails.
 
-``test_reveal_file_manager.py`` beside this covers WSL and native Linux, which
-is where the endpoint first went wrong. This file completes the matrix: macOS
-and native Windows had no coverage at all, and neither did any of the ways the
-call can fail once the branch is chosen -- a target that is gone, a target that
-disappears mid-call, a launcher that is not installed.
-
-The launcher is never really run: ``subprocess.run``/``Popen`` and
-``os.startfile`` are replaced, and the assertions are on the exact argv. Exact,
-not a substring, because the thing most likely to break a path here is a space,
-a comma or a non-ASCII character splitting one argument into two.
+``test_reveal_file_manager.py`` beside this covers WSL and native Linux; this
+completes the matrix with macOS, native Windows, and the failure modes once a
+branch is chosen. Launchers are stubbed and argv asserted exactly, since what
+breaks a path here is a space, comma or non-ASCII splitting one argument in two.
 """
 
 from __future__ import annotations
@@ -60,8 +54,7 @@ except Exception as exc:
     pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
 
 
-# A name carrying every character that has ever been split into two argv
-# elements by someone building a command line as a string.
+# Characters that get split into two argv elements by string-built commands.
 _AWKWARD_NAME = "rapport final, v2 (draft) — 90% ✅"
 
 
@@ -69,9 +62,8 @@ _AWKWARD_NAME = "rapport final, v2 (draft) — 90% ✅"
 def spawned(monkeypatch):
     """Record what would have been launched, and launch nothing.
 
-    ``startfile`` only exists on Windows, so it is installed rather than
-    replaced; ``raising = False`` is what lets the Windows branch be exercised
-    from Linux at all.
+    ``startfile`` is Windows-only, so ``raising = False`` installs it rather
+    than replacing it, which is what exercises that branch from Linux.
     """
     calls = types.SimpleNamespace(run = [], popen = [], startfile = [], popen_error = None)
 
@@ -155,13 +147,9 @@ def test_windows_opens_a_directory_with_startfile(windows, spawned, tmp_path):
 
 
 def test_windows_never_waits_on_explorer_or_reads_its_exit_code(windows, spawned, tmp_path):
-    """``explorer.exe`` hands the request to the running shell and exits 1 even
-    when it worked (microsoft/WSL#6565), so its return code says nothing.
-
-    ``Popen`` without a ``wait`` is what makes that harmless. A ``run(...,
-    check = True)`` here would raise on every SUCCESSFUL reveal, which is why
-    this is asserted rather than left to style.
-    """
+    """``explorer.exe`` exits 1 even when it worked (microsoft/WSL#6565), so
+    ``run(..., check = True)`` here would raise on every SUCCESSFUL reveal.
+    ``Popen`` without a wait is what makes that harmless."""
     target = tmp_path / "report.csv"
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
@@ -170,11 +158,9 @@ def test_windows_never_waits_on_explorer_or_reads_its_exit_code(windows, spawned
 
 
 def test_windows_keeps_a_comma_in_the_path_out_of_the_select_flag(windows, spawned, tmp_path):
-    """``/select,`` is comma-delimited, and a real filename may contain one.
-
-    Recorded rather than asserted-correct: the whole thing is one argv element,
-    so the comma is Explorer's problem to parse, not the shell's.
-    """
+    """``/select,`` is comma-delimited and a filename may contain one. Recorded,
+    not asserted-correct: it is one argv element, so parsing is Explorer's
+    problem, not the shell's."""
     target = tmp_path / "q3, final.csv"
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
@@ -262,12 +248,9 @@ def test_a_broken_symlink_launches_nothing_anywhere(host, spawned, tmp_path, req
 
 
 class _VanishesAfterTheGuard:
-    """A target that is there for the existence guard and gone by the branch.
-
-    Not contrived: the guard and the branch are two separate stat calls, and a
-    chat being deleted (or its sandbox migrated) in between is exactly what the
-    endpoint's own tests already simulate one layer up.
-    """
+    """There for the existence guard, gone by the branch. The two are separate
+    stats, and a chat deleted or migrated in between is what the endpoint's own
+    tests already simulate one layer up."""
 
     def __init__(self, real: Path) -> None:
         self._real = real
@@ -305,12 +288,9 @@ def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
 
 
 class _SwappedForAFile:
-    """A directory the caller checked, replaced by a regular file before the open.
-
-    A tool runs inside its own sandbox and can delete it and write a file under
-    the same name. Deletion is not the only way to reach the parent: the file
-    branch names it on every platform.
-    """
+    """A checked directory replaced by a regular file before the open. A tool
+    runs inside its own sandbox and can do this, and the file branch names the
+    parent on every platform."""
 
     def __init__(self, real: Path) -> None:
         self._real = real
@@ -337,14 +317,10 @@ class _SwappedForAFile:
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp_path, request):
-    """``expect_dir`` is what the sandbox route passes, because the parent of a
-    sandbox is the root holding every other chat's.
-
-    A real file on disk rather than a fake that lies between two stats: under
-    ``expect_dir`` the type check IS the decision, one ``lstat``, so there is
-    no longer a gap between them for a fake to sit in. That is the property
-    being tested.
-    """
+    """``expect_dir`` is what the sandbox route passes, since a sandbox's parent
+    is the root holding every other chat's. A real file on disk, not a fake:
+    the one ``lstat`` leaves no gap between check and use for a fake to sit in,
+    which is the property under test."""
     request.getfixturevalue(host)
     root = tmp_path / "sandbox"
     root.mkdir(parents = True)
@@ -357,10 +333,8 @@ def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_directory_symlink_is_refused(host, spawned, tmp_path, request):
-    """``is_dir()`` follows links, so a sandbox replaced by a link to somewhere
-    else would pass a naive directory check and open the TARGET: another
-    chat's sandbox, or anywhere at all. The guard asks for the link's own type.
-    """
+    """``is_dir()`` follows links, so a sandbox replaced by one would pass a
+    naive check and open the TARGET. The guard asks for the link's own type."""
     request.getfixturevalue(host)
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
@@ -402,14 +376,10 @@ def test_the_same_swap_is_still_revealed_without_expect_dir(host, spawned, tmp_p
 
 
 def test_a_missing_launcher_is_reported_as_a_missing_launcher(native_linux, spawned, tmp_path):
-    """``xdg-open`` is absent on a headless or minimal host, and ``Popen``
-    raises ``FileNotFoundError`` for the LAUNCHER exactly as it does for a
-    missing target.
-
-    The helper cannot tell the two apart, so the caller must: this pins the
-    exception's payload as the launcher, which is what lets the route answer
-    500 rather than "this chat has no folder".
-    """
+    """``xdg-open`` is absent on a headless host, and ``Popen`` then raises
+    ``FileNotFoundError`` for the LAUNCHER just as for a missing target. The
+    helper cannot tell them apart, so this pins the payload as the launcher,
+    which is what lets the route answer 500 rather than "no folder"."""
     spawned.popen_error = FileNotFoundError(2, "No such file or directory", "xdg-open")
     with pytest.raises(FileNotFoundError) as caught:
         path_utils.reveal_in_file_manager(tmp_path)
