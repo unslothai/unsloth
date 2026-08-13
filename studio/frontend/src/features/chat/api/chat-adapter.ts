@@ -93,12 +93,14 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "../provider-capabilities";
+import { selectCodeToolNames } from "./code-tool-placement";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -1660,6 +1662,7 @@ export async function buildLocalTokenCountExtras(
     ragMode,
     ragTopK,
     autoHealToolCalls,
+    bypassPermissions,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1677,13 +1680,21 @@ export async function buildLocalTokenCountExtras(
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
     // request that never mentions them, so every pill being off has to say so.
-    return { enable_tools: false };
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
   return {
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
+    // Full access swaps the python/terminal descriptions and adds a nudge
+    // sentence, so the count needs the flag to price the same prompt.
+    bypass_permissions: bypassPermissions,
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
@@ -3630,10 +3641,13 @@ export function createOpenAIStreamAdapter(
         if (
           !selectedCheckpoint ||
           (researchExternalSelection &&
-            researchExternalProvider?.providerType !== "openai_codex")
+            providerModelSupportsStudioTools(
+              researchExternalProvider?.providerType,
+              researchExternalSelection.modelId,
+            ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or ChatGPT/Codex subscription.",
+            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
           );
         }
         const reasoningRequested =
@@ -3645,6 +3659,7 @@ export function createOpenAIStreamAdapter(
             researchExternalSelection && researchExternalProvider
               ? {
                   providerId: researchExternalProvider.id,
+                  providerType: researchExternalProvider.providerType,
                   modelId: researchExternalSelection.modelId,
                 }
               : undefined,
@@ -4105,6 +4120,19 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
+      // Which side of the connection the Code pill runs code on. Hosted
+      // `code_execution` and local `python` / `terminal` are two trust
+      // boundaries, not two spellings of one feature, so the stored pill keeps
+      // meaning the provider's sandbox wherever it meant that before the Studio
+      // loop reached these providers. See code-tool-placement.ts.
+      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
+        selectCodeToolNames({
+          codeToolsEnabled,
+          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+          providerHostsCodeExecution: providerHostsCodeExecution(
+            externalProvider?.providerType,
+          ),
+        });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -5004,6 +5032,7 @@ export function createOpenAIStreamAdapter(
                 getExternalMaxOutputTokens(
                   externalProvider?.providerType,
                   externalSelection?.modelId,
+                  externalProvider?.maxOutputTokens,
                 ),
               ),
 
@@ -5015,11 +5044,17 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // ChatGPT/Codex function calls are executed by Studio. Other
-              // external providers keep their provider-hosted tool envelope.
+              // Studio executes the calls for any provider that advertises the
+              // capability. Providers that do not keep their provider-hosted
+              // tool envelope in the branch below.
+              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
+              // resolved to the provider's own sandbox is a hosted request and
+              // belongs in the branch below. Sending this body for it would
+              // attach permission_mode to a passthrough turn, which the route
+              // answers with a 400.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
-                codeToolsEnabled ||
+                studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled)
@@ -5030,7 +5065,21 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                      ...studioLocalCodeTools,
+                      // Hosted tools Studio has no local stand-in for. Their
+                      // pills stay lit whether or not a Studio tool is on, so
+                      // listing only the local names here would silently drop
+                      // Images (or Fetch) the moment Search, Code, MCP or a
+                      // project's automatic RAG selected this branch. Search
+                      // deliberately does not ride along: that is the one
+                      // Studio runs itself just above. Code rides along only
+                      // when it resolved to the provider's sandbox, which is
+                      // mutually exclusive with the local names above.
+                      ...(imageGenerationEnabledForThisTurn
+                        ? ["image_generation"]
+                        : []),
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                      ...hostedCodeToolsForThisTurn,
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
@@ -5043,6 +5092,14 @@ export function createOpenAIStreamAdapter(
                       runtime.toolCallTimeout >= 9999
                         ? 9999
                         : runtime.toolCallTimeout * 60,
+                    // Self-hosted models often write a call as text rather than
+                    // emitting structured tool_calls, so the external loop heals
+                    // like the local one. Omitting this left the backend on its
+                    // process default, which is not what the user set in Settings.
+                    // nudge_tool_calls is deliberately absent: it is the
+                    // non-streaming client-tool passthrough retry, which this
+                    // streaming server-side loop does not perform.
+                    auto_heal_tool_calls: runtime.autoHealToolCalls,
                     ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
                     ...(ragEnabled || projectRagEnabled

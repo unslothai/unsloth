@@ -17,7 +17,6 @@ export const ar = {
     searchAriaLabel: "البحث في {noun}",
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
-    pickModelFile: "اختيار ملف نموذج من القرص",
     modelDropped: "لم يعد متاحًا",
     modelDroppedByProvider: "{provider} · لم يعد متاحًا",
     modelDisabled: "غير مُفعَّل",
@@ -419,6 +418,11 @@ export const ar = {
         launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+
+        closeToTray: "الإغلاق إلى علبة النظام",
+        closeToTrayDescription:
+          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+        closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
@@ -716,6 +720,39 @@ export const ar = {
         free: "{value} متاح",
         total: "{value} إجمالي",
       },
+      llamaBackend: {
+        title: "محرك استدلال GGUF",
+        label: "خلفية الحوسبة",
+        description: "الخلفية التي يستخدمها llama.cpp لتشغيل نماذج GGUF.",
+        runningOn: "يعمل llama.cpp حاليًا على {backend}.",
+        hint: "يثبّت إصدار llama.cpp الخاص بهذه الخلفية ويحافظ عليه عبر التحديثات. مفيد عندما ينهار الاختيار التلقائي أو لا يدعمه تعريف كرت الشاشة لديك. تظهر فقط الخلفيات التي يتوفر لها إصدار لهذا الجهاز، والتدريب لا يتأثر.",
+        autoWith: "تلقائي ({backend})",
+        apply: "تطبيق",
+        applying: "جارٍ التثبيت...",
+        applyHint: "ينزّل الإصدار الجديد ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        applyHintWithSize: "ينزّل {size} ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        switchedTo: "يعمل llama.cpp الآن على {backend}.",
+        switchFailed: "تعذّر تغيير خلفية llama.cpp.",
+        switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
+        envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
+        backends: {
+          auto: "تلقائي",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
+          localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
+          sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
+          unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
+        },
+        // لا يظهر: كلمات إضافية لبحث الإعدادات.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
+      },
       modelMemory: {
         title: "ذاكرة النموذج",
         keepResident: "إبقاء النموذج في ذاكرة كرت الرسوميات",
@@ -926,12 +963,14 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
+        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
         "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
+      importingChats: "جارٍ استيراد المحادثات: {count} حتى الآن ({percent}%)...",
+      importedChatCountPartial: "تم استيراد {count} محادثة إلى الأخيرة؛ تعذّر حفظ {failed} منها.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",

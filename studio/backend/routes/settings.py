@@ -4,11 +4,11 @@
 import functools
 import re
 import threading
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -53,6 +53,13 @@ from utils.model_memory_settings import (
     memlock_limit_bytes,
     set_model_memory_settings,
     should_mlock,
+)
+from utils.vram_budget_settings import (
+    VRAM_FRACTION_DEFAULT,
+    VRAM_FRACTION_MAX,
+    VRAM_FRACTION_MIN,
+    get_vram_budget_state,
+    set_vram_budget_fraction,
 )
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
@@ -100,10 +107,352 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.media_generation_preset_settings import (
+    delete_media_generation_preset,
+    get_media_generation_preset_settings,
+    set_media_generation_preset_settings,
+    upsert_media_generation_preset,
+)
 
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+class ImageGenerationPresetParams(BaseModel):
+    """Bounds track DiffusionGenerateRequest. A preset the generate endpoint would refuse is not
+    a usable preset: selecting it would make every following Generate fail validation."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = ""
+    width: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    steps: int = Field(default = 9, ge = 1, le = 100)
+    guidance: float = Field(default = 0, ge = 0, le = 20)
+    batchSize: int = Field(default = 1, ge = 1, le = 32)
+    runs: int = Field(default = 1, ge = 1)
+
+
+class VideoGenerationPresetParams(BaseModel):
+    """Bounds track VideoGenerateRequest, as the image params track theirs."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = ""
+    width: int = Field(default = 768, ge = 32, le = 2048)
+    height: int = Field(default = 512, ge = 32, le = 2048)
+    durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
+    steps: int = Field(default = 8, ge = 1, le = 100)
+    guidance: float = Field(default = 1, ge = 0, le = 20)
+    flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+
+
+class MediaGenerationPreset(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(..., min_length = 1, max_length = 80)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name or name == "Default":
+            raise ValueError("Preset name is reserved or empty")
+        return name
+
+
+class ImageGenerationPreset(MediaGenerationPreset):
+    params: ImageGenerationPresetParams
+
+
+class VideoGenerationPreset(MediaGenerationPreset):
+    params: VideoGenerationPresetParams
+
+
+class MediaGenerationPresetState(BaseModel):
+    """A saved generation recipe and the selection that owns it.
+
+    Model-load options are deliberately not here: they take effect only on a reload, they follow
+    the hardware and the checkpoint rather than the recipe, and the resident build already reports
+    them, so a second stored copy would only ever compete with it.
+    """
+
+    model_config = ConfigDict(extra = "forbid")
+
+    activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
+
+
+class ImageGenerationPresetState(MediaGenerationPresetState):
+    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
+
+
+class VideoGenerationPresetState(MediaGenerationPresetState):
+    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
+
+
+class ImageGenerationPresetSettings(ImageGenerationPresetState):
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+class VideoGenerationPresetSettings(VideoGenerationPresetState):
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
+    for candidate in (annotation, *get_args(annotation)):
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def _readable(model: type[BaseModel], value: Any) -> Any:
+    """Drop what this build's schema does not define, keeping every field it does.
+
+    `extra = "forbid"` is right for a submitted payload but wrong for reading storage back: a blob
+    holding one field from a newer build would otherwise fail validation, and a stored recipe the
+    user can no longer read is worse than one missing a field this build cannot render anyway.
+    """
+    if isinstance(value, list):
+        return [_readable(model, item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    readable = {}
+    for name, field in model.model_fields.items():
+        if name not in value:
+            continue
+        nested = _nested_model(field.annotation)
+        readable[name] = _readable(nested, value[name]) if nested else value[name]
+    return readable
+
+
+def _without_field_at_location(value: Any, location: tuple[Any, ...]) -> tuple[Any, bool]:
+    """Return a copy with one invalid leaf removed from a nested model payload."""
+    if not location:
+        return value, False
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    if not rest:
+        result.pop(key)
+        return result, True
+    nested, removed = _without_field_at_location(result[key], tuple(rest))
+    if removed:
+        result[key] = nested
+    return result, removed
+
+
+def _validated_without_invalid_fields(
+    schema: type[BaseModel], payload: dict
+) -> tuple[BaseModel, list[tuple[Any, ...]]]:
+    """Validate, dropping only the fields that fail.
+
+    Resetting the whole recipe over one unreadable field would hand the client schema defaults,
+    which it then autosaves over the rest of a perfectly good stored recipe.
+    """
+    remaining = payload
+    removed_locations = []
+    while True:
+        try:
+            return schema.model_validate(remaining), removed_locations
+        except ValidationError as exc:
+            for error in exc.errors():
+                location = tuple(error.get("loc", ()))
+                remaining, removed = _without_field_at_location(remaining, location)
+                if removed:
+                    removed_locations.append(location)
+                    break
+            else:
+                return schema(), removed_locations
+
+
+_MISSING = object()
+
+
+def _value_at_location(value: Any, location: tuple[Any, ...]) -> Any:
+    for key in location:
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def _with_value_at_location(
+    value: Any, location: tuple[Any, ...], replacement: Any
+) -> tuple[Any, bool]:
+    if not location:
+        return replacement, True
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    nested, replaced = _with_value_at_location(result[key], tuple(rest), replacement)
+    if replaced:
+        result[key] = nested
+    return result, replaced
+
+
+def _preserve_recovered_defaults(schema: type[BaseModel], stored: dict, submitted: dict) -> dict:
+    """Do not mistake a recovery default for an edit to an unreadable stored field.
+
+    A downgraded GET omits known fields whose values this schema cannot validate, then Pydantic
+    supplies their defaults in the response. The client cannot tell those defaults from stored
+    values and echoes them in its next state write. Preserve the raw leaf only while the submitted
+    value is still the synthesized value; a real edit remains authoritative.
+    """
+    recovered, locations = _validated_without_invalid_fields(schema, _readable(schema, stored))
+    recovered_values = recovered.model_dump()
+    merged = submitted
+    for location in locations:
+        previous = _value_at_location(stored, location)
+        submitted_value = _value_at_location(submitted, location)
+        recovered_value = _value_at_location(recovered_values, location)
+        if (
+            previous is not _MISSING
+            and submitted_value is not _MISSING
+            and recovered_value is not _MISSING
+            and submitted_value == recovered_value
+        ):
+            merged, _ = _with_value_at_location(merged, location, previous)
+    return merged
+
+
+def _validated_readable_model(schema: type[BaseModel], payload: Any) -> Optional[BaseModel]:
+    try:
+        return schema.model_validate(_readable(schema, payload))
+    except ValidationError:
+        return None
+
+
+def _get_generation_preset_settings(kind, schema):
+    stored = get_media_generation_preset_settings(kind)
+    try:
+        response = schema.model_validate(_readable(schema, stored))
+    except ValidationError:
+        # A value this build cannot represent at all. Drop only what fails: one unreadable entry
+        # costs neither the rest of the list nor the state, which is validated on its own here.
+        logger.warning("Dropping unreadable %s generation preset entries", kind)
+        presets = schema.model_fields["customPresets"].annotation
+        item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
+        readable = []
+        # Only a list is a preset collection. Recovery exists so a store this build cannot
+        # represent still reads; iterating a scalar here would answer 500 instead, which is the
+        # one outcome it is meant to prevent. _custom_presets takes the same view on the write.
+        raw_presets = stored.get("customPresets")
+        for raw in raw_presets if isinstance(raw_presets, list) else []:
+            validated = _validated_readable_model(item, raw)
+            if validated is not None:
+                readable.append(validated)
+        state = {
+            key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
+        }
+        response, _ = _validated_without_invalid_fields(
+            schema, {**state, "customPresets": readable}
+        )
+    # Saved means the store owns the CURRENT recipe, not merely that something is stored. A blob
+    # holding named presets but no recipe -- a preset write that landed while the state write did
+    # not -- would otherwise hand back schema defaults dressed as the user's own choice, and the
+    # client suppresses the resident model's defaults for exactly as long as it believes that.
+    response.saved = isinstance(stored.get("currentParams"), dict)
+    return response
+
+
+@router.get(
+    "/generation-presets/image",
+    response_model = ImageGenerationPresetSettings,
+)
+def get_image_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ImageGenerationPresetSettings:
+    return _get_generation_preset_settings("image", ImageGenerationPresetSettings)
+
+
+@router.put("/generation-presets/image")
+def update_image_generation_preset_settings(
+    payload: ImageGenerationPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "image",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            ImageGenerationPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
+@router.get(
+    "/generation-presets/video",
+    response_model = VideoGenerationPresetSettings,
+)
+def get_video_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> VideoGenerationPresetSettings:
+    return _get_generation_preset_settings("video", VideoGenerationPresetSettings)
+
+
+@router.put("/generation-presets/video")
+def update_video_generation_preset_settings(
+    payload: VideoGenerationPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "video",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            VideoGenerationPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
+def _upsert_custom_generation_preset(
+    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
+) -> dict[str, bool]:
+    try:
+        schema = type(payload)
+        upsert_media_generation_preset(
+            kind,
+            payload.model_dump(),
+            lambda stored: _validated_readable_model(schema, stored) is not None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return {"saved": True}
+
+
+@router.put("/generation-presets/image/custom")
+def upsert_custom_image_generation_preset(
+    payload: ImageGenerationPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("image", payload)
+
+
+@router.put("/generation-presets/video/custom")
+def upsert_custom_video_generation_preset(
+    payload: VideoGenerationPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("video", payload)
+
+
+@router.delete("/generation-presets/{kind}/custom")
+def delete_custom_generation_preset(
+    kind: Literal["image", "video"],
+    name: str,
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    name = name.strip()
+    if not name or name == "Default" or len(name) > 80:
+        raise HTTPException(status_code = 422, detail = "Invalid preset name")
+    delete_media_generation_preset(kind, name)
+    return {"deleted": True}
 
 
 class UploadLimitPayload(BaseModel):
@@ -216,6 +565,35 @@ class ModelMemoryResponse(BaseModel):
     # that residency will not fully pin a model larger than this. None means
     # unlimited (macOS) or not applicable (Windows).
     memlock_limit_bytes: Optional[int] = None
+
+
+class VramBudgetPayload(BaseModel):
+    # None clears the stored budget so env/default applies again; it cannot also
+    # mean "leave untouched" as the model-memory switches do, since there is one
+    # field. Hence required, not defaulted: with a default, {} would mean "clear it"
+    # and a client that dropped the field would silently discard the stored budget.
+    fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
+
+    @field_validator("fraction", mode = "before")
+    @classmethod
+    def _reject_bool(cls, value: object) -> object:
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and stores
+        # the max budget instead of 422; pydantic coerces before the util's guard.
+        if isinstance(value, bool):
+            raise ValueError("fraction must be a number, not a boolean")
+        return value
+
+
+class VramBudgetResponse(BaseModel):
+    fraction: float
+    # False when inherited from UNSLOTH_VRAM_FRACTION or the default, so the UI
+    # knows whether clearing it would change anything.
+    is_stored: bool
+    default_fraction: float = VRAM_FRACTION_DEFAULT
+    min_fraction: float = VRAM_FRACTION_MIN
+    max_fraction: float = VRAM_FRACTION_MAX
+    # Read when a load sizes itself, so a change cannot reach a running child.
+    reload_required: bool
 
 
 class HuggingFaceCachePayload(BaseModel):
@@ -452,6 +830,45 @@ def _model_memory_response() -> ModelMemoryResponse:
     )
 
 
+def _vram_budget_reload_required(fraction: float) -> bool:
+    """True when a child is running that was sized against a different budget.
+
+    Compares against the fraction the child actually launched with, not merely
+    "is something loaded", so re-saving the same value does not nag for a reload.
+    Exact equality is fine: both sides come from the same clamp, so a stored 0.97
+    and a launched 0.97 are the same float.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        # A planned-but-unspawned load has no _process, so is_active is False while
+        # the child is already committed to its captured fraction; answer from the
+        # pending value there, as _active_launch_placement does for Model Memory.
+        pending = getattr(backend, "_vram_fraction_pending", None)
+        if pending is not None:
+            return float(pending) != float(fraction)
+        if not backend.is_active:
+            return False
+        launched = getattr(backend, "_vram_fraction_launched", None)
+        # A child predating this field, or from a path that never set it, cannot be
+        # compared; say no rather than nagging on every save.
+        if launched is None:
+            return False
+        return float(launched) != float(fraction)
+    except Exception:
+        return False
+
+
+def _vram_budget_response() -> VramBudgetResponse:
+    fraction, is_stored = get_vram_budget_state()
+    return VramBudgetResponse(
+        fraction = fraction,
+        is_stored = is_stored,
+        reload_required = _vram_budget_reload_required(fraction),
+    )
+
+
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
@@ -545,6 +962,28 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+@router.get("/vram-budget", response_model = VramBudgetResponse)
+def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
+    return _vram_budget_response()
+
+
+@router.put("/vram-budget", response_model = VramBudgetResponse)
+def update_vram_budget(
+    payload: VramBudgetPayload, current_subject: str = Depends(get_current_subject)
+) -> VramBudgetResponse:
+    try:
+        set_vram_budget_fraction(payload.fraction)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid VRAM budget."),
+            event = "settings.update_vram_budget_failed",
+            log = logger,
+        ) from exc
+    return _vram_budget_response()
 
 
 class CodingAgentsResponse(BaseModel):

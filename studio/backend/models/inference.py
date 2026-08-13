@@ -1714,6 +1714,33 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "
+        "the prompt: it swaps the python/terminal descriptions for the unsandboxed pair and adds a "
+        "sentence to the tool nudge, so a count that omits it prices a prompt the completion will "
+        "not send.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
+        "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
+    )
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
+        """Mirrors ChatCompletionRequest: the prompt builders read only the
+        bypass flag, so 'full' has to reach them the same way here."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            self.permission_mode = "full"
+        return self
 
 
 class ToolConfirmRequest(BaseModel):
@@ -2621,6 +2648,13 @@ class DiffusionLoadRequest(BaseModel):
         "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
         "shifts the residual distribution).",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a diffusion checkpoint, so a selection of several cards resolves "
+        "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
+        "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -3400,6 +3434,14 @@ class VideoLoadRequest(BaseModel):
         "and first/last-frame video, the default) or ref2va (omni-reference video). They are "
         "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
         "whose filename already names the partition; rejected if it contradicts that filename.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a video checkpoint, so a selection of several cards resolves to "
+        "the one with the most free VRAM. Refused with a 400 when an index does not exist here; "
+        "ignored on XPU / MPS / CPU, which have no applicator for a physical index. Mirrors the "
+        "image backend's field.",
     )
 
     @field_validator("attention_backend", mode = "before")

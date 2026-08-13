@@ -63,6 +63,23 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     or IS_MAC_INTEL
 )
 
+
+def _is_windows_arm64() -> bool:
+    """Windows on ARM, machine arch rather than process arch: platform.machine() reports
+    AMD64 under an emulated x64 Python, and PROCESSOR_ARCHITEW6432 is ARM64 in exactly
+    that case. Mirrors Get-HostMachineArch in install.ps1 / setup.ps1."""
+    if not IS_WINDOWS:
+        return False
+    return any(
+        (value or "").strip().lower() in {"arm64", "aarch64"}
+        for value in (
+            os.environ.get("PROCESSOR_ARCHITEW6432"),
+            os.environ.get("PROCESSOR_ARCHITECTURE"),
+            platform.machine(),
+        )
+    )
+
+
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Detected ROCm (major, minor) -> best PyTorch wheel tag on
 # download.pytorch.org. Checked newest-first (>=).
@@ -964,11 +981,52 @@ def _detect_windows_gfx_arch() -> str | None:
                 return _pick
             if _names and not _pick:
                 # No arch means CPU-only torch; name the adapter instead of failing silently.
-                _safe_print(
-                    f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
-                    f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
-                    f"(e.g. gfx1200) to install AMD wheels."
-                )
+                # RDNA 1 / Polaris is not an unknown card: naming an override there
+                # sends the user after a fix that does not exist (#8529, #8458).
+                _unsupported = _unsupported_gfx_arch_from_gpu_name(_names[_sel])
+                if _unsupported:
+                    # The CPU-only half is false under an explicit index pin, which is
+                    # honoured for any arch, so a pinned run says what it is doing instead.
+                    _pinned = bool(
+                        (os.environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
+                        or (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
+                    )
+                    _tail = (
+                        "so the torch index you pinned is used as given."
+                        if _pinned
+                        else (
+                            "so torch will be CPU-only. No HIP SDK install and "
+                            "no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
+                        )
+                    )
+                    _safe_print(
+                        f"   [WARN] '{_names[_sel]}' is {_unsupported}, which Unsloth's ROCm "
+                        f"PyTorch wheels do not cover, {_tail}"
+                    )
+                    # Torch ends here, llama.cpp does not: Vulkan drives these cards
+                    # (#8458 ran an RX 580 through it). PowerShell syntax because this
+                    # branch is Windows-only: a pasted VAR=value parses there as a
+                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
+                    # that variable there, so this would abort the next update.
+                    if _is_windows_arm64():
+                        _safe_print(
+                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
+                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
+                            "from source, or run this on x64."
+                        )
+                    else:
+                        _safe_print(
+                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                            "It selects the llama.cpp bundle at install time, so setting it "
+                            "afterwards has no effect until you install or update again."
+                        )
+                else:
+                    _safe_print(
+                        f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
+                        f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
+                        f"(e.g. gfx1200) to install AMD wheels."
+                    )
     except Exception:
         pass
     return None
@@ -979,7 +1037,10 @@ def _detect_windows_gfx_arch() -> str | None:
 # prebuilts / AMD Windows torch indexes support; unknown names return None
 # (callers then fall back cleanly to CPU).
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
-    (r"9070|9080", "gfx1201"),  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080)
+    # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700).
+    # R9700 is listed separately: its name holds neither 9070 nor 9080, so it matched
+    # nothing and fell through to CPU torch (#7624, #7307).
+    (r"9070|9080|R9700", "gfx1201"),
     (r"9060", "gfx1200"),  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
     # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
     (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
@@ -1004,6 +1065,41 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
     if not name:
         return None
     for _pat, _arch in _WIN_GPU_NAME_ARCH_TABLE:
+        if re.search(_pat, name, re.IGNORECASE):
+            return _arch
+    return None
+
+
+# GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+# and Polaris 10/20/30 (unslothai#8529, #8458). Deliberately SEPARATE from
+# _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route to a wheel index. AMD's TheRock
+# ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
+# Every (?!0) guard stops "RX 570" swallowing "RX 5700", so each row is correct on its
+# own regardless of order. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids
+# for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
+# (RX 460/550/560, a different die) is left out.
+_UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
+    (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
+    (
+        r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700",
+        "gfx1010",
+    ),  # RDNA 1 (Navi 10)
+    (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),  # RDNA 1 (Navi 14)
+    (
+        r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
+        "gfx803",
+    ),  # Polaris 10/20/30
+]
+
+
+def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
+    """Name the gfx arch of a GPU whose generation Unsloth has no ROCm wheels for.
+
+    Messaging only. Callers must not feed the result into index selection.
+    """
+    if not name:
+        return None
+    for _pat, _arch in _UNSUPPORTED_GPU_NAME_ARCH_TABLE:
         if re.search(_pat, name, re.IGNORECASE):
             return _arch
     return None
@@ -3628,6 +3724,48 @@ NO_TORCH_SKIP_PACKAGES = {
     "librosa",
 }
 
+# Requirements with NO wheel on PyPI at any version, so the installer has always built
+# them from source. antlr4-python3-runtime arrives transitively: omegaconf==2.3.1 pins it
+# below the 4.13.2 wheel.
+#
+# A user-level `no-build = true` (uv.toml) or `only-binary = :all:` (pip.conf) makes all
+# of them unresolvable and fails the whole extras step (#8530). A PACKAGE-SCOPED
+# --no-binary overrides that policy for these names only, so the user's binary-only
+# policy still applies everywhere it can be honoured -- a blanket --no-build or
+# `:none:` override would discard it entirely.
+#
+# Keep in sync with the CI `nobuild` allowlists asserting the same contract:
+# .github/scripts/clean-machine-assert.sh and .github/scripts/assert-nobuild.ps1.
+SDIST_ONLY_PACKAGES = (
+    "openai-whisper",
+    "argbind",
+    "randomname",
+    "antlr4-python3-runtime",
+)
+
+
+def _sdist_only_build_args(*names: str) -> list[str]:
+    """``--no-binary`` for each named wheel-less requirement, for uv and pip alike.
+
+    Naming a package that the resolution never reaches is harmless (verified), so this
+    is safe next to the NO_TORCH / Windows requirement filtering.
+    """
+    args: list[str] = []
+    for name in names:
+        args += ["--no-binary", name]
+    return args
+
+
+def _extras_sdist_only_packages() -> tuple[str, ...]:
+    """SDIST_ONLY_PACKAGES plus any this interpreter alone resolves to an sdist."""
+    names = list(SDIST_ONLY_PACKAGES)
+    # extras.txt pins MeCab==0.996.5 on macOS cp314+, the last release carrying an sdist.
+    # Conditional because MeCab is a C extension: everywhere else 0.996.13 resolves to a
+    # wheel, and exempting it there would force a compiler-dependent build.
+    if IS_MACOS and sys.version_info >= (3, 14):
+        names.append("MeCab")
+    return tuple(names)
+
 
 def _select_flash_attn_version(torch_mm: str) -> str | None:
     return flash_attn_package_version(torch_mm)
@@ -3910,6 +4048,40 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
+# Restrictive policy a pinned install must not inherit from the ENVIRONMENT. The pinned
+# branch neutralises the config FILES (UV_NO_CONFIG=1 + PIP_CONFIG_FILE=devnull), but an
+# env var outranks a config file, so a hardened shell could still fail a torch repair the
+# pin was supposed to make deterministic (#8530).
+_PM_POLICY_ENV_VARS = (
+    "UV_NO_BUILD",
+    "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "UV_REQUIRE_HASHES",
+    "UV_EXCLUDE_NEWER",
+    "PIP_ONLY_BINARY",
+    "PIP_NO_BINARY",
+    "PIP_REQUIRE_HASHES",
+)
+
+
+def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
+    """Overrides that stop a hardened user pip config failing the installer's own pip.
+
+    Empty for anything that is not a `pip install` / `pip download` this module drives,
+    every `uv` command included, so the "non-pinned installs inherit the caller env
+    unchanged" contract holds on a machine with no hostile pip config.
+
+    `require-hashes = true` makes pip reject any requirement without a --hash, which is
+    every requirements file we ship; that is what took the pip FALLBACK down in #8530
+    once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
+    overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+    """
+    if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
+        return {}
+    return {"PIP_REQUIRE_HASHES": "0"}
+
+
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
@@ -3917,11 +4089,22 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the user's mirror. For pinned commands, the uv index/backend vars are removed,
     UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
     pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
+
+    A non-pinned `pip` command also gets hash-required mode switched off, the one
+    relaxation with no command-line equivalent; the wheel-less requirements go through
+    the package-scoped --no-binary in _sdist_only_build_args() instead.
     """
     if not _is_pinned_index_cmd(cmd):
-        return None
+        relaxed = _relaxed_pip_policy_env(cmd)
+        if not relaxed:
+            return None
+        env = os.environ.copy()
+        env.update(relaxed)
+        return env
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
+        env.pop(name, None)
+    for name in _PM_POLICY_ENV_VARS:
         env.pop(name, None)
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
@@ -4432,6 +4615,9 @@ def install_python_stack() -> int:
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
+        # extras.txt is where the wheel-less requirements live, so a user-level
+        # no-build/only-binary policy fails this step first (#8530).
+        *_sdist_only_build_args(*_extras_sdist_only_packages()),
         req = REQ_ROOT / "extras.txt",
     )
 
@@ -4568,6 +4754,11 @@ def install_python_stack() -> int:
     pip_install(
         "Installing the pinned Diffusers revision",
         "--no-cache-dir",
+        # The pin is a source ARCHIVE, which uv refuses to build under a user-level
+        # no-build, so a hardened host failed here even once extras.txt succeeded
+        # (#8530). Guarded: python < 3.10 resolves a released wheel from this file that
+        # must not be forced through a source build.
+        *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 

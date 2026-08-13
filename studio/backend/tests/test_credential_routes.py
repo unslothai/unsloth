@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from auth import storage as auth_storage
 from models.providers import (
@@ -146,6 +147,166 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
     assert credential_secrets.get_provider_api_key(created.id) is None
     assert providers_db.get_provider(created.id) is None
+
+
+def test_custom_max_output_tokens_create_update_and_clear():
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "custom",
+                display_name = "Custom",
+                base_url = "https://example.com/v1",
+                models = ["vendor/model"],
+                max_output_tokens = 131072,
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert created.max_output_tokens == 131072
+    assert providers_db.get_provider(created.id)["max_output_tokens"] == 131072
+
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(max_output_tokens = 65536),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert updated.max_output_tokens == 65536
+
+    preserved = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(display_name = "Renamed Custom"),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert preserved.display_name == "Renamed Custom"
+    assert preserved.max_output_tokens == 65536
+
+    cleared = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(max_output_tokens = None),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert cleared.max_output_tokens is None
+
+
+@pytest.mark.parametrize("value", [1_048_577, 9_007_199_254_740_991])
+def test_custom_max_output_tokens_accepts_safe_integer_values(value):
+    payload = ProviderCreate(
+        provider_type = "custom",
+        display_name = "Custom",
+        max_output_tokens = value,
+    )
+    assert payload.max_output_tokens == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [63, 4096.5, "4096", True, 9_007_199_254_740_992],
+)
+def test_custom_max_output_tokens_requires_a_safe_integer(value):
+    with pytest.raises(ValidationError):
+        ProviderCreate(
+            provider_type = "custom",
+            display_name = "Custom",
+            max_output_tokens = value,
+        )
+
+
+def test_known_and_custom_preset_providers_reject_a_non_null_max_output_override():
+    for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                providers_route.create_provider_config(
+                    ProviderCreate(
+                        provider_type = provider_type,
+                        display_name = provider_type,
+                        base_url = "https://example.com/v1",
+                        max_output_tokens = 65536,
+                    ),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        assert error.value.status_code == 400
+
+
+def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_override():
+    """A blank Max Tokens limit field serialises as null, not as an omission.
+
+    The dialog renders that field from the UI provider type, which resolves to
+    "custom" for a connection STORED as `openai` once the user has renamed it or
+    pointed it at another base URL. Rejecting the null as well as a real value meant
+    every unrelated edit of such a connection -- a rename, a model change, a key
+    rotation -- failed with an error about a field the user never touched. Clearing
+    an override that cannot exist is a no-op, so the null is accepted everywhere and
+    only a non-null value is refused.
+    """
+    for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
+        created = asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = provider_type,
+                    display_name = provider_type,
+                    base_url = "https://example.com/v1",
+                    max_output_tokens = None,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert created.max_output_tokens is None
+        assert providers_db.get_provider(created.id)["max_output_tokens"] is None
+
+
+def test_known_provider_rejects_max_output_override_update():
+    providers_db.create_provider(
+        id = "openai-1",
+        provider_type = "openai",
+        display_name = "OpenAI",
+        base_url = "https://api.openai.com/v1",
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            providers_route.update_provider_config(
+                "openai-1",
+                ProviderUpdate(max_output_tokens = 65536),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+    assert error.value.status_code == 400
+
+
+def test_known_provider_accepts_a_null_max_output_override_update():
+    """The counterpart on the update path: a blank field must not block a rename."""
+    providers_db.create_provider(
+        id = "openai-1",
+        provider_type = "openai",
+        display_name = "OpenAI",
+        base_url = "https://api.openai.com/v1",
+    )
+
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            "openai-1",
+            ProviderUpdate(display_name = "Renamed", max_output_tokens = None),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert updated.display_name == "Renamed"
+    assert updated.max_output_tokens is None
+    assert providers_db.get_provider("openai-1")["max_output_tokens"] is None
 
 
 def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeypatch):
