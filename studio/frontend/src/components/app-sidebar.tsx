@@ -122,8 +122,10 @@ import {
   clearNewChatDraft,
   deleteChatProject,
   deleteChatItem,
+  listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
+  recordedSandboxSessionId,
   notifyChatHistoryUpdated,
   renameChatItem,
   renameChatProject,
@@ -1817,12 +1819,25 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   title="Open the folder this chat's tool calls read and write"
                   onSelect={() => {
-                    revealSandbox(sandboxSessionId).catch((error) => {
-                      toast.error("Could not open the chat folder.", {
-                        description:
-                          error instanceof Error ? error.message : String(error),
-                      });
-                    });
+                    void (async () => {
+                      try {
+                        // A chat moved between projects keeps the sandbox it wrote to,
+                        // so its own history names the folder, not current membership.
+                        const recorded = await listStoredChatMessages(
+                          threadIds[0] ?? item.id,
+                        )
+                          .then(recordedSandboxSessionId)
+                          .catch(() => undefined);
+                        await revealSandbox(recorded ?? sandboxSessionId);
+                      } catch (error) {
+                        toast.error("Could not open the chat folder.", {
+                          description:
+                            error instanceof Error
+                              ? error.message
+                              : String(error),
+                        });
+                      }
+                    })();
                   }}
                 >
                   <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />

@@ -148,9 +148,11 @@ export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   isThreadIncognito,
+  listStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
