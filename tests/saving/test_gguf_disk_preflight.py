@@ -984,12 +984,32 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         out = capsys.readouterr().out
         assert "TMPDIR" in out
-        assert "10.0GB" in out
+        # 10GB of merge over the 0.95 the merge guard reserves.
+        assert "10.5GB" in out
 
     def test_a_staging_filesystem_with_room_says_nothing(self, separate, capsys):
-        separate["staging"] = self._STAGING
+        separate["staging"] = _with_merge_headroom(self._STAGING)
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert capsys.readouterr().out == ""
+
+    def test_the_warning_carries_the_merge_guards_own_reserve(self, separate, capsys):
+        """Exactly the merge's size on TMPDIR is not enough to write it there.
+
+        `merge_and_overwrite_lora` compares the staging save against
+        `int(free * 0.95)` and raises "Failed saving - no disk space left"
+        when it is short, and on a separate TMPDIR its own /tmp fallback is
+        that same filesystem, so there is no recovery. Between `staging_bytes`
+        and `staging_bytes / 0.95` the merge therefore dies and only this
+        warning could have named the disk, so it has to use the same figure
+        `_preflight_merge_disk` asks the redirect for.
+        """
+        separate["staging"] = self._STAGING
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+        assert "TMPDIR" in capsys.readouterr().out
+
+        separate["staging"] = _with_merge_headroom(self._STAGING) - 1
+        S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
+        assert "TMPDIR" in capsys.readouterr().out
 
     @pytest.mark.parametrize("save_method", ["merged_16bit", "fp8", "mxfp4"])
     def test_an_export_that_stages_nothing_is_silent(self, separate, capsys, save_method):

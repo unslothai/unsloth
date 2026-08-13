@@ -3277,11 +3277,16 @@ def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
         if _same_filesystem(staging_directory, destination):
             return
         free = free_bytes(staging_directory)
-        if free is None or free >= staging_bytes:
+        # The staging merge is written by `merge_and_overwrite_lora`, which
+        # refuses it unless `free * 0.95` covers it. Comparing against the
+        # bare size leaves the 5% band where the merge predictably dies and
+        # this says nothing, which is the one thing it exists to prevent.
+        needed = math.ceil(staging_bytes / _MERGE_FREE_SPACE_RESERVE)
+        if free is None or free >= needed:
             return
         print(
             f"Unsloth: `{staging_directory}` has {free / 1024**3:.1f}GB free and the "
-            f"16-bit staging merge needs about {staging_bytes / 1024**3:.1f}GB there.\n"
+            f"16-bit staging merge needs about {needed / 1024**3:.1f}GB there.\n"
             f"The torchao export merges into a temporary directory before it quantizes, "
             f"and that directory is on a different filesystem from `{destination}`, so "
             f"the room at the destination does not help.\n"
