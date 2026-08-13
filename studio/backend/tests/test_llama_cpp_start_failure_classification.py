@@ -1426,9 +1426,9 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "dump",
         [
-            'DB_PASSWORD="prefix supersecret',            # truncated output
+            'DB_PASSWORD="prefix supersecret',  # truncated output
             "DB_PASSWORD='prefix supersecret",
-            'DB_PASSWORD="prefix supersecret\nnext=1',    # runs to end of line only
+            'DB_PASSWORD="prefix supersecret\nnext=1',  # runs to end of line only
         ],
     )
     def test_an_unterminated_quoted_value_is_redacted_to_the_line_end(self, dump):
@@ -1465,8 +1465,9 @@ class TestTheRedactionHolesCodexFound:
     def test_a_widened_name_does_not_redact_ordinary_output(self, line):
         assert "***" not in LlamaCppBackend._scrub_secret_values(line, ())
 
-    @pytest.mark.parametrize("order", [("abcdefgh", "abcdefgh VERYSECRET"),
-                                       ("abcdefgh VERYSECRET", "abcdefgh")])
+    @pytest.mark.parametrize(
+        "order", [("abcdefgh", "abcdefgh VERYSECRET"), ("abcdefgh VERYSECRET", "abcdefgh")]
+    )
     def test_overlapping_secrets_are_replaced_longest_first(self, order):
         """The short one first rewrote the long one so it no longer matched."""
         text = "child printed abcdefgh VERYSECRET plainly"
@@ -1479,6 +1480,7 @@ class TestTheRedactionHolesCodexFound:
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         import time
+
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0
