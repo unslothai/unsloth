@@ -93,21 +93,18 @@ def test_the_canary_must_be_the_whole_answer():
 
 def test_the_canary_tolerates_surrounding_whitespace_only():
     from run_t4_smoke import CANARY, canary_failures
-
     assert canary_failures({"run_index": 0, "generated": CANARY}, require = True) == []
     assert canary_failures({"run_index": 0, "generated": "\n" + CANARY + " \n"}, require = True) == []
 
 
 def test_a_missing_canary_is_still_a_failure():
     from run_t4_smoke import canary_failures
-
     failures = canary_failures({"run_index": 1, "generated": "def my_function():"}, require = True)
     assert failures and "did not emit" in failures[0]
 
 
 def test_the_canary_can_be_downgraded_to_a_warning():
     from run_t4_smoke import canary_failures
-
     assert canary_failures({"run_index": 1, "generated": "nope"}, require = False) == []
 
 
@@ -129,7 +126,6 @@ def test_an_infinite_gradient_norm_is_not_an_applied_update():
 
 def test_one_finite_gradient_norm_is_enough():
     from run_t4_smoke import optimisation_failures
-
     metrics = [
         {"step": 1, "loss": 10.0, "grad_norm": NAN},
         {"step": 2, "loss": 5.0, "grad_norm": INF},
@@ -158,13 +154,11 @@ def _adapter_state(**over) -> dict:
 
 def test_a_saved_adapter_that_reloads_with_weights_passes():
     from run_t4_smoke import saved_adapter_failures
-
     assert saved_adapter_failures(_adapter_state()) == []
 
 
 def test_an_adapter_whose_weight_file_cannot_be_read_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-
     failures = saved_adapter_failures(
         _adapter_state(tensors = None, error = "SafetensorError: header too small")
     )
@@ -173,14 +167,12 @@ def test_an_adapter_whose_weight_file_cannot_be_read_is_a_failure():
 
 def test_an_adapter_with_no_tensors_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-
     failures = saved_adapter_failures(_adapter_state(tensors = 0, parameters = 0))
     assert failures and "no tensors" in failures[0]
 
 
 def test_an_adapter_with_non_finite_weights_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-
     failures = saved_adapter_failures(_adapter_state(non_finite_tensors = ["...lora_B.weight"]))
     assert failures and "non-finite" in failures[0]
 
@@ -195,7 +187,6 @@ def test_an_all_zero_adapter_is_a_failure():
 
 def test_a_missing_adapter_config_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-
     failures = saved_adapter_failures(_adapter_state(config_readable = False))
     assert failures and "adapter_config.json" in failures[0]
 
@@ -222,9 +213,7 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     assert state["config_readable"] is True
     assert saved_adapter_failures(state) == []
 
-    save_file(
-        {"a.lora_B.weight": torch.zeros(4, 4)}, str(tmp_path / "adapter_model.safetensors")
-    )
+    save_file({"a.lora_B.weight": torch.zeros(4, 4)}, str(tmp_path / "adapter_model.safetensors"))
     failures = saved_adapter_failures(verify_saved_adapter(tmp_path))
     assert failures and "every saved tensor is zero" in failures[0]
 
@@ -232,7 +221,12 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
 # ------------------------------------------ run_t4_smoke.py: the reference
 
 
-def _write_reference(path: Path, *, config: dict, model: str = "unsloth/Qwen2.5-0.5B-Instruct"):
+def _write_reference(
+    path: Path,
+    *,
+    config: dict,
+    model: str = "unsloth/Qwen2.5-0.5B-Instruct",
+):
     path.write_text(
         json.dumps(
             {
@@ -335,7 +329,9 @@ def test_the_reference_check_still_works_without_an_observed_config(tmp_path):
     _write_reference(ref, config = REFERENCE_CONFIG)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     assert check_reference(observed, ref, 0.10, 0.05, max_steps = 3)["status"] == "ok"
-    assert check_reference(observed, ref, 0.10, 0.05, max_steps = 10)["status"] == "step_count_mismatch"
+    assert (
+        check_reference(observed, ref, 0.10, 0.05, max_steps = 10)["status"] == "step_count_mismatch"
+    )
 
 
 def test_a_shifted_step_coordinate_is_refused_by_the_band_check(tmp_path):
@@ -395,9 +391,7 @@ def test_a_reference_with_no_recorded_revision_does_not_refuse(tmp_path):
     ref = tmp_path / "ref.json"
     _write_reference(ref, config = REFERENCE_CONFIG)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
-    verdict = check_reference(
-        observed, ref, 0.10, 0.05, max_steps = 3, resolved_revision = "abc123"
-    )
+    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, resolved_revision = "abc123")
     assert verdict["status"] == "ok"
     assert "resolved_revision" in verdict["config_unchecked"]
 
@@ -452,9 +446,7 @@ def test_every_requested_repeat_is_compared_against_the_baseline(monkeypatch, tm
         1: _cycle(1, [3.0, 2.0, 1.0]),
         2: _cycle(2, [3.0, 2.0, 99.0]),
     }
-    code, report = _drive_main(
-        monkeypatch, tmp_path, cycles, ["--repeat", "3", "--max-steps", "3"]
-    )
+    code, report = _drive_main(monkeypatch, tmp_path, cycles, ["--repeat", "3", "--max-steps", "3"])
     assert code == 1
     assert report["passed"] is False
     assert any("cycle 2" in f for f in report["failures"])
@@ -470,9 +462,7 @@ def test_every_requested_repeat_is_compared_against_the_baseline(monkeypatch, tm
 
 def test_two_agreeing_repeats_still_pass(monkeypatch, tmp_path):
     cycles = {0: _cycle(0, [3.0, 2.0, 1.0]), 1: _cycle(1, [3.0, 2.0, 1.0])}
-    code, report = _drive_main(
-        monkeypatch, tmp_path, cycles, ["--repeat", "2", "--max-steps", "3"]
-    )
+    code, report = _drive_main(monkeypatch, tmp_path, cycles, ["--repeat", "2", "--max-steps", "3"])
     assert code == 0
     assert report["passed"] is True
     assert report["reproducibility"]["identical"] is True
@@ -532,7 +522,6 @@ def _gptoss_result(**over) -> dict:
 
 def test_a_healthy_gptoss_run_passes():
     from run_gptoss_t4 import failures_for
-
     assert failures_for(_gptoss_result(), _gptoss_args()) == []
 
 
@@ -641,7 +630,6 @@ def _grpo_result(**over) -> dict:
 
 def test_a_healthy_grpo_run_passes():
     from run_grpo_t4 import failures_for
-
     assert failures_for(_grpo_result(), _grpo_args()) == []
 
 
@@ -669,9 +657,7 @@ def test_grpo_ignores_the_summary_entry_that_carries_no_loss():
 def test_grpo_fails_when_every_gradient_norm_is_nan():
     from run_grpo_t4 import failures_for
 
-    result = _grpo_result(
-        metrics = [{"step": s, "loss": 0.0, "grad_norm": NAN} for s in (1, 2, 3)]
-    )
+    result = _grpo_result(metrics = [{"step": s, "loss": 0.0, "grad_norm": NAN} for s in (1, 2, 3)])
     failures = failures_for(result, _grpo_args())
     assert failures and any("optimizer update" in f for f in failures)
 

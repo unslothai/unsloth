@@ -561,8 +561,7 @@ def canary_failures(run: dict, *, require: bool) -> list[str]:
         )
     else:
         msg = (
-            f"run {run.get('run_index')} did not emit the canary "
-            f"{CANARY!r}; got {generated!r}"
+            f"run {run.get('run_index')} did not emit the canary " f"{CANARY!r}; got {generated!r}"
         )
     if not require:
         _log("WARNING (not enforced): " + msg)
@@ -1176,9 +1175,7 @@ def main() -> int:
     if len(runs) > 1:
         cycles: dict = {}
         for other in runs[1:]:
-            cycles[str(other["run_index"])] = compare_metrics(
-                runs[0]["metrics"], other["metrics"]
-            )
+            cycles[str(other["run_index"])] = compare_metrics(runs[0]["metrics"], other["metrics"])
         worst: dict = {}
         for cmp in cycles.values():
             for field, value in cmp.get("max_abs_diff", {}).items():

@@ -261,8 +261,11 @@ def compare_metrics(
                     result["identical"] = False
                     result["first_diff_step"] = (ea if has_a else eb).get("step")
                 result.setdefault("one_sided_fields", []).append(
-                    {"step": (ea if has_a else eb).get("step"), "field": field,
-                     "present_in": "a" if has_a else "b"}
+                    {
+                        "step": (ea if has_a else eb).get("step"),
+                        "field": field,
+                        "present_in": "a" if has_a else "b",
+                    }
                 )
                 continue
             va, vb = float(ea[field]), float(eb[field])
