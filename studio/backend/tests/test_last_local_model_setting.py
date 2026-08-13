@@ -111,7 +111,10 @@ def test_put_unstamped_write_keeps_last_write_wins(client):
     c, _ = client
     stamped = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": 2000}
     assert c.put("/last-local-model", json = stamped).status_code == 200
-    assert c.put("/last-local-model", json = {"id": "unsloth/OLMo-4-13B", "kind": "model"}).status_code == 200
+    assert (
+        c.put("/last-local-model", json = {"id": "unsloth/OLMo-4-13B", "kind": "model"}).status_code
+        == 200
+    )
     assert c.get("/last-local-model").json()["id"] == "unsloth/OLMo-4-13B"
 
 

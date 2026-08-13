@@ -1011,6 +1011,7 @@ def update_last_local_model(
     payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
 ) -> LastLocalModelResponse:
     from storage.studio_db import get_app_setting, upsert_app_settings
+
     # A delayed older PUT (token refresh, network retry) must not overwrite a newer
     # load from another surface: loaded_at orders stamped writes, and the stored
     # record is returned so the caller sees the authoritative state. Unstamped
