@@ -66,10 +66,6 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import { ArchivedMediaView } from "../components/archived-media-dialog";
-import {
-  createFineTuneRecipeFromChats,
-  loadFineTuneDatasetInTrainTab,
-} from "../components/finetune-recipe";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -311,6 +307,10 @@ export function DataTab() {
   const handleOpenInRecipes = async () => {
     setOpeningRecipe(true);
     try {
+      // Recipe Studio and its database are not needed unless this action runs.
+      const { createFineTuneRecipeFromChats } = await import(
+        "../components/finetune-recipe"
+      );
       const recipeId = await createFineTuneRecipeFromChats(fineTuneFormat);
       if (!recipeId) return;
       useSettingsDialogStore.getState().closeDialog();
@@ -327,6 +327,13 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
+      // Same deferred module as above. The training store and datasets-api it also
+      // pulls stay eager either way, since __root.tsx imports the @/features/training
+      // barrel that re-exports both; Recipe Studio is what actually leaves the
+      // startup bundle.
+      const { loadFineTuneDatasetInTrainTab } = await import(
+        "../components/finetune-recipe"
+      );
       const loaded = await loadFineTuneDatasetInTrainTab(fineTuneFormat);
       if (!loaded) return;
       useSettingsDialogStore.getState().closeDialog();
@@ -498,7 +505,10 @@ export function DataTab() {
         {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
             instance, and a showMore still awaiting the old shelf appends its rows to the new one,
             which then drives restore and delete through the wrong media API. */}
-        <ArchivedMediaView key={subpage} kind={isImages ? "images" : "videos"} />
+        <ArchivedMediaView
+          key={subpage}
+          kind={isImages ? "images" : "videos"}
+        />
       </div>
     );
   }

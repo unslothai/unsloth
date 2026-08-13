@@ -132,9 +132,9 @@ function Write-StudioLine {
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
-# "rocm". "cpu" forces the CPU-only prebuilt. "vulkan" selects Vulkan even
-# when CUDA or ROCm is detected. "hip"/"rocm" opts out of automatic Vulkan.
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
+# "hip", or "rocm". Concrete values select and persist a backend across updates;
+# "auto" restores detection. Overrides Studio's Settings > System selection.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -2085,6 +2085,10 @@ $HipSdkInstalled = $false   # HIP SDK binary found (independent of device access
 $ROCmGpuLabel = $null
 $script:ROCmGpuLabels = @()   # every AMD adapter name WMI reported (shadowing-aware inference)
 $script:ROCmGfxArch = $null
+# Beside ROCmGfxArch, NOT inside the `-not $HasNvidiaSmi` block below: the ROCm summary
+# reads this unconditionally, so an NVIDIA host would hit an undefined variable under a
+# caller's Set-StrictMode. Assigning here also clears a stale value on a re-invocation.
+$script:ROCmUnsupportedGfxArch = $null
 # APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
 # enumerates the APU first, so an index-0 pick reads the iGPU's arch and the dGPU never
 # gets its wheels (#7776: gfx1036 Raphael shadowing a gfx1200 RX 9060 XT). In sync with
@@ -2373,7 +2377,10 @@ if (-not $HasNvidiaSmi) {
     # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
     # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
     # so the name-based inference below can still attempt an arch lookup.
-    if (-not $HasROCm) {
+    # Gated on the ARCH, like install.ps1: amd-smi can set $HasROCm with no arch, and gated
+    # that way the scan was skipped, so $script:ROCmGpuLabels held one name and the inference
+    # below judged a whole multi-GPU host on it. Same condition as that inference.
+    if (-not $script:ROCmGfxArch) {
         try {
             # Keep every AMD adapter, not just the first: WMI orders controllers as the
             # driver stack enumerated them, so a shadowing iGPU can lead here exactly as
@@ -2397,10 +2404,26 @@ if (-not $HasNvidiaSmi) {
             $wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
-                $ROCmGpuLabel = $script:ROCmGpuLabels[0]
+                # amd-smi's label wins when it had one; this scan is here for the peers.
+                if (-not $HasROCm) { $ROCmGpuLabel = $script:ROCmGpuLabels[0] }
             }
         } catch {}
     }
+    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+    # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
+    # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
+    # RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
+    # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from LLVM's AMDGPU
+    # tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14 professional parts LLVM
+    # omits; nothing is guessed, so Polaris 11/12 (RX 460/550/560, a different die) is
+    # left out.
+    $unsupportedNameArchTable = @(
+        @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
+        @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+        @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
+        @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
+    )
+    $script:ROCmUnsupportedGfxArch = $null
     # ── Arch resolution: env-var override → name inference ──────────────────
     # Runs after all probes, even when none confirmed a ROCm runtime ($HasROCm false):
     # the Adrenalin driver alone runs the per-gfx ROCm llama.cpp prebuilt (bundles its
@@ -2471,6 +2494,11 @@ if (-not $HasNvidiaSmi) {
                 $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+            } else {
+                # Nothing mapped: the card may be a generation ROCm never covered rather
+                # than one we failed to recognise (unslothai#8529). $script:ROCmGfxArch
+                # stays null either way, so only the wording of the report below moves.
+                $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
             }
         }
     }
@@ -2615,13 +2643,17 @@ if ($HasNvidiaSmi) {
     substep "$IntelGpuLabel"
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-StudioLine ""
-} elseif ($HasROCm) {
+} elseif ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
+    # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
+    # and only a market name, which sets $HasROCm without an arch.
     step "gpu" $ROCmGpuLabel
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
-} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
-    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel -and -not $script:ROCmUnsupportedGfxArch) {
+    # HIP SDK installed but ROCm can't see the device (driver issue, not SDK issue).
+    # Excludes cards already known to be out of scope: the #8529 reporters installed the
+    # HIP SDK BECAUSE this arm said to, so unguarded it hides the arm below from them.
     $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
     Write-StudioLine ""
     step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
@@ -2637,6 +2669,39 @@ if ($HasNvidiaSmi) {
     step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
     substep "Detected: $ROCmGpuLabel" "Cyan"
     substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    Write-StudioLine ""
+} elseif ($script:ROCmUnsupportedGfxArch) {
+    # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
+    # unknown" arm below: the arch is known here, and that arm's advice cannot succeed
+    # on this GPU (unslothai#8529).
+    Write-StudioLine ""
+    step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+    # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+    # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+    # VAR=value resolves as a command name here and sets nothing.
+    # Both claims are conditional: an explicit index pin is honoured for any arch, and
+    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
+    # is published, so the usual advice would abort the next update instead of helping.
+    $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                   (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
+    if ($unsupPinned) {
+        substep "Unsloth ships no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, but the torch" "Yellow"
+        substep "index you pinned is used as given, so torch is whatever it publishes." "Yellow"
+    } else {
+        substep "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+        substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
+        substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
+    }
+    if ((Get-HostMachineArch) -eq "arm64") {
+        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+    } else {
+        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+        substep "until you install or update again." "Yellow"
+    }
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -3080,13 +3145,17 @@ $script:CudaArch = $CudaArch
 $script:CudaToolkitReady = $true
 }
 
-if ($HasROCm) {
+if ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
     $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
     step "rocm" $rocmVerLabel
 } elseif ($script:ROCmGfxArch) {
     # GPU training/inference works via AMD's bundled-runtime ROCm PyTorch wheels;
     # the HIP SDK is optional (only the system ROCm toolchain).
     step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
+} elseif ($script:ROCmUnsupportedGfxArch) {
+    # Naming the HIP SDK here would read as "install it and this resolves"; on a
+    # generation with no ROCm PyTorch wheels it never does (unslothai#8529).
+    step "rocm" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
 } elseif ($ROCmGpuLabel) {
     step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }
@@ -5272,16 +5341,14 @@ $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
-$explicitVulkanSourceBuild = (
-    -not $IsMacOS -and
-    (
-        $sourceLlamaBackend -eq "vulkan" -or
-        (
-            $sourceLlamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
-            $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
-        )
-    )
-)
+$explicitLlamaSourceBackend = $null
+if (-not $IsMacOS) {
+    if ($sourceLlamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
+        $explicitLlamaSourceBackend = if ($sourceLlamaBackend -eq "hip") { "rocm" } else { $sourceLlamaBackend }
+    } elseif ($sourceLlamaBackend -ne "auto" -and $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")) {
+        $explicitLlamaSourceBackend = "vulkan"
+    }
+}
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
@@ -5470,11 +5537,11 @@ if ($LocalLlamaCppSrc) {
 
 if ($LocalLlamaCppLinked) {
     # local directory linked above; skip prebuilt install
-} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {
+} elseif ($explicitLlamaSourceBackend -and $NeedLlamaSourceBuild) {
     Write-StudioLine ""
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "Red"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override" "Yellow"
-    Exit-SetupFailure "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+    step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build" "Red"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND" "Yellow"
+    Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 } elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-StudioLine ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
@@ -5548,11 +5615,11 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # The backend override is case-insensitive and whitespace-trimmed. cpu
-        # maps to the persisted --force-cpu choice. vulkan is consumed directly
-        # by install_llama_prebuilt.py and does not change the torch backend.
+        # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself, and
+        # it is also the only side that can see a choice recorded in the install
+        # marker, so forwarding a second copy from here could only ever disagree
+        # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $legacyForceVulkan = $sourceLegacyForceVulkan
         $windowsArm64 = (
             $env:OS -eq "Windows_NT" -and
             (
@@ -5560,31 +5627,16 @@ if ($LocalLlamaCppLinked) {
                 "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
             )
         )
-        $explicitVulkanBackend = $false
-        if ($llamaBackend -eq "cpu") {
-            $prebuiltArgs += "--force-cpu"
-        } elseif ($llamaBackend -eq "vulkan") {
+        if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
             } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
-                $prebuiltArgs += @("--llama-backend", "vulkan")
-                $explicitVulkanBackend = $true
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
-        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "hip", "rocm")) {
-            Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
-        }
-        if (
-            -not $IsMacOS -and
-            $llamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
-            $legacyForceVulkan -in @("1", "true", "yes", "on")
-        ) {
-            if ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
-            }
-            $explicitVulkanBackend = $true
+        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "cpu", "cuda", "hip", "rocm")) {
+            Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -5647,27 +5699,32 @@ if ($LocalLlamaCppLinked) {
                 if (Test-PathQuiet $_cand) { $PreservedLlamaServerFound = $true; break }
             }
             if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
-            # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-            # request, and it leaves LlamaCppDegraded false, so without this the
-            # run reports success on the backend the user asked to replace.
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+            # A preserved server may not satisfy an explicit backend request, and
+            # it leaves LlamaCppDegraded false. Never report success on an
+            # unverified backend after the requested replacement ran out of space.
+            if ($explicitLlamaSourceBackend) {
+                step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, so the installer will not keep an unverified existing backend" "Red"
+                Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
             }
+        } elseif ($prebuiltExit -eq 5) {
+            step "llama.cpp" "selected backend could not be installed" "Red"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                substep "Existing install was restored" "Yellow"
+            }
+            substep "Check the error above, choose another backend, or retry" "Yellow"
+            Exit-SetupFailure "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
         } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
-                substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
-            } else {
-                substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
-                $NeedLlamaSourceBuild = $true
-            }
+            # Exit 2 means no concrete backend was in play: a request the installer
+            # could not honour -- named here or recorded in the install marker,
+            # which this script cannot see -- exits 5 above instead.
+            substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
+            $NeedLlamaSourceBuild = $true
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
             Write-LlamaFailureLog -Output $prebuiltOutput
