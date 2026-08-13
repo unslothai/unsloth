@@ -2296,9 +2296,7 @@ class TestTheApuRetryRecomputesThePageLock:
         for cmd, _env in launches:
             assert "--mlock" not in cmd
 
-    def test_the_users_own_extra_args_survive_the_recompute(
-        self, tmp_path, monkeypatch, probe_env
-    ):
+    def test_the_users_own_extra_args_survive_the_recompute(self, tmp_path, monkeypatch, probe_env):
         """The recompute may only ADD the lock. Rewriting argv to take the
         crashed launch's memory flags back off would have to scan for --mlock /
         --no-mmap, which are valueless in llama.cpp's parser, so the scan drops
