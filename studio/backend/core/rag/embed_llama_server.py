@@ -283,15 +283,31 @@ class LlamaServerBackend:
     def _gpu_available() -> bool:
         """Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM. Reuses
         llama_cpp's static probe (nvidia-smi first, so the common path needs no
-        torch)."""
+        torch). This backend IS llama-server, so it opts into the ROCm arch gate: an
+        uncovered device crashes the embedding server as it does a chat load
+        (#7624)."""
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
             return True  # bundled mac build offloads to Metal
         from core.inference.llama_cpp import LlamaCppBackend
 
-        gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
+        # [(idx, free_mib)], honors CVD
+        gpus = LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
+
+    @staticmethod
+    def _arch_gated_gpu_ids(binary: str) -> list[int]:
+        """GPU ids to pin the embedding child to, or [] when it needs no mask.
+
+        Knowing a supported device exists is not enough: the child enumerates every
+        ROCm agent, and that HSA enumeration is what dies on an uncovered GPU (#7624),
+        so on a mixed host the gate passes on the dGPU and the server still crashes on
+        the iGPU. Pin the survivors instead. Empty unless the gate is both known and
+        actually narrowing: NVIDIA, CPU, Vulkan and macOS have no mapped_targets
+        marker, and a build covering every card needs no pin."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._arch_gate_survivors(binary)
 
     def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
         # No --embd-normalize (not in every build; we normalize in Python to match
@@ -330,9 +346,35 @@ class LlamaServerBackend:
             # LD_LIBRARY_PATH entry for every existing Linux GPU install whose
             # llama-server is a symlink, and this change is not about them.
             self._add_linux_cuda_libs(env, str(Path(binary).parent))
+            _pinned = self._arch_gated_gpu_ids(binary)
+            if _pinned:
+                from core.inference.llama_cpp import LlamaCppBackend
+
+                # prefer_rocr: a HIP-only mask still lets HSA enumerate (and die
+                # on) the unsupported agent; ROCR drops it at the driver layer.
+                LlamaCppBackend._emit_child_gpu_visibility(
+                    env, ",".join(str(i) for i in _pinned), prefer_rocr = True
+                )
+                logger.info("pinning the embed server to arch-supported GPU(s) %s", _pinned)
+        # Not else: the darwin branch above is about dylibs, so a macOS CPU start
+        # still has to blank the devices, exactly as it did before that branch.
         if not use_gpu:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
+            # HIP reads CUDA_VISIBLE_DEVICES only when HIP_VISIBLE_DEVICES is unset,
+            # so an inherited HIP mask would keep a device (and the ~0.5 GB context it
+            # costs) visible to a child we just put on the CPU. Same "-1" sentinel the
+            # chat forced-CPU path uses. An inherited ROCR mask is left alone: it hides
+            # agents below HIP, so clearing it would expose MORE of them to the HSA
+            # enumeration that dies on an uncovered arch (#7624).
+            env["HIP_VISIBLE_DEVICES"] = "-1"
+            # LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU are the env spelling of --device /
+            # --main-gpu. Hiding every device while leaving that pick in place makes
+            # llama.cpp reject the name that no longer enumerates and exit instead of
+            # running on the CPU. Same clear the chat sentinel makes.
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            LlamaCppBackend._clear_device_placement_env(env)
         return env
 
     @staticmethod
