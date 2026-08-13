@@ -1482,7 +1482,6 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
 
     def test_an_integer_entry_keeps_its_own_width(self):
         import torch
-
         state_dict = {"buffer": torch.zeros(16, dtype = torch.int64)}
         assert S._cast_16bit_state_dict_bytes(state_dict) == 16 * 8
 
@@ -1501,13 +1500,16 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
 
     def test_an_empty_dict_writes_nothing(self, sized):
         """`{}` reaches `save_pretrained` and no model tensor is written."""
-        assert S._preflight_merge_disk(
-            self._model(),
-            "model",
-            "merged_16bit",
-            state_dict = {},
-            forwards_state_dict = True,
-        ) == "model"
+        assert (
+            S._preflight_merge_disk(
+                self._model(),
+                "model",
+                "merged_16bit",
+                state_dict = {},
+                forwards_state_dict = True,
+            )
+            == "model"
+        )
         assert sized == [], "nothing is written, so nothing is asked for"
 
     def test_no_dict_measures_the_model(self, sized):
@@ -2681,9 +2683,10 @@ class TestTheMergeGuardAndTheConversionAreTwoPhases:
     def test_a_non_peft_export_is_unchanged(self, colocated_merge):
         """No merge guard, so the requirement is the pair and nothing more."""
         colocated_merge.update(free = 120 * GB)
-        assert S._preflight_gguf_disk(
-            _FakeModel(), "model", "q4_k_m", first_conversion = "bf16"
-        ) == ("model", True)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", first_conversion = "bf16") == (
+            "model",
+            True,
+        )
 
     def test_the_guard_really_runs_before_the_conversion(self):
         """The two phases are only separate while the merge is written first."""
