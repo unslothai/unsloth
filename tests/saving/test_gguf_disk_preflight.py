@@ -1399,7 +1399,10 @@ class TestFullModelSavedAsLora:
         import inspect
 
         source = inspect.getsource(S.unsloth_generic_save)
-        assert 'if state_dict is not None:\n            _save_kwargs["state_dict"] = state_dict' in source
+        assert (
+            'if state_dict is not None:\n            _save_kwargs["state_dict"] = state_dict'
+            in source
+        )
 
     def test_both_call_sites_forward_the_dict(self, monkeypatch):
         """A parameter nothing passes measures nothing.
