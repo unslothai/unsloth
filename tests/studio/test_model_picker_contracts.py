@@ -3376,19 +3376,37 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     )
     # Representatives are derived per key, not once for the listing.
     group = src.split("const footprintVariants = useMemo(", 1)[1]
-    group = group.split("}, [displayVariants, effectiveRecommendedByGroup]);", 1)[0]
+    group = group.split("}, [displayVariants, recommendedQuantForVariant]);", 1)[0]
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
     # The recommended quant still wins, and only inside its own group. Main
     # tracked the source through effectiveRecommended becoming a SET and
     # asserted membership in it; but that set is flattened across groups, so it
     # blesses the other group's pick when two families in one repo share quant
-    # names. The lookup is now keyed by group, so pin that instead, and pin
-    # that the flattened set is gone from this block rather than merely unused.
-    assert "effectiveRecommendedByGroup.get(key)" in group
+    # names.
+    #
+    # Group-scoping it is right, but this block buckets by the BACKEND's
+    # dependency_key ("flux.2-klein:<digest>") while the recommendation map is
+    # keyed by PRESENTATION group ("quantizations", "text-frames",
+    # "reference-media"). Joining those two key spaces makes every lookup
+    # undefined and the recommended-quant branch dead, leaving whichever row
+    # tier ordering put first to speak for the group. So ask through the
+    # variant, and pin that neither the flattened set nor the crossed-key
+    # lookup is what stands here.
+    assert "const recommended = recommendedQuantForVariant.get(variant);" in group
     assert "variant.quant === recommended" in group
     assert "current.quant !== recommended" in group
+    assert "recommended !== undefined" in group
     assert "effectiveRecommended.has(" not in group
+    assert "effectiveRecommendedByGroup.get(key)" not in group
+
+    # And the map it asks is built from the presentation groups, keyed by the
+    # variant objects those groups hold.
+    builder = src.split("const recommendedQuantForVariant = useMemo(", 1)[1]
+    builder = builder.split("}, [variantGroups, effectiveRecommendedByGroup]);", 1)[0]
+    assert "new Map<GgufVariantDetail, string>()" in builder
+    assert "effectiveRecommendedByGroup.get(group.key)" in builder
+    assert "byVariant.set(variant, recommended)" in builder
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():

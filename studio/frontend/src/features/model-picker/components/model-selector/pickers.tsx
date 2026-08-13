@@ -1428,6 +1428,21 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
+  // The same recommendations, reachable from a row. `effectiveRecommendedByGroup`
+  // is keyed by PRESENTATION group ("quantizations", "text-frames",
+  // "reference-media"); the footprint pass below buckets by the backend's
+  // dependency_key ("flux.2-klein:<digest>"). Those are different key spaces,
+  // so that pass has to ask through the variant itself, which is the object
+  // the presentation grouping already placed.
+  const recommendedQuantForVariant = useMemo(() => {
+    const byVariant = new Map<GgufVariantDetail, string>();
+    for (const group of variantGroups) {
+      const recommended = effectiveRecommendedByGroup.get(group.key);
+      if (recommended === undefined) continue;
+      for (const variant of group.variants) byVariant.set(variant, recommended);
+    }
+    return byVariant;
+  }, [variantGroups, effectiveRecommendedByGroup]);
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -1503,17 +1518,21 @@ function GgufVariantExpander({
         continue;
       }
       // The recommended quant is the representative of its own group when it
-      // has one; otherwise the group's first row stands. Keyed by group, not
-      // the flattened set: two families in one neutral repo can share quant
+      // has one; otherwise the group's first row stands. Asked per variant, not
+      // of a flattened set: two families in one neutral repo can share quant
       // names, so global membership would let the other group's pick stand in
       // here and resolve companions against the wrong base repo.
-      const recommended = effectiveRecommendedByGroup.get(key);
-      if (current.quant !== recommended && variant.quant === recommended) {
+      const recommended = recommendedQuantForVariant.get(variant);
+      if (
+        recommended !== undefined &&
+        current.quant !== recommended &&
+        variant.quant === recommended
+      ) {
         byKey.set(key, variant);
       }
     }
     return Array.from(byKey.values());
-  }, [displayVariants, effectiveRecommendedByGroup]);
+  }, [displayVariants, recommendedQuantForVariant]);
   const [companionBytesByKey, setCompanionBytesByKey] = useState<
     Map<string, number>
   >(() => new Map());

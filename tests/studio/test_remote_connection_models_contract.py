@@ -50,8 +50,14 @@ def test_frontend_sync_backfills_local_models_to_backend():
     assert "settleTasksIfCurrent(backfillTasks" in source
     helper = RECONCILIATION.read_text(encoding = "utf-8")
     assert "export async function settleTasksIfCurrent" in helper
+    # Scoped to the helper's own body. The module also allSettles in
+    # runCredentialBootstrap, so a module-wide search stays green when
+    # settleTasksIfCurrent is regressed to Promise.all -- which is exactly the
+    # first-failure-sinks-the-rest bug this contract exists to catch.
+    body = helper.split("export async function settleTasksIfCurrent", 1)[1]
+    body = body.split("\nexport ", 1)[0]
     assert (
-        "allSettled" in helper
+        "Promise.allSettled(tasks.map(" in body
     ), "the batch must still settle rather than reject on the first failure"
 
 
