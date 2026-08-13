@@ -746,9 +746,16 @@ def check_reference(
         ("resolved_checkpoint", resolved_checkpoint),
         ("resolved_revision", resolved_revision),
     ):
-        if observed is None:
+        # Neither side records it: nothing was claimed, so there is nothing to
+        # report. Present on ONE side is a pin that did not run, and it is
+        # recorded rather than skipped silently. "It does not say" is not "it
+        # differs", so it is still not a refusal; but a skip nobody can see
+        # reads as a comparison that passed, and this is exactly where a
+        # checkpoint pin sits unenforced for months. report.py puts
+        # config_unchecked on the summary.
+        if observed is None and ref.get(key) is None:
             continue
-        if ref.get(key) is None:
+        if observed is None or ref.get(key) is None:
             verdict["config_unchecked"].append(key)
             continue
         observed_pairs.append((key, ref[key], observed))

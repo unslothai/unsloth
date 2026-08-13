@@ -346,7 +346,10 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
-    assert verdict["config_unchecked"] == ["gradient_checkpointing"]
+    # `model` too: the helper's reference names one and this call observed
+    # none, and a pin present on one side only did not run, so it is recorded
+    # rather than skipped in silence.
+    assert verdict["config_unchecked"] == ["gradient_checkpointing", "model"]
 
 
 def test_the_reference_check_still_works_without_an_observed_config(tmp_path):
@@ -422,6 +425,63 @@ def test_a_reference_with_no_recorded_revision_does_not_refuse(tmp_path):
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, resolved_revision = "abc123")
     assert verdict["status"] == "ok"
     assert "resolved_revision" in verdict["config_unchecked"]
+
+
+def test_a_pin_the_run_could_not_read_is_recorded_as_unchecked(tmp_path):
+    """The other direction: the reference names a commit and the run does not.
+
+    Skipping that silently is a checkpoint pin that stopped running with
+    nothing to say so.
+    """
+    from run_t4_smoke import check_reference
+
+    ref = tmp_path / "ref.json"
+    _write_reference(ref, config = REFERENCE_CONFIG)
+    payload = json.loads(ref.read_text())
+    payload["resolved_revision"] = "10413c288cb9629acdf60b3e0229f3ba75efe413"
+    ref.write_text(json.dumps(payload))
+    observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
+    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3)
+    assert verdict["status"] == "ok"
+    assert "resolved_revision" in verdict["config_unchecked"]
+    # Neither side claims a checkpoint, so there is nothing to report on it.
+    assert "resolved_checkpoint" not in verdict["config_unchecked"]
+
+
+def test_what_the_band_did_not_compare_reaches_the_summary():
+    """A skip nobody can see reads as a comparison that passed."""
+    import report as report_module
+
+    lines = report_module.render(
+        {
+            "label": "control",
+            "model": "unsloth/Qwen2.5-0.5B-Instruct",
+            "passed": True,
+            "metrics": [],
+            "reference_check": {
+                "status": "ok",
+                "worst_rel": {"loss": 0.01},
+                "reference_max_steps": 10,
+                "config_unchecked": ["resolved_revision"],
+            },
+        }
+    )
+    assert any("resolved_revision" in line for line in lines), lines
+
+
+def test_the_committed_reference_pins_the_model_it_was_captured_on():
+    """The one identity key that is knowable without another T4 session.
+
+    The control leg passes no --model, so the reference belongs to
+    DEFAULT_MODEL and the gate can be live now rather than from the next
+    recapture.
+    """
+    from run_t4_smoke import DEFAULT_MODEL
+
+    reference = json.loads(
+        (SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json").read_text(encoding = "utf-8")
+    )
+    assert reference["model"] == DEFAULT_MODEL
 
 
 # -------------------------------------------- run_t4_smoke.py: main() paths

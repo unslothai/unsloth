@@ -189,6 +189,20 @@ def render(report: dict) -> list[str]:
             lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
+        # What the band did NOT compare, on the face of the summary rather
+        # than buried in the evidence. A key the committed reference predates
+        # is skipped rather than refused, which is right -- "it does not say"
+        # is not "it differs" -- but a skip nobody can see reads as a check
+        # that ran, and the checkpoint pin is exactly the kind of thing that
+        # can sit unchecked for months without anyone noticing.
+        unchecked = ref.get("config_unchecked")
+        if unchecked:
+            lines.append(
+                "Not compared, absent from one side: "
+                + ", ".join(f"`{key}`" for key in unchecked)
+                + ". Recapture the reference (references/README.md) to bring "
+                "them into the check."
+            )
         lines.append("")
 
     pins = report.get("pins")

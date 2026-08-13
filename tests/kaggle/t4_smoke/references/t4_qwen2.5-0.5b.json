@@ -87,5 +87,6 @@
     "gradient_checkpointing": "unsloth",
     "repeat": 2
   },
+  "model": "unsloth/Qwen2.5-0.5B-Instruct",
   "source_kernel": "danielhanchen/unsloth-t4-ci-e3c6661f"
 }
