@@ -47,6 +47,12 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True):
+    """The images route's resolver, shared so both media routes apply one rule."""
+    from routes.inference import _selected_gpu_ordinal as _resolve
+    return _resolve(gpu_ids, allow_ranking = allow_ranking)
+
+
 def _training_is_active() -> bool:
     """The non-raising half of the load guard, for callers that must not take the GPU."""
     from routes.inference import _training_is_active as _images_training_is_active
@@ -132,7 +138,16 @@ async def video_download_plan(
         # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
         # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
         # plan runs before the load's training guard can refuse. Staging needs no GPU.
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
+        # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
+        # so the RANKING waits until training is known idle. Validating and translating the ids
+        # does not, so that happens either way: a plan that skipped it accepted a GPU the load
+        # would refuse and sized its file set for the wrong card. ONE resolution, reused by
+        # preflight and plan.
+        gpu_ordinal = None
+        training = fam is not None and await asyncio.to_thread(_training_is_active)
+        if fam is not None:
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        if fam is not None and not training:
             await asyncio.to_thread(
                 assert_video_precision_available,
                 fam,
@@ -140,10 +155,13 @@ async def video_download_plan(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = request.memory_mode,
+                # Judged on the card this pick would load on, as the loader does.
+                gpu_ordinal = gpu_ordinal,
             )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
+            gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
@@ -174,7 +192,10 @@ async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.diffusion import resolve_local_single_file
-    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
     from core.inference.video import (
         assert_video_precision_available,
@@ -215,6 +236,10 @@ async def load_video_model(
         # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
         # already taken the GPU away from the model it was meant to preserve. `auto` is never
         # refused, so a caller that left the precision to the backend cannot reach this.
+        # Ahead of the precision gate, which has to judge the card this pick would load on.
+        # Refused here too, before anything is evicted or staged; begin_load re-checks, but only
+        # after the arbiter has taken the GPU.
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         await asyncio.to_thread(
             assert_video_precision_available,
             fam,
@@ -224,6 +249,7 @@ async def load_video_model(
             # The memory request settles the offload policy for balanced/low_vram before
             # anything is measured, and an offloaded DiT or encoder skips the torchao build.
             memory_mode = request.memory_mode,
+            gpu_ordinal = gpu_ordinal,
         )
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
@@ -245,6 +271,10 @@ async def load_video_model(
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
                 h3_task = request.h3_task,
+                gpu_ids = request.gpu_ids,
+                # The winner this route already ranked and preflighted, so the load cannot pick a
+                # different card from free VRAM that has moved since.
+                gpu_ordinal = gpu_ordinal,
             )
 
         if device != "cpu":

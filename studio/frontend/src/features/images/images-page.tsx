@@ -50,6 +50,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -88,6 +90,11 @@ import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_TABS } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import {
+  type ImageGenerationPresetParams,
+  MediaGenerationPresetControl,
+  useMediaGenerationPresets,
+} from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
@@ -1130,7 +1137,16 @@ type Busy = "loading" | "unloading" | "generating" | null;
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.
-type PickRevert = { prev: string | null; steps: number; guidance: number };
+type PickRevert = {
+  prev: string | null;
+  steps: number;
+  guidance: number;
+  commitRecipeClaim?: () => void;
+  releaseRecipeClaim?: () => void;
+  // What the pick applied. A field the user changed after that is theirs, not ours to put back.
+  appliedSteps?: number;
+  appliedGuidance?: number;
+};
 
 // The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged download pins one at pick time.
 type LoadAdvanced = Pick<
@@ -1142,6 +1158,7 @@ type LoadAdvanced = Pick<
   | "memory_mode"
   | "transformer_cache"
   | "loras"
+  | "gpu_ids"
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
@@ -1167,12 +1184,30 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  // Whether the user has taken the recipe since the pick that is still waiting for its status: a
+  // preset selected while the model downloaded is newer than that pick, so its rollback is not the
+  // one to restore.
+  const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
-    setSteps(r.steps);
-    setGuidance(r.guidance);
+    setPendingModelDefaults(null);
+    // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
+    // preset selected after the pick owns these fields even where it matches what the pick applied.
+    if (!pickRecipeSuperseded.current?.()) {
+      setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
+      setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
+    }
+    pickRecipeSuperseded.current = null;
+    r.releaseRecipeClaim?.();
+    r.releaseRecipeClaim = undefined;
   }, []);
+  // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
+  // it. Without this the Default preset would read as "modified" for the whole download.
+  const [pendingModelDefaults, setPendingModelDefaults] = useState<{
+    steps: number;
+    guidance: number;
+  } | null>(null);
   const [seed, setSeed] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
@@ -1236,14 +1271,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "auto",
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  // "auto", or the physical index to pin this load to. Only offered on a multi-card CUDA / ROCm host.
+  // Persisted, unlike the selects around it: those are reseeded from the loaded build, and the
+  // status carries the device a pipeline is on but not which card, so a refresh would reset this
+  // one to Auto while the model stayed put and the next Reapply would move it to the default GPU.
+  // A stored id is only a hint; the send path below still drops one whose card is no longer there.
+  const [selectedGpu, setSelectedGpu] = usePersistedChoice(
+    "unsloth_image_gpu_choice",
+    "auto",
+  );
+  const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
-  // Render-safe mirror of "lastLoad.current was set by a user-initiated load": a resident GGUF discovered by refresh carries
-  // no filename, so lastLoad stays null and Reapply would be dead. Set only from handlers; the resident case derives from status.
+  // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
   const seededResident = useRef<string | null>(null);
@@ -1320,6 +1364,80 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // one. Lazy state, not a ref: a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
+  const imagePresetParams = useMemo<ImageGenerationPresetParams>(
+    () => ({
+      negativePrompt,
+      width,
+      height,
+      steps,
+      guidance,
+      batchSize,
+      runs: count,
+    }),
+    [batchSize, count, guidance, height, negativePrompt, steps, width],
+  );
+  const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
+    const recommended =
+      pendingModelDefaults ??
+      defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+    return {
+      negativePrompt: "",
+      width: 1024,
+      height: 1024,
+      steps: recommended.steps,
+      guidance: recommended.guidance,
+      batchSize: 1,
+      runs: 1,
+    };
+  }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
+  const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
+    setNegativePrompt(params.negativePrompt);
+    // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
+    // the user generates against a setting the collapsed field is hiding.
+    if (params.negativePrompt) setNegativeOpen(true);
+    setWidth(params.width);
+    setHeight(params.height);
+    const matched = matchAspect(params.width, params.height);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+    setSteps(params.steps);
+    setGuidance(params.guidance);
+    setBatchSize(params.batchSize);
+    setCount(params.runs);
+    return params;
+  }, []);
+  const imagePresets = useMediaGenerationPresets({
+    kind: "image",
+    defaultParams: imageDefaultRecipe,
+    currentParams: imagePresetParams,
+    applyParams: applyImagePresetParams,
+  });
+  const claimImageRecipe = imagePresets.claimRecipe;
+  const imageFormClaimId = imagePresets.formClaimId;
+  const applyImageModelDefaults = useCallback(
+    (repoId: string) => {
+      const revert = quantRevert.current;
+      if (revert && !revert.releaseRecipeClaim) {
+        const claim = claimImageRecipe();
+        revert.commitRecipeClaim = claim.commit;
+        revert.releaseRecipeClaim = claim.release;
+      }
+      // Baselined per pick, including a pick that inherits an earlier one's rollback: the question
+      // is whether the user takes the form after THIS pick, not after the one it replaced.
+      const claimedAt = imageFormClaimId();
+      pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
+      const recommended = defaultsFor(repoId);
+      setPendingModelDefaults(recommended);
+      setSteps(recommended.steps);
+      setGuidance(recommended.guidance);
+      if (revert) {
+        revert.appliedSteps = recommended.steps;
+        revert.appliedGuidance = recommended.guidance;
+      }
+    },
+    [claimImageRecipe, imageFormClaimId],
+  );
+
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
@@ -1373,7 +1491,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
     setCanReapply(false);
-  }, [dismissLoadToast, pickGuard]);
+    // Stopping the poll above also stops its "the load was cancelled or evicted" branch, which is
+    // what hands back a pick that never became resident. Do it here, exactly as that branch would:
+    // an unreleased recipe claim leaves hydration parked behind a load that is never coming, and a
+    // rollback left behind is one a later pick would inherit in place of its own.
+    if (quantRevert.current) {
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
+    }
+  }, [dismissLoadToast, pickGuard, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -2022,7 +2148,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
+        quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
+        // Status owns the recipe from here, so the pick's claim on Default expires with it.
+        setPendingModelDefaults(null);
         // lastLoad.current already holds the now-resident pick, so drop its revert too.
         lastLoadRevert.current = null;
         return;
@@ -2175,23 +2304,34 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   // Seed the generation sliders from a resident model's recipe when the page finds one it did not load itself, else they keep the
   // unrecognised-model fallback and a resident flux.1-dev generates garbage at 9 steps. Guarded by lastLoad.current === null and a per-repo ref.
+  const residentSeeded = useRef(false);
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
+    // Wire Reapply to the resident model too, so an advanced-option reload works without
+    // re-picking. Only a full pipeline is reloadable by repo id alone; a resident GGUF/single_file
+    // carries no checkpoint filename, so leave the target null for those and the button hidden.
+    // Set before the recipe decision below: whether Reapply has a target is a separate question
+    // from whether the model's defaults should seed the form.
+    if (status?.model_kind === "pipeline") {
+      lastLoad.current = { repoId, kind: "pipeline" };
+    }
+    // A stored recipe is the user's own choice, so it outranks the resident model's defaults on
+    // the first seed. Later resident changes still seed, as picking a model always has.
+    if (!residentSeeded.current) {
+      residentSeeded.current = true;
+      if (imagePresets.storedRecipe) return;
+    }
     // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
+    // Status is the authority for a resident model, so this is not a pick's optimistic claim.
     const d = defaultsFor(status?.base_repo ?? repoId);
+    setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-    // Wire "Reapply" to the resident model too, so an advanced-option reload works without re-picking. Only a full pipeline
-    // needs no checkpoint filename; a resident GGUF/single_file carries none, so leave lastLoad null for those.
-    const kind = status?.model_kind;
-    if (kind === "pipeline") {
-      lastLoad.current = { repoId, kind };
-    }
-  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -2225,8 +2365,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
-  // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
-  // takes adapters only before quantize_ + compile. Only a reload of the SAME target bakes, and it reads lastLoad.current, so call it first.
   const bakedLorasFor = useCallback(
     (repoId: string): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
@@ -2250,6 +2388,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         loras: baked.length > 0 ? baked : undefined,
+        // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
+        gpu_ids:
+          selectedGpu !== "auto" &&
+          gpuChoices.some((d) => String(d.index) === selectedGpu)
+            ? [Number(selectedGpu)]
+            : undefined,
       };
     },
     [
@@ -2260,6 +2404,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       attentionBackend,
       memoryMode,
       transformerCache,
+      selectedGpu,
+      gpuChoices,
     ],
   );
 
@@ -2332,6 +2478,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
+          gpu_ids: advanced.gpu_ids,
         });
         await startRequest;
       } catch (err) {
@@ -2473,6 +2620,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
         // planned a quantized file set and staged too little. Same list handleLoad bakes.
         loras: advanced.loras,
+        // The plan route preflights precision and sizes the file set against the card the load
+        // will use, so a selection the load carries has to reach the plan as well.
+        gpu_ids: advanced.gpu_ids,
       }),
     [],
   );
@@ -2603,9 +2753,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         onResolved: (filename) => {
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
-          const d = defaultsFor(repoId);
-          setSteps(d.steps);
-          setGuidance(d.guidance);
+          applyImageModelDefaults(repoId);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -2617,7 +2765,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
-    [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
+    [applyImageModelDefaults, loadOrStage, pickGuard, quant, revertPick],
   );
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
@@ -2634,6 +2782,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     // A hidden page owns no query: both diffusion pages stay mounted.
     if (!active) return;
+    if (!imagePresets.hydrated) return;
     const wanted = routeSearch?.model;
     // Key on the model AND the quant, and release the marker once the query is gone: this page stays mounted, so a marker that
     // outlived the query made re-picking the same checkpoint a click that neither loaded nor cleared the URL.
@@ -2672,9 +2821,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
       return;
     }
-    void loadOrStage(pick.repoId, pick.opts, "hub", token);
+    // Match every direct picker branch: the routed intent owns both the visible build label and
+    // the model-specific Default recipe, and a load that never becomes resident rolls both back.
+    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+    quantRevert.current = revert;
+    setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
+    applyImageModelDefaults(wanted);
+    void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
+      if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
+        revertPick(revert);
+        quantRevert.current = null;
+      }
+    });
   }, [
     active,
+    applyImageModelDefaults,
+    imagePresets.hydrated,
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
@@ -2682,6 +2844,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadGgufRepoPick,
     navigateSelf,
     pickGuard,
+    quant,
+    revertPick,
   ]);
 
   // Reload the current model with the current advanced options.
@@ -2732,9 +2896,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
-        const d = defaultsFor(id);
-        setSteps(d.steps);
-        setGuidance(d.guidance);
+        applyImageModelDefaults(id);
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
@@ -2754,9 +2916,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
-        const dq = defaultsFor(id);
-        setSteps(dq.steps);
-        setGuidance(dq.guidance);
+        applyImageModelDefaults(id);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -2793,9 +2953,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dq2 = defaultsFor(id);
-        setSteps(dq2.steps);
-        setGuidance(dq2.guidance);
+        applyImageModelDefaults(id);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
           if (!started) {
             revertPick(revert);
@@ -2814,9 +2972,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dsf = defaultsFor(id);
-        setSteps(dsf.steps);
-        setGuidance(dsf.guidance);
+        applyImageModelDefaults(id);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
             revertPick(revert);
@@ -2847,9 +3003,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(id);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
+      applyImageModelDefaults(id);
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
@@ -2859,16 +3013,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     },
     [
       abandonPick,
+      applyImageModelDefaults,
       beginPick,
       busy,
-      guidance,
       handleLoad,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
       quant,
       revertPick,
-      steps,
     ],
   );
 
@@ -2891,15 +3044,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(args.baseRepo);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
+      applyImageModelDefaults(args.baseRepo);
       void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
-        if (!started) pendingDeploy.current = null;
+        if (!started) {
+          pendingDeploy.current = null;
+          if (quantRevert.current === revert) {
+            revertPick(revert);
+            quantRevert.current = null;
+          }
+        }
       });
     },
-    [busy, handleLoad, pickGuard, setPageMode],
+    [applyImageModelDefaults, busy, handleLoad, pickGuard, quant, revertPick, setPageMode],
   );
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
@@ -3368,6 +3527,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           ["low_vram", "Low VRAM"],
         ]}
       />
+      {gpuChoices.length > 0 && (
+        <AdvancedSelect
+          label="GPU"
+          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool."
+          value={selectedGpu}
+          onValueChange={setSelectedGpu}
+          options={[
+            ["auto", "Auto"],
+            ...gpuChoices.map(
+              (d) =>
+                [
+                  String(d.index),
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                ] as [string, string],
+            ),
+          ]}
+        />
+      )}
       <AdvancedSelect
         label="Step cache"
         hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."
@@ -3536,18 +3713,33 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
             {/* Icon rides the heading; the line below runs the full width.
                 Same shape on the Video page, so the two stay level. */}
-            <div className="mb-2 grid gap-1.5">
-              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-                {/* Same icon the sidebar submenu uses for this workflow. */}
-                <HugeiconsIcon
-                  icon={activeWorkflowTab.icon}
-                  className="size-[18px] shrink-0"
+            <div className="mb-2 flex items-start justify-between gap-3">
+              <div className="min-w-0 grid gap-1.5">
+                <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
+                  {/* Same icon the sidebar submenu uses for this workflow. */}
+                  <HugeiconsIcon
+                    icon={activeWorkflowTab.icon}
+                    className="size-[18px] shrink-0"
+                  />
+                  {activeWorkflowTab.heading ?? activeWorkflowTab.label}
+                </h2>
+                <p className="text-xs leading-snug text-muted-foreground">
+                  {activeWorkflowTab.hint}
+                </p>
+              </div>
+
+              {workflow === "create" && (
+                <MediaGenerationPresetControl
+                  kind="image"
+                  presets={imagePresets.presets}
+                  activePreset={imagePresets.activePreset}
+                  ready={imagePresets.presetsReady}
+                  hasUnsavedChanges={imagePresets.hasUnsavedChanges}
+                  onSelect={imagePresets.selectPreset}
+                  onSave={imagePresets.savePreset}
+                  onDelete={imagePresets.deletePreset}
                 />
-                {activeWorkflowTab.heading ?? activeWorkflowTab.label}
-              </h2>
-              <p className="text-xs leading-snug text-muted-foreground">
-                {activeWorkflowTab.hint}
-              </p>
+              )}
             </div>
 
             {workflow === "transform" && (
@@ -4252,7 +4444,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       <HugeiconsIcon icon={PinIcon} className="size-3" />
                     </span>
                   )}
-                  <div className="absolute right-0.5 top-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  <div className="absolute right-0.5 top-0.5">
                     <GalleryItemMenu
                       variant="overlay"
                       noun="image"

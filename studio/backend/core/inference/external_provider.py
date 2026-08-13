@@ -26,6 +26,7 @@ from core.inference.openai_responses_shared import (
     responses_function_output,
     response_event_type,
 )
+from core.inference.sse_control_frames import sanitize_provider_sse_line
 
 # Local servers, not hosted APIs: each applies the model's own chat template on the way
 # in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
@@ -172,7 +173,16 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
                 summary_parts.append({"type": "summary_text", "text": text})
     # `id` and `summary` only: Responses rejects `status` on an input item
     # ("Unknown parameter: 'input[1].status'"), which 400d every replayed edit.
-    return {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    replay: dict[str, Any] = {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    # A zero-data-retention org has `store=false` forced on it, and OpenAI then
+    # attaches `encrypted_content` to every reasoning item because the id alone
+    # resolves to nothing server-side on the next turn. Carry it whenever it is
+    # present: without it the replay is an id pointing at a response that was
+    # never stored.
+    encrypted = item.get("encrypted_content")
+    if isinstance(encrypted, str) and encrypted:
+        replay["encrypted_content"] = encrypted
+    return replay
 
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
@@ -945,6 +955,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
         continue_final_message: Optional[bool] = None,
+        response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -987,6 +998,7 @@ class ExternalProviderClient:
                     reasoning_effort,
                     tools,
                     tool_choice,
+                    response_format,
                 ):
                     yield line
                 return
@@ -1030,6 +1042,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                response_format,
             ):
                 yield line
             return
@@ -1185,6 +1198,11 @@ class ExternalProviderClient:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        # JSON mode / guided decoding. Every OpenAI-compatible server accepts
+        # this (llama.cpp, vLLM and Ollama all implement it), and dropping it
+        # silently turned a caller's structured-output request into free prose.
+        if response_format is not None:
+            body["response_format"] = response_format
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -1378,7 +1396,14 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        yield line
+                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # the frames this server writes to paint tool cards ride
+                        # the same stream, so an endpoint that echoes them forges
+                        # a card for a tool that never ran.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                     # Stream ended without [DONE] (some upstreams just close
                     # the connection). Emit tool_end so the card doesn't stay
                     # in "running" forever.
@@ -1613,7 +1638,11 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if line.strip():
-                                yield line
+                                # Same rule as the main relay: never let the
+                                # endpoint speak Studio's control vocabulary.
+                                relayed = sanitize_provider_sse_line(line)
+                                if relayed is not None:
+                                    yield relayed
                     except GeneratorExit:
                         await response.aclose()
                         await lines_gen.aclose()
@@ -1745,7 +1774,12 @@ class ExternalProviderClient:
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
                                                     )
-                        yield line
+                        # Same rule as the main relay: never let the endpoint
+                        # speak Studio's control vocabulary.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                 except GeneratorExit:
                     await response.aclose()
                     await lines_gen.aclose()
@@ -3114,6 +3148,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -3978,6 +4013,25 @@ class ExternalProviderClient:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
 
+        # Structured output. Gemini carries it on generationConfig as a response
+        # MIME type, not the Chat Completions `response_format` this endpoint has
+        # never seen, so JSON mode was silently dropped for every native Gemini
+        # call (deep research parses its planning hop as JSON). Only on a tool-free
+        # turn: Gemini 400s with "Function calling with a response mime type:
+        # 'application/json' is unsupported" when both are sent, and the hop that
+        # asks for JSON sends no tools.
+        # https://ai.google.dev/gemini-api/docs/structured-output
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type in ("json_object", "json_schema") and "tools" not in body:
+            _gen_cfg = body.setdefault("generationConfig", {})
+            _gen_cfg["responseMimeType"] = "application/json"
+            if _rf_type == "json_schema":
+                _rf_schema = response_format.get("json_schema")
+                if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                    # responseSchema is the same OpenAPI subset the function
+                    # declarations use, so it needs the same scrubbing.
+                    _gen_cfg["responseSchema"] = _sanitize_gemini_schema(_rf_schema["schema"])
+
         # Prompt caching. The Gemini contract is "create a CachedContent
         # resource, then pass its name on `cachedContent`". The cache is created
         # out of band by the caller via POST /cachedContents; here we forward an
@@ -4668,6 +4722,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -4738,10 +4793,15 @@ class ExternalProviderClient:
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                # Collected rather than appended directly: the turn's reasoning
+                # items have to lead it, and whether any of them may be replayed
+                # at all is only known once the function_call items survive the
+                # server-builtin filter below.
+                _turn_items: list[dict[str, Any]] = []
                 # Emit assistant text before its function_call items to preserve
                 # the original response.output ordering.
                 if isinstance(content, str) and content:
-                    input_items.append({"role": "assistant", "content": content})
+                    _turn_items.append({"role": "assistant", "content": content})
                 elif isinstance(content, list):
                     _asst_parts: list[dict[str, Any]] = []
                     for _part in content:
@@ -4760,7 +4820,7 @@ class ExternalProviderClient:
                             if _u:
                                 _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
-                        input_items.append({"role": "assistant", "content": _asst_parts})
+                        _turn_items.append({"role": "assistant", "content": _asst_parts})
 
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
@@ -4792,9 +4852,37 @@ class ExternalProviderClient:
                     if _is_server_builtin:
                         skipped_server_builtin_call_ids.add(_call_id_out)
                         continue
-                    input_items.append(
+                    _turn_items.append(
                         responses_function_call(_call_id_out, _fn["name"], _args_raw)
                     )
+                # OpenAI requires the reasoning items that came back alongside a
+                # tool call to be replayed with the function_call /
+                # function_call_output pair whenever the history is managed by
+                # hand, which is exactly what the Studio tool loop does: "any
+                # reasoning items returned in model responses with tool calls
+                # must also be passed back with tool call outputs"
+                # (https://developers.openai.com/api/docs/guides/function-calling).
+                # Dropping them loses the model's chain of thought across every
+                # local tool hop and misses the prompt cache on the turn after.
+                #
+                # They lead the turn, matching response.output order, and only
+                # when something followed them survived: a trailing reasoning
+                # item is a hard 400 ("Item 'rs_...' of type 'reasoning' was
+                # provided without its required following item"), so a turn whose
+                # calls were all dropped server-side builtins replays none.
+                if _turn_items:
+                    _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                    _reasoning_replay = (
+                        _msg_extra.get("openai_responses_reasoning")
+                        if isinstance(_msg_extra, dict)
+                        else None
+                    )
+                    if isinstance(_reasoning_replay, list):
+                        for _r_item in _reasoning_replay:
+                            _replay = _sanitize_openai_reasoning_replay_item(_r_item)
+                            if _replay:
+                                input_items.append(_replay)
+                input_items.extend(_turn_items)
                 # Assistant text already emitted above (in order) so we don't
                 # fall through to the generic content branches.
                 continue
@@ -4966,6 +5054,26 @@ class ExternalProviderClient:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
+
+        # The Responses API carries structured output on `text.format`; the Chat
+        # Completions `response_format` is not part of its contract, so a caller's
+        # JSON mode became free prose. The json_schema shape is flattened here:
+        # name/schema/strict are siblings of `type`, not nested under json_schema.
+        # https://platform.openai.com/docs/guides/structured-outputs
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type == "json_object":
+            body["text"] = {"format": {"type": "json_object"}}
+        elif _rf_type == "json_schema":
+            _rf_schema = response_format.get("json_schema")
+            if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                body["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": str(_rf_schema.get("name") or "response"),
+                        "schema": _rf_schema["schema"],
+                        "strict": bool(_rf_schema.get("strict", True)),
+                    }
+                }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
         # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
@@ -5513,6 +5621,18 @@ class ExternalProviderClient:
                                 # a Responses request with Chat Completions frames, so skipping
                                 # an unrecognisable frame beats failing the whole completion.
                                 # The ChatGPT path stays strict, where the shape is guaranteed.
+                                # An error payload is the exception: the bare {"error": ...} an
+                                # OpenAI-compatible proxy emits has no type and no event name
+                                # either, so skipping it returned zero chunks and no error.
+                                if isinstance(event, dict) and isinstance(
+                                    event.get("error"), (dict, str)
+                                ):
+                                    yield _error_sse_line(
+                                        502,
+                                        _openai_response_error_message(event),
+                                        self.provider_type,
+                                    )
+                                    break
                                 continue
                             _record_openai_response_id(event)
 
@@ -5912,13 +6032,29 @@ class ExternalProviderClient:
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True
+                                # Hand this turn's reasoning items back so the
+                                # next request can replay them beside the
+                                # function_call they belong to; the tool loop
+                                # latches delta.extra_content onto the assistant
+                                # message it rebuilds. Only on a turn that
+                                # actually called a tool: prose needs none, and
+                                # shipping them would grow every following body
+                                # for nothing. Mirrors the openai_codex client's
+                                # openai_codex_reasoning.
+                                _terminal_delta: dict[str, Any] = {}
+                                if saw_function_call and openai_reasoning_replay_items:
+                                    _terminal_delta["extra_content"] = {
+                                        "openai_responses_reasoning": list(
+                                            openai_reasoning_replay_items.values()
+                                        )
+                                    }
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
                                     "choices": [
                                         {
                                             "index": 0,
-                                            "delta": {},
+                                            "delta": _terminal_delta,
                                             "finish_reason": (
                                                 "tool_calls" if saw_function_call else "stop"
                                             ),

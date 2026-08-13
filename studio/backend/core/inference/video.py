@@ -59,9 +59,15 @@ from .diffusion_cache import (
     normalize_transformer_cache,
 )
 from .diffusion_device import (
+    DiffusionDeviceTarget,
+    apply_diffusion_device_ordinal,
+    diffusion_device_scope,
     force_float32_rope,
     install_decoder_sync,
+    pin_cuda_ordinal,
+    placed_cuda_ordinal,
     resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
 )
 from .diffusion_memory import (
     apply_memory_plan,
@@ -196,6 +202,7 @@ def assert_video_precision_available(
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
+    gpu_ordinal: Optional[int] = None,
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -213,8 +220,38 @@ def assert_video_precision_available(
     te_mode = normalize_te_quant(text_encoder_quant)
     if pinned is None and te_mode is None:
         return
-    # One probe for both checks (it reads the live device).
-    target = resolve_diffusion_device_target()
+    # One probe for both checks, asked of the card THIS load will use: the default one can be a
+    # different generation, refusing a scheme the selected card supports or passing one it cannot.
+    # SCOPED around the probes below, which use argument-less CUDA calls and bare "cuda"
+    # allocations, and which the route reaches on a pooled thread that must not keep the pin.
+    with diffusion_device_scope(gpu_ordinal):
+        target = (
+            resolve_diffusion_device_target()
+            if gpu_ordinal is None
+            else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+        )
+        _assert_video_precision_for_target(
+            fam,
+            target,
+            model_kind = model_kind,
+            transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
+            memory_mode = memory_mode,
+        )
+
+
+def _assert_video_precision_for_target(
+    fam: Any,
+    target: Any,
+    *,
+    model_kind: str,
+    transformer_quant: Optional[str] = None,
+    text_encoder_quant: Optional[str] = None,
+    memory_mode: Optional[str] = None,
+) -> None:
+    """The body of ``assert_video_precision_available``, run with the selected card current."""
+    pinned = normalize_transformer_quant(transformer_quant)
+    te_mode = normalize_te_quant(text_encoder_quant)
     # A modular-workflow family (MiniMax-H3) never reaches the memory plan the offload refusals
     # below reason about: load_pipeline hands it to _load_h3_modular_pipeline, which always uses
     # the ComponentsManager auto CPU offload and PINS a pre-quantized denoiser resident, so
@@ -467,6 +504,13 @@ class _VideoLoadState:
     dtype: str
     kind: str
     engine: str = "diffusers"
+    # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
+    # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
+    gpu_ordinal: Optional[int] = None
+    # The card the weights are ACTUALLY on, automatic loads included. Only for re-pinning a worker
+    # that a previous pinned load may have left on another card; everything reported reads
+    # gpu_ordinal, so an automatic load still resolves a bare device. Mirrors the image backend.
+    placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
@@ -981,6 +1025,30 @@ class VideoBackend:
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
 
+    def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
+        """The device target for ``ordinal``, pinned onto the calling thread.
+
+        ``torch.cuda.set_device`` is thread-local, so this runs per worker rather than once at
+        load: the daemon thread that builds the pipeline is not the one that denoises. Called with
+        no argument on the automatic path, so a monkeypatched resolver keeps working.
+        """
+        if ordinal is None:
+            return resolve_diffusion_device_target()
+        target = resolve_diffusion_device_target(ordinal = ordinal)
+        apply_diffusion_device_ordinal(target)
+        return target
+
+    def _state_device_target(self, state: _VideoLoadState) -> DiffusionDeviceTarget:
+        """The resident pipeline's target, pinned onto the calling thread. Every worker that
+        touches the loaded pipeline goes through this: the weights are on ``state.gpu_ordinal``
+        and ``state.device`` is un-indexed, so an unpinned thread resolves to its own card."""
+        target = self._device_target(state.gpu_ordinal)
+        # And an automatic load back onto its own card, in case this thread is a shared one a
+        # previous pinned load left elsewhere. The image path reaches this through a pooled
+        # executor; here it costs one no-op call to keep the two engines identical.
+        pin_cuda_ordinal(state.placed_ordinal)
+        return target
+
     # ── validation ───────────────────────────────────────────────────────────
 
     def validate_load_request(
@@ -1217,9 +1285,25 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
+        gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
+        # 400 rather than a load that dies tens of GB later, and only once so free VRAM cannot
+        # re-rank the choice after the weights land. Gated on the resolved backend, since XPU /
+        # MPS / CPU ignore physical ids and would otherwise 400 a selection the contract drops.
+        # Re-ranked only when the caller did not already do it: free VRAM moves between the
+        # route's preflight and here, so resolving twice can approve a scheme against one card
+        # and place the weights on another.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -1240,7 +1324,17 @@ class VideoBackend:
             model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            gpu_ordinal = gpu_ordinal,
         )
+        # Resolved out here so the companion claim is published in the SAME locked section as
+        # _loading. begin_load returns as soon as the thread is scheduled, and a delete arriving in
+        # that gap sees only repo_id and base_repo, passes the guard, and starts removing a
+        # companion repo this load needs. A later claim does not revoke a delete already admitted.
+        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
+
+        h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
+        claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
+
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A video load is already in progress.")
@@ -1250,7 +1344,11 @@ class VideoBackend:
             # drops _loading, so the next begin_load would clear the object that worker watches. A fresh object leaves it set.
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
-            self._loading = _VideoLoadingState(repo_id = repo_id, base_repo = fam.base_repo)
+            self._loading = _VideoLoadingState(
+                repo_id = repo_id,
+                base_repo = fam.base_repo,
+                asset_repos = claimed_assets,
+            )
 
         threading.Thread(
             target = self._run_load,
@@ -1269,6 +1367,7 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant,
                 model_kind = model_kind,
                 h3_task = h3_task,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1305,7 +1404,9 @@ class VideoBackend:
             )
             kwargs["base_repo"] = base
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
-            te_sources = self._te_prequant_sources(fam, kwargs.get("text_encoder_quant"))
+            te_sources = self._te_prequant_sources(
+                fam, kwargs.get("text_encoder_quant"), kwargs.get("gpu_ordinal")
+            )
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
             # DiT shards, so the estimate and the scoped pull below both drop them. VERIFIED, like
             # the conditioner below and like the plan: this flag both REMOVES 66 GB from the pull
@@ -1322,6 +1423,9 @@ class VideoBackend:
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
                 speed_mode = kwargs.get("speed_mode"),
                 h3_task = kwargs.get("h3_task"),
+                # This decides the file set AND the memory policy, so it has to read the card the
+                # pipeline will land on: the default one can be larger or smaller than the pick.
+                gpu_ordinal = kwargs.get("gpu_ordinal"),
             )
             skip_transformer_weights = self._denoiser_prequant_verified(
                 fam,
@@ -1473,16 +1577,18 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
+        gpu_ordinal: Optional[int] = None,
         **_: Any,
     ) -> None:
         """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
         from huggingface_hub import HfApi
 
-        from .sd_cpp_args import SdCppModelFiles, offload_flags
+        from .sd_cpp_args import SdCppModelFiles, device_backend_flags, offload_flags
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
             ensure_h3_sd_cpp_binary,
+            sd_cpp_device_name_for_ordinal,
             sd_cpp_lists_accelerator_device,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -1499,6 +1605,18 @@ class VideoBackend:
         filename = gguf_filename or ""
         qwen_filename = h3_text_encoder_filename(filename)
 
+        # Claimed before anything slow, the preflight included: it can spend minutes installing the
+        # sd-cli prebuilt, and asset_repos is what stops the delete-cached guard admitting a delete
+        # of the H3 companion repos mid-load, which a later claim cannot revoke. The download list
+        # pulls from both, and neither is repo_id or base_repo. loaded_repo_ids() is the committed
+        # twin; expected_bytes stays below, where the sizes are known.
+        # begin_load publishes the same claim with _loading, covering the gap before this thread is
+        # scheduled. This one is for load_pipeline, which never goes through begin_load.
+        with self._lock:
+            if self._load_token == token and self._loading is not None:
+                self._loading.base_repo = fam.base_repo
+                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
+
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
         # predates H3 runs fine and so clears the version() gate below, then aborts on the first
         # generation. That is the whole reason this gate exists, and running it after the four-file
@@ -1509,7 +1627,7 @@ class VideoBackend:
         # an install nobody is waiting for. The download loop used to be the first check.
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
-        target = resolve_diffusion_device_target()
+        target = self._device_target(gpu_ordinal)
         allow_install = _install_allowed()
         binary = ensure_h3_sd_cpp_binary(
             allow_install = allow_install,
@@ -1588,11 +1706,6 @@ class VideoBackend:
             total = 0
         with self._lock:
             if self._load_token == token and self._loading is not None:
-                self._loading.base_repo = fam.base_repo
-                # The download list below pulls from the H3 companion repos too, and neither is
-                # repo_id or base_repo, so without this the delete-cached guard would let one be
-                # deleted out from under the in-flight load. The committed twin is loaded_repo_ids().
-                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
                 self._loading.expected_bytes = total or None
 
         resolved: list[Path] = []
@@ -1693,6 +1806,15 @@ class VideoBackend:
                     "again."
                 )
             binary_identity = _sd_cli_identity(binary)
+            # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal
+            # would outlive the decision and be committed against a runtime that never used it.
+            native_ordinal = None if native_device == "cpu" else gpu_ordinal
+            # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose between.
+            native_device_name = (
+                None
+                if native_device == "cpu"
+                else sd_cpp_device_name_for_ordinal(binary, native_ordinal)
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -1722,6 +1844,8 @@ class VideoBackend:
         native_offload = tuple(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
+        # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0 whatever was selected.
+        native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
         from .video_minimax_h3 import MiniMaxH3NativeRuntime
 
         runtime = MiniMaxH3NativeRuntime(
@@ -1757,6 +1881,10 @@ class VideoBackend:
                         repo_id = repo_id,
                         base_repo = fam.base_repo,
                         device = native_device,
+                        gpu_ordinal = native_ordinal,
+                        # The native runtime is sd.cpp, not torch, so there is no thread-local
+                        # device to put back: the pin it honours is the --backend one.
+                        placed_ordinal = native_ordinal,
                         dtype = Path(filename).stem.split("-")[-1],
                         kind = "gguf",
                         engine = "sd_cpp",
@@ -1811,14 +1939,24 @@ class VideoBackend:
     _LTX23_BASE_PREFIXES = ("scheduler/", "text_encoder/", "tokenizer/")
 
     @staticmethod
-    def _te_prequant_sources(fam: Any, text_encoder_quant: Optional[str]) -> dict[str, Any]:
+    def _te_prequant_sources(
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        gpu_ordinal: Optional[int] = None,
+    ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
         from .diffusion_te_prequant import te_prequant_sources
         return te_prequant_sources(
             fam,
             te_quant_mode = text_encoder_quant,
-            target = resolve_diffusion_device_target(),
+            # The selected card: an fp8 encoder the default card cannot take is still hosted
+            # pre-cast for the one this load lands on, and vice versa.
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            ),
         )
 
     @staticmethod
@@ -1970,6 +2108,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str],
         speed_mode: Optional[str],
         h3_task: Optional[str],
+        gpu_ordinal: Optional[int] = None,
     ) -> Optional[str]:
         """The auto denoiser fallback, resolved BEFORE anything is downloaded, or None.
 
@@ -1989,21 +2128,31 @@ class VideoBackend:
                 return None
             import torch
 
-            target = resolve_diffusion_device_target()
-            dtype = target.dtype
-            if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
-                dtype = torch.float32
-            return _h3_auto_denoiser_scheme(
-                fam,
-                target = target,
-                dtype = dtype,
-                device = target.device,
-                te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, target),
-                task = h3_task or getattr(fam, "modular_workflow", None),
-                base_repo = base,
-                speed_mode = speed_mode,
-                free_reader = _h3_device_capacity_bytes,
-            )
+            # SCOPED, not pinned: the plan route reaches this on a pooled asyncio.to_thread
+            # thread, which must not be handed back to the pool set to this request's card.
+            # The WHOLE sizing call, not just the target: _h3_device_capacity_bytes and the
+            # encoder-scheme probe read the current device, so a scope that closes early measures
+            # the pooled thread's default card and stages the wrong denoiser.
+            with diffusion_device_scope(gpu_ordinal):
+                target = (
+                    resolve_diffusion_device_target()
+                    if gpu_ordinal is None
+                    else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+                )
+                dtype = target.dtype
+                if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
+                    dtype = torch.float32
+                return _h3_auto_denoiser_scheme(
+                    fam,
+                    target = target,
+                    dtype = dtype,
+                    device = target.device,
+                    te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, target),
+                    task = h3_task or getattr(fam, "modular_workflow", None),
+                    base_repo = base,
+                    speed_mode = speed_mode,
+                    free_reader = _h3_device_capacity_bytes,
+                )
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
             return None
 
@@ -2439,6 +2588,8 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant,
                 speed_mode = load_kwargs.get("speed_mode"),
                 h3_task = h3_task,
+                # Sizes the file set from device capacity, so it has to read the selected card.
+                gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             )
             or transformer_quant
         )
@@ -2541,7 +2692,9 @@ class VideoBackend:
                         revision = getattr(extras_info, "sha", None),
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
-            te_sources = self._te_prequant_sources(fam, text_encoder_quant)
+            te_sources = self._te_prequant_sources(
+                fam, text_encoder_quant, load_kwargs.get("gpu_ordinal")
+            )
             te_files = self._te_prequant_hub_files(te_sources, api)
             for component, files in te_files.items():
                 total += add(te_sources[component].location, files)
@@ -2988,6 +3141,8 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
+        # The torch ordinal begin_load resolved for this load, carried rather than re-derived.
+        gpu_ordinal: Optional[int] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
@@ -3053,7 +3208,7 @@ class VideoBackend:
                     # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown must not leave the fence up for the life of the process.
                     self._teardown_waiters -= 1
 
-        target = resolve_diffusion_device_target()
+        target = self._device_target(gpu_ordinal)
         device = target.device
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32. CPU stays float32.
         dtype = target.dtype
@@ -3574,7 +3729,15 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
-            offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
+            offload_policy, vae_tiling = apply_memory_plan(
+                pipe,
+                plan,
+                device = device,
+                # Same reason as the image path: a bare "cuda" sends the CPU-offload hooks to
+                # ordinal 0 whatever was selected.
+                placement_device = target.torch_device,
+                logger = logger,
+            )
             # A dual-DiT MoE needs no extra per-expert pass: apply_memory_plan covers every DiT; a second pass would duplicate-hook.
             if not vae_tiling:
                 # Whole-clip decode is the video memory peak; tiling is near-free, so always on.
@@ -3660,6 +3823,8 @@ class VideoBackend:
                     repo_id = repo_id,
                     base_repo = base,
                     device = device,
+                    gpu_ordinal = target.ordinal,
+                    placed_ordinal = placed_cuda_ordinal(target),
                     dtype = str(dtype).replace("torch.", ""),
                     kind = kind,
                     gguf_filename = gguf_filename,
@@ -3787,7 +3952,7 @@ class VideoBackend:
         # directly, and by the time it runs the resident pipeline has already been torn down.
         if kind != "pipeline":
             raise ValueError("MiniMax-H3 Diffusers loading requires the pipeline artifact.")
-        umem_target = target if target is not None else resolve_diffusion_device_target()
+        umem_target = target if target is not None else self._device_target()
         # What the CALLER asked for, kept for the resolved record, before the tri-state below
         # rewrites it. An unset request must not read back as a pin.
         transformer_quant_requested = transformer_quant
@@ -4392,6 +4557,8 @@ class VideoBackend:
                 repo_id = repo_id,
                 base_repo = base,
                 device = device,
+                gpu_ordinal = umem_target.ordinal,
+                placed_ordinal = placed_cuda_ordinal(umem_target),
                 dtype = str(dtype).replace("torch.", ""),
                 kind = kind,
                 engine = "diffusers",
@@ -4742,6 +4909,11 @@ class VideoBackend:
             # resolution, and there is nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
             try:
+                # FIRST, before any device object exists. begin_generate runs this on a fresh
+                # daemon thread, so until it is pinned the un-indexed state.device below -- the H3
+                # memory probe and every torch.Generator -- resolves to its own default card while
+                # the pipeline sits on the selected one.
+                self._state_device_target(state)
                 fam = state.family
                 first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
                     fam, state.h3_task, first_frame, last_frame, width, height
