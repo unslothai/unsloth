@@ -175,6 +175,25 @@ def test_mcp_specs_skip_empty_tool_name():
     assert specs == []
 
 
+def test_mcp_specs_skip_app_only_tools():
+    """MCP Apps tools marked _meta.ui.visibility without "model" are for the
+    server's rendered widget, not the LLM; keep them out of the schema set."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {"name": "shown"},
+        {"name": "widget_only", "meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "both", "meta": {"ui": {"visibility": ["app", "model"]}}},
+        {"name": "flat_key", "meta": {"ui/visibility": ["app"]}},
+        {"name": "underscore_meta", "_meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "unrelated_meta", "meta": {"ui": {"resourceUri": "ui://x"}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    names = {s["function"]["name"] for s in specs}
+    assert names == {"mcp__srv__shown", "mcp__srv__both", "mcp__srv__unrelated_meta"}
+
+
 def test_mcp_specs_drops_duplicate_names():
     """Duplicate tool names from one server -> OpenAI rejects; drop before forwarding."""
     from core.inference.tools import _mcp_specs_for_server

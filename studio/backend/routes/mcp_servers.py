@@ -22,6 +22,7 @@ from core.inference.mcp_client import (
     parse_stdio_command,
     probe_timeout,
     record_probe_failure,
+    stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
 )
 from core.inference.mcp_config_import import parse_mcp_config
@@ -80,11 +81,7 @@ def _validate_url(url: str) -> str:
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         if _looks_like_command(trimmed):
-            detail = (
-                "Local commands aren't enabled on this server. To allow them, "
-                "set UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Unsloth, or use "
-                "an http:// or https:// URL instead."
-            )
+            detail = stdio_mcp_disabled_reason()
         else:
             detail = (
                 "MCP server address must start with http:// or https:// "
@@ -242,7 +239,7 @@ async def refresh_mcp_server_tools(
     # Refresh uses the stored address, so re-check the stdio gate here too: a
     # stdio row from a desktop DB must not spawn on a hosted/network host.
     if is_stdio(server["url"]) and not stdio_mcp_enabled():
-        raise HTTPException(status_code = 400, detail = "stdio MCP servers are disabled on this host")
+        raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
 
     use_oauth = bool(server.get("use_oauth"))
     try:
