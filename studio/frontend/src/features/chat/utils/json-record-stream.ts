@@ -146,7 +146,20 @@ export async function* streamJsonRecords(
     options.onBytes?.(chunk.bytes);
     // Retain only the record still being read.
     const consumed = start >= 0 ? start : scan;
-    buffer = consumed > 0 ? buffer.slice(consumed) + chunk.text : buffer + chunk.text;
+    try {
+      buffer = consumed > 0 ? buffer.slice(consumed) + chunk.text : buffer + chunk.text;
+    } catch (error) {
+      // Records are dropped from the buffer as they are emitted, so the only way
+      // to reach the engine's maximum string length is ONE record that long.
+      // Untranslated, that surfaces as a bare "Invalid string length".
+      if (error instanceof RangeError) {
+        throw new RangeError(
+          "One chat in this export is too large to read in a single piece. " +
+            "Split the export and import the pieces separately.",
+        );
+      }
+      throw error;
+    }
     scan -= consumed;
     if (start >= 0) start = 0;
 
@@ -242,7 +255,18 @@ export async function* streamJsonRecords(
   if (tail) {
     if (sawArrayStart) {
       // Arrays have no line boundary on which to recover a truncated record.
-      yield JSON.parse(tail);
+      // The failure is the same one the closing-bracket check below reports, so
+      // it says so in the same words rather than surfacing the engine's own
+      // "Unterminated string in JSON at position ..." to the user.
+      let record: unknown;
+      try {
+        record = JSON.parse(tail);
+      } catch {
+        throw new SyntaxError(
+          "The JSON array ends in the middle of a record, so the export is incomplete.",
+        );
+      }
+      yield record;
     } else {
       // Recover complete JSONL rows after a broken one.
       const salvaged = salvageLines(tail, lineFramed);

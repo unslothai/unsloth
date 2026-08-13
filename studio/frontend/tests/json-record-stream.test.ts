@@ -382,3 +382,38 @@ test("a pretty-printed conversation after a damaged row is framed, not shredded 
     assert.deepEqual(malformed, ['{"id":1'], `chunk size ${size}`);
   }
 });
+
+test("an array cut mid-record explains itself instead of quoting the JSON engine", async () => {
+  // The records before the cut are still yielded, so the caller can report how
+  // many were saved; only the message the user sees changes.
+  const truncated = '[{"id":1},{"id":2},{"title":"half a chat';
+  for (const size of [1, 5, 64, 4096]) {
+    const seen: unknown[] = [];
+    let message = "";
+    try {
+      for await (const record of streamJsonRecords(asChunks(truncated, size))) seen.push(record);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assert.deepEqual(seen, [{ id: 1 }, { id: 2 }], `records lost at chunk ${size}`);
+    assert.match(message, /ends in the middle of a record/);
+    assert.doesNotMatch(message, /Unterminated string|position \d+/);
+  }
+});
+
+test("an array cut between records still names the missing bracket", async () => {
+  for (const truncated of ['[{"id":1},{"id":2},', '[{"id":1},{"id":2}']) {
+    let message = "";
+    try {
+      await drain(streamJsonRecords(asChunks(truncated, 3)));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assert.match(message, /ends before its closing bracket/);
+  }
+});
+
+test("a complete array is unaffected by the truncation handling", async () => {
+  const records = await collect('[{"id":1},{"id":2}]', 2);
+  assert.deepEqual(records, [{ id: 1 }, { id: 2 }]);
+});
