@@ -100,3 +100,50 @@ test("chat streaming bypasses Streamdown's starvable transition without visible 
     "{STREAMDOWN_IMMEDIATE_UPDATES}",
   );
 });
+
+test("token updates keep Streamdown's expensive configuration props stable", () => {
+  const streamdown = findChatStreamdown();
+  assert.ok(streamdown, "chat <Streamdown> is missing");
+
+  for (const [attribute, constant] of [
+    ["plugins", "STREAMDOWN_PLUGINS"],
+    ["controls", "STREAMDOWN_CONTROLS"],
+    ["shikiTheme", "STREAMDOWN_SHIKI_THEME"],
+  ]) {
+    assert.equal(
+      jsxAttribute(streamdown, attribute)?.initializer?.getText(source),
+      `{${constant}}`,
+      `${attribute} must retain object identity while raw tokens arrive`,
+    );
+  }
+});
+
+test("stream updates are paint-coalesced without a time or length throttle", () => {
+  const markdownSource = source.getText();
+  const hookStart = markdownSource.indexOf(
+    "function useCoalescedStreamingText",
+  );
+  const hookEnd = markdownSource.indexOf("const MarkdownTextImpl", hookStart);
+  assert.ok(hookStart >= 0 && hookEnd > hookStart);
+  const hook = markdownSource.slice(hookStart, hookEnd);
+
+  assert.ok(hook.includes("requestAnimationFrame"));
+  assert.ok(!hook.includes("setTimeout"));
+});
+
+test("streaming reparses only the active Markdown tail", () => {
+  const streamdown = findChatStreamdown();
+  assert.ok(streamdown, "chat <Streamdown> is missing");
+  assert.equal(
+    jsxAttribute(streamdown, "parseIncompleteMarkdown")?.initializer?.getText(
+      source,
+    ),
+    "{!incrementalRender}",
+  );
+  assert.equal(
+    jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
+      source,
+    ),
+    "{incrementalRender?.parseMarkdownIntoBlocks}",
+  );
+});
