@@ -318,16 +318,34 @@ fn main_window_close_action(close_to_tray: bool) -> MainWindowCloseAction {
     }
 }
 
-#[tauri::command]
-fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
+/// The autostart state as the OS records it.
+///
+/// On Windows this reads the two keys itself rather than calling `is_enabled`, which folds them
+/// together through the trailing-bytes rule above and so reports a re-enabled entry as off.
+fn autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
     // is_enabled only checks the entry file exists, so a DE-disabled entry would read as on.
-    if cfg!(target_os = "linux") && linux_autostart_disabled(&app) {
+    if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return Ok(false);
     }
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())
+    #[cfg(windows)]
+    {
+        // A Run key we cannot open reads as present and disabled, which is off here and
+        // restores nothing below: an unreadable key is not evidence either way.
+        let (present, disabled) = windows_autostart_entry_state(app);
+        Ok(present && !disabled)
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch()
+            .is_enabled()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    autostart_enabled(&app)
 }
 
 #[tauri::command]
@@ -346,7 +364,7 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
     // After the OS write, so a failed one leaves no record to restore from, and on both arms:
     // a stored `false` is what stops the restore from arguing with someone turning this off.
     store_launch_at_login_preference(&app, enabled);
-    autolaunch.is_enabled().map_err(|error| error.to_string())
+    autostart_enabled(&app)
 }
 
 fn harden_autostart_entry(app: &tauri::AppHandle) {
@@ -397,12 +415,18 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
 /// Whether Windows itself holds the entry disabled, from the StartupApproved bytes.
 ///
 /// Task Manager's Startup tab and Settings > Apps > Startup disable an entry by writing a
-/// timestamp into the last eight bytes here; they never delete the Run value. Read the same way
-/// auto-launch reads it, or this would disagree with the `is_enabled` that sent us here: fewer
-/// than eight bytes is not a timestamp, and auto-launch treats that as enabled.
+/// timestamp into the last eight bytes here; they never delete the Run value. The state lives in
+/// the FIRST byte though: 02 for enabled, 03 for disabled, and 06 for enabled again after the
+/// user switched it back on. Only 02 leaves the trailing bytes zero, so reading them, as
+/// auto-launch does, calls every re-enabled entry disabled and never recovers.
+///
+/// An absent or truncated value is not a state Windows recorded, and it starts such an entry.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn startup_approved_disabled(bytes: &[u8]) -> bool {
-    bytes.len() >= 8 && !bytes.iter().rev().take(8).all(|byte| *byte == 0)
+    match bytes.first() {
+        Some(0x02) | Some(0x06) | None => false,
+        Some(_) => true,
+    }
 }
 
 /// Restore a *deleted* entry, never a disabled one.
@@ -635,8 +659,7 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return;
     }
-    let autolaunch = app.autolaunch();
-    if autolaunch.is_enabled().unwrap_or(false) {
+    if autostart_enabled(app).unwrap_or(false) {
         // Adopt an entry made before this install kept a record, so the first thing that
         // deletes it can be undone rather than being the one loss that teaches us to care.
         if stored_launch_at_login_preference(app).is_none() {
@@ -645,7 +668,7 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     } else if !restore_missing_autostart_entry(app) {
         return;
     }
-    if autolaunch.enable().is_ok() {
+    if app.autolaunch().enable().is_ok() {
         harden_autostart_entry(app);
     }
 }
@@ -2068,9 +2091,9 @@ mod tests {
         assert!(!should_restore_autostart_entry(Some(true), true, false));
     }
 
-    /// Read the same bytes auto-launch reads, or a restore would fight the `is_enabled` it follows.
+    /// The state is the first byte, not the trailing timestamp.
     #[test]
-    fn startup_approved_bytes_are_read_the_way_auto_launch_reads_them() {
+    fn startup_approved_bytes_are_read_from_the_state_byte() {
         // What auto-launch's own enable() writes: a 0x02 lead and eight zero bytes after it.
         assert!(!startup_approved_disabled(&[
             0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -2079,9 +2102,26 @@ mod tests {
         assert!(startup_approved_disabled(&[
             0x03, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
         ]));
-        // Too short to carry a timestamp, which auto-launch counts as enabled.
+        // Switched back on: 0x06, and the timestamp stays. Reading the trailing bytes calls
+        // this disabled, which is how a user who toggled the entry twice lost the setting.
+        assert!(!startup_approved_disabled(&[
+            0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
+        ]));
+        // No state byte at all is no state Windows recorded, and it starts such an entry.
         assert!(!startup_approved_disabled(&[0x02, 0, 0, 0]));
         assert!(!startup_approved_disabled(&[]));
+    }
+
+    /// A re-enabled entry is present and on, so it is adopted and never restored over.
+    #[test]
+    fn a_re_enabled_entry_is_not_treated_as_deleted() {
+        let re_enabled = [
+            0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01,
+        ];
+        let disabled = startup_approved_disabled(&re_enabled);
+
+        assert!(!disabled);
+        assert!(!should_restore_autostart_entry(Some(true), true, disabled));
     }
 
     #[test]
