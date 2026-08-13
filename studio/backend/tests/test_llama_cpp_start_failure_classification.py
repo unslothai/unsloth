@@ -1542,6 +1542,18 @@ class TestRejectedArguments:
         assert "enough memory" in msg.lower()
         assert "argument" not in msg.lower()
 
+    def test_a_huge_line_before_the_error_is_still_cheap(self):
+        # The argument scan is bounded because _drain_stdout keeps an unterminated
+        # line whole, and two full scans of one over the whole capture put the
+        # classifier past its budget.
+        import time
+
+        out = "x" * 10_000_000 + "\nerror: invalid argument: --tempp"
+        start = time.perf_counter()
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert time.perf_counter() - start < 0.2
+        assert "--tempp" in msg
+
     def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
         # "invalid argument" as an errno string (EINVAL) is not llama.cpp's
         # argument parser, and the anchored "error: invalid argument:" prefix is

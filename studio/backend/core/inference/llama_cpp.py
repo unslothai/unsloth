@@ -483,6 +483,10 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
+# How far back to look for llama.cpp's argument-parsing error. It prints one and
+# exits, so it is always at the end; generous enough to survive a usage hint
+# printed after it, small enough that a 10 MB unterminated line stays cheap.
+_ARG_ERROR_SCAN_CHARS = 64 * 1024
 # Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired with
 # an action verb. Sentence-anchored: mid-sentence the same words are prose that names
 # a tool ("The API I should invoke is foo() because ..."), and suppressing that loses
@@ -10352,7 +10356,12 @@ class LlamaCppBackend:
         # difference matters to the reader: an unknown flag is a typo or a flag
         # this build does not have, while a rejected VALUE is the right flag used
         # wrongly. Both are otherwise diagnosed as an invalid GGUF or an OOM.
-        unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", output or "", re.IGNORECASE)
+        # Bounded, unlike the branches above: llama.cpp prints this and exits, so it
+        # is always near the end, and _drain_stdout keeps an unterminated line whole.
+        # Two full scans of a 10 MB single line put the whole classifier over its
+        # 200 ms budget (test_a_huge_unterminated_line_is_cheap).
+        arg_tail = (output or "")[-_ARG_ERROR_SCAN_CHARS:]
+        unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", arg_tail, re.IGNORECASE)
         if unknown_arg:
             # Both owners in one sentence, because nothing reaching here says which
             # one it was: Unsloth emits its own flags conditionally on the capability
@@ -10368,7 +10377,7 @@ class LlamaCppBackend:
 
         bad_arg_value = re.search(
             r'error while handling argument "([^"]+)":\s*([^\r\n]*)',
-            output or "",
+            arg_tail,
             re.IGNORECASE,
         )
         if bad_arg_value:
