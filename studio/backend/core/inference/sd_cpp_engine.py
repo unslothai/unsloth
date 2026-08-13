@@ -233,24 +233,34 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
-# Identity verdicts, keyed by the file itself (path + mtime + size) rather than the path alone, so
-# replacing a binary in place re-probes it while a rebuild elsewhere on PATH is unaffected. Bounded:
-# a Studio session sees a handful of candidates, and a runaway key set would only ever come from a
-# path being rewritten under us, which is exactly the case that must not be served from here.
-_IDENTITY_MEMO: dict[tuple[str, int, int, int], bool] = {}
+# Identity verdicts, keyed by the file itself rather than by the path alone, so replacing a binary
+# in place re-probes it while a rebuild elsewhere on PATH is unaffected. Bounded: a Studio session
+# sees a handful of candidates, and a runaway key set would only ever come from a path being
+# rewritten under us, which is exactly the case that must not be served from here.
+_IDENTITY_MEMO: dict[tuple[str, int, int, int], tuple[bool, float]] = {}
 _IDENTITY_MEMO_LOCK = threading.Lock()
 _IDENTITY_MEMO_MAX = 32
+# How long a verdict may answer for. The key catches the replacements it can SEE, but no stat tuple
+# is a content hash: on Windows ``st_ctime`` is the CREATION time, which an in-place overwrite
+# preserves, so a same-sized write that also restores mtime is invisible to it. Hashing the file on
+# every lookup would trade the exec this memo exists to avoid for a read of the whole binary, on a
+# path walked for every load. A short life is the cheaper guarantee and it is not platform-specific:
+# whatever the key misses, and whatever nobody has thought of, expires within a minute. Long enough
+# for its actual job, which is the several resolutions inside one load sequence.
+_IDENTITY_MEMO_TTL_S = 60.0
 
 
 def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
-    """A cache key that changes whenever ``binary``'s CONTENT could have, or None when it cannot be
-    read -- an unreadable candidate is never memoized, so a file that appears later is probed.
+    """A cache key that changes whenever ``binary``'s content is SEEN to change, or None when it
+    cannot be read -- an unreadable candidate is never memoized, so a file that appears later is
+    probed.
 
     ``st_ctime`` as well as ``st_mtime``: metadata-preserving copies (``cp -p``, ``shutil.copy2``,
     an archive carrying source timestamps) restore the modification time of the file they replace,
-    so a same-sized replacement is otherwise indistinguishable from the binary it overwrote. The
-    inode change time is not restorable that way, and on Windows it stands in for the creation
-    time, which a replacement changes too."""
+    so on POSIX a same-sized replacement is otherwise indistinguishable from the binary it
+    overwrote, and the inode change time is not restorable that way. It is NOT a content revision
+    on Windows, where the field is the creation time and survives an in-place overwrite -- hence
+    the TTL above, which is what actually bounds a stale verdict."""
     try:
         st = os.stat(binary)
     except OSError:
@@ -297,10 +307,14 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
     """
     key = _identity_key(binary)
     if key is not None:
+        now = time.monotonic()
         with _IDENTITY_MEMO_LOCK:
             cached = _IDENTITY_MEMO.get(key)
+            if cached is not None and now - cached[1] > _IDENTITY_MEMO_TTL_S:
+                _IDENTITY_MEMO.pop(key, None)
+                cached = None
         if cached is not None:
-            return cached
+            return cached[0]
     returncode = None
     try:
         result = subprocess.run(
@@ -326,7 +340,7 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
         with _IDENTITY_MEMO_LOCK:
             if len(_IDENTITY_MEMO) >= _IDENTITY_MEMO_MAX:
                 _IDENTITY_MEMO.clear()
-            _IDENTITY_MEMO[key] = identified
+            _IDENTITY_MEMO[key] = (identified, time.monotonic())
     return identified
 
 

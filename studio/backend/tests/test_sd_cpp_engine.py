@@ -314,6 +314,43 @@ def test_identity_probe_memoizes_an_identifying_build_that_exits_nonzero(tmp_pat
     assert len(runs) == 1
 
 
+def test_identity_verdict_expires(tmp_path, monkeypatch):
+    # No stat tuple is a content hash. On Windows st_ctime is the CREATION time, which an in-place
+    # overwrite preserves, so a same-sized write that also restores mtime leaves the whole key
+    # unchanged. Hashing the binary on every lookup would cost a full read on a path walked for
+    # every load; a short life bounds that staleness instead, and bounds whatever else the key
+    # cannot see.
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    runs = []
+
+    def _reject(cmd, **_kwargs):
+        runs.append(cmd)
+        return types.SimpleNamespace(stdout = "Find & replace\n", stderr = "", returncode = 0)
+
+    monkeypatch.setattr(eng.subprocess, "run", _reject)
+    assert find_sd_cpp_binary() is None
+    assert find_sd_cpp_binary() is None
+    assert len(runs) == 1  # inside the window, the verdict answers
+
+    clock = [time.monotonic() + eng._IDENTITY_MEMO_TTL_S + 1]
+    monkeypatch.setattr(eng.time, "monotonic", lambda: clock[0])
+
+    def _accept(cmd, **_kwargs):
+        runs.append(cmd)
+        return types.SimpleNamespace(
+            stdout = "stable-diffusion.cpp version unknown\n", stderr = "", returncode = 0
+        )
+
+    monkeypatch.setattr(eng.subprocess, "run", _accept)
+    # Past the window the same unchanged file is probed again, so a replacement the key could not
+    # see is picked up rather than being answered from a verdict about the binary it replaced.
+    assert find_sd_cpp_binary() == str(candidate)
+    assert len(runs) == 2
+
+
 def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypatch):
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
@@ -793,9 +830,9 @@ def test_native_generation_timeout_matches_the_ui_settle_window():
 
     assert NATIVE_GENERATION_TIMEOUT_S == 6 * 60 * 60
     for fn in (SdCppEngine.generate, SdCppEngine.upscale):
-        assert (
-            inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S
-        ), fn.__name__
+        assert inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S, (
+            fn.__name__
+        )
     # The resident-server path shares the same ceiling, applied per request (see test_server_generate_splits_batches_above_server_limit).
     assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S
 

@@ -303,6 +303,23 @@ def help_text_supports_minimax_h3(help_text: str) -> bool:
     return _H3_HELP_MARKER in help_text
 
 
+def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
+    """Both of ``ensure_h3_sd_cpp_binary``'s questions against a live binary, on ONE ``--help``.
+
+    The capability marker cannot stand alone here. ``--ref-video`` is a plain option name that
+    unrelated reference-video tools expose too, so a caller re-checking only capability would
+    accept a program the gate itself would have refused on identity -- the difference between
+    "an sd.cpp build too old for H3" and "not sd.cpp at all" (#8507).
+
+    Same conservative default as ``sd_cpp_supports_minimax_h3``: an unreadable ``--help`` is
+    "could not tell", and the caller's own ``version()`` gate already refuses a binary that will
+    not run."""
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return True
+    return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
+
+
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     """True unless ``binary`` demonstrably enumerates the CPU ggml device and nothing else.
 

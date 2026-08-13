@@ -266,6 +266,45 @@ def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
 
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
+def test_h3_revet_checks_identity_not_just_the_h3_marker(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """The post-download re-vet asks both of the preflight's questions, not only capability.
+
+    --ref-video is a plain option name that unrelated reference-video tools expose too, so a swap
+    to one of those would clear a marker-only re-check and then be recorded by _sd_cli_identity as
+    the vetted build every later generation compares against."""
+    from core.inference import sd_cpp_backend
+
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+
+    swapped = {"done": False}
+    real_probe = sd_cpp_backend._sd_cpp_probe_output
+
+    def _probe(binary, *args):
+        # Not sd.cpp, but it does carry the H3 marker -- capability alone would wave it through.
+        if args == ("--help",) and swapped["done"]:
+            return "reference-video-cli 2.1\n  --ref-video PATH   reference clip\n"
+        return real_probe(binary, *args)
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    with pytest.raises(RuntimeError, match = "changed while this model was loading"):
+        host.run()
+    assert len(host.downloads) == 4
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
 def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label, backend, device):
     """The preflight can download and extract the sd-cli prebuilt and takes no cancel_event, so a
     load cancelled before its worker started must not reach it."""

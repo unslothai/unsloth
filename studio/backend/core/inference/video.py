@@ -1627,7 +1627,7 @@ class VideoBackend:
         # checked for H3 support or the selected accelerator -- after which every generation
         # compares the replacement against itself and lets it through. Inside the claim no install
         # can start, so the build that answers --help here is the build whose identity is stored.
-        from .sd_cpp_backend import _tree_reader, sd_cpp_supports_minimax_h3
+        from .sd_cpp_backend import _tree_reader, sd_cpp_binary_vets_for_h3
         from .sd_cpp_engine import is_managed_binary
 
         with _tree_reader(binary, cancel_event, VIDEO_CANCELLED_MSG):
@@ -1642,10 +1642,15 @@ class VideoBackend:
             # download -- long enough for a user to rebuild or repoint their own SD_CLI_PATH copy,
             # after which _sd_cli_identity below would record the replacement as the vetted build
             # and every later generation would compare it against itself.
-            if not sd_cpp_supports_minimax_h3(binary):
+            # Identity AND capability, the same pair the preflight applied. Capability alone is
+            # not enough: --ref-video is a plain option name unrelated reference-video tools also
+            # expose, so a swap to one of those would clear a marker-only re-check and then be
+            # recorded as the vetted identity.
+            if not sd_cpp_binary_vets_for_h3(binary):
                 raise RuntimeError(
                     "The stable-diffusion.cpp binary changed while this model was loading, and the "
-                    "one now at that path does not support MiniMax-H3. Try the load again."
+                    "one now at that path is not an sd.cpp build with MiniMax-H3 support. Try the "
+                    "load again."
                 )
             # And re-ask the question native_device was decided on. H3 support alone is not
             # enough: a replacement can be H3-capable and still be a different accelerator, and
