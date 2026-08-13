@@ -58,6 +58,44 @@ else
     bad "the pinned uv version is a single constant"
 fi
 
+# All four installers must pin the same uv, or which one a user ends up with depends on which
+# script reached the machine first.
+_pinned_versions=$(
+    grep -hoE '(UV_PINNED_VERSION|_SETUP_UV_PINNED_VERSION)="[0-9.]+"' \
+        "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh"
+    grep -hoE '\$UvPinnedVersion += +"[0-9.]+"' \
+        "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"
+)
+_pinned_distinct=$(printf '%s\n' "$_pinned_versions" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -u)
+_pinned_count=$(printf '%s\n' "$_pinned_distinct" | grep -c .)
+if [ "$(printf '%s\n' "$_pinned_versions" | grep -c .)" = "4" ] && [ "$_pinned_count" = "1" ]; then
+    ok "all four installers pin the same uv ($_pinned_distinct)"
+else
+    bad "the pinned uv version disagrees across installers: $(printf '%s' "$_pinned_distinct" | tr '\n' ' ')"
+fi
+
+# The pin has to clear every version floor in the tree. Before the pin, astral's endpoint always
+# delivered the newest uv, so raising a floor was safe on its own; now a floor above the pin would
+# install a uv the same script immediately judges too old. This is the check that catches it.
+_floors=$(
+    grep -hoE '^UV_MIN_VERSION="[0-9.]+"|^UV_OFFLINE_MIN_VERSION="[0-9.]+"' "$INSTALL_SH"
+    grep -hoE '\$UvMinVersion += +"[0-9.]+"' "$SCRIPT_DIR/../../install.ps1"
+)
+_floor_bad=0
+for _floor in $(printf '%s\n' "$_floors" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?'); do
+    # sort -V: the lower of the two sorts first, so the pin must not be it unless they are equal.
+    _lowest=$(printf '%s\n%s\n' "$_floor" "$_pinned_distinct" | sort -V | head -1)
+    if [ "$_lowest" != "$_floor" ] && [ "$_floor" != "$_pinned_distinct" ]; then
+        echo "      floor $_floor is above the pin $_pinned_distinct"
+        _floor_bad=$((_floor_bad + 1))
+    fi
+done
+if [ "$_floor_bad" = 0 ]; then
+    ok "the pinned uv clears every version floor in the tree"
+else
+    bad "$_floor_bad version floor(s) sit above the pinned uv"
+fi
+
 # astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
 # default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
 # configured an XDG location, where no later shell looks for it.
