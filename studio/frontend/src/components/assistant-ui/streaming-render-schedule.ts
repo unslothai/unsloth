@@ -5,14 +5,29 @@ import remend from "remend";
 import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 
 const ROLLBACK_BLOCKS = 8;
-const MULTILINE_KATEX_CONTEXT = "$$\n$$\n\n";
+// Balanced marker prefixes preserve the whole-document facts that remend uses
+// to decide how an incomplete tail should close, without changing parity.
+const MULTILINE_KATEX_CONTEXT = "$$\nx\n$$\n\n";
+const BOLD_CONTEXT = "**x**\n\n";
+const SINGLE_ASTERISK_CONTEXT = "*x*\n\n";
+const SINGLE_UNDERSCORE_CONTEXT = "_x_\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
+const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
+const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
 type RepairParity = {
   bold: boolean;
+  boldCandidate: boolean;
   boldFence: boolean;
   doubleUnderscore: boolean;
+  emphasisDisplayMath: boolean;
+  emphasisInlineMath: boolean;
+  singleAsterisk: boolean;
+  singleAsteriskCandidate: boolean;
+  singleUnderscore: boolean;
+  singleUnderscoreCandidate: boolean;
+  tripleAsterisk: boolean;
   displayMathInlineCode: boolean;
   inlineCode: boolean;
   inlineMathInlineCode: boolean;
@@ -23,8 +38,16 @@ type RepairParity = {
 
 const createRepairParity = (): RepairParity => ({
   bold: false,
+  boldCandidate: false,
   boldFence: false,
   doubleUnderscore: false,
+  emphasisDisplayMath: false,
+  emphasisInlineMath: false,
+  singleAsterisk: false,
+  singleAsteriskCandidate: false,
+  singleUnderscore: false,
+  singleUnderscoreCandidate: false,
+  tripleAsterisk: false,
   displayMathInlineCode: false,
   inlineCode: false,
   inlineMathInlineCode: false,
@@ -38,10 +61,215 @@ const isTripleBacktick = (text: string, index: number): boolean =>
   (index >= 1 && text.slice(index - 1, index + 2) === "```") ||
   text.slice(index, index + 3) === "```";
 
+const isWordCharacter = (character: string | undefined): boolean =>
+  character !== undefined && WORD_CHARACTER_RE.test(character);
+
+function findLinkDestinationStart(text: string, index: number): number {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const character = text[cursor];
+    if (character === ")" || character === "\n") {
+      return -1;
+    }
+    if (character === "(") {
+      return cursor > 0 && text[cursor - 1] === "]" ? cursor : -1;
+    }
+  }
+  return -1;
+}
+
+function hasLinkDestinationEnd(text: string, index: number): boolean {
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    if (text[cursor] === ")") {
+      return true;
+    }
+    if (text[cursor] === "\n") {
+      return false;
+    }
+  }
+  return false;
+}
+
+const isWithinLinkDestination = (text: string, index: number): boolean =>
+  findLinkDestinationStart(text, index) >= 0 &&
+  hasLinkDestinationEnd(text, index);
+
+function isWithinHtmlTag(text: string, index: number): boolean {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (text[cursor] === ">") {
+      return false;
+    }
+    if (text[cursor] === "<") {
+      return HTML_TAG_START_RE.test(text[cursor + 1] ?? "");
+    }
+    if (text[cursor] === "\n") {
+      return false;
+    }
+  }
+  return false;
+}
+
+function updateEmphasisMathParity(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): number {
+  if (text[index] === "\\") {
+    return index + 1;
+  }
+  if (text[index] !== "$") {
+    return index;
+  }
+  if (text[index + 1] === "$") {
+    parity.emphasisDisplayMath = !parity.emphasisDisplayMath;
+    parity.emphasisInlineMath = false;
+    return index + 1;
+  }
+  if (!parity.emphasisDisplayMath) {
+    parity.emphasisInlineMath = !parity.emphasisInlineMath;
+  }
+  return index;
+}
+
+function countsAsSingleAsterisk(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): boolean {
+  const previous = text[index - 1];
+  const next = text[index + 1];
+  if (
+    previous === "\\" ||
+    parity.emphasisDisplayMath ||
+    parity.emphasisInlineMath
+  ) {
+    return false;
+  }
+  if (previous !== "*" && next === "*") {
+    return text[index + 2] === "*";
+  }
+  if (
+    previous === "*" ||
+    (isWordCharacter(previous) && isWordCharacter(next))
+  ) {
+    return false;
+  }
+  const previousIsBoundary =
+    previous === undefined ||
+    previous === " " ||
+    previous === "\t" ||
+    previous === "\n";
+  const nextIsBoundary =
+    next === undefined || next === " " || next === "\t" || next === "\n";
+  return !(previousIsBoundary && nextIsBoundary);
+}
+
+function isSingleAsteriskCandidate(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): boolean {
+  const previous = text[index - 1];
+  const next = text[index + 1];
+  if (
+    previous === "\\" ||
+    previous === "*" ||
+    next === "*" ||
+    parity.emphasisDisplayMath ||
+    parity.emphasisInlineMath
+  ) {
+    return false;
+  }
+  const previousIsBoundary =
+    previous === undefined ||
+    previous === " " ||
+    previous === "\t" ||
+    previous === "\n";
+  const nextIsBoundary =
+    next === undefined || next === " " || next === "\t" || next === "\n";
+  return !(
+    (previousIsBoundary && nextIsBoundary) ||
+    (isWordCharacter(previous) && isWordCharacter(next))
+  );
+}
+
+function countsAsSingleUnderscore(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): boolean {
+  const previous = text[index - 1];
+  const next = text[index + 1];
+  return !(
+    previous === "\\" ||
+    parity.emphasisDisplayMath ||
+    parity.emphasisInlineMath ||
+    isWithinLinkDestination(text, index) ||
+    isWithinHtmlTag(text, index) ||
+    previous === "_" ||
+    next === "_" ||
+    (isWordCharacter(previous) && isWordCharacter(next))
+  );
+}
+
+function isSingleUnderscoreCandidate(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): boolean {
+  const previous = text[index - 1];
+  const next = text[index + 1];
+  return !(
+    previous === "\\" ||
+    previous === "_" ||
+    next === "_" ||
+    parity.emphasisDisplayMath ||
+    parity.emphasisInlineMath ||
+    isWithinLinkDestination(text, index) ||
+    (isWordCharacter(previous) && isWordCharacter(next))
+  );
+}
+
 // Remend decides these closers from marker parity over the whole document.
 // A retained prefix must therefore end with neutral parity, otherwise repairing
 // the remaining tail alone could add or omit a closer that a full repair would
 // handle differently.
+function updateAsteriskParity(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): number {
+  if (isSingleAsteriskCandidate(parity, text, index)) {
+    parity.singleAsteriskCandidate = true;
+  }
+  if (text[index + 1] === "*") {
+    parity.boldCandidate = true;
+    parity.bold = !parity.bold;
+    return index + 1;
+  }
+  if (countsAsSingleAsterisk(parity, text, index)) {
+    parity.singleAsterisk = !parity.singleAsterisk;
+  }
+  return index;
+}
+
+function updateUnderscoreParity(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): number {
+  if (isSingleUnderscoreCandidate(parity, text, index)) {
+    parity.singleUnderscoreCandidate = true;
+  }
+  if (text[index + 1] === "_") {
+    parity.doubleUnderscore = !parity.doubleUnderscore;
+    return index + 1;
+  }
+  if (countsAsSingleUnderscore(parity, text, index)) {
+    parity.singleUnderscore = !parity.singleUnderscore;
+  }
+  return index;
+}
+
 function updateEmphasisParity(parity: RepairParity, text: string): void {
   for (let index = 0; index < text.length; index += 1) {
     if (text.slice(index, index + 3) === "```") {
@@ -49,16 +277,41 @@ function updateEmphasisParity(parity: RepairParity, text: string): void {
       index += 2;
       continue;
     }
-    if (!parity.boldFence && text.slice(index, index + 2) === "**") {
-      parity.bold = !parity.bold;
-      index += 1;
+    if (parity.boldFence) {
       continue;
     }
-    if (!parity.boldFence && text.slice(index, index + 2) === "__") {
-      parity.doubleUnderscore = !parity.doubleUnderscore;
-      index += 1;
+    index = updateEmphasisMathParity(parity, text, index);
+    if (text[index] === "*") {
+      index = updateAsteriskParity(parity, text, index);
+      continue;
+    }
+    if (text[index] === "_") {
+      index = updateUnderscoreParity(parity, text, index);
     }
   }
+}
+
+function updateTripleAsteriskParity(parity: RepairParity, text: string): void {
+  let inFence = false;
+  let runLength = 0;
+  const finishRun = () => {
+    if (Math.floor(runLength / 3) % 2 === 1) {
+      parity.tripleAsterisk = !parity.tripleAsterisk;
+    }
+    runLength = 0;
+  };
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.slice(index, index + 3) === "```") {
+      finishRun();
+      inFence = !inFence;
+      index += 2;
+    } else if (!inFence && text[index] === "*") {
+      runLength += 1;
+    } else {
+      finishRun();
+    }
+  }
+  finishRun();
 }
 
 function updateInlineCodeParity(parity: RepairParity, text: string): void {
@@ -120,6 +373,7 @@ function updateInlineMathParity(parity: RepairParity, text: string): void {
 
 function updateRepairParity(parity: RepairParity, text: string): void {
   updateEmphasisParity(parity, text);
+  updateTripleAsteriskParity(parity, text);
   updateInlineCodeParity(parity, text);
   updateStrikethroughParity(parity, text);
   updateDisplayMathParity(parity, text);
@@ -127,7 +381,22 @@ function updateRepairParity(parity: RepairParity, text: string): void {
 }
 
 const hasNeutralRepairParity = (parity: RepairParity): boolean =>
-  Object.values(parity).every((value) => !value);
+  ![
+    parity.bold,
+    parity.boldFence,
+    parity.doubleUnderscore,
+    parity.emphasisDisplayMath,
+    parity.emphasisInlineMath,
+    parity.singleAsterisk,
+    parity.singleUnderscore,
+    parity.tripleAsterisk,
+    parity.displayMathInlineCode,
+    parity.inlineCode,
+    parity.inlineMathInlineCode,
+    parity.strikethrough,
+    parity.displayMath,
+    parity.inlineMath,
+  ].includes(true);
 
 export type IncrementalMarkdownRender = {
   markdown: string;
@@ -143,6 +412,9 @@ export class IncrementalMarkdownCache {
   private tail = "";
   private committedBlocks: string[] = [];
   private hasMultilineKatexContext = false;
+  private hasBoldContext = false;
+  private hasSingleAsteriskContext = false;
+  private hasSingleUnderscoreContext = false;
   private fullDocumentMode = false;
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
@@ -151,18 +423,36 @@ export class IncrementalMarkdownCache {
   ];
 
   private repairTail(): string {
-    if (!this.hasMultilineKatexContext) {
+    let context = "";
+    if (this.hasBoldContext) {
+      context += BOLD_CONTEXT;
+    }
+    if (this.hasSingleAsteriskContext) {
+      context += SINGLE_ASTERISK_CONTEXT;
+    }
+    if (this.hasSingleUnderscoreContext) {
+      context += SINGLE_UNDERSCORE_CONTEXT;
+    }
+    if (this.hasMultilineKatexContext) {
+      context += MULTILINE_KATEX_CONTEXT;
+    }
+    if (!context) {
       return remend(this.tail);
     }
-    return remend(MULTILINE_KATEX_CONTEXT + this.tail).slice(
-      MULTILINE_KATEX_CONTEXT.length,
-    );
+    return remend(context + this.tail).slice(context.length);
   }
 
-  private renderFullDocument(markdown: string): IncrementalMarkdownRender {
+  private resetIncrementalState(markdown: string): void {
     this.tail = markdown;
     this.committedBlocks = [];
     this.hasMultilineKatexContext = false;
+    this.hasBoldContext = false;
+    this.hasSingleAsteriskContext = false;
+    this.hasSingleUnderscoreContext = false;
+  }
+
+  private renderFullDocument(markdown: string): IncrementalMarkdownRender {
+    this.resetIncrementalState(markdown);
     this.fullDocumentMode = true;
     return {
       markdown: remend(markdown),
@@ -170,20 +460,23 @@ export class IncrementalMarkdownCache {
     };
   }
 
-  update(markdown: string): IncrementalMarkdownRender {
+  private updateTail(markdown: string): void {
     if (markdown.startsWith(this.source)) {
       this.tail += markdown.slice(this.source.length);
     } else {
-      this.tail = markdown;
-      this.committedBlocks = [];
-      this.hasMultilineKatexContext = false;
+      this.resetIncrementalState(markdown);
       this.fullDocumentMode = false;
     }
     this.source = markdown;
+  }
 
+  update(markdown: string): IncrementalMarkdownRender {
     if (this.fullDocumentMode) {
+      this.source = markdown;
       return this.renderFullDocument(markdown);
     }
+
+    this.updateTail(markdown);
 
     const repaired = this.repairTail();
 
@@ -210,6 +503,10 @@ export class IncrementalMarkdownCache {
     let exactLength = 0;
     let commitCount = 0;
     let committedLength = 0;
+    let committedHasBoldCandidate = false;
+    let committedHasSingleAsteriskCandidate = false;
+    let committedHasSingleUnderscoreCandidate = false;
+    let repairBroke = false;
 
     // Remend may synthesize closing syntax at the end of an incomplete tail.
     // Never retain synthetic or mid-string repaired text. Scan forward once,
@@ -217,6 +514,7 @@ export class IncrementalMarkdownCache {
     for (let index = 0; index < candidateCount; index += 1) {
       const block = blocks[index];
       if (!this.tail.startsWith(block, exactLength)) {
+        repairBroke = true;
         break;
       }
       exactLength += block.length;
@@ -224,18 +522,30 @@ export class IncrementalMarkdownCache {
       if (hasNeutralRepairParity(parity)) {
         commitCount = index + 1;
         committedLength = exactLength;
+        committedHasBoldCandidate = parity.boldCandidate;
+        committedHasSingleAsteriskCandidate = parity.singleAsteriskCandidate;
+        committedHasSingleUnderscoreCandidate =
+          parity.singleUnderscoreCandidate;
       }
     }
 
-    // A repair before the rollback window or an unbalanced global marker can
-    // pin every following block behind it. Make that fallback sticky for this
-    // append-only message so later updates pay the normal full-repair cost once,
-    // rather than repeatedly rescanning and walking the same failed prefix.
+    // A mid-string repair can never become a raw prefix on a later append, so
+    // make that fallback sticky. A temporarily unbalanced marker can close in a
+    // later block, so keep its repaired tail live and retry on the next update.
     if (commitCount === 0) {
-      return this.renderFullDocument(markdown);
+      if (repairBroke) {
+        return this.renderFullDocument(markdown);
+      }
+      return {
+        markdown: repaired,
+        parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
+      };
     }
 
     this.committedBlocks.push(...blocks.slice(0, commitCount));
+    this.hasBoldContext ||= committedHasBoldCandidate;
+    this.hasSingleAsteriskContext ||= committedHasSingleAsteriskCandidate;
+    this.hasSingleUnderscoreContext ||= committedHasSingleUnderscoreCandidate;
     const committedText = this.tail.slice(0, committedLength);
     const katex = committedText.indexOf("$$");
     if (katex >= 0 && committedText.indexOf("\n", katex) >= 0) {
