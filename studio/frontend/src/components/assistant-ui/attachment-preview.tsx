@@ -174,7 +174,7 @@ const AttachmentTextDialog: FC<
       source.file ? formatBytes(source.file.size) : null,
       `${lines} ${lines === 1 ? "line" : "lines"}`,
       state.label ? `text extracted from ${state.label}` : null,
-      preview.truncated ? "preview truncated" : null,
+      preview.truncated || state.truncated ? "preview truncated" : null,
     ]
       .filter(Boolean)
       .join(" · ");
@@ -211,7 +211,9 @@ const AttachmentTextDialog: FC<
             <div className="px-4 py-6 text-muted-foreground text-sm">
               {state.status === "error"
                 ? "This file could not be read."
-                : "No readable text in this file."}
+                : state.status === "ready" && state.truncated
+                  ? "No readable text in the part of this file the preview reads."
+                  : "No readable text in this file."}
             </div>
           )}
         </div>

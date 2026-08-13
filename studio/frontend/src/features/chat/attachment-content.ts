@@ -12,6 +12,9 @@ export type AttachmentTextLabel = "PDF" | "DOCX" | "HTML" | "ODS" | "ODT";
 export type AttachmentText = {
   label: AttachmentTextLabel | null;
   text: string;
+  // True when the file was only read up to the preview cap, so the dialog can
+  // say so even if the extracted text ends up short.
+  truncated: boolean;
 };
 
 const AUDIO_ATTACHMENT_RE = /\.(wav|mp3|m4a|ogg|oga|flac|webm|mp4|aac)$/i;
@@ -139,15 +142,25 @@ export async function readAttachmentText(
   contentType: string | undefined,
 ): Promise<AttachmentText> {
   if (isPdfAttachment(name, contentType)) {
-    return { label: "PDF", text: await extractPdfAttachmentText(file) };
+    return {
+      label: "PDF",
+      text: await extractPdfAttachmentText(file),
+      truncated: false,
+    };
   }
   if (isDocxAttachment(name, contentType)) {
-    return { label: "DOCX", text: await extractDocxAttachmentText(file) };
+    return {
+      label: "DOCX",
+      text: await extractDocxAttachmentText(file),
+      truncated: false,
+    };
   }
   if (isHtmlAttachment(name, contentType)) {
+    const { text, truncated } = await readBoundedText(file);
     return {
       label: "HTML",
-      text: extractHtmlAttachmentText(await readBoundedText(file)),
+      text: extractHtmlAttachmentText(text),
+      truncated,
     };
   }
   if (isOpenDocumentAttachment(name, contentType)) {
@@ -156,17 +169,17 @@ export async function readAttachmentText(
       name,
       contentType ?? "",
     );
-    return { label, text };
+    return { label, text, truncated: false };
   }
-  return { label: null, text: await readBoundedText(file) };
+  return { label: null, ...(await readBoundedText(file)) };
 }
 
-function readBoundedText(file: File): Promise<string> {
-  return (
-    file.size > MAX_PREVIEW_TEXT_BYTES
-      ? file.slice(0, MAX_PREVIEW_TEXT_BYTES)
-      : file
-  ).text();
+async function readBoundedText(
+  file: File,
+): Promise<{ text: string; truncated: boolean }> {
+  const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
+  const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
+  return { text: await slice.text(), truncated };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview
@@ -177,13 +190,14 @@ export function parseAttachmentText(raw: string): AttachmentText {
     return {
       label: labelled[1] as AttachmentTextLabel,
       text: raw.slice(labelled[0].length),
+      truncated: false,
     };
   }
   const tagged = raw.match(TAGGED_ATTACHMENT_TEXT_RE);
   if (tagged) {
-    return { label: null, text: tagged[1] };
+    return { label: null, text: tagged[1], truncated: false };
   }
-  return { label: null, text: raw };
+  return { label: null, text: raw, truncated: false };
 }
 
 export function truncateAttachmentPreviewText(text: string): {

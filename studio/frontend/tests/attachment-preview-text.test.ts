@@ -21,14 +21,22 @@ const {
 // so every wrapper the adapters write has to round-trip.
 test("parseAttachmentText unwraps a labelled document header", () => {
   const parsed = parseAttachmentText("[PDF: report.pdf]\nline one\nline two");
-  assert.deepEqual(parsed, { label: "PDF", text: "line one\nline two" });
+  assert.deepEqual(parsed, {
+    label: "PDF",
+    text: "line one\nline two",
+    truncated: false,
+  });
 });
 
 test("parseAttachmentText unwraps the plain text attachment tag", () => {
   const parsed = parseAttachmentText(
     "<attachment name=notes.txt>\nline one\nline two\n</attachment>",
   );
-  assert.deepEqual(parsed, { label: null, text: "line one\nline two" });
+  assert.deepEqual(parsed, {
+    label: null,
+    text: "line one\nline two",
+    truncated: false,
+  });
 });
 
 test("parseAttachmentText keeps text that carries no wrapper", () => {
@@ -36,12 +44,17 @@ test("parseAttachmentText keeps text that carries no wrapper", () => {
   assert.deepEqual(parsed, {
     label: null,
     text: "[not a label] still content",
+    truncated: false,
   });
 });
 
 test("parseAttachmentText keeps a header-like first line inside the body", () => {
   const parsed = parseAttachmentText("[PDF: a.pdf]\n[DOCX: b.docx]\nbody");
-  assert.deepEqual(parsed, { label: "PDF", text: "[DOCX: b.docx]\nbody" });
+  assert.deepEqual(parsed, {
+    label: "PDF",
+    text: "[DOCX: b.docx]\nbody",
+    truncated: false,
+  });
 });
 
 test("truncateAttachmentPreviewText caps very long attachments", () => {
@@ -101,12 +114,13 @@ test("readAttachmentText reads a bounded slice of a large text file", async () =
   const oversized = new File(["a".repeat(2_000_000)], "huge.txt", {
     type: "text/plain",
   });
-  const { label, text } = await readAttachmentText(
+  const { label, text, truncated } = await readAttachmentText(
     oversized,
     oversized.name,
     oversized.type,
   );
   assert.equal(label, null);
+  assert.equal(truncated, true);
   assert.equal(text.length, 1_000_000);
   assert.equal(truncateAttachmentPreviewText(text).truncated, true);
 });
@@ -132,12 +146,13 @@ test("readAttachmentText reads a bounded slice of a large html file", async () =
         type: "text/html",
       },
     );
-    const { label, text } = await readAttachmentText(
+    const { label, text, truncated } = await readAttachmentText(
       oversized,
       oversized.name,
       oversized.type,
     );
     assert.equal(label, "HTML");
+    assert.equal(truncated, true);
     assert.deepEqual(parsed, [1_000_000]);
     assert.equal(text.length <= 1_000_000, true);
   } finally {
@@ -150,4 +165,35 @@ test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment("clip", "audio/webm"), true);
   assert.equal(isAudioAttachment("notes.txt", "text/plain"), false);
   assert.equal(isAudioAttachment(undefined, undefined), false);
+});
+
+// A bounded HTML read can extract almost nothing when the slice ends inside a
+// script block, so the flag, not the text length, is what discloses the cut.
+test("readAttachmentText reports truncation even when the slice extracts no text", async () => {
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = class {
+    parseFromString() {
+      return { querySelectorAll: () => [], body: { textContent: "" } };
+    }
+  };
+
+  try {
+    const oversized = new File(
+      [`<script>${"c".repeat(2_000_000)}`],
+      "big.html",
+      {
+        type: "text/html",
+      },
+    );
+    const { text, truncated } = await readAttachmentText(
+      oversized,
+      oversized.name,
+      oversized.type,
+    );
+    assert.equal(text, "");
+    assert.equal(truncated, true);
+    assert.equal(truncateAttachmentPreviewText(text).truncated, false);
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
 });
