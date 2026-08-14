@@ -9229,7 +9229,9 @@ async def check_transformers_upgrade_route(
     try:
         latest_tier_active = await asyncio.to_thread(
             _offline_guarded,
-            targets,
+            # Every target, not just the load target: latest_tier_active_for resolves a
+            # remote adapter's base itself, so the base is fetched too.
+            tuple(targets),
             latest_tier_active_for,
             load_target,
             request.hf_token,
@@ -9261,9 +9263,12 @@ async def check_transformers_upgrade_route(
         model_name = model_name,
         requires_transformers_upgrade = transformers_upgrade is not None,
         transformers_upgrade = transformers_upgrade,
-        requires_trust_remote_code = bool(requires_trust_remote_code),
-        latest_tier_active = bool(latest_tier_active),
-        forces_16bit = bool(latest_tier_active) or install_only_upgrade,
+        # Already booleans: False, or the preflight's own bool result. Re-wrapping the
+        # custom-code one in bool() reads as the raw-YAML pattern the GGUF consistency
+        # guard forbids, and it was never needed here.
+        requires_trust_remote_code = requires_trust_remote_code,
+        latest_tier_active = latest_tier_active,
+        forces_16bit = latest_tier_active or install_only_upgrade,
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 
