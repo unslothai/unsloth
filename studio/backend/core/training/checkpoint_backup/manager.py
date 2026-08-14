@@ -31,13 +31,15 @@ class CheckpointBackupManager:
 
     def __init__(self, config: CheckpointBackupConfig, output_root: Path,
                  transport: BackupTransport, *, checkpoint_validator: Callable[[Path], bool],
-                 max_attempts: int = 3, backoff_seconds: float = 1.0) -> None:
+                 save_steps: int = 1, max_attempts: int = 3,
+                 backoff_seconds: float = 1.0) -> None:
         self.config = config
         self.output_root = output_root.resolve()
         self.transport = transport
         self.checkpoint_validator = checkpoint_validator
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
+        self.effective_backup_steps = config.effective_backup_steps(save_steps)
         self.progress = BackupProgressStore()
         self._pending: dict[str, _Upload] = {}
         self._active: dict[str, Path] = {}
@@ -48,7 +50,7 @@ class CheckpointBackupManager:
         self._thread.start()
 
     def on_checkpoint_saved(self, run_id: str, global_step: int, checkpoint_path: Path) -> bool:
-        if not self.config.enabled or global_step % self.config.interval_steps:
+        if not self.config.enabled or global_step % self.effective_backup_steps:
             return False
         path = Path(checkpoint_path).resolve()
         try:

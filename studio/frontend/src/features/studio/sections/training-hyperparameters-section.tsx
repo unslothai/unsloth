@@ -276,6 +276,7 @@ export function TrainingHyperparametersSection({
               }
             >
               <Input
+                id="training-save-steps"
                 type="number"
                 step="0.001"
                 value={store.weightDecay}

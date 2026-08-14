@@ -18,7 +18,7 @@ class CheckpointBackupConfig(BaseModel):
     provider: Literal["huggingface"] = "huggingface"
     repo_id: Optional[str] = None
     private: bool = True
-    interval_steps: int = Field(1, gt = 0)
+    interval_checkpoints: int = Field(1, gt = 0, le = 1000)
     strategy: Literal["latest"] = "latest"
     keep_remote: int = Field(1, ge = 1)
     upload_on_stop: bool = True
@@ -50,10 +50,9 @@ class CheckpointBackupConfig(BaseModel):
             raise ValueError(
                 "Interval-based backup requires local checkpoint save steps greater than zero."
             )
-        if self.interval_steps % save_steps:
-            examples = ", ".join(str(save_steps * n) for n in range(1, 4))
-            raise ValueError(
-                "Backup interval must be a multiple of local checkpoint save steps. "
-                f"With save_steps={save_steps}, use {examples}, ..."
-            )
         return self
+
+    def effective_backup_steps(self, save_steps: int) -> int:
+        """Resolve the portable checkpoint multiplier for a training run."""
+        self.validate_for_save_steps(save_steps)
+        return save_steps * self.interval_checkpoints

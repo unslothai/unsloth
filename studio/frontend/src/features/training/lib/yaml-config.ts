@@ -59,24 +59,18 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   }
   if (rawBackup && typeof rawBackup === "object") {
     const backup = rawBackup as Record<string, unknown>;
-    const enabled = backup.enabled === true;
     const saveSteps = Number(trainingObj.save_steps ?? 0);
-    const interval = Number(backup.interval_steps ?? 0);
-    if (enabled && (!Number.isInteger(saveSteps) || saveSteps <= 0)) {
-      throw new Error(
-        "Interval-based backup requires local checkpoint save steps greater than zero.",
-      );
+    if (!Object.hasOwn(backup, "interval_checkpoints")) {
+      const legacySteps = Number(backup.interval_steps);
+      if (Number.isFinite(legacySteps) && legacySteps > 0 && saveSteps > 0) {
+        // Keep a fractional value when the legacy interval was not an exact
+        // multiple. The UI will select Custom and ask the user to correct it.
+        backup.interval_checkpoints = legacySteps / saveSteps;
+      } else {
+        backup.interval_checkpoints = 1;
+      }
     }
-    if (
-      enabled &&
-      (!Number.isInteger(interval) ||
-        interval <= 0 ||
-        interval % saveSteps !== 0)
-    ) {
-      throw new Error(
-        `Backup interval must be a multiple of local checkpoint save steps. With save_steps=${saveSteps}, use ${saveSteps}, ${saveSteps * 2}, ${saveSteps * 3}, ...`,
-      );
-    }
+    delete backup.interval_steps;
   }
 
   return {
@@ -156,7 +150,7 @@ export function serializeConfigToYaml(
       provider: checkpointBackup.provider,
       repo_id: checkpointBackup.repoId,
       private: checkpointBackup.private,
-      interval_steps: checkpointBackup.intervalSteps,
+      interval_checkpoints: checkpointBackup.intervalCheckpoints,
       strategy: checkpointBackup.strategy,
       keep_remote: checkpointBackup.keepRemote,
       upload_on_stop: checkpointBackup.uploadOnStop,
