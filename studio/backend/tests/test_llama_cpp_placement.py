@@ -513,6 +513,27 @@ def test_auto_keeps_embedded_hybrid_mtp_without_a_gpu(tmp_path):
     assert backend.spec_fallback_reason is None
 
 
+def test_auto_keeps_embedded_hybrid_mtp_when_the_device_selection_is_cpu(tmp_path):
+    # A GPU is probed, but the extras take the model off it. llama.cpp then runs
+    # on the CPU whatever the fitter decides, so nothing is partially offloaded
+    # and the rollback copies cost no VRAM.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        extra_args = ["--device", "none"],
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert "draft-mtp" in cmd[cmd.index("--spec-type") + 1]
+    assert backend.spec_fallback_reason is None
+
+
 def test_partial_offload_stand_down_records_the_draft_depth_it_decided_at(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 

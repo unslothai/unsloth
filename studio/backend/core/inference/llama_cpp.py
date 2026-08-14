@@ -5653,7 +5653,9 @@ class LlamaCppBackend:
 
         A concrete layer count owns placement even when ``--fit on`` is present.
         Otherwise ``-1`` (or an omitted count) is partial only while the fitter may
-        lower it. Zero is CPU-only rather than partial offload, and keeps CPU MTP.
+        lower it. Zero is CPU-only rather than partial offload, and keeps CPU MTP,
+        and so is a ``--device`` selection naming no GPU: llama.cpp then runs the
+        model on the CPU whatever the layer count and the fitter say.
         """
         n_layers = self.n_layers
         if not n_layers:
@@ -5663,6 +5665,8 @@ class LlamaCppBackend:
         except ValueError:
             return False
         source_env = os.environ if env is None else env
+        if _device_selection_is_cpu(args, source_env):
+            return False
         if requested is None:
             raw = source_env.get("LLAMA_ARG_N_GPU_LAYERS")
             if raw is not None and raw.strip():
