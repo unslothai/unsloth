@@ -751,6 +751,39 @@ function buildThreadScopedSnapshot(
   ) {
     settings.deepResearchEnabled = true;
   }
+  // Same again for the two pills a tool-less model clamps off in the store
+  // (resolveToolsEnabledOnLoad) without touching the snapshot. The clamp is the model's,
+  // not the user's, so it must not erase what the chat had stored; the condition is each
+  // pill's own `disabled` rule from the composer, which is exactly when the user could
+  // not have turned it off themselves.
+  if (threadId === threadScopedSettingsThreadId) {
+    const live = useChatRuntimeStore.getState();
+    const modelLoaded = !!live.params.checkpoint && !live.modelLoading;
+    const clampedOff = (
+      key: "toolsEnabled" | "codeToolsEnabled",
+      capable: boolean,
+    ) =>
+      modelLoaded &&
+      !capable &&
+      activeThreadScopedSettings?.[key] === true &&
+      settings[key] !== true;
+    if (
+      clampedOff(
+        "toolsEnabled",
+        live.supportsTools || live.supportsBuiltinWebSearch,
+      )
+    ) {
+      settings.toolsEnabled = true;
+    }
+    if (
+      clampedOff(
+        "codeToolsEnabled",
+        live.supportsTools || live.supportsBuiltinCodeExecution,
+      )
+    ) {
+      settings.codeToolsEnabled = true;
+    }
+  }
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -767,6 +800,10 @@ function sendThreadScopedSettingsBeacon(
   snapshot: ThreadScopedSettings | null,
 ): void {
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  // The beacon carries the newest values but skips the chain, so a write still queued
+  // behind an in-flight one would go out afterwards and put the older snapshot back.
+  // Taking the newest ticket makes those queued writes stand down.
+  takeThreadSettingsWriteTicket(threadId);
   void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -779,6 +816,15 @@ function sendThreadScopedSettingsBeacon(
 // unordered writes do not merge into the newer one, they pick a winner: a slow first
 // request landing after a fast second restores the settings the user just moved away from.
 const threadSettingsWriteChains = new Map<string, Promise<void>>();
+// Newest snapshot issued per thread, so a write that is still waiting its turn can tell it
+// has been superseded and skip its PATCH rather than reinstate what it captured.
+const threadSettingsWriteTickets = new Map<string, number>();
+
+function takeThreadSettingsWriteTicket(threadId: string): number {
+  const ticket = (threadSettingsWriteTickets.get(threadId) ?? 0) + 1;
+  threadSettingsWriteTickets.set(threadId, ticket);
+  return ticket;
+}
 
 function writeThreadScopedSettings(
   threadId: string,
@@ -787,10 +833,15 @@ function writeThreadScopedSettings(
   // Built now, not inside the chain: the snapshot must describe the store as it is at the
   // moment of the edit, not as it will be once the previous write has finished.
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  const ticket = takeThreadSettingsWriteTicket(threadId);
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
     .then(async () => {
+      // superseded while queued: sending this would undo the newer snapshot.
+      if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
+        return;
+      }
       try {
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
@@ -804,10 +855,26 @@ function writeThreadScopedSettings(
     .finally(() => {
       if (threadSettingsWriteChains.get(threadId) === next) {
         threadSettingsWriteChains.delete(threadId);
+        threadSettingsWriteTickets.delete(threadId);
       }
     });
   threadSettingsWriteChains.set(threadId, next);
   return next;
+}
+
+/**
+ * Settle this chat's snapshot before anything reads it back. A chat edited, left and
+ * re-entered has its PATCH in flight, and a GET overtaking it returns the pre-edit
+ * snapshot, which then gets applied over the values the user set and written back on the
+ * next edit. Pending debounce included, or the read races the timer instead.
+ */
+export async function awaitThreadScopedSettingsWrite(
+  threadId: string,
+): Promise<void> {
+  if (threadSettingsWriteThreadId === threadId) {
+    flushThreadScopedSettingsWrite();
+  }
+  await threadSettingsWriteChains.get(threadId)?.catch(() => undefined);
 }
 
 function flushThreadScopedSettingsWrite(keepalive = false): void {
@@ -2158,6 +2225,22 @@ function externalCheckpointRefusesDeepResearch(
   return provider != null && provider.providerType !== "openai_codex";
 }
 
+/**
+ * Kimi's $web_search builtin requires thinking disabled, so the composer keeps the two
+ * pills mutually exclusive. A restore has to do the same, or a chat stored under another
+ * provider sends a combination Kimi rejects.
+ */
+function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
+  const parsed = parseExternalModelId(checkpoint);
+  if (!parsed) return false;
+  return (
+    useExternalProvidersStore
+      .getState()
+      .providers.find((candidate) => candidate.id === parsed.providerId)
+      ?.providerType === "kimi"
+  );
+}
+
 function getHydratedSettingsState(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
@@ -2774,7 +2857,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         for (const edit of heldThreadScopedEdits) heldFields.add(edit.field);
         heldThreadScopedEdits = [];
         pendingPairingThreadId = null;
-      } else {
+      } else if (
+        // A drop to the defaults for the chat that is still open and still waiting on its
+        // read keeps holding: those edits are that chat's, and releasing them here is the
+        // leak this whole path exists to prevent.
+        threadId !== null ||
+        pendingPairingThreadId === null ||
+        pendingPairingThreadId !== state.activeThreadId
+      ) {
         releaseHeldThreadScopedEdits();
       }
       // nothing was overridden while unpaired, so there is nothing to restore.
@@ -2826,6 +2916,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (value === undefined) continue;
         applied[key] = value;
         if (!isSameThreadScopedValue(value, state[key])) target[key] = value;
+      }
+      // Search and Thinking are mutually exclusive on Kimi, and the model-selection effect
+      // that enforces it does not rerun on a thread switch. Restoring both, which a chat
+      // stored under another provider can hold, would send an unsupported combination, so
+      // the restore drops thinking exactly as clicking the Search pill does.
+      if (
+        isKimiCheckpoint(state.params.checkpoint) &&
+        (applied.toolsEnabled ?? state.toolsEnabled) === true &&
+        (applied.reasoningEnabled ?? state.reasoningEnabled) === true
+      ) {
+        applied.reasoningEnabled = false;
+        if (state.reasoningEnabled !== false) target.reasoningEnabled = false;
       }
       // pin what the chat shows now, or changing the defaults later would rewrite its modes.
       // A chat that already had a snapshot only needs a write if it is carrying a held edit.

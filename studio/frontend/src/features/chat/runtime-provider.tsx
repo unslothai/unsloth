@@ -63,6 +63,7 @@ import {
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
+  awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
   commitHeldThreadScopedEditsToTheirThread,
   releaseHeldThreadScopedEdits,
@@ -1696,6 +1697,10 @@ function ActiveThreadSync({
   return null;
 }
 
+// A thread read that fails leaves the chat unpaired, so it is worth a couple of goes.
+const THREAD_READ_RETRY_MS = 1_500;
+const THREAD_READ_RETRIES = 2;
+
 // gated on hydration, or the initial /api/chat/settings response lands after a thread's own values.
 function ThreadScopedSettingsSync({
   enabled,
@@ -1706,16 +1711,33 @@ function ThreadScopedSettingsSync({
   );
 
   useEffect(() => {
-    if (!enabled || !settingsHydrated) return;
+    if (!enabled) return;
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
     if (activeThreadId === null) {
-      applyThreadScopedSettings(null, null);
+      if (settingsHydrated) applyThreadScopedSettings(null, null);
       return;
+    }
+    // The composer is interactive while /api/chat/settings is still out, so start holding
+    // this chat's edits as soon as its id is known. Waiting for hydration to begin the
+    // pairing left that window writing edits into the installation defaults instead.
+    beginThreadScopedPairing(activeThreadId);
+    if (!settingsHydrated) {
+      return () => {
+        // Hydration finishing re-runs this effect for the same chat, and the held edits are
+        // still waiting for that chat's read, so keep holding them. Any other reason to
+        // leave means the chat is going away and they belong to it.
+        const now = useChatRuntimeStore.getState();
+        if (!now.settingsHydrated || now.activeThreadId !== activeThreadId) {
+          commitHeldThreadScopedEditsToTheirThread();
+        }
+      };
     }
     let cancelled = false;
     let paired = false;
     let unpaired = false;
     let defaulted = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retriesLeft = THREAD_READ_RETRIES;
 
     const sync = () => {
       if (cancelled || paired) return;
@@ -1729,14 +1751,18 @@ function ThreadScopedSettingsSync({
       // own settings are not known yet, and a read that never resolves now leaves those
       // rather than another chat's.
       //
-      // Before beginThreadScopedPairing, not after: this call ends any pairing in progress,
-      // so reversing the two would close the window that holds edits made during the read.
+      // The pairing opened above survives this: a drop to the defaults for the chat that is
+      // still open and still waiting on its read keeps holding rather than releasing.
       if (!defaulted) {
         defaulted = true;
         applyThreadScopedSettings(null, null);
       }
       beginThreadScopedPairing(activeThreadId);
-      void getStoredChatThreadReadResult(activeThreadId)
+      // Settle this chat's own PATCH first. Edit a chat, leave, come straight back and the
+      // read can overtake the write and return the pre-edit snapshot, which then goes back
+      // over the values the user set and is written out again by the next edit.
+      void awaitThreadScopedSettingsWrite(activeThreadId)
+        .then(() => getStoredChatThreadReadResult(activeThreadId))
         .then(({ thread, cacheable }) => {
           if (cancelled || paired) return;
           // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
@@ -1760,13 +1786,28 @@ function ThreadScopedSettingsSync({
         // A failed read leaves the installation defaults up (dropped to above), not the
         // outgoing chat's settings, which would otherwise stay live indefinitely. The held
         // edit goes to the chat it was made in.
-        .catch(() => commitHeldThreadScopedEditsToTheirThread());
+        .catch(() => {
+          if (cancelled) return;
+          commitHeldThreadScopedEditsToTheirThread();
+          // and keep the chat paired, or every later edit in it would fall through to the
+          // installation defaults for as long as it stays open. A fresh browser with no
+          // legacy cache has nothing else to fall back on, so retry a bounded few times.
+          beginThreadScopedPairing(activeThreadId);
+          if (retryTimer === null && retriesLeft > 0) {
+            retriesLeft -= 1;
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              sync();
+            }, THREAD_READ_RETRY_MS);
+          }
+        });
     };
 
     sync();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     return () => {
       cancelled = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
       // switched away mid-read: the edit belongs to the chat it was made in, not to the
       // installation defaults that every other snapshot-less chat follows.
       commitHeldThreadScopedEditsToTheirThread();
