@@ -5865,7 +5865,7 @@ class LlamaCppBackend:
     def _metal_zero_ctx_floor(
         effective_ctx: int,
         auto_fit: bool,
-        gpu_memory_mode: Optional[str],
+        caller_owns_budget: bool,
         native_ctx: Optional[int],
         max_available_ctx: Optional[int] = None,
     ) -> int:
@@ -5890,11 +5890,15 @@ class LlamaCppBackend:
         estimate.
 
         Only when a Metal budget is resolvable, which is 0 off Apple Silicon, so
-        this is inert everywhere else. Auto-layers is left alone because it omits
-        -c entirely and lets --fit size it, and manual offload is left alone
-        because there the user owns memory management, cap included.
+        this is inert everywhere else. ``auto_fit`` is what the command builder
+        is about to emit, and it omits -c entirely so --fit can size it, which is
+        already correct. ``caller_owns_budget`` is a property of the REQUEST, a
+        manual mode with a fixed layer count, where the user owns memory
+        management, cap included; the paravirtual CPU pin rewrites every
+        placement to manual/0 before this runs, so reading the mode off the
+        rewritten placement would treat a plain Auto request as caller-owned.
         """
-        if effective_ctx > 0 or auto_fit or gpu_memory_mode == "manual":
+        if effective_ctx > 0 or auto_fit or caller_owns_budget:
             return 0
         if not LlamaCppBackend._apple_metal_memory_budget_bytes():
             return 0
@@ -5907,7 +5911,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _metal_drops_zero_ctx_override(
-        ctx_override: Optional[int], auto_fit: bool, gpu_memory_mode: Optional[str]
+        ctx_override: Optional[int], caller_owns_budget: bool
     ) -> bool:
         """Whether a pass-through "-c 0" must be dropped before it reaches Metal.
 
@@ -5920,13 +5924,13 @@ class LlamaCppBackend:
         "let llama.cpp decide" is the one that stops it from deciding.
 
         Only a zero override; a positive -c stays honored as it is today. Inert
-        off Apple Silicon, like the floor, but unlike the floor it does fire in
+        off Apple Silicon, like the floor, but unlike the floor it also fires in
         Auto-layers: there the managed command omits -c precisely so --fit sizes
         the context, so the trailing zero is the one argument that disables the
-        fit the mode depends on. A fixed manual layer count is still left alone,
-        since there the user owns the budget.
+        fit the mode depends on. Only ``caller_owns_budget`` is left alone, and
+        that is read off the request for the reason the floor documents.
         """
-        if ctx_override != 0 or (gpu_memory_mode == "manual" and not auto_fit):
+        if ctx_override != 0 or caller_owns_budget:
             return False
         return bool(LlamaCppBackend._apple_metal_memory_budget_bytes())
 
@@ -11882,6 +11886,12 @@ class LlamaCppBackend:
             tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
             gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
 
+            # Read here, before the pin below rewrites every placement (a plain Auto
+            # one included) to manual/0 in both the locals and the intent. Whether the
+            # user owns the memory budget is a property of what was asked for, and the
+            # two Metal context guards further down skip themselves on it.
+            _caller_owns_budget = gpu_memory_mode == "manual" and gpu_layers >= 0
+
             # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
             # inference to CPU there; physical Apple Silicon is untouched. Settled
             # ABOVE the duplicate-load check (and the KV estimates) so the compared
@@ -14152,7 +14162,7 @@ class LlamaCppBackend:
                 # there made an unchanged request look different from itself, so
                 # every Apply reloaded the model.
                 _extra_args_as_requested = list(extra_args) if extra_args is not None else None
-                if self._metal_drops_zero_ctx_override(ctx_override, auto_fit, gpu_memory_mode):
+                if self._metal_drops_zero_ctx_override(ctx_override, _caller_owns_budget):
                     extra_args = strip_context_only(extra_args)
                     logger.warning(
                         "Dropping the pass-through zero context: on Metal it pins the "
@@ -14161,7 +14171,7 @@ class LlamaCppBackend:
                 _metal_floor = self._metal_zero_ctx_floor(
                     effective_ctx,
                     auto_fit,
-                    gpu_memory_mode,
+                    _caller_owns_budget,
                     self._context_length,
                     max_available_ctx,
                 )
@@ -16112,16 +16122,19 @@ class LlamaCppBackend:
                         else list(extra_args)
                     )
                     # Device-stripped the same way, so both comparator sides share a rule.
-                    # _extra_args_as_requested, not extra_args: the Metal zero-context
-                    # strip is a launch decision and must not rewrite what the user is
-                    # recorded as having asked for, or the next identical Apply
-                    # compares unequal and reloads.
+                    # _extra_args_as_requested first: the Metal zero-context strip is a
+                    # launch decision and must not rewrite what the user is recorded as
+                    # having asked for, or the next identical Apply compares unequal and
+                    # reloads. Ahead of the drafter-drop snapshot, which is taken after
+                    # that strip. The two never disagree otherwise: the snapshot is only
+                    # set alongside a non-None _extra_args_as_requested, and the spec
+                    # strip it guards runs later still.
                     _pv_requested = (
-                        _pv_suppressed_spec_extra_args
-                        if _pv_suppressed_spec_extra_args is not None
+                        _extra_args_as_requested
+                        if _extra_args_as_requested is not None
                         else (
-                            _extra_args_as_requested
-                            if _extra_args_as_requested is not None
+                            _pv_suppressed_spec_extra_args
+                            if _pv_suppressed_spec_extra_args is not None
                             else extra_args
                         )
                     )

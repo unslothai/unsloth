@@ -86,6 +86,7 @@ def _launch(
     extra_args = None,
     gpu_memory_mode = "auto",
     gpu_layers = -1,
+    paravirtual = False,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition)."""
     monkeypatch.setattr(
@@ -93,6 +94,9 @@ def _launch(
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: 16 * 1024**3 if metal else 0),
     )
+    if paravirtual:
+        import core.inference.llama_cpp as _llama_cpp
+        monkeypatch.setattr(_llama_cpp, "_metal_device_is_paravirtual", lambda: True)
     backend = LlamaCppBackend()
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
@@ -161,14 +165,14 @@ def off_metal(monkeypatch):
 class TestOnMetal:
     def test_a_zero_context_is_floored(self, on_metal):
         """The exception path: auto request restored to 0 after the cap ran."""
-        assert _floor(0, False, "auto", 262144) == 4096
+        assert _floor(0, False, False, 262144) == 4096
 
     def test_a_model_shorter_than_the_floor_keeps_its_own_length(self, on_metal):
-        assert _floor(0, False, "auto", 2048) == 2048
+        assert _floor(0, False, False, 2048) == 2048
 
     def test_no_metadata_still_gets_a_floor(self, on_metal):
         """The cap is guarded on ctx > 0, so this GGUF was never capped."""
-        assert _floor(0, False, "auto", None) == 4096
+        assert _floor(0, False, False, None) == 4096
 
     def test_a_cap_below_the_floor_wins(self, on_metal):
         """The exception path keeps max_available_ctx after discarding the context.
@@ -176,33 +180,33 @@ class TestOnMetal:
         Its KV-based answer can sit under 4096, and floating back up would
         re-create a smaller version of the same over-commit.
         """
-        assert _floor(0, False, "auto", 262144, 2048) == 2048
+        assert _floor(0, False, False, 262144, 2048) == 2048
 
     def test_a_cap_above_the_floor_does_not_raise_it(self, on_metal):
-        assert _floor(0, False, "auto", 262144, 131072) == 4096
+        assert _floor(0, False, False, 262144, 131072) == 4096
 
     def test_no_cap_yet_still_floors(self, on_metal):
         """The no-metadata path never ran the cap, so there is no ceiling to respect."""
-        assert _floor(0, False, "auto", None, 0) == 4096
+        assert _floor(0, False, False, None, 0) == 4096
 
     def test_a_positive_context_is_left_alone(self, on_metal):
-        assert _floor(8192, False, "auto", 262144) == 0
+        assert _floor(8192, False, False, 262144) == 0
 
     def test_auto_layers_is_left_alone(self, on_metal):
         """It omits -c entirely and lets --fit size it, which is correct."""
-        assert _floor(0, True, "manual", 262144) == 0
+        assert _floor(0, True, False, 262144) == 0
 
     def test_manual_offload_is_left_alone(self, on_metal):
         """There the user owns memory management, context cap included."""
-        assert _floor(0, False, "manual", 262144) == 0
+        assert _floor(0, False, True, 262144) == 0
 
 
 class TestEverywhereElse:
-    @pytest.mark.parametrize("mode", ["auto", "manual", None])
+    @pytest.mark.parametrize("owns", [False, True])
     @pytest.mark.parametrize("ctx", [0, 4096])
-    def test_no_budget_means_no_change(self, off_metal, mode, ctx):
+    def test_no_budget_means_no_change(self, off_metal, owns, ctx):
         """0 off Apple Silicon, so Linux and Windows never enter this."""
-        assert _floor(ctx, False, mode, 262144) == 0
+        assert _floor(ctx, False, owns, 262144) == 0
 
 
 class TestAPassThroughZeroContext:
@@ -210,21 +214,21 @@ class TestAPassThroughZeroContext:
 
     @pytest.mark.parametrize("override", [0])
     def test_it_is_dropped_on_metal(self, on_metal, override):
-        assert _drops(override, False, "auto") is True
+        assert _drops(override, False) is True
 
     @pytest.mark.parametrize("override", [None, 2048, 262144])
     def test_a_positive_or_absent_override_is_left_alone(self, on_metal, override):
-        assert _drops(override, False, "auto") is False
+        assert _drops(override, False) is False
 
     def test_auto_layers_drops_it_too(self, on_metal):
         """Auto-layers omits -c so --fit sizes it; a trailing zero disables that."""
-        assert _drops(0, True, "manual") is True
+        assert _drops(0, False) is True
 
     def test_manual_offload_is_left_alone(self, on_metal):
-        assert _drops(0, False, "manual") is False
+        assert _drops(0, True) is False
 
     def test_it_is_kept_everywhere_else(self, off_metal):
-        assert _drops(0, False, "auto") is False
+        assert _drops(0, False) is False
 
 
 class TestTheEmittedCommand:
@@ -320,6 +324,46 @@ class TestAutoLayers:
         assert _ctx_values(cmd)[-1] == "0"
 
 
+class TestAVirtualisedMetalDevice:
+    """The paravirtual pin rewrites every placement to manual/0 before these guards.
+
+    An Auto request is the default, so reading the mode off the rewritten
+    placement made the common case on a virtualised Mac look caller-owned and
+    handed llama-server the "-c 0" the whole branch exists to prevent.
+    """
+
+    def _launch_pv(self, tmp_path, monkeypatch, **kwargs):
+        return _launch(tmp_path, monkeypatch, paravirtual = True, **kwargs)
+
+    def test_an_auto_request_still_gets_the_floor(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_pv(tmp_path, monkeypatch)
+        assert _ctx_values(cmd) == ["4096"]
+
+    def test_an_auto_request_still_drops_a_zero_override(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_pv(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
+        assert _ctx_values(cmd) == ["4096"]
+        assert "--top-k" in cmd and "5" in cmd
+
+    def test_auto_layers_is_treated_the_same(self, tmp_path, monkeypatch):
+        """The pin took the layer freedom --fit needed, so the floor applies."""
+        cmd, _ = self._launch_pv(tmp_path, monkeypatch, gpu_memory_mode = "manual", gpu_layers = -1)
+        assert _ctx_values(cmd) == ["4096"]
+
+    def test_a_fixed_manual_layer_count_is_still_the_callers(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_pv(
+            tmp_path,
+            monkeypatch,
+            gpu_memory_mode = "manual",
+            gpu_layers = 20,
+            extra_args = ["-c", "0"],
+        )
+        assert _ctx_values(cmd)[-1] == "0"
+
+    def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_pv(tmp_path, monkeypatch, metal = False, extra_args = ["-c", "0"])
+        assert _ctx_values(cmd) == ["0", "0"]
+
+
 def test_the_emission_guard_is_still_in_place():
     """Pins the existing contract the floor sits in front of."""
     import inspect
@@ -345,18 +389,18 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
     NATIVE = 262144
 
     def test_the_native_length_is_not_advertised_after_the_floor(self, on_metal):
-        floor = _floor(0, False, "auto", self.NATIVE, self.NATIVE)
+        floor = _floor(0, False, False, self.NATIVE, self.NATIVE)
         assert floor == 4096
         # What load_model now publishes: the floor itself, not max(ceiling, floor).
         assert floor < self.NATIVE
 
     def test_a_real_ceiling_below_the_floor_still_wins(self, on_metal):
         """The cap did run and its KV answer is smaller, so keep the smaller."""
-        assert _floor(0, False, "auto", self.NATIVE, 3000) == 3000
+        assert _floor(0, False, False, self.NATIVE, 3000) == 3000
 
     def test_the_published_ceiling_is_never_above_what_we_launch(self, on_metal):
         for max_avail in (None, 3000, 4096, self.NATIVE):
-            floor = _floor(0, False, "auto", self.NATIVE, max_avail)
+            floor = _floor(0, False, False, self.NATIVE, max_avail)
             assert floor <= (max_avail or 4096)
             assert floor <= 4096
 
@@ -373,6 +417,23 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         from core.inference.llama_cpp import strip_context_only
         user = ["--threads", "8", "-c", "0", "--mlock"]
         assert strip_context_only(list(user)) == ["--threads", "8", "--mlock"]
+
+    def test_a_suppressed_drafter_does_not_snapshot_the_strip(self, tmp_path, monkeypatch):
+        """The paravirtual drafter drop takes its own copy, and that copy wins below.
+
+        Taken after the zero-context strip it puts the rewrite straight back into
+        the comparator, which is the reload this class exists to prevent.
+        """
+        import core.inference.llama_cpp as _llama_cpp
+
+        draft = tmp_path / "draft.gguf"
+        draft.write_bytes(b"\x00" * 16)
+        # No draft-layer flag, so the drafter cannot be pinned and is dropped instead.
+        monkeypatch.setattr(_llama_cpp, "_paravirtual_draft_ngl_flag", lambda caps: None)
+        requested = ["-md", str(draft), "-c", "0", "--top-k", "5"]
+        cmd, backend = _launch(tmp_path, monkeypatch, extra_args = list(requested), paravirtual = True)
+        assert _ctx_values(cmd) == ["4096"]
+        assert backend._requested_extra_args == requested
 
     @pytest.mark.parametrize("mode,layers", [("auto", -1), ("manual", -1)])
     def test_the_comparator_still_holds_what_was_asked_for(
