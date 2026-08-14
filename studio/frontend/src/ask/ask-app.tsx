@@ -50,7 +50,7 @@ function SparkIcon(): ReactElement {
 
 function Key({ children }: { children: ReactNode }): ReactElement {
   return (
-    <kbd className="rounded-[4px] border border-border/70 bg-muted/60 px-[5px] py-px font-sans text-[10px] leading-[14px] text-muted-foreground">
+    <kbd className="rounded-[4px] border border-border/70 bg-muted/60 px-[5px] py-px font-sans text-ui-10 leading-ui-14 text-muted-foreground">
       {children}
     </kbd>
   );
@@ -330,7 +330,7 @@ export function AskApp(): ReactElement {
               : t("systemPill.ask.placeholder")
           }
           spellCheck={false}
-          className="w-full bg-transparent text-[17px] text-foreground outline-none placeholder:text-muted-foreground/80"
+          className="w-full bg-transparent text-ui-17 text-foreground outline-none placeholder:text-muted-foreground/80"
         />
         {busy && (
           <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-muted-foreground/70 border-t-transparent" />
@@ -339,7 +339,7 @@ export function AskApp(): ReactElement {
 
       {context && (
         <div className="flex items-center gap-2 px-5 pb-3 -mt-1">
-          <span className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/50 py-0.5 pl-2.5 pr-1 text-[11px] text-muted-foreground">
+          <span className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/50 py-0.5 pl-2.5 pr-1 text-ui-11 text-muted-foreground">
             {t("systemPill.ask.context", { chars: String(context.length) })}
             <button
               type="button"
@@ -355,12 +355,12 @@ export function AskApp(): ReactElement {
       {(turns.length > 0 || phase === "error") && (
         <div
           ref={answerRef}
-          className="max-h-80 overflow-y-auto border-t border-border/50 px-5 py-3.5 text-[13.5px] leading-6"
+          className="max-h-80 overflow-y-auto border-t border-border/50 px-5 py-3.5 text-ui-13p5 leading-6"
         >
           {turns.map((turn, index) => (
             <div key={index} className={index > 0 ? "mt-3" : undefined}>
               {(index > 0 || turns.length > 1) && (
-                <div className="mb-1 text-[11.5px] font-medium text-muted-foreground">
+                <div className="mb-1 text-ui-11p5 font-medium text-muted-foreground">
                   {turn.question}
                 </div>
               )}
@@ -385,7 +385,7 @@ export function AskApp(): ReactElement {
       )}
 
       <div className="flex h-9 items-center justify-between border-t border-border/50 bg-muted/30 px-4">
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-1.5 text-ui-11 text-muted-foreground">
           {phase === "loading" && loadingModel ? (
             t("systemPill.ask.loading", { model: loadingModel })
           ) : (
@@ -397,7 +397,7 @@ export function AskApp(): ReactElement {
             </>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-3 text-[11px] text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-3 text-ui-11 text-muted-foreground">
           {turns.length > 0 && (
             <button
               type="button"
