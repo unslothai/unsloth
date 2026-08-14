@@ -11,8 +11,10 @@ with Bearer token auth and SSE streaming.
 import ipaddress
 import os
 import re
+import threading
+import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
@@ -554,6 +556,11 @@ _METADATA_IPS = frozenset(
         "fd20:ce::254",
         "100.100.100.200",
         "100.100.100.110",
+        # metadata.tencentyun.com, on VPC and on the classic network. Listed
+        # exactly because the resolved-address check reads this set rather than
+        # the link-local network below.
+        "169.254.0.23",
+        "169.254.10.10",
     )
 )
 # Link-local, where the IPv4 metadata services live. Matched as a network so a
@@ -611,22 +618,232 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
-def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
-    """Raise when ``hostname`` is, or resolves to, a non-public address."""
+# The block above only reads the hostname text, so a caller-controlled name
+# (metadata-alias.attacker.test IN A 169.254.169.254) dials the very service it
+# exists to refuse. Names are resolved on the default path too, but only far
+# enough to answer "is this metadata"; refusing other private addresses stays
+# opt-in. Three things keep that lookup off the endpoints people configure:
+#   * registry hosts and IP literals skip it, so a real provider or
+#     http://127.0.0.1:11434 touches no resolver;
+#   * a name that does not resolve is allowed -- http://my_ollama:11434 may only
+#     resolve in the client's network namespace, not in this one;
+#   * it is bounded and cached, so a dead resolver cannot stall each request.
+#     A client is built per request and the route validates the same URL again,
+#     so the cache is what keeps a request to one lookup.
+# Short on purpose. This validator is sync and called from async handlers, so
+# the wait is the event loop's wait, and every millisecond of it is shared by
+# every concurrent request. A provider hostname that a resolver can answer at
+# all is answered well inside this; past it the answer is treated as unknown,
+# which the default path allows and the opt-in path re-asks for without a bound.
+# So a longer deadline buys accuracy for nobody and costs latency for everyone.
+_DNS_TIMEOUT_SECONDS = 0.5
+_DNS_CACHE_TTL_SECONDS = 300.0
+_DNS_CACHE_MAX_ENTRIES = 512
+# hostname -> (expiry, addresses). Only answers land here; a failure and a
+# timeout are both cheap to repeat and wrong to remember.
+_dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
+_dns_cache_lock = threading.Lock()
+# A lookup that times out is abandoned, not cancelled, so its thread lives until
+# the platform resolver gives up. Rotating hostnames defeat the cache and would
+# otherwise pile those up one per request, so the number in flight is capped and
+# a caller waits its turn up to the same deadline rather than being waved
+# through the moment the pool is busy.
+#
+# Saturating the pool still ends in "no answer", which the default path allows.
+# That is the same decision this file makes for a lookup that times out, and it
+# is deliberate: refusing instead would mean any resolver trouble, or any caller
+# willing to stall a few lookups, could stop the operator configuring a provider
+# at all. The check is a bound on what a caller-supplied URL may resolve to, not
+# a guarantee about what the socket will later connect to -- see the transport
+# note on _resolve_host.
+_DNS_MAX_IN_FLIGHT = 32
+_dns_in_flight = threading.BoundedSemaphore(_DNS_MAX_IN_FLIGHT)
+
+# Hostnames of the providers this build ships. They are hard-coded destinations,
+# not caller-controlled names, so learning their addresses buys nothing.
+_REGISTRY_HOSTNAMES = frozenset(
+    host
+    for host in (
+        urlsplit(info["base_url"]).hostname
+        for info in PROVIDER_REGISTRY.values()
+        if info.get("base_url")
+    )
+    if host
+)
+
+
+def _metadata_address(address: str) -> bool:
+    """``_metadata_host`` for a RESOLVED address: the exact services, no net.
+
+    The 169.254.0.0/16 clause exists to catch a caller who types a link-local
+    address at the metadata service directly, and it stays for that. It cannot
+    be applied to a resolved address: 169.254/16 is the general IPv4 link-local
+    range (RFC 3927), so a self-assigned host, an mDNS .local name on a network
+    without DHCP, or a captive portal answering every query would all read as
+    the metadata service. Those are refused today by nobody, and this change is
+    not the place to start.
+    """
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
+        if candidate is not None and _metadata_address(candidate.compressed):
+            return True
+    return ip in _METADATA_IPS
+
+
+# What httpx leaves unescaped in a host: RFC 3986 sub-delims plus the WHATWG
+# set. Kept in step with its `_urlparse.encode_host`.
+_HOST_SAFE_CHARS = "!$&'()*+,;=" + '"`{}%|\\'
+
+
+def _transport_host(hostname: str) -> str:
+    """The ASCII host httpx will dial, so the checked name is the dialled name.
+
+    ``socket.getaddrinfo`` encodes a Unicode host with the stdlib ``idna`` codec
+    (IDNA 2003), httpx with the ``idna`` package (IDNA 2008), and the two differ
+    on the deviation characters: straße.de resolves as strasse.de through the
+    resolver and as xn--strae-oqa.de through httpx, which are different hosts
+    owned by different people. Mirrors httpx's `_urlparse.encode_host`.
+    """
+    try:
+        # An address is dialled as written; quoting one would corrupt IPv6.
+        ipaddress.ip_address(hostname)
+        return hostname
+    except ValueError:
+        pass
+    if hostname.isascii():
+        # httpx percent-encodes what RFC 3986 does not allow in a reg-name, so
+        # safe^alias.example is dialled as safe%5Ealias.example, a name whose
+        # parent zone can answer differently. Same quoting, same name.
+        return quote(hostname.lower(), safe = _HOST_SAFE_CHARS)
+    try:
+        import idna
+        return idna.encode(hostname.lower()).decode("ascii")
+    except Exception:
+        # httpx raises InvalidURL here, so the request cannot happen at all;
+        # resolving the name as written is then as good an answer as any.
+        return hostname
+
+
+def _cached_addresses(hostname: str) -> tuple[str, ...] | None:
+    """What ``_resolve_host`` already learned about ``hostname``, if anything."""
+    now = time.monotonic()
+    with _dns_cache_lock:
+        cached = _dns_cache.get(_transport_host(hostname))
+    return cached[1] if cached is not None and cached[0] > now else None
+
+
+def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ...] | None:
+    """Addresses for ``hostname``, or ``None`` when the resolver did not answer.
+
+    One lookup and one cache entry serve both callers, which read "no answer" in
+    opposite directions: the metadata check has nothing to refuse, the opt-in
+    private-address check refuses.
+    """
     import socket
 
-    try:
-        addresses = [ipaddress.ip_address(hostname)]
-    except ValueError:
+    hostname = _transport_host(hostname)
+    cached = _cached_addresses(hostname)
+    if cached is not None:
+        return cached
+    now = time.monotonic()
+
+    # Bound to a local: a worker abandoned at the deadline may outlive the
+    # global, and BoundedSemaphore raises if it releases one it never took.
+    in_flight = _dns_in_flight
+    if not in_flight.acquire(timeout = _DNS_TIMEOUT_SECONDS):
+        return None
+
+    resolved: list[str] = []
+    answered = False
+
+    def _resolve() -> None:
+        nonlocal answered
         try:
             infos = socket.getaddrinfo(
                 hostname,
                 port or (443 if scheme == "https" else 80),
                 type = socket.SOCK_STREAM,
             )
-        except (OSError, UnicodeError) as exc:
-            raise ValueError("Provider base URL hostname could not be resolved.") from exc
-        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+        except (OSError, UnicodeError, ValueError):
+            return
+        finally:
+            # Released by the worker, not the caller, so an abandoned lookup
+            # frees its slot only once the resolver actually lets it go.
+            in_flight.release()
+        resolved.extend(str(info[4][0]) for info in infos)
+        answered = True
+
+    # Daemon thread, so a resolver that never answers cannot hold up shutdown;
+    # the validator abandons it after the timeout and treats the name the same
+    # way it treats any other lookup failure.
+    thread = threading.Thread(target = _resolve, daemon = True)
+    thread.start()
+    thread.join(_DNS_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        # A timeout is not an answer, so it is not remembered as one: the
+        # transport waits longer than this and would still get the address a
+        # deliberately slow authoritative server sends after the deadline.
+        return None
+    if not answered:
+        # A failure is not cached either. It is cheap to repeat (the resolver
+        # says so immediately), and remembering it would turn one transient
+        # SERVFAIL into five minutes of refusal on the opt-in path.
+        return None
+
+    addresses = tuple(resolved)
+    with _dns_cache_lock:
+        if len(_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
+            _dns_cache.clear()
+        _dns_cache[hostname] = (now + _DNS_CACHE_TTL_SECONDS, addresses)
+    return addresses
+
+
+def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
+    """True when ``hostname`` resolves to a cloud metadata address."""
+    hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
+    if not hostname or hostname in _REGISTRY_HOSTNAMES:
+        return False
+    try:
+        # Literals were already classified by _metadata_host; no lookup needed.
+        ipaddress.ip_address(_canonical_host(hostname))
+        return False
+    except ValueError:
+        pass
+    return any(
+        _metadata_address(address) for address in _resolve_host(hostname, port, scheme) or ()
+    )
+
+
+def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
+    """Raise when ``hostname`` is, or resolves to, a non-public address."""
+    try:
+        addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        # The metadata check ran a moment ago and cached whatever it learned, so
+        # this reads that rather than starting a second bounded lookup: on a
+        # slow resolver the pair of them would each spend a deadline before the
+        # fallback below spent a third.
+        resolved = _cached_addresses(hostname)
+        if resolved is None:
+            # This path blocked on an unbounded getaddrinfo before the metadata
+            # check existed, and a resolver slower than that check's deadline is
+            # ordinary (the Linux default is 5s per server, twice). Falling back
+            # to the same unbounded call keeps a slow-but-working resolver from
+            # turning into a refusal here, where "no answer" fails closed.
+            import socket
+            try:
+                infos = socket.getaddrinfo(
+                    _transport_host(hostname),
+                    port or (443 if scheme == "https" else 80),
+                    type = socket.SOCK_STREAM,
+                )
+            except (OSError, UnicodeError) as exc:
+                raise ValueError("Provider base URL hostname could not be resolved.") from exc
+            resolved = tuple(str(info[4][0]) for info in infos)
+        addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
     if not addresses or any(not ip.is_global for ip in addresses):
         raise ValueError(
             "Provider base URL points at a private address, which is disabled on this "
@@ -642,8 +859,9 @@ def validate_provider_base_url(base_url: str) -> str:
     that can never be a real provider endpoint are refused: a non-http(s) scheme,
     control characters, a missing host, and cloud metadata services. Plain http,
     loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
-    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. No
-    DNS lookup happens unless the private-address opt-in is set.
+    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
+    caller-supplied hostname is resolved far enough to apply the metadata block
+    to DNS aliases of it; rejecting other private addresses stays opt-in.
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -671,7 +889,7 @@ def validate_provider_base_url(base_url: str) -> str:
         raise ValueError("Provider base URL must contain a hostname.")
 
     hostname = hostname.rstrip(".")
-    if _metadata_host(hostname):
+    if _metadata_host(hostname) or _resolves_to_metadata(hostname, port, scheme):
         raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
 
     if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
