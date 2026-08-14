@@ -102,8 +102,9 @@ class _LoadRecorder:
         self.backend._gguf_path = request.model_path
         self.backend.is_loaded = True
         # Mirror _load_model_impl: a load advertises its own id until the
-        # auto-switch caller overwrites it with the repo id.
-        self.backend._openai_advertised_id = None
+        # auto-switch caller overwrites it with the repo id. Same helper the route
+        # calls, so the probe marker is dropped here exactly as it is in production.
+        inference_route._clear_advertised_alias(self.backend)
         from core.inference import llama_keepwarm as kw
 
         kw.note_model_loaded(self.backend)
@@ -1822,6 +1823,68 @@ def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
         _run_hook(path)
     assert rec.calls == []
     assert len(scans) == 1, f"resolved {len(scans)} times, expected one probe"
+
+
+def test_a_request_for_another_model_does_not_spend_the_probe(monkeypatch):
+    # The probe exists so the request that names the load path reaches the resolver and
+    # the alias gets recorded. A request naming something else resolves elsewhere, so it
+    # records nothing for the resident model; spending the single probe on it would leave
+    # the path answered from the shortcut forever, reported by its filename.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda m, **_kw: (path, None, "Qwen3-4B-Instruct-GGUF") if m == path else None,
+    )
+
+    _run_hook("org/Not-Here-GGUF")  # a resolver miss: nothing loads, the path stays resident
+    assert rec.calls == []
+    assert backend._openai_advertised_id is None
+
+    _run_hook(path)
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+
+def test_a_reload_of_the_same_path_probes_for_the_alias_again(monkeypatch):
+    # Every load clears the advertised id, so the alias has to be recorded again. A
+    # marker held over from the previous load would send the next request straight to
+    # the resident shortcut, and /v1/models and responses would revert to the filename.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    _run_hook(path)
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+    # What the load route does to the advertised id, by the same call it makes.
+    inference_route._clear_advertised_alias(backend)
+    _run_hook(path)
+    assert rec.calls == []  # still serving the same weights -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+
+def test_the_load_route_clears_the_probe_with_the_advertised_id():
+    # The reset above is only correct where the load happens, so keep the two together.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert "_clear_advertised_alias(llama_backend)" in src
+    assert "_openai_advertised_id = None" not in src
 
 
 def test_streaming_responses_uses_advertised_id_helper():

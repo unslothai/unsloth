@@ -5044,8 +5044,21 @@ def _loaded_satisfies(requested: str) -> bool:
 
 
 # Load paths already sent through the resolver so it could record their advertised
-# alias. Bounded by the distinct local models a process loads.
+# alias. Scoped to the current load: a fresh one clears the advertised id, so the
+# recording has to happen again.
 _alias_probed_load_paths: set[str] = set()
+
+
+def _clear_advertised_alias(llama_backend) -> None:
+    """Drop the advertised id, and with it the probe that recorded it.
+
+    A load advertises its own identifier until auto-switch overwrites it with the
+    repo id. Keeping the marker across that reset would let the resident shortcut
+    answer the first request after a reload, so the alias would never be recorded
+    again and the model would be reported by its filename.
+    """
+    llama_backend._openai_advertised_id = None
+    _alias_probed_load_paths.clear()
 
 
 def _loaded_identity_satisfies(requested: str) -> bool:
@@ -5068,10 +5081,18 @@ def _loaded_identity_satisfies(requested: str) -> bool:
         # the recording and /v1/models and every response would report the filename. Send
         # the first such request to the resolver instead. Once per path: one that no scan
         # root indexes has no alias to record, and must not pay for the attempt again.
-        if advertised is None and identifier and _looks_like_local_path(identifier):
-            if identifier not in _alias_probed_load_paths:
-                _alias_probed_load_paths.add(identifier)
-                return False
+        # Only a request naming the path can be answered from here, and only it resolves
+        # to the resident model, so only it spends the probe. One naming anything else
+        # already falls through to the resolver, and records no alias for this model.
+        if (
+            advertised is None
+            and identifier
+            and identifier not in _alias_probed_load_paths
+            and _looks_like_local_path(identifier)
+            and _matches_any(base, (identifier,))
+        ):
+            _alias_probed_load_paths.add(identifier)
+            return False
         return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
     active = getattr(get_inference_backend(), "active_model_name", None)
     return bool(active and _matches_any(base, [active]) and _loaded_satisfies(requested))
@@ -8239,7 +8260,7 @@ async def _load_model_impl(
             await asyncio.to_thread(note_model_loaded, llama_backend)
             # A plain load advertises its own identifier; auto-switch overwrites
             # this with the repo id right after _load_model_impl returns.
-            llama_backend._openai_advertised_id = None
+            _clear_advertised_alias(llama_backend)
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type
