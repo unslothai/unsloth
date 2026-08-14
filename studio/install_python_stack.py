@@ -4007,12 +4007,34 @@ class _QuarantinedMetadata:
     def __init__(self) -> None:
         self._holding = ""
         self._moved: list = []
+        self._copied: list = []
+
+    def _holding_dir(self) -> str:
+        if not self._holding:
+            self._holding = tempfile.mkdtemp(prefix = "unsloth_metadata_quarantine_")
+        return self._holding
+
+    def back_up(self, path: str) -> bool:
+        """Keep a copy of a file that is about to be rewritten in place.
+
+        The rewrite has to happen before staging, and staging can still fail. Without
+        this the original is gone and what remains is a synthetic record that parses:
+        the next run would see one readable record, decide there is nothing wrong, and
+        never attempt the payload repair that is still owed.
+        """
+        target = os.path.join(self._holding_dir(), f"copy_{len(self._copied)}")
+        try:
+            shutil.copy2(path, target)
+        except OSError:
+            return False
+        self._copied.append((path, target))
+        return True
 
     def take(self, paths) -> bool:
         for path in paths:
-            if not self._holding:
-                self._holding = tempfile.mkdtemp(prefix = "unsloth_metadata_quarantine_")
-            target = os.path.join(self._holding, f"{len(self._moved)}_{os.path.basename(path)}")
+            target = os.path.join(
+                self._holding_dir(), f"{len(self._moved)}_{os.path.basename(path)}"
+            )
             try:
                 shutil.move(os.fspath(path), target)
             except OSError:
@@ -4027,6 +4049,12 @@ class _QuarantinedMetadata:
                 shutil.move(target, original)
             except OSError:
                 pass
+        while self._copied:
+            original, target = self._copied.pop()
+            try:
+                shutil.copy2(target, original)
+            except OSError:
+                pass
         self.discard()
 
     def discard(self) -> None:
@@ -4034,6 +4062,7 @@ class _QuarantinedMetadata:
             shutil.rmtree(self._holding, ignore_errors = True)
             self._holding = ""
         self._moved.clear()
+        self._copied.clear()
 
 
 def _restore_from_staged(name: str, staged: str, removed_any: bool) -> None:
@@ -4230,7 +4259,12 @@ def _repair_duplicate_core_metadata(
             # that exists solely in the older release stays on disk and importable
             # while the repair reports success.
             unrewritable = [
-                path for path in invalid_paths if not _rewrite_minimal_metadata(path, name)
+                path
+                for path in invalid_paths
+                if not (
+                    quarantine.back_up(os.path.join(path, "METADATA"))
+                    and _rewrite_minimal_metadata(path, name)
+                )
             ]
             # Whatever could not be made readable still has to leave the tree, because
             # pip cannot run at all while it is there. Move it aside rather than delete
@@ -4575,7 +4609,7 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         elif line and not line.startswith(("#", "-")):
             # uv continues a hashed pin onto the following lines with a backslash.
             pinned = line.split(";", 1)[0].rstrip("\\").strip()
-            if _canonical_package_name(pinned.split("==", 1)[0]) == canonical:
+            if _canonical_package_name(_requirement_name(pinned)) == canonical:
                 requirement = pinned
     if not requirement:
         return None
@@ -4671,6 +4705,17 @@ def _pip_config_without_sources(directory: str) -> str:
                     f"{option} ={value}\n" if value.startswith("\n") else f"{option} = {value}\n"
                 )
     return path
+
+
+def _requirement_name(requirement: str) -> str:
+    """The distribution name from a pin or a PEP 508 direct reference.
+
+    An override can redirect a package to a path, a repository or a URL, and uv then
+    emits `name @ reference` rather than `name==version`. Treating the whole line as
+    the name left the requirement empty and aborted every repair under that policy.
+    """
+    head = requirement.split("==", 1)[0]
+    return head.split("@", 1)[0].strip()
 
 
 def _canonical_package_name(name: str) -> str:

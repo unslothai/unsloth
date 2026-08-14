@@ -1592,6 +1592,96 @@ class TestDuplicateCoreMetadataRepair:
         assert events[0] == "discard"
         assert events[-1] == "restore"
 
+    def test_a_direct_reference_pin_is_recognised(self, monkeypatch):
+        """An override can redirect a package to a path, repository or URL, and uv
+        then emits `name @ reference` rather than `name==version`. Treating the whole
+        line as the name left the requirement empty and aborted every repair under
+        that policy."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = (
+                b"--index-url https://pypi.org/simple\n"
+                b"unsloth-zoo @ file:///src/zoo\n"
+                b"    # from https://pypi.org/simple\n"
+            ),
+        )
+        requirement, _overrides, _options = ips._uv_staging_plan("unsloth_zoo")
+        # The reference is kept as written; only the name is parsed out of it.
+        assert requirement == "unsloth-zoo @ file:///src/zoo"
+
+    @pytest.mark.parametrize(
+        "line, name",
+        (
+            ("six==1.17.0", "six"),
+            ("unsloth-zoo @ git+https://example/x", "unsloth-zoo"),
+            ("unsloth_zoo @ file:///src", "unsloth_zoo"),
+        ),
+    )
+    def test_the_name_is_taken_from_either_spelling(self, line, name):
+        assert ips._requirement_name(line) == name
+
+    def test_the_original_metadata_comes_back_when_the_repair_fails(self, tmp_path):
+        """The rewrite has to happen before staging, and staging can still fail.
+        Without a backup the original is gone and what remains parses, so the next
+        run would see one readable record, decide nothing is wrong, and never attempt
+        the payload repair that is still owed."""
+        record = tmp_path / "unsloth-2026.8.12.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        (record / "RECORD").write_text("unsloth/gone.py,,\n")
+        quarantine = ips._QuarantinedMetadata()
+
+        assert quarantine.back_up(str(record / "METADATA")) is True
+        assert ips._rewrite_minimal_metadata(str(record), "unsloth") is True
+        assert "Name: unsloth" in (record / "METADATA").read_text()
+
+        quarantine.restore()
+
+        # Byte for byte what was there, so the conflict is still detected next time.
+        assert (record / "METADATA").read_bytes() == b"\xff\xfe"
+
+    def test_a_committed_rewrite_is_not_undone(self, tmp_path):
+        record = tmp_path / "unsloth-2026.8.12.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        (record / "RECORD").write_text("unsloth/gone.py,,\n")
+        quarantine = ips._QuarantinedMetadata()
+        quarantine.back_up(str(record / "METADATA"))
+        ips._rewrite_minimal_metadata(str(record), "unsloth")
+
+        quarantine.discard()
+        quarantine.restore()
+
+        assert "Name: unsloth" in (record / "METADATA").read_text()
+
+    def test_a_backup_failure_leaves_the_record_unrewritten(self, tmp_path, monkeypatch):
+        """No backup means no safe rewrite, so the record is quarantined instead."""
+        record = tmp_path / "unsloth-2026.8.12.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        (record / "RECORD").write_text("unsloth/gone.py,,\n")
+        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
+        taken = []
+
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
+        monkeypatch.setattr(
+            ips.install_manifest, "invalid_metadata_paths", lambda _n: [str(record)]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _n: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setattr(ips._QuarantinedMetadata, "back_up", lambda _self, _p: False)
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata, "take", lambda _self, paths: taken.append(list(paths)) or True
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert taken == [[str(record)]]
+        assert (record / "METADATA").read_bytes() == b"\xff\xfe"
+
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
