@@ -12,7 +12,14 @@ const ROLLBACK_BLOCKS = 8;
 // retain, and the scan for a boundary is then paid on top of the full repair it
 // was meant to replace. Give up at a character budget, because characters are
 // what that scan costs, and a transient imbalance closes far below this.
-const STALLED_TAIL_CHARACTERS = 32_768;
+//
+// The budget is what gets spent before giving up, and that spending grows with
+// the square of the tail, so the value matters. Measured on an emphasis marker
+// that only closes 40,000 characters later, 420 updates, five repetitions: the
+// median cost against the full-document path is +73% at 32,768 and +1.6% at
+// 8,192. 8,192 characters is still around 1,300 words of slack, well beyond a
+// marker a later line genuinely closes.
+const STALLED_TAIL_CHARACTERS = 8_192;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
 const MULTILINE_KATEX_CONTEXT = "$$\n$$\n\n";

@@ -360,3 +360,58 @@ test("a repeating reply keeps displaying every retained block", () => {
     assert.ok(render.markdown.length < step * 6);
   }
 });
+
+// The stalled-tail budget is only reachable once the live tail holds more than
+// ROLLBACK_BLOCKS blocks, so a single long fenced block never reaches it: while
+// the fence is open the tail lexes to a handful of blocks and stays retainable.
+// What does reach it is an inline marker with many paragraphs between it and its
+// closer, and since the budget is spent before giving up, the cost of that shape
+// is what the budget has to be sized against.
+test("an emphasis marker that closes far later stays near the full-repair cost", () => {
+  const source = `An *opening\n\n${paragraphs(3_600)}closing* marker.\n\n${paragraphs(200)}`;
+  const cache = new IncrementalMarkdownCache();
+  const step = Math.ceil(source.length / 420);
+  let render = cache.update(processStreamingText(""));
+  for (let length = 0; length <= source.length; length += step) {
+    render = cache.update(processStreamingText(source.slice(0, length)));
+  }
+  const input = processStreamingText(source);
+  render = cache.update(input);
+
+  assert.deepEqual(
+    render.parseMarkdownIntoBlocks(render.markdown),
+    parseMarkdownIntoBlocks(remend(input)),
+  );
+  // Retaining nothing is the correct answer here; retaining the attempt is not.
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+});
+
+// A long fenced block is the shape most likely to be mistaken for the budget's
+// trigger. It is not one: it keeps retaining, so a code-heavy answer does not
+// quietly lose the optimisation.
+test("a fenced block larger than the budget keeps retaining", () => {
+  const body = "const value = compute(argument, options, fallback);\n".repeat(
+    1_700,
+  );
+  const source = `\`\`\`js\n${body}\`\`\`\n\n${paragraphs(200)}`;
+  const cache = new IncrementalMarkdownCache();
+  let render = cache.update(processStreamingText(""));
+  for (let length = 0; length <= source.length; length += 512) {
+    render = cache.update(processStreamingText(source.slice(0, length)));
+  }
+  const input = processStreamingText(source);
+  render = cache.update(input);
+
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    false,
+  );
+  assert.ok(render.markdown.length < source.length / 4);
+  assert.deepEqual(
+    render.parseMarkdownIntoBlocks(render.markdown),
+    parseMarkdownIntoBlocks(remend(input)),
+  );
+});
