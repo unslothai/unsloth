@@ -4245,9 +4245,7 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
     return found
 
 
-def _scan_uv_policy_config_by_line(
-    candidates: "list[Path]",
-) -> "list[tuple[str, str, object]]":
+def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str, str, object]]":
     """The 3.10 fallback: look for `key = value` without parsing TOML properly.
 
     Sections are tracked because the answer is no longer only a printed line: strict mode
@@ -4406,9 +4404,7 @@ def _uv_policy_settings() -> "dict[str, object]":
     packages = list(settings["no_build_packages"])
     # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
     packages += _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
-    no_build_all = settings["no_build_all"] or _pm_policy_value_is_on(
-        os.environ.get("UV_NO_BUILD")
-    )
+    no_build_all = settings["no_build_all"] or _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
     exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
     if not _pm_policy_value_is_on(exclude_newer):
         exclude_newer = ""
@@ -4480,7 +4476,9 @@ def _uv_policy_config_projection() -> "Path | None":
         lines.append("no-build = true")
     elif settings["no_build_packages"]:
         lines.append(
-            "only-binary = [" + ", ".join(f'"{name}"' for name in settings["no_build_packages"]) + "]"
+            "only-binary = ["
+            + ", ".join(f'"{name}"' for name in settings["no_build_packages"])
+            + "]"
         )
     if settings["require_hashes"]:
         lines.append("require-hashes = true")

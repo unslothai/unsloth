@@ -978,7 +978,7 @@ class TestUvConfigDiscoveryMatchesUv:
         return [f"{name}: {key}" for name, key, _value in ips._scan_uv_policy_config()]
 
     def test_an_adjacent_uv_toml_beats_the_pyproject(self, tmp_path):
-        """"uv.toml files take precedence over pyproject.toml files, so if both are
+        """ "uv.toml files take precedence over pyproject.toml files, so if both are
         present in a directory, configuration will be read from uv.toml". Reading the
         losing file too turns a [tool.uv] table uv ignores into enforced policy."""
         (tmp_path / "uv.toml").write_text("require-hashes = true\n", encoding = "utf-8")
@@ -998,7 +998,7 @@ class TestUvConfigDiscoveryMatchesUv:
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "XDG is the Unix system-config path")
     def test_the_system_config_can_live_under_xdg_config_dirs(self, tmp_path, monkeypatch):
-        """"If multiple system-level configuration files are found, e.g. at both
+        """ "If multiple system-level configuration files are found, e.g. at both
         /etc/uv/uv.toml and $XDG_CONFIG_DIRS/uv/uv.toml, only the first-discovered file
         will be used, with XDG taking priority." A managed fleet is exactly where the
         policy lives outside /etc, and missing it means a silent note and an untranslated
