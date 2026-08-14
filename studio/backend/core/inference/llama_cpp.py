@@ -7709,7 +7709,6 @@ class LlamaCppBackend:
             if not Path(path).is_file():
                 return None
             from utils.hf_cache_settings import get_hf_cache_paths
-
             hub_cache = Path(os.path.abspath(get_hf_cache_paths().hub_cache))
         except Exception:  # noqa: BLE001 -- an unreadable cache setting is not a reusable path
             return None

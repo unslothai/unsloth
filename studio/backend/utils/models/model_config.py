@@ -3888,9 +3888,7 @@ class ModelConfig:
                     is_lora = False,
                     is_gguf = True,
                     gguf_file = None,
-                    gguf_verified = (
-                        (identifier, variant, verified_file) if verified_file else None
-                    ),
+                    gguf_verified = ((identifier, variant, verified_file) if verified_file else None),
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )
