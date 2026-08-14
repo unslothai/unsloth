@@ -59,11 +59,24 @@ interface BackendLoggingDefaults {
   log_frequency?: number;
 }
 
+export interface BackendCheckpointBackupConfig {
+  enabled?: boolean;
+  provider?: "huggingface";
+  repo_id?: string | null;
+  private?: boolean;
+  interval_steps?: number;
+  strategy?: "latest";
+  keep_remote?: number;
+  upload_on_stop?: boolean;
+  upload_on_complete?: boolean;
+}
+
 export interface BackendModelConfig {
   audio_type?: string | null;
   training?: BackendTrainingDefaults;
   lora?: BackendLoraDefaults;
   logging?: BackendLoggingDefaults;
+  checkpoint_backup?: BackendCheckpointBackupConfig;
 }
 
 export interface ModelConfigResponse {

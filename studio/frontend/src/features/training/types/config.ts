@@ -14,6 +14,18 @@ import type { BackendModelConfig } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
+export interface CheckpointBackupConfig {
+  enabled: boolean;
+  provider: "huggingface";
+  repoId: string | null;
+  private: boolean;
+  intervalSteps: number;
+  strategy: "latest";
+  keepRemote: number;
+  uploadOnStop: boolean;
+  uploadOnComplete: boolean;
+}
+
 export interface ModelCacheReferenceOptions {
   knownCached?: boolean;
   localPath?: string | null;
@@ -99,6 +111,7 @@ export interface TrainingConfigState {
   warmupSteps: number;
   maxSteps: number;
   saveSteps: number;
+  checkpointBackup: CheckpointBackupConfig;
   evalSteps: number;
   packing: boolean;
   trainOnCompletions: boolean;
@@ -233,6 +246,7 @@ export interface TrainingConfigActions {
   setWarmupSteps: (value: number) => void;
   setMaxSteps: (value: number) => void;
   setSaveSteps: (value: number) => void;
+  setCheckpointBackup: (value: CheckpointBackupConfig) => void;
   setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;

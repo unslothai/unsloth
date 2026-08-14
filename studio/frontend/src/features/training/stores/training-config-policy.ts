@@ -100,6 +100,17 @@ export const initialTrainingConfigState: TrainingConfigState = {
   isDatasetAudio: false,
   datasetCheckFailed: false,
   maxPositionEmbeddings: null,
+  checkpointBackup: {
+    enabled: false,
+    provider: "huggingface",
+    repoId: null,
+    private: true,
+    intervalSteps: 100,
+    strategy: "latest",
+    keepRemote: 1,
+    uploadOnStop: true,
+    uploadOnComplete: true,
+  },
   ...DEFAULT_HYPERPARAMS,
 };
 export function hasSeparateStreamingEvalSplit(
