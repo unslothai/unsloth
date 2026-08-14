@@ -400,6 +400,10 @@ def _is_crash_call(node, aliases = None) -> bool:
         return False
     # Only the signal argument, so a PID never reads as a signal.
     signal_argument = node.args[index]
+    # A string delivers nothing: `raise_signal("SIGQUIT")` is a TypeError, and the
+    # quoted name survives unparsing and matched as though it were the symbol.
+    if isinstance(signal_argument, ast.Constant) and isinstance(signal_argument.value, str):
+        return False
     rendered = ast.unparse(signal_argument)
     if _FATAL_SIGNAL_RE.search(rendered):
         return True
@@ -417,7 +421,9 @@ def _enclosing_scopes(tree):
     def walk(scope, node):
         for child in ast.iter_child_nodes(node):
             next_scope = (
-                child if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope
+                child
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+                else scope
             )
             owner[id(child)] = next_scope
             walk(next_scope, child)
@@ -443,15 +449,28 @@ def _position(node):
 _AFTER_EVERYTHING = (float("inf"), 0)
 
 
-_BRANCHING = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match)
+_BRANCHING = (
+    ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match, ast.BoolOp
+)
 
 
 def _child_paths(scope, certain):
     """`(child, certain)`. A branch's body may not run, but its `finally` always does."""
     branching = isinstance(scope, _BRANCHING)
-    finally_body = scope.finalbody if isinstance(scope, ast.Try) else ()
+    if isinstance(scope, ast.Try):
+        always = scope.finalbody  # a finally runs whatever the try did
+    elif isinstance(scope, ast.BoolOp):
+        always = scope.values[:1]  # only the first operand of a short circuit
+    else:
+        always = ()
     for child in ast.iter_child_nodes(scope):
-        yield child, certain and (not branching or child in finally_body)
+        yield child, certain and (not branching or any(child is node for node in always))
+
+
+def _definition_time(node):
+    """Parts of a def that run where it sits: defaults and decorators, not the body."""
+    defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d is not None]
+    return defaults + list(getattr(node, "decorator_list", ()))
 
 
 def _dumpable_writes(
@@ -464,13 +483,22 @@ def _dumpable_writes(
     With `functions`, a call to a local helper counts too, at the call's position, as
     whatever that helper leaves dumpability set to.
     """
+    def written(node):
+        value = _prctl_dumpable_value(node)
+        if value is None and functions is not None:
+            value = _helper_leaves_dumpable(node, scope, functions)
+        return value
+
     for child, child_certain in _child_paths(scope, certain):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # The body waits for a call, but defaults and decorators run right here.
+            for part in _definition_time(child):
+                if isinstance(part, ast.Call) and written(part) is not None:
+                    yield _position(part), written(part), child_certain
+                yield from _dumpable_writes(part, child_certain, functions)
             continue
         if isinstance(child, ast.Call):
-            value = _prctl_dumpable_value(child)
-            if value is None and functions is not None:
-                value = _helper_leaves_dumpable(child, scope, functions)
+            value = written(child)
             if value is not None:
                 yield _position(child), value, child_certain
         yield from _dumpable_writes(child, child_certain, functions)
@@ -619,12 +647,17 @@ def _bindings_before(tree, scope, position):
     the old value on `if False: INNER = "pass"` lost the crash it replaced.
     """
     env, maybe = {}, {}
+    # Python binds a name locally for the whole function if it is assigned anywhere in
+    # it, so a global of that name is never what the body reads, even above the assign.
+    shadowed = _rebound_names(scope) if scope is not tree else ()
     for owner_scope in (tree, scope) if scope is not tree else (tree,):
         # A nested scope runs after the module body, so a global assigned below the
         # `def` is still bound by the time the call gets there.
         limit = _AFTER_EVERYTHING if owner_scope is tree and scope is not tree else position
         for node, certain in _assignments_before(owner_scope, limit):
             pair = _assigned_pair(node)
+            if owner_scope is tree and pair[0].id in shadowed:
+                continue
             folded, _ids = _fold(pair[1], env)
             if not certain:
                 if folded is not None:
@@ -1165,6 +1198,41 @@ _FIXTURES = {
         "SCRIPT = \"import builtins\\nbuiltins.exec('import os; os.abort()')\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         True,  # builtins.exec is the builtin, spelled out
+    ),
+    "payload_name_is_local_to_the_function": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\ndef run():\\n    exec(INNER)\\n"
+        "    INNER = 'pass'\\nrun()\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # assigning INNER anywhere makes it local, so the global never applies
+    ),
+    "restore_in_a_short_circuited_operand": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    False and ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the operand never evaluates, so the clear still stands
+    ),
+    "restore_in_a_method_default": (
+        "import ctypes\n"
+        "class C:\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    def f(x = ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)):\n        pass\n"
+        "    ctypes.string_at(0)\n",
+        True,  # a default runs where the def sits, so the restore beats the crash
+    ),
+    "crash_alias_as_a_lambda_parameter": (
+        "from os import abort\n"
+        "f = lambda abort: abort()\n"
+        "f(mock)\n",
+        False,  # the parameter shadows the import inside the lambda
+    ),
+    "signal_name_passed_as_a_string": (
+        "import signal\n"
+        "def child():\n"
+        '    signal.raise_signal("SIGQUIT")\n',
+        False,  # a string is a TypeError, and delivers no signal
     ),
 }
 
