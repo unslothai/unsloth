@@ -38,10 +38,10 @@ FULL_FINETUNE_REFUSED = (
     "sidecar refuses full fine-tune; unset UNSLOTH_ENABLE_FULL_FINETUNING"
 )
 PREFERENCE_NEEDS_DPO = "preference recipe needs trl.DPOTrainer"
-PREFERENCE_DPO_UNWIRED = "Unsloth DPO training is not wired"
 NO_PREFERENCE_PAIRS = (
-    "no preference pairs (need a world fail then a later world pass)"
+    "no preference pairs (need a world pass and an admitted error_fix)"
 )
+UNSLOTH_DPO_NOT_WIRED = "Unsloth DPO training is not wired"
 RECIPE_PREFERENCE = "preference"
 
 
@@ -221,7 +221,7 @@ class UnslothTrainBackend:
             except ImportError as exc:
                 raise RuntimeError(PREFERENCE_NEEDS_DPO) from exc
             del DPOTrainer
-            raise NotImplementedError(PREFERENCE_DPO_UNWIRED)
+            raise NotImplementedError(UNSLOTH_DPO_NOT_WIRED)
         from unsloth import FastLanguageModel
         from trl import SFTTrainer, SFTConfig
         from datasets import Dataset

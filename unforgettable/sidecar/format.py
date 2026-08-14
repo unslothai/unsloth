@@ -18,12 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from unforgettable.store.records import (
-    get_record,
-    list_records,
-    list_retrieve_uses,
-    list_rollouts,
-)
+from unforgettable.store.records import list_records, list_rollouts
 
 PACK_BODY_CHARS = 1200
 PREFERENCE_MAX_PAIRS = 32
@@ -56,92 +51,50 @@ def _twin_note_episodes(*, db_path=None) -> set[str]:
     return eps
 
 
-def _linked_procedure_title(
-    episode_id: str, fail: dict[str, Any], *, db_path=None
-) -> str:
-    candidates: list[str] = []
-    sid = fail.get("source_record_id")
-    if sid:
-        candidates.append(sid)
-    for use in list_retrieve_uses(episode_id=episode_id, db_path=db_path):
-        rid = use.get("record_id")
-        if rid:
-            candidates.append(rid)
-    for rid in candidates:
-        rec = get_record(rid, db_path=db_path)
-        if rec is None or rec.get("kind") != "procedure":
+def _fail_text_from_error_fix(rec: dict[str, Any]) -> str:
+    """Rejected text: first Tried:/failed line, else the error_fix title."""
+    for line in (rec.get("body") or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
             continue
-        title = (rec.get("title") or "").strip()
-        if title:
-            return title
-    return ""
-
-
-def _admitted_error_fix_body(episode_id: str, *, db_path=None) -> str:
-    for rec in list_records(kinds=["error_fix"], statuses=["active"], db_path=db_path):
-        if rec.get("source_episode_id") != episode_id:
-            continue
-        if rec.get("provenance") not in _TRUSTED_CHOSEN:
-            continue
-        body = (rec.get("body") or "").strip()
-        if body:
-            return _clip(body, PACK_BODY_CHARS)
-    return ""
+        lower = stripped.lower()
+        if lower.startswith("tried:"):
+            rest = stripped.split(":", 1)[1].strip()
+            return rest or stripped
+        if "failed" in lower:
+            return stripped
+    return (rec.get("title") or "").strip()
 
 
 def preference_pairs(*, db_path=None) -> list[dict]:
-    """World fail/pass pairs. Chosen is never sim-only."""
-    has_world_fail: set[str] = set()
-    has_world_pass: set[str] = set()
-    for row in list_rollouts(db_path=db_path):
-        eid = row.get("episode_id")
-        if not eid or row.get("contact") != "world":
-            continue
-        if row.get("outcome") == "fail":
-            has_world_fail.add(eid)
-        elif row.get("outcome") == "pass":
-            has_world_pass.add(eid)
+    """World-pass + admitted error_fix pairs. Chosen is never sim-only."""
+    # run() keeps last-per-contact, so a happy path stores world/pass only.
+    world_pass = {
+        row["episode_id"]
+        for row in list_rollouts(contact="world", outcome="pass", db_path=db_path)
+        if row.get("episode_id")
+    }
     twin_eps = _twin_note_episodes(db_path=db_path)
     pairs: list[dict] = []
-    for eid in sorted(has_world_fail & has_world_pass):
-        if eid in twin_eps:
+    seen: set[str] = set()
+    for rec in list_records(kinds=["error_fix"], statuses=["active"], db_path=db_path):
+        eid = rec.get("source_episode_id")
+        if not eid or eid in seen or eid in twin_eps:
             continue
-        fail = None
-        later_pass = None
-        # episode_id filter is created_at ASC: later pass is after the fail.
-        for row in list_rollouts(episode_id=eid, db_path=db_path):
-            if (
-                fail is None
-                and row.get("contact") == "world"
-                and row.get("outcome") == "fail"
-            ):
-                fail = row
-                continue
-            if (
-                fail is not None
-                and later_pass is None
-                and row.get("contact") == "world"
-                and row.get("outcome") == "pass"
-            ):
-                later_pass = row
-                break
-        if fail is None or later_pass is None:
+        if eid not in world_pass:
             continue
-        fail_summary = _clip((fail.get("summary") or "").strip(), PACK_BODY_CHARS)
-        pass_summary = _clip((later_pass.get("summary") or "").strip(), PACK_BODY_CHARS)
-        prompt_content = fail_summary or _linked_procedure_title(
-            eid, fail, db_path=db_path
-        )
-        if not prompt_content or not fail_summary:
+        if rec.get("provenance") not in _TRUSTED_CHOSEN:
             continue
-        chosen = _admitted_error_fix_body(eid, db_path=db_path) or pass_summary
-        if not chosen:
+        chosen = _clip((rec.get("body") or "").strip(), PACK_BODY_CHARS)
+        rejected = _clip(_fail_text_from_error_fix(rec), PACK_BODY_CHARS)
+        if not chosen or not rejected:
             continue
+        seen.add(eid)
         pairs.append(
             {
-                "prompt": [{"role": "user", "content": prompt_content}],
+                "prompt": [{"role": "user", "content": rejected}],
                 "chosen": chosen,
-                "rejected": fail_summary,
+                "rejected": rejected,
                 "episode_id": eid,
             }
         )

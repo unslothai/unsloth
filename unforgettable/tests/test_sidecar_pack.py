@@ -14,8 +14,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
+from unforgettable.loop.context import EpisodeState
+from unforgettable.loop.episode import _extract
 from unforgettable.sidecar import pack_from_admitted_b
 from unforgettable.sidecar.format import preference_pairs
 from unforgettable.sidecar.pack import (
@@ -29,6 +32,9 @@ from unforgettable.store.records import (
     insert_record,
     insert_retrieve_use,
     insert_rollout,
+    list_records,
+    list_rollouts,
+    set_record_status,
 )
 
 
@@ -361,25 +367,49 @@ def test_pack_is_retrieval_heavy_when_inject_stats_mean_high(db_path):
     assert pack_is_retrieval_heavy(db_path) is True
 
 
-def test_preference_pairs_world_fail_then_pass(db_path):
-    insert_rollout(
-        episode_id="ep-pref",
-        contact="world",
-        outcome="fail",
-        summary="broke in world",
+def _admitted_error_fix(
+    db_path,
+    *,
+    episode_id: str,
+    body: str,
+    provenance: str = "mixed",
+    title: str = "Error then fix",
+) -> dict:
+    return insert_record(
+        kind="error_fix",
+        title=title,
+        body=body,
+        provenance=provenance,
+        source_episode_id=episode_id,
         db_path=db_path,
     )
+
+
+class _NoCompleteHost:
+    def __init__(self, db):
+        self.db = db
+
+    def memory_db_path(self):
+        return self.db
+
+
+def test_preference_pairs_world_pass_and_admitted_error_fix(db_path):
     insert_rollout(
         episode_id="ep-pref",
         contact="world",
         outcome="pass",
-        summary="fixed in world",
+        summary="works in world",
         db_path=db_path,
+    )
+    _admitted_error_fix(
+        db_path,
+        episode_id="ep-pref",
+        body="Tried: broke in world\nThen: fixed in world",
     )
     pairs = preference_pairs(db_path=db_path)
     assert len(pairs) == 1
     assert pairs[0]["prompt"] == [{"role": "user", "content": "broke in world"}]
-    assert pairs[0]["chosen"] == "fixed in world"
+    assert pairs[0]["chosen"] == "Tried: broke in world\nThen: fixed in world"
     assert pairs[0]["rejected"] == "broke in world"
     assert pairs[0]["episode_id"] == "ep-pref"
 
@@ -388,16 +418,14 @@ def test_preference_pairs_skips_twin_note_episode(db_path):
     insert_rollout(
         episode_id="ep-twin",
         contact="world",
-        outcome="fail",
-        summary="broke in world",
+        outcome="pass",
+        summary="works in world",
         db_path=db_path,
     )
-    insert_rollout(
+    _admitted_error_fix(
+        db_path,
         episode_id="ep-twin",
-        contact="world",
-        outcome="pass",
-        summary="fixed in world",
-        db_path=db_path,
+        body="Tried: broke in world\nThen: later passed",
     )
     insert_record(
         kind="twin_note",
@@ -425,6 +453,12 @@ def test_preference_pairs_sim_only_pass_not_chosen(db_path):
         summary="sim only glory",
         db_path=db_path,
     )
+    _admitted_error_fix(
+        db_path,
+        episode_id="ep-sim",
+        body="Tried: sim fail\nThen: sim only glory",
+        provenance="sim",
+    )
     assert preference_pairs(db_path=db_path) == []
     insert_rollout(
         episode_id="ep-sim",
@@ -433,9 +467,16 @@ def test_preference_pairs_sim_only_pass_not_chosen(db_path):
         summary="world fixed",
         db_path=db_path,
     )
+    assert preference_pairs(db_path=db_path) == []
+    _admitted_error_fix(
+        db_path,
+        episode_id="ep-sim",
+        body="Tried: broke in world\nThen: world fixed",
+        provenance="mixed",
+    )
     pairs = preference_pairs(db_path=db_path)
     assert len(pairs) == 1
-    assert pairs[0]["chosen"] == "world fixed"
+    assert pairs[0]["chosen"] == "Tried: broke in world\nThen: world fixed"
     assert pairs[0]["rejected"] == "broke in world"
     assert "sim only glory" not in json.dumps(pairs)
 
@@ -444,25 +485,48 @@ def test_preference_pairs_prefers_admitted_error_fix(db_path):
     insert_rollout(
         episode_id="ep-fix",
         contact="world",
-        outcome="fail",
-        summary="broke in world",
-        db_path=db_path,
-    )
-    insert_rollout(
-        episode_id="ep-fix",
-        contact="world",
         outcome="pass",
         summary="fixed in world",
         db_path=db_path,
     )
-    insert_record(
-        kind="error_fix",
-        title="Error then fix",
+    _admitted_error_fix(
+        db_path,
+        episode_id="ep-fix",
         body="the admitted fix body",
-        provenance="mixed",
-        source_episode_id="ep-fix",
-        db_path=db_path,
     )
     pairs = preference_pairs(db_path=db_path)
     assert len(pairs) == 1
     assert pairs[0]["chosen"] == "the admitted fix body"
+    assert pairs[0]["rejected"] == "Error then fix"
+
+
+def test_preference_pairs_from_episode_writer_world_pass(db_path):
+    state = EpisodeState(episode_id="ep-live-01", world_session="world")
+    state.note_failure("exit code 1", "world")
+    state.note_success("ok in sim", "sim")
+    state.note_success("works in world", "world")
+    asyncio.run(
+        _extract(
+            state,
+            str(db_path),
+            last_user="run the tests",
+            actions=["act"],
+            host=_NoCompleteHost(db_path),
+        )
+    )
+    grades = {
+        (row["contact"], row["outcome"])
+        for row in list_rollouts(episode_id=state.episode_id, db_path=db_path)
+    }
+    assert grades == {("world", "pass"), ("sim", "pass")}
+    assert preference_pairs(db_path=db_path) == []
+    fixes = list_records(kinds=["error_fix"], db_path=db_path)
+    assert len(fixes) == 1
+    assert fixes[0]["status"] == "proposed"
+    set_record_status(fixes[0]["id"], "active", reason="cli admit", db_path=db_path)
+    pairs = preference_pairs(db_path=db_path)
+    assert len(pairs) == 1
+    assert pairs[0]["episode_id"] == state.episode_id
+    assert pairs[0]["chosen"] == fixes[0]["body"]
+    assert pairs[0]["rejected"] == "exit code 1"
+    assert pairs[0]["prompt"] == [{"role": "user", "content": "exit code 1"}]

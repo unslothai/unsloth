@@ -157,15 +157,16 @@ def test_train_pack_preference_writes_pairs_jsonl(db_path):
     insert_rollout(
         episode_id="ep-pref",
         contact="world",
-        outcome="fail",
-        summary="broke in world",
+        outcome="pass",
+        summary="works in world",
         db_path=db_path,
     )
-    insert_rollout(
-        episode_id="ep-pref",
-        contact="world",
-        outcome="pass",
-        summary="fixed in world",
+    insert_record(
+        kind="error_fix",
+        title="Error then fix",
+        body="Tried: broke in world\nThen: fixed in world",
+        provenance="mixed",
+        source_episode_id="ep-pref",
         db_path=db_path,
     )
     result = train_pack(
@@ -184,7 +185,7 @@ def test_train_pack_preference_writes_pairs_jsonl(db_path):
     lines = (dest / "pairs.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     pair = json.loads(lines[0])
-    assert pair["chosen"] == "fixed in world"
+    assert pair["chosen"] == "Tried: broke in world\nThen: fixed in world"
     assert pair["rejected"] == "broke in world"
     assert pair["episode_id"] == "ep-pref"
     row = get_adapter(result.adapter_id, db_path=db_path)
