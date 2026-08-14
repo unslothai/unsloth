@@ -27,12 +27,20 @@ def _read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+# The classes that identify the trigger's model-name span. Matched as a set against every
+# string literal in the file rather than against a `className="..."` attribute: the span moved
+# to `className={cn("...", triggerLabelClassName)}` and the old attribute-shaped regex then
+# found nothing, so the guard passed vacuously while still reading as if it checked something.
+TRIGGER_LABEL_CLASSES = {"min-w-0", "flex-1", "truncate", "font-heading", "text-ui-16"}
+
+
 def test_model_selector_trigger_label_uses_leading_tight():
     src = _read(MODEL_SELECTOR)
-    pattern = re.compile(
-        r'<span\s+className="[^"]*\bmin-w-0\b[^"]*\bflex-1\b[^"]*\btruncate\b[^"]*\bfont-heading\b[^"]*\btext-ui-16[^"]*"',
-    )
-    matches = pattern.findall(src)
+    matches = [
+        literal
+        for literal in re.findall(r'"([^"\n]*)"', src)
+        if TRIGGER_LABEL_CLASSES <= set(literal.split())
+    ]
     assert matches, "could not find ModelSelectorTrigger model-name span"
     for cls in matches:
         assert "leading-tight" in cls, f"expected leading-tight, got: {cls}"
