@@ -542,6 +542,9 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-Music3", 67, {
         label: "Diffusers",
+        // 67 GB is the repository/download footprint, not resident VRAM. The
+        // publisher's ModularPipeline path loads in BF16 on a 24 GB CUDA GPU.
+        offloadFitTiers: [{ gpuGb: 24, systemRamGb: 0 }],
       }),
     ],
   },

@@ -87,6 +87,7 @@ import {
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
+  getAudioDownloadPlan,
   generateAudio,
   listAudioGallery,
 } from "./api";
@@ -378,7 +379,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const stagedTtsGeneration = useRef(0);
   const pendingStagedTtsLoad = useRef<{
     repoId: string;
-    ggufFilename: string;
+    ggufFilename: string | null;
+    loadId?: string | null;
+    audioType?: string | null;
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
@@ -905,7 +908,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         return;
       }
       pendingStagedTtsLoad.current = null;
-      void loadTtsModelRef.current(pending.repoId, pending.ggufFilename);
+      void loadTtsModelRef.current(
+        pending.repoId,
+        pending.ggufFilename,
+        pending.loadId,
+        pending.audioType,
+      );
     },
   });
 
@@ -925,23 +933,79 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       return;
     }
     pendingStagedTtsLoad.current = null;
-    void loadTtsModelRef.current(pending.repoId, pending.ggufFilename);
+    void loadTtsModelRef.current(
+      pending.repoId,
+      pending.ggufFilename,
+      pending.loadId,
+      pending.audioType,
+    );
   }, [active, busy]);
 
   const loadOrStageTtsModel = useCallback(
-    (
+    async (
       repoId: string,
       ggufFilename: string | null,
       meta: ModelSelectorChangeMeta,
     ) => {
+      const generation = ++stagedTtsGeneration.current;
+      pendingStagedTtsLoad.current = null;
+      stagedTtsLoadDeferred.current = false;
+      stageTtsDownload([]);
+
+      // Hub TTS picks use the same managed path as Chat. Native models can also
+      // depend on a second codec repository, so the selected repo's downloaded
+      // badge is not enough: the cache-aware backend plan owns every missing
+      // checkpoint, config and companion file before model loading begins.
+      if (meta.source === "hub" && !ggufFilename) {
+        let plan;
+        try {
+          plan = await getAudioDownloadPlan(
+            repoId,
+            hfApiToken(getHfToken()),
+          );
+        } catch (error) {
+          if (generation !== stagedTtsGeneration.current) return;
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : `Could not prepare the download for ${repoId}.`,
+          );
+          return;
+        }
+        if (generation !== stagedTtsGeneration.current) return;
+        if (plan.entries.length > 0) {
+          pendingStagedTtsLoad.current = {
+            repoId,
+            ggufFilename,
+            loadId: meta.loadId,
+            audioType: meta.audioType,
+            generation,
+          };
+          stageTtsDownload(
+            plan.entries.map((entry) => ({
+              repoId: entry.repo_id,
+              files: entry.files,
+              bytes: entry.bytes,
+              ggufFilename: entry.gguf_filename,
+              checkpoint: entry.checkpoint,
+            })),
+          );
+          return;
+        }
+      }
+
       if (
         meta.source === "hub" &&
         meta.isDownloaded === false &&
         ggufFilename
       ) {
-        const generation = ++stagedTtsGeneration.current;
-        pendingStagedTtsLoad.current = { repoId, ggufFilename, generation };
-        stagedTtsLoadDeferred.current = false;
+        pendingStagedTtsLoad.current = {
+          repoId,
+          ggufFilename,
+          loadId: meta.loadId,
+          audioType: meta.audioType,
+          generation,
+        };
         stageTtsDownload([
           {
             repoId,
@@ -955,8 +1019,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
       // A cached/local/direct pick supersedes any staged auto-load. The manager
       // may keep downloading globally, but its old completion cannot load here.
-      invalidatePendingStagedTts();
-      stageTtsDownload([]);
       void loadTtsModelRef.current(
         repoId,
         ggufFilename,
@@ -964,7 +1026,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         meta.audioType,
       );
     },
-    [invalidatePendingStagedTts, stageTtsDownload],
+    [stageTtsDownload],
   );
 
   const ensureSttLoaded = useCallback(
@@ -1258,7 +1320,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             busyRef.current = null;
             setBusy(null);
           }
-          loadOrStageTtsModel(ggufSibling, variant.filename, {
+          await loadOrStageTtsModel(ggufSibling, variant.filename, {
             ...meta,
             source: "hub",
             isGguf: true,
@@ -1283,7 +1345,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
         return;
       }
-      loadOrStageTtsModel(id, exactGguf, meta);
+      await loadOrStageTtsModel(id, exactGguf, meta);
     },
     [
       ensureSttLoaded,

@@ -30,6 +30,7 @@ import json
 import logging
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -67,6 +68,18 @@ _MINIMAX_MODULAR_CLASSES = (
     "MiniMaxMusic3ModularPipeline",
     "MiniMaxMusic3Blocks",
 )
+_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
+    (
+        "condition_encoder",
+        "language_model",
+        "rvq_depth_decoder",
+        "scheduler",
+        "tokenizer",
+        "transformer",
+        "vocoder",
+    )
+)
+_MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 
 
 def _read_local_audio_metadata(path: Path, filename: str) -> dict[str, Any]:
@@ -187,6 +200,204 @@ def native_audio_security_targets(
     else:
         targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
     return targets
+
+
+def _moss_transformers5_config_compat(
+    codec_source: str, token_kwargs: dict[str, Any]
+) -> None:
+    """Import a MOSS codec config with the pre-Transformers-5 subclass contract.
+
+    Transformers 5 turns every ``PreTrainedConfig`` subclass into a dataclass.
+    The published MOSS codec configs have required fields (including
+    ``sampling_rate``) after inherited default fields, which Python dataclasses
+    reject before any model weights are read. The remote configs already own
+    their constructors, so briefly suppressing only that automatic conversion
+    restores the contract they were published against. The base hook is always
+    restored before the actual model load begins.
+    """
+    import transformers
+
+    try:
+        major = int(str(getattr(transformers, "__version__", "0")).split(".", 1)[0])
+    except (TypeError, ValueError):
+        return
+    if major < 5:
+        return
+
+    auto_config = getattr(transformers, "AutoConfig", None)
+    base_config = getattr(transformers, "PreTrainedConfig", None)
+    if auto_config is None or base_config is None:
+        return
+    original = base_config.__dict__.get("__init_subclass__")
+    if original is None:
+        return
+
+    with _MOSS_CONFIG_COMPAT_LOCK:
+        setattr(
+            base_config,
+            "__init_subclass__",
+            classmethod(lambda cls, *args, **kwargs: None),
+        )
+        try:
+            auto_config.from_pretrained(
+                codec_source,
+                trust_remote_code = True,
+                **token_kwargs,
+            )
+        finally:
+            setattr(base_config, "__init_subclass__", original)
+
+
+def _native_audio_file_size(sibling: Any) -> int:
+    size = getattr(sibling, "size", None)
+    if size is None:
+        lfs = getattr(sibling, "lfs", None)
+        size = getattr(lfs, "size", None) if lfs is not None else None
+    try:
+        return max(0, int(size or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _native_audio_file_is_cached(
+    repo_id: str,
+    filename: str,
+    revision: Optional[str],
+    expected_size: int,
+) -> bool:
+    """Require a complete current-revision hit in a cache the loaders reuse."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        roots: list[Optional[str]] = [str(active_hf_hub_cache()), None]
+        seen: set[Optional[str]] = set()
+        for root in roots:
+            if root in seen:
+                continue
+            seen.add(root)
+            current = try_to_load_from_cache(
+                repo_id,
+                filename,
+                cache_dir = root,
+                revision = revision,
+            )
+            default = try_to_load_from_cache(repo_id, filename, cache_dir = root)
+            if not isinstance(current, str) or not isinstance(default, str):
+                continue
+            current_path = Path(current)
+            default_path = Path(default)
+            if not current_path.is_file() or not default_path.is_file():
+                continue
+            try:
+                if current_path.resolve() != default_path.resolve():
+                    continue
+                if expected_size > 0 and default_path.stat().st_size != expected_size:
+                    continue
+            except OSError:
+                continue
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _native_audio_repo_files(
+    audio_type: Optional[str], checkpoint: bool, siblings: list[Any]
+) -> list[Any]:
+    if audio_type != "minimax_music3" or not checkpoint:
+        return [s for s in siblings if str(getattr(s, "rfilename", "")).strip()]
+
+    required = []
+    for sibling in siblings:
+        name = str(getattr(sibling, "rfilename", "")).strip()
+        if not name:
+            continue
+        root = name.split("/", 1)[0]
+        if (
+            root in _MINIMAX_DOWNLOAD_COMPONENTS
+            or name == "modular_model_index.json"
+            or ("/" not in name and Path(name).suffix.lower() in (".json", ".py"))
+        ):
+            required.append(sibling)
+    return required
+
+
+def native_audio_download_plan(
+    model_name: str, hf_token: Optional[str] = None
+) -> dict[str, Any]:
+    """Return uncached Hub files for an Audio-page TTS load.
+
+    Native models add their companion codec repositories and MiniMax excludes
+    legacy weights its modular index never references. Other TTS repositories
+    use a full snapshot, matching Chat's safe generic fallback.
+    """
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        raise ValueError("A model repository is required.")
+    if Path(normalized).expanduser().exists():
+        return {
+            "entries": [],
+            "total_bytes": 0,
+            "required_bytes": 0,
+            "checkpoint_bytes": 0,
+        }
+
+    audio_type = _native_audio_type(normalized)
+
+    from huggingface_hub import HfApi
+
+    api = HfApi(token = hf_token or None)
+    entries = []
+    total_bytes = 0
+    required_bytes = 0
+    checkpoint_bytes = 0
+    targets = (
+        list(dict.fromkeys(native_audio_security_targets(normalized, audio_type, hf_token)))
+        if audio_type is not None
+        else [normalized]
+    )
+    for index, repo_id in enumerate(targets):
+        checkpoint = index == 0
+        info = api.model_info(repo_id, files_metadata = True)
+        siblings = _native_audio_repo_files(
+            audio_type,
+            checkpoint,
+            list(getattr(info, "siblings", None) or []),
+        )
+        if not siblings:
+            raise ValueError(f"{repo_id} does not publish files required by its audio loader.")
+        revision = str(getattr(info, "sha", "") or "") or None
+        missing_files = []
+        missing_bytes = 0
+        repo_bytes = 0
+        for sibling in siblings:
+            filename = str(getattr(sibling, "rfilename", ""))
+            size = _native_audio_file_size(sibling)
+            repo_bytes += size
+            if not _native_audio_file_is_cached(repo_id, filename, revision, size):
+                missing_files.append(filename)
+                missing_bytes += size
+        required_bytes += repo_bytes
+        if checkpoint:
+            checkpoint_bytes += repo_bytes
+        if missing_files:
+            entries.append(
+                {
+                    "repo_id": repo_id,
+                    "files": missing_files,
+                    "bytes": missing_bytes,
+                    "gguf_filename": None,
+                    "checkpoint": checkpoint,
+                }
+            )
+            total_bytes += missing_bytes
+    return {
+        "entries": entries,
+        "total_bytes": total_bytes,
+        "required_bytes": required_bytes,
+        "checkpoint_bytes": checkpoint_bytes,
+    }
 
 
 class _CancelStoppingCriteria:
@@ -421,10 +632,12 @@ class NativeAudioBackend:
         from transformers import AutoModel, AutoProcessor
 
         token_kwargs = self._token_kwargs(hf_token)
+        codec_source = _moss_local_codec_target(source, hf_token)
+        _moss_transformers5_config_compat(codec_source, token_kwargs)
         processor = AutoProcessor.from_pretrained(
             source,
             trust_remote_code = trust_remote_code,
-            codec_path = _moss_local_codec_target(source, hf_token),
+            codec_path = codec_source,
             **token_kwargs,
         )
         audio_tokenizer = getattr(processor, "audio_tokenizer", None)
@@ -447,6 +660,7 @@ class NativeAudioBackend:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
         token_kwargs = self._token_kwargs(hf_token)
+        _moss_transformers5_config_compat(MOSS_NANO_CODEC_REPO, token_kwargs)
         model = AutoModelForCausalLM.from_pretrained(
             source,
             trust_remote_code = trust_remote_code,

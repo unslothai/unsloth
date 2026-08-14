@@ -18,7 +18,9 @@ from core.inference.native_audio import (
     MOSS_LOCAL_CODEC_REPO,
     MOSS_NANO_CODEC_REPO,
     NativeAudioBackend,
+    _moss_transformers5_config_compat,
     is_native_audio_model,
+    native_audio_download_plan,
     native_audio_type_from_local_path,
     native_audio_security_targets,
 )
@@ -85,6 +87,158 @@ def test_moss_local_security_target_follows_checkpoint_processor_config(tmp_path
     assert native_audio_security_targets(str(tmp_path), "moss_tts_local") == [
         str(tmp_path),
         custom_codec,
+    ]
+
+
+def test_transformers5_moss_config_compat_is_scoped_and_restored(monkeypatch):
+    calls = []
+
+    class PreTrainedConfig:
+        def __init_subclass__(cls, **kwargs):
+            raise TypeError("non-default argument 'sampling_rate' follows default argument")
+
+    original = PreTrainedConfig.__dict__["__init_subclass__"]
+
+    class AutoConfig:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            class PublishedMossConfig(PreTrainedConfig):
+                pass
+
+            calls.append((source, kwargs, PublishedMossConfig))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            __version__ = "5.5.0",
+            AutoConfig = AutoConfig,
+            PreTrainedConfig = PreTrainedConfig,
+        ),
+    )
+
+    _moss_transformers5_config_compat("OpenMOSS-Team/test-codec", {"token": "secret"})
+
+    assert calls[0][0] == "OpenMOSS-Team/test-codec"
+    assert calls[0][1] == {"trust_remote_code": True, "token": "secret"}
+    assert PreTrainedConfig.__dict__["__init_subclass__"] is original
+    with pytest.raises(TypeError, match = "sampling_rate"):
+        class RestoredFailure(PreTrainedConfig):
+            pass
+
+
+def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch):
+    siblings = [
+        SimpleNamespace(rfilename = "modular_model_index.json", size = 10),
+        SimpleNamespace(rfilename = "pipeline.py", size = 5),
+        SimpleNamespace(rfilename = "transformer/model.safetensors", size = 100),
+        SimpleNamespace(rfilename = "flowmatching_vae.pth", size = 500),
+        SimpleNamespace(rfilename = "qwen_7B/model-00001.safetensors", size = 400),
+        SimpleNamespace(rfilename = "README.md", size = 20),
+    ]
+
+    class HfApi:
+        def __init__(self, token = None):
+            assert token == "secret"
+
+        def model_info(self, repo_id, files_metadata = False):
+            assert repo_id == "MiniMaxAI/MiniMax-Music3"
+            assert files_metadata is True
+            return SimpleNamespace(sha = "current", siblings = siblings)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached",
+        lambda *_args: False,
+    )
+
+    plan = native_audio_download_plan("MiniMaxAI/MiniMax-Music3", "secret")
+
+    assert plan["entries"][0]["files"] == [
+        "modular_model_index.json",
+        "pipeline.py",
+        "transformer/model.safetensors",
+    ]
+    assert plan["total_bytes"] == 115
+    assert plan["required_bytes"] == 115
+    assert plan["checkpoint_bytes"] == 115
+
+
+def test_download_plan_stages_missing_codec_when_main_repo_is_cached(monkeypatch):
+    infos = {
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": SimpleNamespace(
+            sha = "main-sha",
+            siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 100)],
+        ),
+        MOSS_NANO_CODEC_REPO: SimpleNamespace(
+            sha = "codec-sha",
+            siblings = [
+                SimpleNamespace(rfilename = "config.json", size = 2),
+                SimpleNamespace(rfilename = "model.safetensors", size = 20),
+            ],
+        ),
+    }
+
+    class HfApi:
+        def __init__(self, token = None):
+            assert token is None
+
+        def model_info(self, repo_id, files_metadata = False):
+            assert files_metadata is True
+            return infos[repo_id]
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached",
+        lambda repo, *_args: repo != MOSS_NANO_CODEC_REPO,
+    )
+
+    plan = native_audio_download_plan("OpenMOSS-Team/MOSS-TTS-Nano-100M")
+
+    assert len(plan["entries"]) == 1
+    assert plan["entries"][0] == {
+        "repo_id": MOSS_NANO_CODEC_REPO,
+        "files": ["config.json", "model.safetensors"],
+        "bytes": 22,
+        "gguf_filename": None,
+        "checkpoint": False,
+    }
+    assert plan["required_bytes"] == 122
+    assert plan["checkpoint_bytes"] == 100
+
+
+def test_download_plan_uses_full_snapshot_for_generic_hub_tts(monkeypatch):
+    siblings = [
+        SimpleNamespace(rfilename = "config.json", size = 2),
+        SimpleNamespace(rfilename = "model.safetensors", size = 20),
+        SimpleNamespace(rfilename = "tokenizer.json", size = 3),
+    ]
+
+    class HfApi:
+        def __init__(self, token = None):
+            assert token is None
+
+        def model_info(self, repo_id, files_metadata = False):
+            assert repo_id == "acme/custom-tts"
+            assert files_metadata is True
+            return SimpleNamespace(sha = "current", siblings = siblings)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached",
+        lambda *_args: False,
+    )
+
+    plan = native_audio_download_plan("acme/custom-tts")
+
+    assert plan["entries"] == [
+        {
+            "repo_id": "acme/custom-tts",
+            "files": ["config.json", "model.safetensors", "tokenizer.json"],
+            "bytes": 25,
+            "gguf_filename": None,
+            "checkpoint": True,
+        }
     ]
 
 

@@ -10315,6 +10315,33 @@ def _persist_tts_clip(
         return None
 
 
+@studio_router.post("/audio/download-plan", response_model = DiffusionDownloadPlanResponse)
+async def audio_download_plan(
+    request: LoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stage native-audio checkpoints and companion codecs through Download Manager."""
+    from core.inference.native_audio import native_audio_download_plan
+    from utils.native_path_leases import redact_native_paths
+
+    try:
+        plan = await asyncio.to_thread(
+            native_audio_download_plan,
+            request.model_path,
+            request.hf_token,
+        )
+        return DiffusionDownloadPlanResponse(**plan)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    except Exception as exc:  # noqa: BLE001 - Hub/API failures become a useful picker error
+        logger.warning("audio.download_plan_failed: %s", exc)
+        raise HTTPException(
+            status_code = 502,
+            detail = redact_native_paths(
+                f"Could not prepare the audio model download: {safe_error_detail(exc)}"
+            ),
+        ) from exc
+
+
 @router.post("/audio/generate")
 async def generate_audio(
     payload: ChatCompletionRequest,
