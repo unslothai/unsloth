@@ -101,6 +101,8 @@ export interface DiffusionLoadRequest {
     | "xformers"
     | "aiter";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
+  // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a checkpoint, so several cards resolve to the one with the most free VRAM.
+  gpu_ids?: number[];
   transformer_cache?: "off" | "fbcache";
   // LoRA adapters to BAKE into a torchao int8/fp8 build: they can only attach to the dense transformer BEFORE quantisation +
   // compile, so a quantized load that omits them rejects every generation. Ignored by bf16 / bnb-4bit, which apply at generate time.
@@ -202,6 +204,9 @@ export interface GalleryImage {
   controlnet_guidance?: string | null;
   reference_image_count?: number | null;
   created_at: number;
+  // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 export interface DiffusionGenerateResponse {
@@ -396,9 +401,26 @@ export interface GalleryPage {
   has_more: boolean;
 }
 
-export async function getGallery(offset = 0, limit = 50): Promise<GalleryPage> {
+/** `archived` picks WHICH shelf to page over: false is the strip, true is the archive. */
+export async function getGallery(offset = 0, limit = 50, archived = false): Promise<GalleryPage> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery?offset=${offset}&limit=${limit}`),
+    await authFetch(
+      `/api/inference/images/gallery?offset=${offset}&limit=${limit}&archived=${archived}`,
+    ),
+  );
+}
+
+/** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
+export async function setGalleryImageFlags(
+  id: string,
+  flags: { pinned?: boolean; archived?: boolean },
+): Promise<GalleryImage> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    }),
   );
 }
 
@@ -412,14 +434,19 @@ export async function clearGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
+/** Fetch an auth-protected gallery image as its original blob. */
+export async function fetchGalleryBlob(url: string): Promise<Blob> {
+  const res = await authFetch(url);
+  if (!res.ok) throw new Error(await readFastApiError(res));
+  return res.blob();
+}
+
 /** Fetch a gallery PNG (auth-protected, so it cannot be a plain <img src>) and wrap it in an object URL. Callers must revoke it. */
 export async function fetchGalleryObjectUrl(
   url: string,
 ): Promise<{ url: string; bytes: number }> {
-  const res = await authFetch(url);
-  if (!res.ok) throw new Error(await readFastApiError(res));
   // The blob size travels with the URL: the gallery cache is budgeted in bytes, which the caller cannot work out from the URL.
-  const blob = await res.blob();
+  const blob = await fetchGalleryBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size };
 }
 

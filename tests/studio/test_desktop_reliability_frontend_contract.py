@@ -41,6 +41,7 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+AUDIO_PAGE = FRONTEND / "features/audio/audio-page.tsx"
 
 DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
 MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
@@ -53,6 +54,9 @@ PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialo
 GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
+# The DataTransfer reading half moved here when long pastes became attachments
+# (#8472). Both halves are still one contract, so read them as one.
+CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
@@ -199,15 +203,45 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "if (!isTauri)" in projects
     # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in data_tab
-    assert 'accept=".jsonl,.ndjson,.csv"' in data_tab
+    # Open WebUI exports are .json arrays, so the picker takes that too.
+    assert 'accept=".json,.jsonl,.ndjson,.csv"' in data_tab
 
     native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
-    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"]' in native_dialogs
+    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"]' in native_dialogs
     assert "InvokeBody::Raw" in native_dialogs
 
     assert ".tempfile_in(parent)" in native_dialogs
     assert ".persist(&path)" in native_dialogs
     assert "fs::write(&path, content)" not in native_dialogs
+
+
+def test_media_galleries_save_natively_with_feedback():
+    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+        "\n}\n\nasync function downloadImage", 1
+    )[0]
+    download = images_page.split("async function downloadImage(", 1)[1].split(
+        "\n}\n\nfunction formatTimestamp", 1
+    )[0]
+    video_download = video_page.split("const handleDownload = useCallback(", 1)[1].split(
+        "\n\n  const handleDelete", 1
+    )[0]
+
+    assert "await downloadUrl(src, filename);" in download
+    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
+    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
+    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    assert "blob.type !== `image/${format}`" in reencode
+    assert "isDownloadCancelled(error)" in download
+    assert "if (isTauri)" in download
+    assert 'toast.success("Image saved", { description: filename });' in download
+    assert 'document.createElement("a")' not in download
+
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "if (isTauri)" in video_download
+    assert 'toast.success("Video saved"' in video_download
+    assert "function saveLink(" not in video_page
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
@@ -290,8 +324,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
-    assert "URL.createObjectURL(blob)" in video_page
+    # Converted exports cross the same native boundary after the backend returns their blob.
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
@@ -327,7 +362,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
-    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")
+    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8") + CLIPBOARD_PAYLOAD.read_text(
+        encoding = "utf-8"
+    )
     thread = THREAD.read_text(encoding = "utf-8")
     shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
     capabilities = TAURI_CAPABILITIES.read_text(encoding = "utf-8")
@@ -737,7 +774,9 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    assert (
+        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
+    )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
@@ -752,9 +791,51 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
     assert "@[50rem]:w-[408px]" in section
     assert "md:flex-row" not in section
-    assert "gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto" in section
+    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
+    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
+    # -action mask, which is why the two are asserted together -- the small padding is
+    # only correct while the fade is there to dissolve the last control into the footer.
+    assert "panel-scroll-fade-action" in section
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
     assert "border-t border-foreground/10 px-10 py-3" in section
+
+
+def test_audio_page_matches_the_image_rail_header_and_action_footer():
+    source = AUDIO_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    header_opening = before.rsplit('<div className="', 1)[1] + marker + after.split(">", 1)[0]
+    header = header_opening + after.split("Below 50rem", 1)[0]
+    layout = source.split("Below 50rem", 1)[1]
+
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert "pointer-events-none" in header_opening
+    assert "relative" in header_opening
+    assert "z-40" in header_opening
+    assert "@[50rem]:border-r" in header
+    assert (
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+    )
+    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "col-start-2 justify-self-end pr-3" in header
+    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "@[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert 'mode === "speak"' in layout
+    assert '"panel-scroll-fade-action"' in layout
+    assert '"panel-scroll-fade"' in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4" in layout
+    assert "btn-float-action" not in layout
+    assert "absolute inset-x-0 bottom-0" not in layout
+    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
 
 
 def test_image_train_rail_matches_create_and_header():
@@ -812,17 +893,20 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     header = opening + after.split("{/* Train mode", 1)[0]
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
-    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in opening
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
-    assert 'className="!h-[34px] max-w-full overflow-hidden"' in header
-    assert "contents @[50rem]:grid" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "@[50rem]:col-start-2" in header
-    assert "@[50rem]:col-start-3" in header
+    assert (
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+    )
+    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
+    assert "col-start-2" in header
+    assert "col-start-3" in header
     assert 'labelClassName="hidden @[50rem]:inline"' in header
     assert 'arrowClassName="hidden @[50rem]:block"' in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]

@@ -7,6 +7,9 @@ Off by default (idle seconds = 0). When enabled, a background loop unloads the
 loaded GGUF once it has been idle for the configured TTL, freeing VRAM. A
 pure-ASGI middleware tracks in-flight inference requests so a long stream that
 outlives the TTL is never unloaded mid-response.
+
+The same loop and the same middleware drive the image/video side (media_keepwarm),
+so Studio has one idle mechanism rather than one per backend.
 """
 
 from __future__ import annotations
@@ -65,6 +68,7 @@ _INFERENCE_SUFFIXES = (
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    "/audio/speech",  # /v1/audio/speech (+ /api/inference/audio/speech); same TTS core as /audio/generate
     # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
     # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
     "/images/generate",  # /api/inference/images/generate
@@ -275,6 +279,34 @@ def sweep_slot_save_dir() -> None:
         pass
 
 
+def _as_bytes(value) -> bytes:
+    return value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
+
+
+def _carries_bearer_credentials(scope) -> bool:
+    """Whether this request carries the ``Authorization: Bearer`` its route demands.
+
+    Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request
+    without one is refused before any handler runs. Counting it anyway would still pin the
+    pipeline: the count is taken here, ahead of FastAPI parsing the body, and a client that
+    opens the POST and then withholds its body produces no response status either, so the
+    401/403 exclusion below never gets to run. One such connection, replaced as it times
+    out, would keep a multi-GB pipeline resident for good. Real clients always send the
+    header, so requiring it costs a legitimate generation nothing.
+    """
+    headers = scope.get("headers")
+    if headers is None:
+        # A real ASGI server always populates headers; a caller that does not is not a
+        # client to second-guess, so keep the protection.
+        return True
+    for name, value in headers:
+        if _as_bytes(name).lower() != b"authorization":
+            continue
+        scheme, _, token = _as_bytes(value).partition(b" ")
+        return scheme.lower() == b"bearer" and bool(token.strip())
+    return False
+
+
 class LlamaKeepWarmMiddleware:
     """Pure ASGI: count in-flight inference requests and stamp activity on completion."""
 
@@ -284,11 +316,25 @@ class LlamaKeepWarmMiddleware:
     async def __call__(self, scope, receive, send):
         # Inference endpoints are all POST; skipping non-POST avoids counting CORS
         # preflight (OPTIONS). ``or ""`` guards an explicit None path.
-        if (
-            scope.get("type") != "http"
-            or scope.get("method") != "POST"
-            or not _is_inference_path(scope.get("path") or "")
-        ):
+        path = scope.get("path") or ""
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+        # An image/video generation gets the same bookkeeping against ITS backend, so the
+        # media idle unload cannot free the pipeline this request is about to generate on
+        # -- or the load it is about to start. The media load routes are tracked HERE only:
+        # they do not use the chat GGUF, so they must not stamp chat activity nor count
+        # towards other_inference_request_count().
+        from core.inference import media_keepwarm
+
+        media_owner = media_keepwarm.owner_for_path(path)
+        if media_owner is not None and not _carries_bearer_credentials(scope):
+            # Cannot reach the backend, so it must not hold it warm (see the helper). The
+            # chat count keeps its own rule: /p/{run}/v1/chat/completions is public by
+            # design, so a missing bearer there is not proof of anything.
+            media_owner = None
+        chat_tracked = _is_inference_path(path)
+        if not chat_tracked and media_owner is None:
             await self.app(scope, receive, send)
             return
         # Always track in-flight on inference paths, even when the feature is off,
@@ -297,15 +343,28 @@ class LlamaKeepWarmMiddleware:
         # cheap and invisible to clients (the response is proxied unchanged).
         # Mark pending before the gate so the idle loop (which holds the gate while
         # unloading) can't free the model while this request is waiting to start.
-        _note_pending()
-        started = False
-        try:
-            async with _unload_gate():
-                _note_start()
-                started = True
-        finally:
-            if not started:
-                _note_unpending()
+        if chat_tracked:
+            _note_pending()
+            started = False
+            try:
+                async with _unload_gate():
+                    _note_start()
+                    started = True
+            finally:
+                if not started:
+                    _note_unpending()
+        if media_owner is not None:
+            try:
+                await media_keepwarm.begin_request(media_owner)
+            except BaseException:
+                # The generate routes are tracked on both sides, and this gate can be held
+                # for the length of a teardown. A client that disconnects while waiting on
+                # it never reaches the _finish below, so balance the chat count here or it
+                # stays positive for the life of the process: chat idle unload would never
+                # fire again and every training start would see an inference request.
+                if chat_tracked:
+                    _note_untracked_end()
+                raise
         ended = {"done": False}
         status = {"code": None}
 
@@ -314,7 +373,11 @@ class LlamaKeepWarmMiddleware:
             if ended["done"]:
                 return
             ended["done"] = True
-            if scope.get(_UNTRACKED_SCOPE_KEY):
+            # Before the untracked early return below: that marks a request as not using the
+            # local GGUF, which says nothing about the media backend it was counted against.
+            if media_owner is not None:
+                media_keepwarm.end_request(media_owner, counted = status["code"] not in (401, 403))
+            if not chat_tracked or scope.get(_UNTRACKED_SCOPE_KEY):
                 return
             # This middleware runs before FastAPI auth, so a 401/403 reaches here
             # without ever touching llama.cpp. Decrement the in-flight count (to
@@ -385,6 +448,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
+        # The image/video half of the tick, in its own guard so neither side can cost the
+        # other an iteration. Inert unless the media TTL is set.
+        try:
+            from core.inference.media_keepwarm import idle_unload_step
+            await idle_unload_step()
+        except Exception as exc:
+            logger.debug("media idle_unload_step failed: %s", exc)
         try:
             ttl = get_auto_unload_idle_seconds()
             if ttl <= 0:

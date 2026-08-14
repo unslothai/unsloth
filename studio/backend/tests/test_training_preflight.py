@@ -5,6 +5,7 @@
 empty-chat-template crash) before train(). The real methods are bound onto a light
 fake self so the production logic runs against controlled batches."""
 
+import contextlib
 import importlib
 import json
 import os
@@ -23,6 +24,9 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
+_STUBBED: list[str] = []
+
+
 def _stub_if_missing(name, attrs):
     """Register a stub module for a dep the CPU backend CI job does not install.
 
@@ -39,6 +43,7 @@ def _stub_if_missing(name, attrs):
         return
     except Exception:
         pass
+    _STUBBED.append(name)
     mod = types.ModuleType(name)
     mod.__spec__ = None
     for attr in attrs:
@@ -49,11 +54,35 @@ def _stub_if_missing(name, attrs):
         setattr(sys.modules[parent], child, mod)
 
 
-_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
-_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
-_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+_STUB_SPECS = (
+    ("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported")),
+    ("unsloth.chat_templates", ("get_chat_template",)),
+    ("trl", ("SFTTrainer", "SFTConfig")),
+)
 
-from core.training.trainer import UnslothTrainer  # noqa: E402
+
+@contextlib.contextmanager
+def _stubbed():
+    """Hold the stubs for the duration of an import of the trainer, then drop them again.
+
+    Leaving them in sys.modules outlives this module and the rest of the suite then runs against
+    them: utils.hardware.hardware._shared_policy branches on `"unsloth" in sys.modules` and then
+    reaches for unsloth.dataset_num_proc, which a spec-less non-package stub cannot provide, so it
+    returns None and every shared-policy case in test_dataset_map_num_proc.py skips instead of
+    running. _load_trainer_module re-imports the trainer per test, so scoping beats a one-shot
+    cleanup after the import below. A real install stubs nothing, so this is a no-op there.
+    """
+    for name, attrs in _STUB_SPECS:
+        _stub_if_missing(name, attrs)
+    try:
+        yield
+    finally:
+        while _STUBBED:
+            sys.modules.pop(_STUBBED.pop(), None)
+
+
+with _stubbed():
+    from core.training.trainer import UnslothTrainer  # noqa: E402
 
 _preflight = UnslothTrainer._preflight_first_batch
 _renders_empty = UnslothTrainer._chat_template_renders_empty
@@ -714,10 +743,11 @@ def _load_trainer_module(
 ):
     _set_training_platform(monkeypatch, package, backend)
     _clear_trainer_module(package)
-    if package in sys.modules:
-        importlib.reload(sys.modules[package])
-    trainer_mod = importlib.import_module(f"{package}.trainer")
-    training_mod = importlib.import_module(f"{package}.training")
+    with _stubbed():
+        if package in sys.modules:
+            importlib.reload(sys.modules[package])
+        trainer_mod = importlib.import_module(f"{package}.trainer")
+        training_mod = importlib.import_module(f"{package}.training")
     monkeypatch.setattr(
         training_mod._MLXTrainerAdapter,
         "_activate_transformers_for_model",
@@ -1020,3 +1050,24 @@ def test_mlx_worker_callsites_select_config_validation_policy(monkeypatch):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_cached_spark_snapshot_root_still_gets_the_llm_subfolder(tmp_path):
+    """An offline or cache-pinned snapshot root has an LLM/ child, which the previous check
+    read as "already at the tokenizer" and sent AutoTokenizer at the root, which has none."""
+    from core.training.trainer import _spark_tts_tokenizer_kwargs
+
+    snapshot = tmp_path / "snapshots" / "abc123"
+    (snapshot / "LLM").mkdir(parents = True)
+
+    assert _spark_tts_tokenizer_kwargs("bicodec", str(snapshot)) == {"subfolder": "LLM"}
+    assert _spark_tts_tokenizer_kwargs("bicodec", "unsloth/Spark-TTS-0.5B") == {"subfolder": "LLM"}
+    # Already pointed at the tokenizer directory.
+    assert _spark_tts_tokenizer_kwargs("bicodec", str(snapshot / "LLM")) == {}
+    # A local checkpoint holding its own tokenizer.
+    local = tmp_path / "my-ft"
+    local.mkdir()
+    (local / "tokenizer_config.json").write_text("{}", encoding = "utf-8")
+    assert _spark_tts_tokenizer_kwargs("bicodec", str(local)) == {}
+    # Not Spark at all.
+    assert _spark_tts_tokenizer_kwargs("snac", str(snapshot)) == {}

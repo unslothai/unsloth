@@ -3224,11 +3224,15 @@ class _ExecEvalPattern:
 RE_EXEC_EVAL = _ExecEvalPattern()
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
+# ``httpx2`` is the pydantic-maintained successor and a separate import name, so the older
+# ``httpx``-only alternative did not see it. openai 3.0.0 requires httpx2 and routes every
+# call through it, which made the SDK's own HTTP invisible to each combined check that needs
+# a network half (secrets + network, IMDS + network, archive + network).
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
     r"|\brequests\s*\.\s*(get|post|put|patch|delete|head|Session)\b"
-    r"|\bhttpx\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
+    r"|\b(?:httpx|httpx2)\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
     r"|\bsocket\s*\.\s*(socket|create_connection)\b"
     r"|\bhttp\.client\b"
     r"|\bhttp\.server\b",

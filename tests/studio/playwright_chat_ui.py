@@ -150,6 +150,44 @@ def exercise_permission_mode_controls(page, shoot):
         expect(item).to_be_visible()
         item.click()
 
+    def set_legacy_confirm(legacy_value):
+        page.evaluate(
+            """(legacyValue) => {
+                localStorage.removeItem("unsloth_chat_permission_mode");
+                if (legacyValue === null) {
+                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+                } else {
+                    localStorage.setItem(
+                        "unsloth_chat_confirm_tool_calls",
+                        legacyValue,
+                    );
+                }
+            }""",
+            legacy_value,
+        )
+
+    # The level is an installation setting, mirrored through /api/chat/settings,
+    # so "fresh profile" is no longer "fresh browser": the cross-browser step
+    # runs this block three times against ONE install, and runs two and three
+    # would otherwise open on the level run one left behind. Refuse the
+    # hydrating GET, with no local level either, which is the state a first-ever
+    # browser on a never-configured install is in. Everything up to the end of
+    # the migration loop reads the level, so the whole stretch is held there.
+    def refuse_settings_hydration(route):
+        if route.request.method == "GET":
+            route.fulfill(
+                status = 503,
+                content_type = "application/json",
+                body = json.dumps({"detail": "hydration disabled for this step"}),
+            )
+        else:
+            route.continue_()
+
+    page.route("**/api/chat/settings", refuse_settings_hydration)
+    set_legacy_confirm(None)
+    page.reload(wait_until = "domcontentloaded")
+    expect(pill).to_be_visible()
+
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
     menu = open_menu()
@@ -180,30 +218,36 @@ def exercise_permission_mode_controls(page, shoot):
         fail(f"permission pill is clipped in compact layout: {box!r}")
     page.set_viewport_size({"width": 1280, "height": 900})
 
-    # Legacy setting migration: true -> ask, false -> off, absent -> auto.
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto. Still
+    # under the refused hydration above: a stored level wins over the local
+    # derivation, so without it the second reload would assert against the level
+    # the first one seeded and read as a migration bug.
     migration_cases = (
         ("true", "Ask for approval"),
         ("false", "Run automatically"),
         (None, "Approve for me"),
     )
-    for legacy_value, expected_label in migration_cases:
-        page.evaluate(
-            """(legacyValue) => {
-                localStorage.removeItem("unsloth_chat_permission_mode");
-                if (legacyValue === null) {
-                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
-                } else {
-                    localStorage.setItem(
-                        "unsloth_chat_confirm_tool_calls",
-                        legacyValue,
-                    );
-                }
-            }""",
-            legacy_value,
-        )
-        page.reload(wait_until = "domcontentloaded")
-        expect(pill).to_be_visible()
-        expect_mode(expected_label)
+    try:
+        for legacy_value, expected_label in migration_cases:
+            set_legacy_confirm(legacy_value)
+            page.reload(wait_until = "domcontentloaded")
+            expect(pill).to_be_visible()
+            expect_mode(expected_label)
+    finally:
+        page.unroute("**/api/chat/settings", refuse_settings_hydration)
+
+    # The other half of that contract: with a level stored for the install, a
+    # browser holding only the legacy key gets the installation's level back
+    # rather than its own derivation.
+    choose("Ask for approval")
+    expect_mode("Ask for approval")
+    set_legacy_confirm("false")
+    page.reload(wait_until = "domcontentloaded")
+    expect(pill).to_be_visible()
+    expect_mode("Ask for approval")
+    cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if cached != "ask":
+        fail(f"hydration left the local cache at {cached!r}, expected 'ask'")
 
     choose("Run automatically")
     expect_mode("Run automatically")
@@ -568,8 +612,8 @@ with sync_playwright() as p:
         ),
     )
     page = ctx.new_page()
-    # 60s default (was 30s): macos-14 under --single-process Chromium is
-    # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
+    # 60s default (was 30s): the macos-14 runners are slow enough that
+    # renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -2008,10 +2052,10 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
     # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: macOS Chromium runs --single-process, where
-    # closing the last context kills the browser and a second context cannot
-    # be created. Open the new page before closing the old one; the context
-    # init script covers the new page.
+    # Stay in the SAME context: it keeps the init script and costs nothing to
+    # reuse. This used to be forced, because macOS ran --single-process Chromium,
+    # which allows only one context; that flag is gone now. Open the new page
+    # before closing the old one; the context init script covers the new page.
     try:
         ctx.clear_cookies()
     except Exception as exc:

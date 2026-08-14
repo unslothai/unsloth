@@ -24,10 +24,7 @@ import { Columns2Icon } from "lucide-react";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
-import {
-  SettingsGroupDivider,
-  SettingsSection,
-} from "../components/settings-section";
+import { SettingsSection } from "../components/settings-section";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -176,6 +173,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const collapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
+  const setCollapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.setCollapseThinkingByDefault,
+  );
 
   useEffect(() => {
     void hydratePersistedSettings();
@@ -236,7 +239,18 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
-        <SettingsGroupDivider />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.thinking.collapseByDefault")}
+          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+        >
+          <Switch
+            checked={collapseThinkingByDefault}
+            onCheckedChange={setCollapseThinkingByDefault}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
@@ -255,9 +269,6 @@ export function ChatTab() {
             onCheckedChange={setShowResponseModel}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.general.autoTitleNewChats")}
           description={t("settings.general.autoTitleNewChatsDescription")}
