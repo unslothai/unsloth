@@ -6859,9 +6859,7 @@ async def _prepare_load_placement(
 
 
 async def _preflight_native_audio_placement(
-    config: ModelConfig,
-    request: LoadRequest | ValidateModelRequest,
-    placement: _LoadPlacement,
+    config: ModelConfig, request: LoadRequest | ValidateModelRequest, placement: _LoadPlacement
 ) -> _LoadPlacement:
     """Resolve native-audio placement before a resident model can be evicted."""
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
@@ -6877,8 +6875,7 @@ async def _preflight_native_audio_placement(
         if audio_type == "minimax_music3":
             if device != hardware.DeviceType.CUDA or hardware.IS_ROCM:
                 raise ValueError(
-                    "MiniMax Music 3 requires an NVIDIA CUDA GPU in its official "
-                    "local runtime."
+                    "MiniMax Music 3 requires an NVIDIA CUDA GPU in its official local runtime."
                 )
             if sys.version_info < (3, 10):
                 raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")

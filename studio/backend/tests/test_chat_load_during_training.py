@@ -881,7 +881,14 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
     def setUpClass(cls):
         cls.route = _load_inference_route()
 
-    def _run(self, audio_type, device, selected = None, requested = None, rocm = False):
+    def _run(
+        self,
+        audio_type,
+        device,
+        selected = None,
+        requested = None,
+        rocm = False,
+    ):
         config = SimpleNamespace(
             identifier = "test/native-audio",
             audio_type = audio_type,

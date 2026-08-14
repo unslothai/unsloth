@@ -91,9 +91,7 @@ def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
         if path.is_file():
             path = path.parent
         config = _read_local_audio_metadata(path, "config.json")
-        audio_type = NATIVE_AUDIO_MODEL_TYPES.get(
-            str(config.get("model_type") or "").lower()
-        )
+        audio_type = NATIVE_AUDIO_MODEL_TYPES.get(str(config.get("model_type") or "").lower())
         if audio_type:
             return audio_type
         modular_index = _read_local_audio_metadata(path, "modular_model_index.json")
@@ -228,9 +226,7 @@ class NativeAudioBackend:
         return torch.float32
 
     @staticmethod
-    def _context_length(
-        entry: dict[str, Any], requested: int, audio_type: str
-    ) -> int:
+    def _context_length(entry: dict[str, Any], requested: int, audio_type: str) -> int:
         if audio_type == "minimax_music3":
             return 0
         model = entry.get("model")
@@ -341,9 +337,7 @@ class NativeAudioBackend:
             elif audio_type == "minimax_music3":
                 self._load_minimax_music3(entry, source, hf_token)
 
-            entry["context_length"] = self._context_length(
-                entry, max_seq_length, audio_type
-            )
+            entry["context_length"] = self._context_length(entry, max_seq_length, audio_type)
 
             self.models[model_name] = entry
             self.active_model_name = model_name
@@ -674,9 +668,7 @@ class NativeAudioBackend:
             )
             seen_targets = set()
             for target in targets:
-                if id(target) in seen_targets or not hasattr(
-                    target, "register_forward_pre_hook"
-                ):
+                if id(target) in seen_targets or not hasattr(target, "register_forward_pre_hook"):
                     continue
                 seen_targets.add(id(target))
                 cancel_hooks.append(

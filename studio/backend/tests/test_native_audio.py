@@ -116,9 +116,7 @@ def test_native_audio_context_uses_text_config_and_requested_cap():
 
     moss_entry = {
         "model": SimpleNamespace(
-            config = SimpleNamespace(
-                language_config = SimpleNamespace(max_position_embeddings = 32768)
-            )
+            config = SimpleNamespace(language_config = SimpleNamespace(max_position_embeddings = 32768))
         )
     }
     assert NativeAudioBackend._context_length(moss_entry, 0, "moss_tts_local") == 32768
@@ -224,9 +222,7 @@ def test_minimax_component_load_receives_hub_token(monkeypatch):
             seen["index"] = kwargs
             return Pipeline()
 
-    monkeypatch.setitem(
-        sys.modules, "diffusers", SimpleNamespace(ModularPipeline = ModularPipeline)
-    )
+    monkeypatch.setitem(sys.modules, "diffusers", SimpleNamespace(ModularPipeline = ModularPipeline))
     backend = _backend("minimax_music3")
     entry = {}
     backend._load_minimax_music3(entry, "MiniMaxAI/MiniMax-Music3", "secret")
