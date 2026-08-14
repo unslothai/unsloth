@@ -1883,6 +1883,9 @@ def _vkey(c):
         return (1, Version(v))
     except Exception:
         pass
+    em = re.match(r'(\d+)!', v)
+    _epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
     m = re.match(r'\d+(\.\d+)*', v)
     if not m:
         return (0, ([], (-9, 0)))
@@ -1890,6 +1893,8 @@ def _vkey(c):
     # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
     while nums and nums[-1] == 0:
         nums.pop()
+    # the epoch orders above everything in the release: 1!0.1 > 2.0
+    nums = [_epoch] + nums
     rest = v[m.end():].lower()
     # Carry the stage AND its number, not just the class. An interrupted upgrade leaves
     # .post1 and .post2 side by side; ranking both as "post" tied their keys, and max()
@@ -2191,13 +2196,17 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
         elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && "$VENV_DIR/bin/python" -I -c "
 import re, sys
 def split(v):
+    em = re.match(r'(\d+)!', v)
+    epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
     m = re.match(r'\d+(\.\d+)*', v)
     if not m: sys.exit(1)
     nums = [int(x) for x in m.group(0).split('.')]
     # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
     while nums and nums[-1] == 0:
         nums.pop()
-    return nums, v[m.end():].lower()
+    # the epoch orders above everything in the release: 1!0.1 > 2.0
+    return [epoch] + nums, v[m.end():].lower()
 try:
     from packaging.version import Version
     ok = Version(sys.argv[1]) >= Version(sys.argv[2])

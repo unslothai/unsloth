@@ -4888,6 +4888,9 @@ def _vkey(c):
         return (1, Version(v))
     except Exception:
         pass
+    em = re.match(r'(\d+)!', v)
+    _epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
     m = re.match(r'\d+(\.\d+)*', v)
     if not m:
         return (0, ([], (-9, 0)))
@@ -4895,6 +4898,8 @@ def _vkey(c):
     # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
     while nums and nums[-1] == 0:
         nums.pop()
+    # the epoch orders above everything in the release: 1!0.1 > 2.0
+    nums = [_epoch] + nums
     rest = v[m.end():].lower()
     # Carry the stage AND its number, not just the class. An interrupted upgrade leaves
     # .post1 and .post2 side by side; ranking both as "post" tied their keys, and max()
@@ -5746,8 +5751,14 @@ if ($_verifyUpdate) {
         if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
-            $_postNum = ($PostVer -replace '[^0-9.].*$', '').TrimEnd('.')
-            $_latestNum = ($LatestVer -replace '[^0-9.].*$', '').TrimEnd('.')
+            # the epoch orders above everything in the release: 1!0.1 > 2.0
+            $_postEpoch = 0; $_latestEpoch = 0
+            if ($PostVer -match '^(\d+)!') { $_postEpoch = [int]$Matches[1] }
+            if ($LatestVer -match '^(\d+)!') { $_latestEpoch = [int]$Matches[1] }
+            $_postBody = $PostVer -replace '^\d+!', ''
+            $_latestBody = $LatestVer -replace '^\d+!', ''
+            $_postNum = ($_postBody -replace '[^0-9.].*$', '').TrimEnd('.')
+            $_latestNum = ($_latestBody -replace '[^0-9.].*$', '').TrimEnd('.')
             # 1.0.0 == 1.0 per PEP 440: strip trailing zero segments, then re-pad to
             # the two components [version] requires
             $_postNum = $_postNum -replace '(\.0)+$', ''
@@ -5756,7 +5767,9 @@ if ($_verifyUpdate) {
             if ($_latestNum -and $_latestNum -notmatch '\.') { $_latestNum = "$_latestNum.0" }
             if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+') {
                 try {
-                    if ([version]$_postNum -gt [version]$_latestNum) {
+                    if ($_postEpoch -ne $_latestEpoch) {
+                        $_updateOk = ($_postEpoch -gt $_latestEpoch)
+                    } elseif ([version]$_postNum -gt [version]$_latestNum) {
                         $_updateOk = $true
                     } elseif ([version]$_postNum -eq [version]$_latestNum) {
                         # equal numeric prefixes: pre/dev orders BELOW the final release
@@ -5789,8 +5802,8 @@ if ($_verifyUpdate) {
                             }
                             return @(0, 0, $_n, $_trail, $_tn)
                         }
-                        $_pr = & $_sufRank $PostVer
-                        $_lr = & $_sufRank $LatestVer
+                        $_pr = & $_sufRank $_postBody
+                        $_lr = & $_sufRank $_latestBody
                         $_updateOk = $false
                         for ($_ri = 0; $_ri -lt 5; $_ri++) {
                             if ($_pr[$_ri] -gt $_lr[$_ri]) { $_updateOk = $true; break }
