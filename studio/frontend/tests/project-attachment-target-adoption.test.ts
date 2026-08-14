@@ -232,3 +232,32 @@ test("both writers of the pending entry move the claim", () => {
   );
   assert.match(bar, /adoptPendingProjectAttachmentTarget\(remoteId, claim\)/);
 });
+
+// Sending a normal message in a project composer creates the chat, and the page
+// swaps ProjectComposer for Thread on the same state change. The bar holding
+// the choice unmounts without ever seeing the new id, and the Thread's own bar
+// mounts with the id already set, so neither of the bar's adopt paths runs.
+test("the project composer's choice survives the swap to a thread", () => {
+  const page = readFileSync(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // The swap: this is what unmounts the composer.
+  assert.match(page, /\{pendingNewThreadId \? \(/);
+  // Adopted before it, in the path that learns the id.
+  assert.match(
+    page,
+    /adoptPendingProjectAttachmentTarget\(activeThreadId\);\s*setPendingNewThreadId\(activeThreadId\);/,
+  );
+
+  // Why the bar cannot cover it: the Thread's bar starts with an id, so the
+  // first-id branch never fires for it.
+  const bar = readFileSync(
+    new URL(
+      "../src/features/rag/components/thread-documents-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /const hadThreadIdRef = useRef\(threadId !== null\);/);
+});

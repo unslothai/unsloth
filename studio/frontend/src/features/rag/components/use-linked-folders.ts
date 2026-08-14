@@ -71,6 +71,15 @@ export function useLinkedFolders(
     [projectWorkScopeId],
   );
 
+  /** Count a job against the project it was started for, whatever this hook is
+   * showing by the time the response lands. */
+  const watchStartedJob = useCallback(
+    (jobId: string) => {
+      if (projectWorkScopeId) watchProjectFolderJob(projectWorkScopeId, jobId);
+    },
+    [projectWorkScopeId],
+  );
+
   const notifySourcesChanged = useCallback(
     (job: FolderSyncJob) => {
       if (notifiedJobs.current.has(job.id)) return;
@@ -262,13 +271,15 @@ export function useLinkedFolders(
     try {
       const selected = await pickNativeDocumentFolder();
       if (!selected || currentScopeKey.current !== operationScopeKey) return;
-      const result = await withProjectWork(() =>
-        createLinkedFolder(
+      const result = await withProjectWork(async () => {
+        const created = await createLinkedFolder(
           { type: scopeType, id: scopeId },
           selected.token,
           selected.displayName,
-        ),
-      );
+        );
+        watchStartedJob(created.job.id);
+        return created;
+      });
       if (currentScopeKey.current !== operationScopeKey) return;
       setStateScopeKey(operationScopeKey);
       setFolders((current) => [
@@ -290,6 +301,7 @@ export function useLinkedFolders(
     scopeId,
     nativePathLeasesSupported,
     trackJob,
+    watchStartedJob,
     withProjectWork,
     onSourcesChanged,
   ]);
@@ -298,11 +310,19 @@ export function useLinkedFolders(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
       try {
-        const { job } = await withProjectWork(() =>
-          mode === "rebuild"
-            ? rebuildLinkedFolder(folderId)
-            : syncLinkedFolder(folderId),
-        );
+        // Watched inside the request's lease, and before the scope guard: the
+        // job runs on the project it was started for whether or not this hook
+        // still shows it, and returning without a watcher would drop that
+        // project's count to zero with the sync still going. Deduped, so
+        // trackJob's own call is a no-op.
+        const { job } = await withProjectWork(async () => {
+          const started =
+            mode === "rebuild"
+              ? await rebuildLinkedFolder(folderId)
+              : await syncLinkedFolder(folderId);
+          watchStartedJob(started.job.id);
+          return started;
+        });
         if (currentScopeKey.current !== operationScopeKey) return;
         trackJob(job);
         onSourcesChanged?.();
@@ -312,7 +332,7 @@ export function useLinkedFolders(
         });
       }
     },
-    [scopeKey, trackJob, withProjectWork, onSourcesChanged],
+    [scopeKey, trackJob, watchStartedJob, withProjectWork, onSourcesChanged],
   );
 
   const remove = useCallback(

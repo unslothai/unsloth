@@ -1328,6 +1328,12 @@ function ProjectLanding({
     if (activeThreadId === initialActiveThreadRef.current) {
       return;
     }
+    // Hand the composer's attach choice to the chat it just created. Setting
+    // this swaps ProjectComposer for Thread, so the bar that holds the choice
+    // unmounts without ever seeing the id, and its cleanup drops it.
+    useChatRuntimeStore
+      .getState()
+      .adoptPendingProjectAttachmentTarget(activeThreadId);
     setPendingNewThreadId(activeThreadId);
   }, [activeThreadId, pendingNewThreadId]);
 

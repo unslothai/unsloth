@@ -701,10 +701,20 @@ test("a folder mutation takes the gate before its request", () => {
     /noteProjectWork\(projectWorkScopeId, 1\);\s*try \{\s*return await run\(\);\s*\} finally \{\s*noteProjectWork\(projectWorkScopeId, -1\);/,
   );
   // Linking, syncing, rebuilding and unlinking all go through it.
-  assert.match(hook, /withProjectWork\(\(\) =>\s*createLinkedFolder\(/);
-  assert.match(hook, /await withProjectWork\(\(\) =>\s*mode === "rebuild"/);
+  assert.match(
+    hook,
+    /withProjectWork\(async \(\) => \{\s*const created = await createLinkedFolder\(/,
+  );
+  assert.match(
+    hook,
+    /withProjectWork\(async \(\) => \{\s*const started =\s*mode === "rebuild"/,
+  );
   assert.match(
     hook,
     /withProjectWork\(\(\) => deleteLinkedFolder\(folderId, removeIndex\)\)/,
   );
+  // The job's own lease is taken inside the request's, so a scope change
+  // between the response and trackJob cannot leave the project uncounted.
+  assert.match(hook, /watchStartedJob\(created\.job\.id\);\s*return created;/);
+  assert.match(hook, /watchStartedJob\(started\.job\.id\);\s*return started;/);
 });
