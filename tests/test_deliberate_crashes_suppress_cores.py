@@ -436,7 +436,11 @@ _AFTER_EVERYTHING = (float("inf"), 0)
 _BRANCHING = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match)
 
 
-def _dumpable_writes(scope, certain = True, functions = None):
+def _dumpable_writes(
+    scope,
+    certain = True,
+    functions = None,
+):
     """`(position, value, certain)` for each prctl dumpability write on this path.
 
     With `functions`, a call to a local helper counts too, at the call's position, as
@@ -451,9 +455,7 @@ def _dumpable_writes(scope, certain = True, functions = None):
                 value = _helper_leaves_dumpable(child, scope, functions)
             if value is not None:
                 yield _position(child), value, certain
-        yield from _dumpable_writes(
-            child, certain and not isinstance(child, _BRANCHING), functions
-        )
+        yield from _dumpable_writes(child, certain and not isinstance(child, _BRANCHING), functions)
 
 
 def _helper_leaves_dumpable(call, scope, functions):
@@ -601,7 +603,11 @@ def _bindings_before(tree, scope, position):
     return env, maybe
 
 
-def _assignments_before(scope, position, certain = True):
+def _assignments_before(
+    scope,
+    position,
+    certain = True,
+):
     """`(assignment, certain)` in source order, before `position`."""
     for child in ast.iter_child_nodes(scope):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -632,9 +638,7 @@ def _nested_scripts(tree):
             env, maybe = _bindings_before(tree, scope, _position(node))
             # Same interpreter, so dumpability carries into the payload, including
             # a restore a helper made between the clear and the exec.
-            inherited = _clears_dumpable_before(
-                scope, _position(node), functions = functions
-            )
+            inherited = _clears_dumpable_before(scope, _position(node), functions = functions)
             payloads = []
             if argument is not None:
                 folded, _ids = _fold(argument, env)
