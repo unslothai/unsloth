@@ -835,8 +835,41 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
 
 def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkeypatch):
     """A suppressed call must not weld inlined reasoning onto a resumed partial."""
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    for partial in ("PARTIAL_TEXT", "PARTIAL_TEXT\n"):
+        tool_stream = [_sse({"reasoning_content": "TRACE_ABC"})] + _structured_tool_call(
+            "python", {"code": "print(1)"}, "call_continued_noop"
+        )
+        final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "continue"},
+                    {"role": "assistant", "content": partial},
+                ],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                continue_final_message = True,
+                max_tool_iterations = 1,
+            )
+        )
+
+        continued = next(
+            message for message in payloads[1]["messages"] if message.get("role") == "assistant"
+        )
+        assert continued == {"role": "assistant", "content": "PARTIAL_TEXT\nTRACE_ABC"}
+
+
+def test_noop_reasoning_without_continuation_adds_clean_assistant_turn(monkeypatch):
+    """A trailing assistant turn is not merged unless continuation is requested."""
     tool_stream = [_sse({"reasoning_content": "TRACE_ABC"})] + _structured_tool_call(
-        "python", {"code": "print(1)"}, "call_continued_noop"
+        "python", {"code": "print(1)"}, "call_separate_noop"
     )
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
     payloads: list[dict] = []
@@ -850,19 +883,22 @@ def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkey
     list(
         backend.generate_chat_completion_with_tools(
             messages = [
-                {"role": "user", "content": "continue"},
-                {"role": "assistant", "content": "PARTIAL_TEXT"},
+                {"role": "user", "content": "new turn"},
+                {"role": "assistant", "content": "EARLIER_ANSWER"},
             ],
             tools = [{"type": "function", "function": {"name": "web_search"}}],
-            continue_final_message = True,
+            continue_final_message = False,
             max_tool_iterations = 1,
         )
     )
 
-    continued = next(
+    assistant_messages = [
         message for message in payloads[1]["messages"] if message.get("role") == "assistant"
-    )
-    assert continued == {"role": "assistant", "content": "PARTIAL_TEXT\nTRACE_ABC"}
+    ]
+    assert assistant_messages == [
+        {"role": "assistant", "content": "EARLIER_ANSWER"},
+        {"role": "assistant", "content": "TRACE_ABC"},
+    ]
 
 
 def test_noop_feedback_is_not_folded_into_another_tool_s_result(monkeypatch):
@@ -923,6 +959,61 @@ def test_noop_feedback_is_not_folded_into_another_tool_s_result(monkeypatch):
         for message in messages
         if message.get("role") == "user" and "not executed" in message.get("content", "")
     ]
+
+
+def test_noop_feedback_for_multiple_tools_is_not_folded_by_partial_name_match(monkeypatch):
+    """Every no-op tool must match the fold target, not merely one of them."""
+    tool_stream = [
+        _sse({"reasoning_content": "Plan the batch."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_multi_noop_{index}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for index, (name, args) in enumerate(
+                        [
+                            ("web_search", {"query": "a"}),
+                            ("web_search", {"query": "a"}),  # duplicate -> internal no-op
+                            ("python", {"code": "print(1)"}),  # disabled -> internal no-op
+                            ("web_search", {"query": "b"}),
+                        ]
+                    )
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: f"RESULT_OF_{name}",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    assert all(
+        message["content"] == "RESULT_OF_web_search"
+        for message in messages
+        if message.get("role") == "tool"
+    )
+    feedback = [message for message in messages if message.get("role") == "user"][1:]
+    assert len(feedback) == 1
+    assert "identical call" in feedback[0]["content"]
+    assert "not enabled" in feedback[0]["content"]
 
 
 def test_same_tool_noop_feedback_still_rides_its_own_result(monkeypatch):
