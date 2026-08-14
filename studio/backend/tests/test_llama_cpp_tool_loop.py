@@ -833,6 +833,38 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
     )
 
 
+def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkeypatch):
+    """A suppressed call must not weld inlined reasoning onto a resumed partial."""
+    tool_stream = [_sse({"reasoning_content": "TRACE_ABC"})] + _structured_tool_call(
+        "python", {"code": "print(1)"}, "call_continued_noop"
+    )
+    final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "PARTIAL_TEXT"},
+            ],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            continue_final_message = True,
+            max_tool_iterations = 1,
+        )
+    )
+
+    continued = next(
+        message for message in payloads[1]["messages"] if message.get("role") == "assistant"
+    )
+    assert continued == {"role": "assistant", "content": "PARTIAL_TEXT\nTRACE_ABC"}
+
+
 def test_noop_feedback_is_not_folded_into_another_tool_s_result(monkeypatch):
     """Feedback about tool A must never ride tool B's result.
 

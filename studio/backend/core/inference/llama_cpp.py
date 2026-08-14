@@ -17852,6 +17852,13 @@ class LlamaCppBackend:
                                 reasoning_accum,
                                 self.markup_profile,
                             )
+                            _continued_partial = (
+                                trailing_assistant_text(conversation)
+                                if continue_final_message
+                                else None
+                            )
+                            if _continued_partial and not _continued_partial.endswith("\n"):
+                                assistant_msg["content"] = f"\n{assistant_msg['content']}"
                             if content_text:
                                 assistant_msg["content"] += f"\n{content_text}"
                             del assistant_msg["reasoning_content"]
