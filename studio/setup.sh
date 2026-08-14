@@ -1901,7 +1901,10 @@ def _vkey(c):
     # keeps whichever enumerated first, so the verifier could confirm the stale one.
     _dev = re.match(r'[-._]?dev[-._]?(\d*)', rest)
     _pre = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c)[-._]?(\d*)', rest)
-    _post = re.match(r'[-._]?post[-._]?(\d*)', rest)
+    # post is also spelled rev and r; _pre is tested first, so rc never lands here
+    _post = re.match(r'[-._]?(post|rev|r)[-._]?(\d*)', rest)
+    # PEP 440's implicit post release: a bare -N after the release (1.0-1 == 1.0.post1)
+    _ipost = re.match(r'-(\d+)', rest)
     _end = 0
     if _dev:
         rank, _end = (-3, int(_dev.group(1) or 0)), _dev.end()
@@ -1910,7 +1913,9 @@ def _vkey(c):
         _stage = {'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_pre.group(1), 2)
         rank, _end = (-2, _stage, int(_pre.group(2) or 0)), _pre.end()
     elif _post:
-        rank, _end = (1, int(_post.group(1) or 0)), _post.end()
+        rank, _end = (1, int(_post.group(2) or 0)), _post.end()
+    elif _ipost:
+        rank, _end = (1, int(_ipost.group(1))), _ipost.end()
     else:
         rank = (0, 0)
     # PEP 440 allows -, _ or . before a suffix number (1.0.post-1 == 1.0.post1),
@@ -2228,8 +2233,12 @@ except Exception:
         # class, stage, number, then the compound tail: dev < a < b < c/rc <
         # final < post, and a suffix AFTER the first stage still orders --
         # 1.0rc1.dev1 sits below 1.0rc1, 1.0rc1.post1 above it
+        # before the lstrip: PEP 440's implicit post release is a bare -N (1.0-1)
+        ip = re.match(r'-(\d+)', rest)
         s = rest.lstrip('-._')
-        m = re.match(r'(dev|post|alpha|beta|preview|pre|rc|a|b|c)[-._]?(\d*)', s)
+        # r and rev also spell post; both sit after rc in the alternation so a
+        # release candidate never matches them
+        m = re.match(r'(dev|post|rev|alpha|beta|preview|pre|rc|a|b|c|r)[-._]?(\d*)', s)
         t = m.group(1) if m else ''
         n = int(m.group(2) or 0) if m else 0
         tail = s[m.end():] if m else s
@@ -2237,8 +2246,9 @@ except Exception:
         trail = (0, 0)
         if tm:
             trail = ((-1 if tm.group(1) == 'dev' else 1), int(tm.group(2) or 0))
+        if ip: return (1, 0, int(ip.group(1))) + trail
         if t == 'dev': return (-3, 0, n) + trail
-        if t == 'post': return (1, 0, n) + trail
+        if t in ('post', 'rev', 'r'): return (1, 0, n) + trail
         if t in ('a', 'alpha'): return (-2, 0, n) + trail
         if t in ('b', 'beta'): return (-2, 1, n) + trail
         if t in ('c', 'rc', 'pre', 'preview'): return (-2, 2, n) + trail
