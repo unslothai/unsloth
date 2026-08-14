@@ -4212,35 +4212,30 @@ def _repair_duplicate_core_metadata(
 
     repaired: list[str] = []
     staging_dirs: list[str] = []
+    # One quarantine per package, discarded as soon as that package is back in place.
+    # A single one shared across both would, when a later package fails, restore the
+    # first package's stale record on top of the install that has already replaced it:
+    # the conflict returns, and its old RECORD then describes a payload that is gone.
     quarantine = _QuarantinedMetadata()
     succeeded = False
     try:
         for name, record_count in duplicates:
+            quarantine = _QuarantinedMetadata()
             _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
             invalid_paths = install_manifest.invalid_metadata_paths(name)
-            if invalid_paths and len(invalid_paths) == record_count:
-                # Every record for this package is unreadable. Quarantining them all
-                # would leave pip nothing to uninstall, so the staged wheel would be
-                # laid over the existing tree and any module the new release dropped
-                # would stay on disk, importable, while the repair reported success.
-                # Give pip a parseable METADATA beside the intact RECORD instead, so
-                # it can remove exactly the files that record lists.
-                if not all(_rewrite_minimal_metadata(path, name) for path in invalid_paths):
-                    _safe_print(
-                        _red(
-                            f"   the only metadata for {name} is unreadable and has no "
-                            "usable RECORD, so its files cannot be removed safely. "
-                            "Recreate the environment to repair it."
-                        ),
-                        file = sys.stderr,
-                    )
-                    return False
-                importlib.invalidate_caches()
-                record_count = len(install_manifest.installed_versions(name))
-                invalid_paths = []
-            # Move the unreadable records aside rather than delete them: pip
-            # cannot run while they are in place, and staging can still fail.
-            if not quarantine.take(invalid_paths):
+            # Give pip a parseable METADATA beside every intact RECORD, so it can
+            # uninstall those records normally and remove exactly the files they list.
+            # Quarantining one instead drops its RECORD on the floor: the uninstall
+            # loop then only removes what the readable records claim, and a module
+            # that exists solely in the older release stays on disk and importable
+            # while the repair reports success.
+            unrewritable = [
+                path for path in invalid_paths if not _rewrite_minimal_metadata(path, name)
+            ]
+            # Whatever could not be made readable still has to leave the tree, because
+            # pip cannot run at all while it is there. Move it aside rather than delete
+            # it: staging can still fail.
+            if not quarantine.take(unrewritable):
                 _safe_print(
                     _red(f"   could not move invalid metadata for {name} aside"),
                     file = sys.stderr,
@@ -4249,6 +4244,18 @@ def _repair_duplicate_core_metadata(
             if invalid_paths:
                 importlib.invalidate_caches()
                 record_count = len(install_manifest.installed_versions(name))
+            if invalid_paths and not record_count:
+                # Nothing is left for pip to uninstall, so the replacement would be
+                # laid over a payload no record describes.
+                _safe_print(
+                    _red(
+                        f"   the metadata for {name} is unreadable and has no usable "
+                        "RECORD, so its files cannot be removed safely. Recreate the "
+                        "environment to repair it."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
 
             canonical = re.sub(r"[-_.]+", "-", name).lower()
             source_repo = local_repo or (ci_source_overlay if canonical == "unsloth" else "")
@@ -4328,6 +4335,8 @@ def _repair_duplicate_core_metadata(
                 )
                 return False
             repaired.append(name)
+            # This package is back in place, so its old records must never return.
+            quarantine.discard()
 
         importlib.invalidate_caches()
         unresolved = [

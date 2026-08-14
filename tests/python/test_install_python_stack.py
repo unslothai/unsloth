@@ -1446,7 +1446,9 @@ class TestDuplicateCoreMetadataRepair:
         record = tmp_path / "unsloth-2026.8.12.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
-        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: [""])
+        # Quarantining the only record leaves nothing behind for pip to uninstall.
+        probes = iter(([""], []))
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
         monkeypatch.setattr(
             ips.install_manifest, "invalid_metadata_paths", lambda _n: [str(record)]
         )
@@ -1521,6 +1523,74 @@ class TestDuplicateCoreMetadataRepair:
         self._uv_plan(monkeypatch)
         _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
         assert overrides["PIP_NO_INDEX"] == ""
+
+    def test_every_unreadable_record_with_a_manifest_is_made_uninstallable(
+        self, tmp_path, monkeypatch
+    ):
+        """One unreadable record beside a readable one used to be quarantined and
+        discarded, so its RECORD was never applied: the uninstall loop removed only
+        what the readable record claimed, and a module existing solely in the older
+        release stayed on disk and importable while the repair reported success."""
+        stale = tmp_path / "unsloth-2026.8.12.dist-info"
+        stale.mkdir()
+        (stale / "METADATA").write_bytes(b"\xff\xfe")
+        (stale / "RECORD").write_text("unsloth/gone.py,,\n")
+        probes = iter(
+            (["", "2026.8.15"], ["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"])
+        )
+        taken = []
+
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [str(stale)])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _n: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata, "take", lambda _self, paths: taken.append(paths) or True
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        # It was rewritten for pip rather than moved aside, so its RECORD is applied.
+        assert taken == [[]]
+        assert "Name: unsloth" in (stale / "METADATA").read_text()
+
+    def test_a_repaired_package_is_not_rolled_back_by_a_later_failure(self, monkeypatch):
+        """A single quarantine shared across both packages would, when the second
+        fails, restore the first package's stale record on top of the install that
+        has already replaced it: the conflict returns, and its old RECORD then
+        describes a payload that is gone."""
+        probes = {
+            "unsloth": iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"])),
+            "unsloth-zoo": iter((["", "2026.8.15"],)),
+        }
+        events = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
+        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+        # The second package cannot be staged, so the repair fails after the first
+        # one has already been reinstalled.
+        staged = iter(("/staged", None))
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _n: next(staged))
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata, "discard", lambda _self: events.append("discard")
+        )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata, "restore", lambda _self: events.append("restore")
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is False
+        # The first package was committed before the second was attempted, so the
+        # rollback at the end can only touch the one that failed.
+        assert events[0] == "discard"
+        assert events[-1] == "restore"
 
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)
