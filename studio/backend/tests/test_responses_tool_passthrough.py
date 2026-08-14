@@ -835,7 +835,13 @@ class TestResponsesNonStreamingAdapter:
         assert request.state.skip_api_monitor is False
 
     @staticmethod
-    def _run_in_process_completion(monkeypatch, monitor, timings, *, observations = None):
+    def _run_in_process_completion(
+        monkeypatch,
+        monitor,
+        timings,
+        *,
+        observations = None,
+    ):
         """Drive the wrapper over an in-process chat completion: its own monitor row is
         suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
         import routes.inference as inf_mod
@@ -949,7 +955,6 @@ class TestResponsesNonStreamingAdapter:
         assert observations["perf_callback"] is None
         assert observations["live_entries"] == []
         assert monitor.snapshot() == []
-
 
     def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
         """The relay is scoped to one inner call, so a timing-less request inherits nothing."""
