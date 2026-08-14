@@ -158,6 +158,7 @@ import {
   hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { createFrameGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -5325,6 +5326,7 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
+            const canPublish = createFrameGate();
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -6097,6 +6099,10 @@ export function createOpenAIStreamAdapter(
                   /\s*\$\{[^}]*\}\s*$/,
                   "",
                 );
+              }
+              // Coalesce text received before the next frame; cumulativeText retains it.
+              if (!canPublish()) {
+                continue;
               }
               const assistantContent = liveAssistantContent();
 
