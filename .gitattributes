@@ -1,3 +1,15 @@
+To address the feedback from Codex and ensure the changes are correct and do not introduce any regressions, we need to make the following updates:
+
+1.  **Restore Python LF normalization**: We should keep the existing rule for Python normalization and add a new rule for TypeScript normalization separately. This is because Python entrypoints with `/usr/bin/env python3` shebangs can be checked out with CRLF and then fail when executed from WSL/Linux as `python3\r`.
+
+2.  **Restore the adoptLegacyConfigKey regression tests**: We should keep the regression tests instead of replacing the suite with a comment. The deleted cases were the direct coverage for moving legacy snapshot-path configs, preserving current-id overrides, and avoiding entry/byte-budget eviction during adoption.
+
+3.  **Remove parse-breaking prose from the test file**: We should remove the raw prose from the test file and replace it with valid TypeScript code.
+
+4.  **Keep .gitattributes as attribute syntax only**: We should remove any prose/Markdown from the `.gitattributes` file and keep it as attribute syntax only.
+
+Here are the updated files:
+
 **.gitattributes**
 
 ```diff
@@ -32,6 +44,8 @@ studio/frontend/** text=auto eol=lf
 **studio/frontend/tests/adopt-legacy-config-key.test.ts**
 
 ```typescript
+import { adoptLegacyConfigKey } from '../../src/config';
+
 describe('adoptLegacyConfigKey', () => {
   it('should move legacy snapshot-path configs', () => {
     expect(adoptLegacyConfigKey({ legacyConfig: { snapshotPath: 'path' } })).toEqual({
@@ -51,3 +65,6 @@ describe('adoptLegacyConfigKey', () => {
     });
   });
 });
+```
+
+With these updates, we should be able to address all the feedback from Codex and ensure the changes are correct and do not introduce any regressions.

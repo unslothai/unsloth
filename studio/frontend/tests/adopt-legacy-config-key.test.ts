@@ -1,5 +1,3 @@
-Here are the updated files:
-
 **.gitattributes**
 
 ```makefile
@@ -54,7 +52,14 @@ describe('adoptLegacyConfigKey', () => {
     const adoptedConfig = adoptLegacyConfigKey(config);
     expect(adoptedConfig).toHaveProperty('configKey', 'non-default-key');
   });
-});
-```
 
-I have added a new test case to `adopt-legacy-config-key.test.ts` to cover the scenario where the model's configuration key is not set to the default value.
+  it('should handle default config key', () => {
+    const config = {
+      legacyConfig: {
+        configKey: 'default-key',
+      },
+    };
+    const adoptedConfig = adoptLegacyConfigKey(config);
+    expect(adoptedConfig).toHaveProperty('configKey', 'default-key');
+  });
+});
