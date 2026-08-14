@@ -45,6 +45,7 @@ from unforgettable.store.records import (
     list_rollouts,
     set_record_status,
 )
+from unforgettable.sidecar.pack import list_packs, pack_from_admitted_b
 from unforgettable.store.search import search_records
 
 DEFAULT_SEARCH_TOP = 20
@@ -67,6 +68,7 @@ COMPACT_FIRST_DRY_RUN_HELP = (
     "First compact on an existing $STUDIO_HOME/memory/memory.db should be "
     "compact --dry-run."
 )
+PACK_FIRST_DRY_RUN_HELP = "First pack is inspectable with --dry-run."
 
 
 def resolve_db_path(explicit: str | None) -> Path:
@@ -321,6 +323,34 @@ def _csv_count(value: str | None) -> int:
     return len([part for part in str(value).split(",") if part])
 
 
+def _cmd_pack(args: argparse.Namespace, db_path: Path) -> int:
+    report = pack_from_admitted_b(
+        include_sim=args.include_sim,
+        dry_run=args.dry_run,
+        db_path=db_path,
+    )
+    _print_json(asdict(report))
+    return 0
+
+
+def _cmd_packs(args: argparse.Namespace, db_path: Path) -> int:
+    rows = list_packs(limit=args.limit, db_path=db_path)
+    _print_aligned(
+        ("id", "n_train", "n_holdout", "include_sim", "created"),
+        [
+            (
+                rec["id"][:TABLE_ID_CHARS],
+                str(rec.get("n_train") or 0),
+                str(rec.get("n_holdout") or 0),
+                "yes" if rec.get("include_sim") else "no",
+                rec.get("created_at") or "",
+            )
+            for rec in rows
+        ],
+    )
+    return 0
+
+
 def _cmd_load(args: argparse.Namespace, db_path: Path) -> int:
     rows = list_inject_stats(limit=args.limit, db_path=db_path)
     _print_aligned(
@@ -521,6 +551,34 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_flag(load_p)
     load_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
     load_p.set_defaults(func=_cmd_load)
+
+    pack_p = sub.add_parser(
+        "pack",
+        help="Build a PEFT pack from admitted B (wet). " + PACK_FIRST_DRY_RUN_HELP,
+        description=(
+            "Pack admitted procedure/error_fix bodies. World-pass traces vote; "
+            "they are not text sources. Mutates unless --dry-run. "
+            + PACK_FIRST_DRY_RUN_HELP
+        ),
+        epilog=PACK_FIRST_DRY_RUN_HELP,
+    )
+    _add_db_flag(pack_p)
+    pack_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview without inserting. " + PACK_FIRST_DRY_RUN_HELP,
+    )
+    pack_p.add_argument(
+        "--include-sim",
+        action="store_true",
+        help="Allow sim/pass votes only when the same episode also has world/pass and no twin_note.",
+    )
+    pack_p.set_defaults(func=_cmd_pack)
+
+    packs_p = sub.add_parser("packs", help="List built packs as a compact table.")
+    _add_db_flag(packs_p)
+    packs_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    packs_p.set_defaults(func=_cmd_packs)
 
     return parser
 

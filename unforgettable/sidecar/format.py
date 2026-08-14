@@ -12,11 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Parametric sidecar (C). Phase 1 stub — do not train from here."""
+"""SFT message JSON for pack items. Gold is the admitted record body only."""
 
 from __future__ import annotations
 
+from typing import Any
 
-def pack_from_admitted_b(*_args, **_kwargs) -> list:
-    """Gap: curated PEFT packs from admitted B + graded world traces."""
-    return []
+PACK_BODY_CHARS = 1200
+
+
+def _clip(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
+def format_sft_item(rec: dict[str, Any]) -> list[dict[str, str]]:
+    title = (rec.get("title") or "").strip()
+    body = _clip((rec.get("body") or "").strip(), PACK_BODY_CHARS)
+    return [
+        {"role": "user", "content": title},
+        {"role": "assistant", "content": body},
+    ]

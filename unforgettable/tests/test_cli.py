@@ -17,11 +17,12 @@ from __future__ import annotations
 import json
 import re
 
-from unforgettable.cli import COMPACT_FIRST_DRY_RUN_HELP, main
+from unforgettable.cli import COMPACT_FIRST_DRY_RUN_HELP, PACK_FIRST_DRY_RUN_HELP, main
 from unforgettable.store.records import (
     get_record,
     insert_inject_stats,
     insert_record,
+    insert_retrieve_use,
     insert_rollout,
 )
 
@@ -255,3 +256,80 @@ def test_load_prints_char_split_columns(db_path, capsys):
     ]
     assert newest == ["abcdef12", "world", "12", "34", "0", "46", "0"]
     assert older == ["oldold01", "sim", "1", "2", "3", "6", "2"]
+
+
+def test_pack_dry_run_json_has_n_train(db_path, capsys):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    insert_retrieve_use(
+        episode_id="ep-1",
+        record_id=rec["id"],
+        contact="world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-1",
+        contact="world",
+        outcome="pass",
+        summary="ok",
+        db_path=db_path,
+    )
+    assert main(["pack", "--dry-run", "--db", str(db_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "n_train" in payload
+    assert payload["n_train"] == 1
+    assert payload["dry_run"] is True
+    assert payload["pack_id"] is None
+
+
+def test_packs_lists_wet_pack(db_path, capsys):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    insert_retrieve_use(
+        episode_id="ep-1",
+        record_id=rec["id"],
+        contact="world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-1",
+        contact="world",
+        outcome="pass",
+        summary="ok",
+        db_path=db_path,
+    )
+    assert main(["pack", "--db", str(db_path)]) == 0
+    packed = json.loads(capsys.readouterr().out)
+    assert packed["n_train"] == 1
+    assert packed["pack_id"]
+    assert main(["packs", "--db", str(db_path)]) == 0
+    out = capsys.readouterr().out
+    assert packed["pack_id"][:8] in out
+    assert "n_train" in out
+    assert "1" in out
+
+
+def test_pack_and_packs_help_include_db(capsys):
+    for cmd in ("pack", "packs"):
+        try:
+            main([cmd, "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+        else:
+            raise AssertionError(f"{cmd} --help should exit")
+        out = capsys.readouterr().out
+        assert "--db" in out
+        if cmd == "pack":
+            assert PACK_FIRST_DRY_RUN_HELP in out
+            assert "--dry-run" in out
+

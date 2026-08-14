@@ -109,6 +109,31 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_inject_stats_episode ON inject_stats(episode_id);
+
+        CREATE TABLE IF NOT EXISTS packs (
+            id TEXT NOT NULL PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            n_train INTEGER NOT NULL,
+            n_holdout INTEGER NOT NULL,
+            include_sim INTEGER NOT NULL DEFAULT 0,
+            report TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS pack_items (
+            id TEXT NOT NULL PRIMARY KEY,
+            pack_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            episode_id TEXT,
+            kind TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            contact TEXT NOT NULL DEFAULT 'world',
+            messages TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (pack_id) REFERENCES packs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pack_items_pack ON pack_items(pack_id);
         """
     )
     _add_missing_columns(conn)

@@ -32,3 +32,17 @@ def test_package_does_not_import_studio():
             if "import studio" in stripped or stripped.startswith("from studio"):
                 offenders.append(f"{path}: {stripped}")
     assert offenders == []
+
+
+def test_sidecar_has_no_eager_unsloth_or_torch():
+    sidecar = ROOT / "sidecar"
+    offenders = []
+    for path in sidecar.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if stripped.startswith(("import unsloth", "from unsloth", "import torch", "from torch")):
+                offenders.append(f"{path}: {stripped}")
+    assert offenders == []
