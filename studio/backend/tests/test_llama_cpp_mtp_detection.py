@@ -1320,9 +1320,7 @@ def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
     ("decided_at", "requested", "expected_match"),
     [(2, 1, False), (2, 2, True), (None, 1, False), (1, 1, True)],
 )
-def test_partial_offload_stand_down_follows_the_draft_depth(
-    decided_at, requested, expected_match
-):
+def test_partial_offload_stand_down_follows_the_draft_depth(decided_at, requested, expected_match):
     # Auto's Hybrid Mamba stand-down engages nothing, so _speculative_type is
     # "none" and the draft-mode arms cannot see it -- but the depth is what priced
     # the rollback copies that made the placement partial, so a change must rerun

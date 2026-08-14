@@ -361,7 +361,12 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
 # ── Auto drops a drafter the VRAM cannot hold ─────────────────────────
 
 
-def _hybrid_mtp_backend(tmp_path: Path, *, partial_offload: bool, memory = None):
+def _hybrid_mtp_backend(
+    tmp_path: Path,
+    *,
+    partial_offload: bool,
+    memory = None,
+):
     backend, gguf = _backend(
         tmp_path,
         vulkan = False,
