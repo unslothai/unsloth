@@ -4,10 +4,9 @@
 // A Train-tab run on a model whose architecture no installed transformers ships was
 // accepted, spawned, and killed minutes later at model load:
 //   "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit is not supported yet in transformers==5.3.0"
-// Studio already had the fix -- the consent dialog that provisions .venv_t5_latest --
-// but it was wired only into chat, so Train never asked. These pin the gate: the start
-// path consults the check, pauses on the dialog, and abandons the start when declined
-// instead of spawning a worker that cannot load the model.
+// Studio already had the consent dialog that provisions .venv_t5_latest, but it was
+// wired only into chat. These pin the gate: the start path consults the check, pauses
+// on the dialog, and abandons the start when declined.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -155,11 +154,10 @@ test("an already-routed model reports 16-bit without a dialog", async () => {
 });
 
 test("an exact 4-bit resume is never offered an install that strands it", async () => {
-  // The latest sidecar is a persistent overlay, and this checkpoint is attested against
-  // a 4-bit model load that sidecar permanently refuses (effective_training_load_in_4bit
-  // raises ExactResumeResourcesUnavailable). The model ships its own code, so the resume
-  // works today: consenting here would trade a working resume for an upgrade it does
-  // not need, and there is no way back.
+  // The sidecar is a persistent overlay and this checkpoint is attested against a 4-bit
+  // load it permanently refuses (effective_training_load_in_4bit raises
+  // ExactResumeResourcesUnavailable). The model ships its own code, so the resume works
+  // today: consenting would trade it for an upgrade it does not need, with no way back.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: UPGRADE,
@@ -189,12 +187,11 @@ test("an exact 4-bit resume is never offered an install that strands it", async 
 });
 
 test("a resume with no custom-code way out is not offered a doomed install", async () => {
-  // No fallback, so the install looks like the only way to load the model at all -- but
-  // it is not one. Installing activates the latest tier, and effective_training_load_in_4bit
-  // then RAISES for exactly the config the backend answered installBreaksExactResume
-  // with, so this resume fails either way. The only thing consent buys is a persistent
-  // overlay that also retires 4-bit for every later run on this model, so the start is
-  // refused with a reason instead.
+  // No fallback, so the install looks like the only way in, but it is not one:
+  // installing activates the latest tier, and effective_training_load_in_4bit then
+  // raises for the very config the backend answered installBreaksExactResume with. The
+  // resume fails either way, and consent buys only a persistent overlay that retires
+  // 4-bit for every later run, so the start is refused with a reason instead.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: UPGRADE,

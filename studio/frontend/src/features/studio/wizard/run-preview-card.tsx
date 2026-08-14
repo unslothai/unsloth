@@ -167,11 +167,9 @@ function ResourceNoticeList({
  *
  * The method row above is what the user picked, not what the backend will run: a model
  * routed to the latest-transformers sidecar always loads 16-bit, so "QLoRA · 4-bit" for
- * one of those is a VRAM promise the run cannot keep. Stated here, before Start.
- *
- * When the model also ships its own code the dialog offers both ways in, and only one of
- * them keeps 4-bit, so the precision line has to name the action rather than assert a
- * single answer. */
+ * one of those is a VRAM promise the run cannot keep. Stated here, before Start. When
+ * the model also ships its own code the dialog offers both ways in and only one keeps
+ * 4-bit, so the precision line names the action rather than asserting one answer. */
 function TransformersUpgradeNotice(): ReactElement | null {
   const t = useT();
   const { installVersion, fourBitUnavailable, installSwitchesTo16Bit } =

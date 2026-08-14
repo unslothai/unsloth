@@ -28,9 +28,8 @@ interface TransformersUpgradeCheckResponse {
  *
  * The pre-load half of the consent gate for callers that do not run chat's `/validate`
  * (the Train tab). The token rides in the POST body, never the URL, like the scan route.
- *
- * `options` carries the cache pin (so the answer describes the snapshot the load will
- * actually open, not the repo's current config) and, for a resume, the run it precedes. */
+ * `options` carries the cache pin, so the answer describes the snapshot the load will
+ * open rather than the repo's current config, and for a resume the run it precedes. */
 export async function checkTransformersUpgrade(
   modelName: string,
   hfToken?: string | null,

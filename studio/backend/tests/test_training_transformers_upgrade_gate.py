@@ -143,10 +143,10 @@ def test_custom_code_fallback_is_reported(monkeypatch):
 
 def test_a_merely_offered_upgrade_keeps_4bit_when_custom_code_can_load_it(monkeypatch):
     # The dialog offers "continue with custom code" for these, and taking it installs
-    # nothing: the worker runs on the CURRENT transformers and loads bnb 4-bit. Claiming
-    # 16-bit here tells the Configure preview that 4-bit is unavailable when it is not,
-    # and oversizes the run's VRAM. /validate applies the same exemption
-    # (_install_only_upgrade is gated on `not requires_trust_remote_code`).
+    # nothing: the worker runs on the current transformers and loads bnb 4-bit. Claiming
+    # 16-bit would tell the preview 4-bit is unavailable when it is not, oversizing the
+    # run's VRAM. /validate exempts these the same way (_install_only_upgrade is gated
+    # on `not requires_trust_remote_code`).
     inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is True
@@ -199,8 +199,7 @@ def test_a_pinned_snapshot_is_what_gets_inspected(monkeypatch, tmp_path):
     # The gate used to be handed the Hub identifier for a cached model, while the
     # remote-code gate and the worker both load the pinned snapshot
     # (resolve_training_model_load_target returns model_snapshot_path or model_name). A
-    # repo whose CURRENT config.json names a brand-new architecture says nothing about
-    # the snapshot on disk this run will actually open.
+    # repo's current config.json says nothing about the snapshot this run opens.
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
@@ -238,12 +237,11 @@ def test_a_selected_cache_directory_resolves_to_its_snapshot(monkeypatch, tmp_pa
 
 def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_path):
     # The worker resolves a LoRA's base from its load target
-    # (core/training/worker.py: get_base_model_from_lora_identifier(load_target)), and the
-    # scan route does the same with its resolved scan target. Reading the Hub identifier
-    # here instead asks the CURRENT adapter_config.json which base to judge, while the run
-    # loads the pinned snapshot's -- a repo that repointed base_model_name_or_path since
-    # the pin was taken then gets the upgrade, custom-code and precision answers for a
-    # base the run never opens.
+    # (core/training/worker.py: get_base_model_from_lora_identifier(load_target)) and the
+    # scan route does the same. Reading the Hub identifier instead asks the current
+    # adapter_config.json which base to judge while the run loads the pinned snapshot's,
+    # so a repo that repointed base_model_name_or_path since the pin was taken gets every
+    # answer for a base the run never opens.
     resolved_from: list = []
     inf_mod = _stub(monkeypatch, upgrade = None)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
@@ -266,12 +264,11 @@ def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_pat
 
 
 def test_a_known_cached_model_with_no_path_still_resolves_its_snapshot(monkeypatch, tmp_path):
-    # A cached inventory row can carry a null cachePath, and the Train tab still sends
-    # prefer_local_cache for it (freshModelCachePin sets the flag from modelKnownCached
-    # and the path only when there is one). _resolve_model_snapshot searches every cache
-    # root for exactly that case, which is what routes/models.py and /train/start both
-    # rely on; requiring a path here left those selections judged on the repo's current
-    # architecture while the worker loads the snapshot.
+    # A cached inventory row can carry a null cachePath and the Train tab still sends
+    # prefer_local_cache for it. _resolve_model_snapshot searches every cache root for
+    # exactly that case, as routes/models.py and /train/start both rely on; requiring a
+    # path here judged those selections on the repo's current architecture while the
+    # worker loads the snapshot.
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)

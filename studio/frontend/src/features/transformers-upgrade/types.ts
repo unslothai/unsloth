@@ -26,8 +26,8 @@ export interface TransformersUpgradeCheck {
   /** A run started now loads 16-bit, not bnb 4-bit: the latest sidecar forces it. */
   forces16Bit: boolean;
   /** Installing would permanently strand the resume this check was asked for: the
-   *  checkpoint can only resume in the 4-bit load mode the current runtime still
-   *  gives it. Only ever set when a resume run was named in the request. */
+   *  checkpoint only resumes in the 4-bit load mode the current runtime still gives it.
+   *  Only set when a resume run was named in the request. */
   installBreaksExactResume: boolean;
 }
 

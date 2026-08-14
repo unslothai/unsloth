@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The gap this closes: `confirmTransformersUpgradeIfNeeded` had exactly two callers,
-// both in chat, so a Train-tab run on a model whose architecture no installed
-// transformers ships was accepted and then died at model load with
+// The gap this closes: `confirmTransformersUpgradeIfNeeded` had two callers, both in
+// chat, so a Train-tab run on an architecture no installed transformers ships was
+// accepted and then died at model load with
 //   "... is not supported yet in transformers==5.3.0"
-// and no prompt. Reading the start paths (rather than driving them) keeps this a cheap
+// and no prompt. Reading the start paths rather than driving them keeps this a cheap
 // guard against the gate being dropped from either one.
 
 import assert from "node:assert/strict";
@@ -54,9 +54,8 @@ test("the upgrade dialog is raised before the custom-code dialog", () => {
 
 test("both gates on a start path inspect the same copy of the model", () => {
   // The upgrade check used to be handed the Hub identifier while the custom-code gate
-  // resolved the pinned snapshot, so a cached model could be judged on the repo's
-  // current config.json and the snapshot's -- two different architectures. One resolver
-  // per start path is what keeps them from drifting apart again.
+  // resolved the pinned snapshot, so a cached model could be judged on two different
+  // architectures. One resolver per start path keeps them from drifting apart again.
   for (const [file, resolver] of [
     [
       "../src/features/training/lib/start-fresh-training-run.ts",
@@ -93,11 +92,10 @@ test("the gate reaches the install through the shared consent dialog", () => {
 });
 
 test("the Configure preview re-asks the check after an install", () => {
-  // The hook itself is React, so this is the cheap guard on the wiring the notice cache
-  // depends on: the store counts completed installs, and the hook keys its cached
-  // answers on that count. Break either end and Configure keeps showing the pre-install
-  // answer -- an install that already ran, and 4-bit for a run the new sidecar loads in
-  // 16-bit.
+  // The hook itself is React, so this guards the wiring the notice cache depends on:
+  // the store counts completed installs and the hook keys its answers on that count.
+  // Break either end and Configure keeps offering an install that already ran, and
+  // 4-bit for a run the new sidecar loads in 16-bit.
   const store = read(
     "../src/features/transformers-upgrade/stores/transformers-upgrade-dialog-store.ts",
   );
@@ -117,11 +115,10 @@ test("the Configure preview re-asks the check after an install", () => {
 });
 
 test("the consent dialog offers the custom-code way out before an install fails", () => {
-  // Training raises this dialog before a run starts, so what it offers first decides
-  // what a run can be. For a model that ships its own modeling code, the install is not
-  // the only way forward and is the more expensive one: it activates the latest sidecar,
-  // which trains 16-bit. Gating the fallback on the error phase left a QLoRA run with
-  // Install or Cancel, neither of which starts the 4-bit run the user asked for.
+  // Training raises this dialog before a run starts, so what it offers decides what the
+  // run can be. For a model shipping its own code the install is the more expensive way
+  // forward, activating the 16-bit sidecar, so gating the fallback on the error phase
+  // left a QLoRA run with Install or Cancel and no way to the 4-bit run it asked for.
   const dialog = read(
     "../src/features/transformers-upgrade/components/transformers-upgrade-dialog.tsx",
   );

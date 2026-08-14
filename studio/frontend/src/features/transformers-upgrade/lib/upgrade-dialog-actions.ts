@@ -19,13 +19,11 @@ export interface UpgradeDialogActions {
 
 /** Decide the dialog's actions from the check that raised it.
  *
- * The custom-code fallback used to appear only when there was nothing to install, or
- * after an install had already failed. That reads as a courtesy and is really a
- * correctness rule: the fallback loads the model on the CURRENT transformers, which for
- * training is the only path that still loads bnb 4-bit, because installing activates the
- * latest sidecar and that sidecar forces 16-bit. Hiding it behind Install therefore
- * leaves a QLoRA run with no way to start that keeps its own precision, when the model
- * ships code that can load it today. Whenever the fallback exists, it is offered. */
+ * The custom-code fallback used to appear only with nothing to install, or after an
+ * install failed. It reads as a courtesy but is a correctness rule: the fallback loads
+ * on the CURRENT transformers, the only path that still loads bnb 4-bit, since
+ * installing activates the 16-bit sidecar. Hiding it behind Install leaves a QLoRA run
+ * no way to start at its own precision. Whenever the fallback exists, it is offered. */
 export function upgradeDialogActions({
   upgrade,
   phase,

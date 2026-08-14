@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The Configure preview asks the upgrade check once per model and caches the answer,
-// because the hook behind it runs on every render. That cache used to outlive the thing
-// it describes: consenting to the install on Start provisions a persistent sidecar, and
-// coming back to Configure in the same session kept reading the pre-install answer -- so
-// the card went on offering a release that was already installed, and went on promising
-// "QLoRA - 4-bit" for a run the new overlay loads in 16-bit, which is the threefold VRAM
-// understatement this preview exists to prevent.
+// because the hook behind it runs on every render. That cache used to outlive what it
+// describes: consenting to the install provisions a persistent sidecar, and returning to
+// Configure in the same session kept reading the pre-install answer, so the card went on
+// offering a release already installed and promising "QLoRA - 4-bit" for a run the new
+// overlay loads in 16-bit.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -111,12 +110,11 @@ test("a different copy or token is still a different answer", () => {
 });
 
 test("a check still in flight across the install cannot rewind the cache", () => {
-  // The pre-install check is a network round trip, and the install it raced takes a
-  // minute, so it can resolve after the post-install check has already answered. Its
-  // write must be dropped: rewinding the generation would clear the post-install entry
-  // and leave the stale one, and because the effect that fired it is already cleaned up,
-  // nothing re-renders and nothing re-asks -- Configure would show no notice at all for
-  // the rest of the session.
+  // The pre-install check is a network round trip racing an install that takes a
+  // minute, so it can resolve after the post-install check answered. Its write must be
+  // dropped: rewinding the generation would clear the fresh entry for the stale one, and
+  // with its effect already cleaned up nothing re-asks, so Configure would show no
+  // notice for the rest of the session.
   const stale = upgradeNoticeCacheKey(4, MODEL, false, null, "");
   const fresh = upgradeNoticeCacheKey(5, MODEL, false, null, "");
   writeUpgradeNoticeCache(5, fresh, AFTER_INSTALL);

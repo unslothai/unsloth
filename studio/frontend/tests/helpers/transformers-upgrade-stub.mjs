@@ -3,9 +3,9 @@
 
 // Stands in for src/features/transformers-upgrade/index.ts.
 //
-// The real barrel re-exports the consent dialog (.tsx), and node
-// --experimental-strip-types cannot parse JSX, so importing the training-side gate for
-// a unit test would pull in the whole React tree. Same cut as export-api-stub.mjs.
+// The real barrel re-exports the consent dialog (.tsx) and node
+// --experimental-strip-types cannot parse JSX, so importing the training-side gate here
+// would pull in the whole React tree. Same cut as export-api-stub.mjs.
 // `checkTransformersUpgrade` answers from `checkResult` (or throws it), the consent
 // answer comes from `consentResult`, and every call is recorded on `calls`.
 

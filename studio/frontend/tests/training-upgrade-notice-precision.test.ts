@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Configure preview reports one precision for a run whose precision depends on which
-// action the user picks at Start. A model that ships its own modeling code AND is shipped
-// by the offered release gets both actions in the dialog: keeping the custom code loads it
-// on the current transformers in 4-bit, and Install activates the latest sidecar, which
-// trains 16-bit. The backend collapses that to forces_16bit=false (it answers for the
-// fallback), so the card offered the install and went on promising QLoRA - 4-bit for a run
-// that Install turns into a roughly threefold VRAM increase, or an OOM.
+// The Configure preview reports one precision for a run whose precision depends on the
+// action taken at Start. A model that ships its own modeling code AND is shipped by the
+// offered release gets both dialog actions: the custom code loads it on the current
+// transformers in 4-bit, Install activates the 16-bit sidecar. The backend collapses
+// that to forces_16bit=false, answering for the fallback, so the card offered the
+// install while promising QLoRA - 4-bit for a run Install turns into roughly triple the
+// VRAM, or an OOM.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

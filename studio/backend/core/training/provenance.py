@@ -110,18 +110,18 @@ def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
 
     ``effective_training_load_in_4bit`` raises ``ExactResumeResourcesUnavailable`` for a
     4-bit run with exact-resource provenance the moment ``latest_tier_active_for`` turns
-    true, and that sidecar is a persistent overlay: once installed, the checkpoint can
-    never resume in the 4-bit load mode it was attested with. Callers offering the
-    install ahead of a resume ask this first, so they do not trade a working resume for
-    an upgrade the run does not need.
+    true, and that sidecar is a persistent overlay: once installed the checkpoint never
+    resumes in the load mode it was attested with. Callers offering the install ahead of
+    a resume ask this first, rather than trade a working resume for an upgrade the run
+    does not need.
 
-    Takes the run's STORED config (``config_json``), which is why it recomputes the
-    requirement from the provenance marker: ``require_exact_resume_resources`` and
-    ``require_exact_model_resource`` are stripped before persistence and only exist on
-    the live worker config that ``/train/start`` assembles.
+    Takes the run's STORED config (``config_json``), so it recomputes the requirement
+    from the provenance marker: ``require_exact_resume_resources`` and
+    ``require_exact_model_resource`` are stripped before persistence and exist only on
+    the live worker config ``/train/start`` assembles.
 
-    Never raises. A provenance that is already refusing a resume returns False: nothing
-    the install does makes that checkpoint any less resumable.
+    Never raises. A provenance already refusing a resume returns False: nothing the
+    install does makes that checkpoint any less resumable.
     """
     if not bool(config.get("load_in_4bit")):
         return False

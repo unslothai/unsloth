@@ -29,9 +29,9 @@ interface TransformersUpgradeDialogStore {
    *  custom-code fallback resolves true without installing and leaves it loaded. */
   installRan: boolean;
   /** Completed installs this session. The sidecar it provisions is a persistent overlay
-   *  that changes every later answer about every model -- what is left to install, and
-   *  whether a run still loads 4-bit -- so anything caching those answers keys on this
-   *  and re-asks once it moves. Survives `resolve`, unlike the per-consent flags. */
+   *  that changes every later answer about every model, what is left to install and
+   *  whether a run still loads 4-bit, so anything caching those answers keys on this and
+   *  re-asks once it moves. Survives `resolve`, unlike the per-consent flags. */
   sidecarGeneration: number;
   /** True when the server unloaded the active chat model during this consent,
    *  including a swap that failed AFTER the unload: callers must then treat

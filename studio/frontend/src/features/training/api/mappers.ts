@@ -35,9 +35,9 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
 
 /** Whether this configuration asks the backend for a bnb 4-bit load.
  *
- * Exported so the UI can say what the run will actually do: the backend refuses 4-bit
- * for models routed to the latest-transformers sidecar, and a preview that reads
- * "QLoRA · 4-bit" for a run that loads 16-bit understates its VRAM by a wide margin. */
+ * Exported so the UI can say what the run will do: the backend refuses 4-bit for models
+ * routed to the latest-transformers sidecar, and a preview reading "QLoRA · 4-bit" for a
+ * 16-bit run understates its VRAM by a wide margin. */
 export function trainingLoadsIn4Bit(
   config: Pick<TrainingConfigState, "trainingMethod" | "selectedModel">,
 ): boolean {

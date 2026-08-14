@@ -58,9 +58,8 @@ export async function resumeTrainingRun(runId: string): Promise<boolean> {
 
     // Upgrade consent first, then the custom-code gate, like a fresh start: a resume
     // after a reinstall can face the same unknown architecture the first run installed for.
-    // The upgrade check already read this model's config: carry its custom-code verdict
-    // into the next gate rather than let that gate's fallback re-derive it from the
-    // stored flag.
+    // The upgrade check already read this model's config, so carry its custom-code
+    // verdict into the next gate rather than let that gate's fallback re-derive it.
     const upgradeVerdict = { requiresTrustRemoteCode: false };
     if (
       !(await confirmResumeTransformersUpgrade(

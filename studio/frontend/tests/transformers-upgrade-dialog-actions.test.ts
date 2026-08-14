@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The consent dialog offered "Continue with custom code" only when there was nothing to
-// install, or after an install had already failed. Training now raises this dialog before
-// a run starts, and for a model that ships its own modeling code that hid the only path
-// that still loads bnb 4-bit: installing the release activates the latest sidecar, which
-// trains 16-bit. The first dialog therefore has to offer the fallback next to Install.
+// The consent dialog offered "Continue with custom code" only with nothing to install,
+// or after an install failed. Training now raises it before a run starts, and for a
+// model shipping its own modeling code that hid the only path still loading bnb 4-bit,
+// since installing activates the 16-bit sidecar. So the first dialog offers the fallback
+// next to Install.
 
 import assert from "node:assert/strict";
 import test from "node:test";

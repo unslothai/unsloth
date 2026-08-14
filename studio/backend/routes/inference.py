@@ -9077,15 +9077,12 @@ def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> st
     ``routes/models.py::scan_model_remote_code`` picks its target as: a local identifier
     stands for itself (resolved); else an exact ``model_snapshot_path`` pin wins; else
     ``prefer_local_cache`` resolves the selected cache directory to a snapshot; else the
-    repository identifier. The training worker agrees --
-    ``resolve_training_model_load_target`` returns ``model_snapshot_path or model_name``
-    -- so the upgrade check must read the same directory. A repo whose CURRENT
-    config.json names an architecture no installed transformers ships says nothing about
-    the pinned snapshot on disk that this run will load, and vice versa.
+    repository identifier. ``resolve_training_model_load_target`` agrees, returning
+    ``model_snapshot_path or model_name``, so this check reads the same directory: a
+    repo's current config.json says nothing about the pinned snapshot the run loads.
 
-    The identifier itself stays the response's ``model_name``, for display; every read
-    -- including the LoRA base resolve -- goes through this target, which is what the
-    scan route does too.
+    The identifier stays the response's ``model_name``, for display; every read, the
+    LoRA base resolve included, goes through this target, as the scan route does.
 
     Falls back to the identifier on any resolution failure: this route never raises.
     """
@@ -9109,11 +9106,11 @@ def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> st
             )
         local_path = (request.model_local_path or "").strip()
         if request.prefer_local_cache:
-            # No path is a legitimate cached selection -- an inventory row can carry a
-            # null cachePath -- and _resolve_model_snapshot then searches every cache
-            # root, which is what the scan route and /train/start both do with it. Only
-            # taking the pin when a path came along would leave those selections judged
-            # on the repo's current architecture while the worker loads the snapshot.
+            # No path is a legitimate cached selection (an inventory row can carry a null
+            # cachePath) and _resolve_model_snapshot then searches every cache root, as
+            # the scan route and /train/start both do. Taking the pin only when a path
+            # came along would judge those selections on the repo's current architecture
+            # while the worker loads the snapshot.
             from core.training.training import _resolve_model_snapshot
             return (
                 _resolve_model_snapshot(
@@ -9130,7 +9127,7 @@ def _install_breaks_exact_resume(run_id: str) -> bool:
     """Would installing the offered release strand the checkpoint of ``run_id``?
 
     The latest sidecar is a persistent overlay, and a 4-bit run with attested exact
-    resource provenance can only resume in the model load mode it was attested with --
+    resource provenance only resumes in the load mode it was attested with:
     ``effective_training_load_in_4bit`` raises the moment the sidecar routes it. So an
     install consented to on the way into a resume is not undoable.
 
@@ -9160,11 +9157,10 @@ async def check_transformers_upgrade_route(
     Does loading this model need a newer transformers than any installed overlay?
 
     /validate answers this for a chat load, but only as one field of a check that also
-    resolves a ModelConfig, picks a GPU placement and runs the coexistence guard -- none
-    of which apply to a training start, and several of which refuse while a run is
-    active. Training therefore asks the question on its own here, before it spawns a
-    worker that would otherwise die at model load with an unrecognized-architecture
-    error and no way for the user to act on it.
+    resolves a ModelConfig, picks a GPU placement and runs the coexistence guard, none of
+    which apply to a training start and several of which refuse while a run is active. So
+    training asks on its own here, before spawning a worker that would otherwise die at
+    model load with an unrecognized-architecture error the user cannot act on.
 
     Answers the same way /validate does: check_upgrade_for_model across [adapter, base],
     inside the same forced-offline window, on a worker thread. Also reports whether the
@@ -9181,13 +9177,11 @@ async def check_transformers_upgrade_route(
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
-        # The worker activates transformers for the BASE model, so a local or remote
-        # adapter has to be judged by what it is an adapter for. Resolved from the LOAD
-        # TARGET, not the identifier: the worker reads the base out of the adapter_config
-        # it opens (get_base_model_from_lora_identifier(load_target)), and the scan route
-        # reads it out of its resolved scan target. A repo that repointed
-        # base_model_name_or_path since the pin was taken would otherwise have this route
-        # judging a base the run never loads.
+        # The worker activates transformers for the BASE model, so an adapter is judged
+        # by what it is an adapter for. Resolved from the load target rather than the
+        # identifier, as the worker and the scan route both do: a repo that repointed
+        # base_model_name_or_path since the pin was taken would otherwise have this
+        # route judging a base the run never loads.
         base = await asyncio.to_thread(
             _offline_guarded,
             load_target,
@@ -9243,13 +9237,13 @@ async def check_transformers_upgrade_route(
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
 
-    # An offered install lands the model on the latest sidecar, and that sidecar forces
-    # 16-bit (bnb 4-bit feeds quantized experts into unvalidated paths for brand-new
-    # architectures). A dev-only upgrade is never installed, so it changes nothing here.
-    # Same rule /validate applies, and for the same reason: a model with a custom-code
-    # fallback still loads 4-bit on the CURRENT transformers, and the dialog offers that
-    # way out, so an upgrade that is merely offered cannot be claimed as 16-bit. Only an
-    # install-only upgrade -- or a sidecar already routing the model -- forces it.
+    # An offered install lands the model on the latest sidecar, which forces 16-bit (bnb
+    # 4-bit feeds quantized experts into unvalidated paths for brand-new architectures).
+    # A dev-only upgrade is never installed, so it changes nothing. Same rule /validate
+    # applies: a model with a custom-code fallback still loads 4-bit on the current
+    # transformers and the dialog offers that way out, so a merely offered upgrade
+    # cannot be claimed as 16-bit. Only an install-only upgrade, or a sidecar already
+    # routing the model, forces it.
     install_only_upgrade = bool(
         transformers_upgrade is not None
         and transformers_upgrade.supported_in_pypi

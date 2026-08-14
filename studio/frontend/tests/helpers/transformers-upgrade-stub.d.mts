@@ -4,9 +4,9 @@
 // Types for transformers-upgrade-stub.mjs so a .ts test can drive it without `any`.
 // Same shape as export-api-stub.d.mts next to it.
 
-/** One argument object as the stub records it. Loose on purpose: a test asserts
- *  that a key is absent as well as that one is present, so every field is optional
- *  and reading an unknown one is a compile error rather than `any`. */
+/** One argument object as the stub records it. Loose on purpose: a test asserts a key
+ *  is absent as well as present, so every field is optional and reading an unknown one
+ *  is a compile error rather than `any`. */
 export interface RecordedArgs {
   modelName?: unknown;
   upgrade?: unknown;

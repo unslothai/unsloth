@@ -129,10 +129,9 @@ export function TransformersUpgradeDialog() {
             <>
               {customCode ? (
                 // The model ships custom code, so the caller's trust_remote_code gate
-                // loads it on the transformers already installed. Offered next to
-                // Install, not only after one fails: installing activates the latest
-                // sidecar, which trains 16-bit, so this is the only way a 4-bit run on
-                // this model can start at all.
+                // loads it on the installed transformers. Offered next to Install, not
+                // only after one fails: installing activates the 16-bit sidecar, so this
+                // is the only way a 4-bit run on this model can start.
                 <AlertDialogAction
                   className="bg-transparent text-foreground hover:bg-accent"
                   onClick={() => resolve(true)}

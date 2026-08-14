@@ -280,9 +280,9 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     }
     // Upgrade consent first, then the custom-code gate: the same order chat loads use,
     // because installing a newer transformers changes what the load would even run.
-    // The upgrade check already read this model's config: carry its custom-code verdict
-    // into the next gate rather than let that gate's fallback re-derive it from the
-    // stored flag, which a fresh run leaves false.
+    // The upgrade check already read this model's config, so carry its custom-code
+    // verdict into the next gate rather than let that gate's fallback re-derive it from
+    // the stored flag, which a fresh run leaves false.
     const upgradeVerdict = { requiresTrustRemoteCode: false };
     if (
       !(await confirmSelectedModelTransformersUpgrade(
@@ -463,8 +463,8 @@ async function confirmSelectedModelTransformersUpgrade(
     modelName,
     hfToken,
     // Same pin the custom-code gate resolves, so both read one config.json: a cached
-    // model loads from its pinned snapshot, whose architecture can differ from the
-    // one the repo publishes today.
+    // model loads from its pinned snapshot, whose architecture can differ from the one
+    // the repo publishes today.
     modelCachePin: freshModelCachePin(attempt),
   });
   verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode;

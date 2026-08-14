@@ -456,9 +456,9 @@ class TransformersUpgradeCheckRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token, so gated repos resolve their config.json"
     )
-    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by the
-    # same precedence: a cached model is loaded from its pinned snapshot, whose config.json
-    # can name a different architecture than the repo's current one.
+    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by
+    # the same precedence: a cached model loads from its pinned snapshot, whose
+    # config.json can name a different architecture than the repo's current one.
     prefer_local_cache: bool = Field(
         False,
         description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
@@ -491,9 +491,9 @@ class TransformersUpgradeCheckResponse(BaseModel):
     """Upgrade + quantization preflight for a load that does not run /validate.
 
     /validate answers this for a chat load as part of a much larger check (GGUF
-    placement, VRAM coexistence, security review). Training needs the same two
-    answers on their own, before it starts a worker that would otherwise die at
-    model load with an unrecognized-architecture error.
+    placement, VRAM coexistence, security review). Training needs the same two answers
+    on their own, before starting a worker that would die at model load with an
+    unrecognized-architecture error.
     """
 
     model_name: str = Field(..., description = "The identifier that was checked")
