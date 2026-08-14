@@ -65,6 +65,7 @@ export interface BackendCheckpointBackupConfig {
   repo_id?: string | null;
   private?: boolean;
   interval_steps?: number;
+  interval_checkpoints?: number;
   strategy?: "latest";
   keep_remote?: number;
   upload_on_stop?: boolean;

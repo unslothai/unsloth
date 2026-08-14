@@ -143,7 +143,7 @@ export function buildTrainingStartPayload(
           provider: config.checkpointBackup.provider,
           repo_id: config.checkpointBackup.repoId,
           private: config.checkpointBackup.private,
-          interval_steps: config.checkpointBackup.intervalSteps,
+          interval_checkpoints: config.checkpointBackup.intervalCheckpoints,
           strategy: config.checkpointBackup.strategy,
           keep_remote: config.checkpointBackup.keepRemote,
           upload_on_stop: config.checkpointBackup.uploadOnStop,
