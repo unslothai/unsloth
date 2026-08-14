@@ -435,15 +435,15 @@ def _with_suite_tail(stmt: list):
             return
 
 
-def _header_end(stmt: list):
-    """The token the `def`/`class` header ends on: its first depth-0 colon.
+def _header_end_index(stmt: list) -> int:
+    """Where a compound header ends: the index of its first depth-0 colon.
 
     `def f(): run = model` keeps the tail glued to the header, so the last
-    token is the tail's, not the header's. The body a scope governs starts
+    token is the tail's, not the header's. The body a suite governs starts
     after the colon.
     """
     depth = 0
-    for tok in stmt:
+    for i, tok in enumerate(stmt):
         if tok.type != tokenize.OP:
             continue
         if tok.string in _OPENERS:
@@ -451,8 +451,13 @@ def _header_end(stmt: list):
         elif tok.string in _CLOSERS:
             depth -= 1
         elif tok.string == ":" and depth == 0:
-            return tok
-    return stmt[-1]
+            return i
+    return len(stmt) - 1
+
+
+def _header_end(stmt: list):
+    """The token the `def`/`class` header ends on."""
+    return stmt[_header_end_index(stmt)]
 
 
 def _split_top(toks: list, sep: str = ",") -> list:
@@ -1144,11 +1149,47 @@ def _add_param_names(stmt: list, start: int, scoped: set, candidates: frozenset)
             expect = False
 
 
+def _add_capture_names(stmt: list, scoped: set, candidates: frozenset) -> None:
+    """Record the capture patterns of a `case` header that shadow an alias.
+
+    A bare name in a pattern binds the subject, so `case run:` makes the
+    `run(...)` in the suite the subject rather than the imported builtin. The
+    two shapes that name something without binding it are excluded: a value
+    pattern (`case mod.run:`) and a class or keyword pattern (`case Run(x=1)`,
+    where the `x` names an attribute). The guard is an ordinary expression, so
+    the walk stops at the depth-0 `if` that opens it.
+    """
+    end = _header_end_index(stmt)
+    depth = 0
+    for j in range(1, end):
+        tok = stmt[j]
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                depth += 1
+            elif tok.string in _CLOSERS:
+                depth -= 1
+            continue
+        if tok.type != tokenize.NAME:
+            continue
+        if depth == 0 and tok.string == "if":
+            return  # the guard: what it names, it reads
+        if tok.string not in candidates:
+            continue
+        prev = stmt[j - 1]
+        if prev.type == tokenize.OP and prev.string == ".":
+            continue  # `case mod.run:` reads a value, it does not bind one
+        nxt = stmt[j + 1]
+        if nxt.type == tokenize.OP and nxt.string in (".", "(", "="):
+            continue  # a value pattern, a class pattern, or a keyword name
+        scoped.add(tok.string)
+
+
 def _collect_rebindings(
     stmt: list,
     rebound: set,
     candidates: frozenset,
     scoped: "set | None" = None,
+    in_match: bool = False,
 ) -> None:
     """Record the names in `candidates` that `stmt` binds to something else.
 
@@ -1170,6 +1211,13 @@ def _collect_rebindings(
         if tok.type == tokenize.NAME and tok.string in candidates:
             break
     else:
+        return
+    if in_match and stmt[0].type == tokenize.NAME and stmt[0].string == "case":
+        # The only binding a `case` header does is its capture patterns, and
+        # they reach the case suite alone: a case that does not match binds
+        # nothing, so the alias is still the module below the `match`.
+        if scoped is not None:
+            _add_capture_names(stmt, scoped, candidates)
         return
     if stmt[0].type == tokenize.NAME and stmt[0].string == "del" and len(stmt) > 1:
         # `del b` unbinds the alias: the `b.eval(...)` below it raises
@@ -1701,6 +1749,94 @@ def _opens_scope(stmt: list) -> "str | None":
     return None
 
 
+# The compound statements whose header is spelled with a hard keyword. `match`
+# and `case` are soft ones - a name, until the statement is shaped like a
+# header - so they are recognised separately.
+_BLOCK_KEYWORDS = frozenset(
+    ("if", "elif", "else", "for", "while", "with", "try", "except", "finally", "def", "class")
+)
+
+
+def _opens_block(stmt: list) -> "tuple | None":
+    """`(keyword, unconditional)` for the suite `stmt` heads, or None.
+
+    `unconditional` marks the one block whose bindings outlive its own dedent:
+    an `if True:` suite always runs, and control only reaches the statement
+    below it by falling off the end of that suite, so `if True: run = cb`
+    really does leave `run` bound to `cb` afterwards. Every other header is
+    conditional - a loop can iterate zero times, a `try` body can raise
+    partway, a `with` can have its exception swallowed by `__exit__`.
+
+    `match` and `case` are soft keywords, so they are read as headers only when
+    the statement is shaped like one: a depth-0 colon at least two tokens in.
+    That is what separates `match x:` from the annotation `match: int = 5` and
+    the call statement `match(x)`, either of which may name an ordinary
+    variable `match`.
+    """
+    head = stmt[0]
+    if head.type != tokenize.NAME:
+        return None
+    word = head.string
+    if word == "async" and len(stmt) > 1:
+        word = stmt[1].string
+    if word in _BLOCK_KEYWORDS:
+        if word != "if":
+            return word, False
+        return word, _is_truthy_constant(stmt[1 : _header_end_index(stmt)])
+    if word in ("match", "case"):
+        end = _header_end_index(stmt)
+        colon = stmt[end]
+        if end >= 2 and colon.type == tokenize.OP and colon.string == ":":
+            return word, False
+    return None
+
+
+def _is_truthy_constant(toks: list) -> bool:
+    """Whether `toks` is a condition that is always true.
+
+    Only the two spellings a generated or vendored file writes to open an
+    unconditional block. `True` cannot be reassigned in Python 3 - it is a
+    keyword - so reading it as a constant is safe.
+    """
+    toks = _strip_parens(toks)
+    if len(toks) != 1:
+        return False
+    tok = toks[0]
+    return (tok.type == tokenize.NAME and tok.string == "True") or (
+        tok.type == tokenize.NUMBER and tok.string == "1"
+    )
+
+
+def _survives_dedent(blocks: list, level: int) -> "int | None":
+    """The indent a rebinding written at `level` stays live at after its dedent.
+
+    None when it does not: the enclosing block may not have run, so the binding
+    it made cannot be assumed. The chain is walked all the way out in one go,
+    so a nested `if True:` inside another is re-homed once at the outermost
+    indent rather than once per dedent as the block unwinds.
+    """
+    target = None
+    for entry in reversed(blocks):
+        if entry[0] >= level:
+            continue
+        if not entry[2]:
+            break
+        target = level = entry[0]
+    return target
+
+
+def _relevel(levels: list, col: int, entries: list) -> None:
+    """Re-file `entries` under indent `col`, keeping `levels` sorted by indent."""
+    for i in range(len(levels) - 1, -1, -1):
+        if levels[i][0] == col:
+            levels[i][1].extend(entries)
+            return
+        if levels[i][0] < col:
+            levels.insert(i + 1, (col, list(entries)))
+            return
+    levels.insert(0, (col, list(entries)))
+
+
 def _cancel_add(cancel: dict, opened: dict, levels: list, name: str, at: int, col: int) -> None:
     """Record that `name` stops being the module at offset `at`, indent `col`.
 
@@ -1750,7 +1886,7 @@ def _cancel_rearm(opened: dict, name: str, at: int) -> None:
             entry[2] = at
 
 
-def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
+def _cancel_close(opened: dict, levels: list, at: int, col: int, blocks: "list | None" = None) -> None:
     """End the spans whose block a statement at `at`, indent `col`, has left.
 
     Only the groups deeper than `col` are touched and each one ends once, so a
@@ -1758,11 +1894,24 @@ def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
     costs N closes in total rather than N per statement. Walking `opened`
     instead kept every name that had ever been rebound in the loop, empty stack
     or not, which on a member allowed up to 64 MiB is enough to stall the scan.
+
+    `blocks` are the compound headers the closing statement sits under, most
+    recent last. A span written under an `if True:` is not ended at the dedent -
+    that suite always runs, so its rebinding is still the live one below the
+    block; it is re-filed at the enclosing indent and goes on deciding calls
+    from there.
     """
+    kept: dict = {}
     while levels and levels[-1][0] > col:
-        for name, entry in levels.pop()[1]:
+        level, group = levels.pop()
+        out = _survives_dedent(blocks, level) if blocks else None
+        for name, entry in group:
             # A span a re-arm already ended keeps that end: the block closing
             # later must not stretch it back over the calls in between.
+            if out is not None and out <= col and entry[2] is None:
+                entry[1] = out
+                kept.setdefault(out, []).append((name, entry))
+                continue
             if entry[2] is None:
                 entry[2] = at
             stack = opened.get(name)
@@ -1772,6 +1921,8 @@ def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
                 stack.pop()
                 if not stack:
                     del opened[name]
+    for out, entries in sorted(kept.items()):
+        _relevel(levels, out, entries)
 
 
 def _close_scope(
@@ -2135,6 +2286,38 @@ def _names_builtin(value: list, receivers: frozenset, funcs: frozenset, aliases:
     return False
 
 
+def _unpacked_value(stmt: list, at: int) -> "list | None":
+    """The value an unpacking assignment binds to the target holding `stmt[at]`.
+
+    Read positionally, so `holder.eval, spare = eval, None` is the same parked
+    builtin as `holder.eval = eval`. Only a flat target list is read: a starred
+    target shifts every position after it, and a single right-hand side
+    (`holder.eval, spare = pair`) names no element at all, so both are left
+    alone rather than guessed at.
+    """
+    eq = _name_index_op(stmt, "=")
+    if eq is None or eq < at:
+        return None  # the name is on the value side, or there is no assignment
+    targets = _split_top(stmt[:eq])
+    values = _split_top(stmt[eq + 1 :])
+    if len(targets) < 2 or len(targets) != len(values):
+        return None
+    pos = depth = 0
+    for tok in stmt[:at]:
+        if tok.type != tokenize.OP:
+            continue
+        if tok.string in _OPENERS:
+            depth += 1
+        elif tok.string in _CLOSERS:
+            depth -= 1
+        elif depth == 0 and tok.string == ",":
+            pos += 1
+    for target in targets:
+        if target and target[0].type == tokenize.OP and target[0].string in ("*", "**"):
+            return None
+    return _strip_parens(values[pos]) or None
+
+
 def _statement_spans(
     stmt: list, aliases: _Aliases, offsets: _Offsets, out: list, positional: bool
 ) -> None:
@@ -2144,12 +2327,23 @@ def _statement_spans(
         receivers, funcs, cancel = aliases.safe_receivers, aliases.safe_funcs, None
     last = len(stmt) - 1
     walked: dict = {}
+    col = stmt[0].start[1]
+    # `_with_suite_tail` yields a one-line suite twice: once glued to its header
+    # and once on its own. The glued copy carries the header's indent, which is
+    # shallower than the suite spans a parameter or a `case` capture is recorded
+    # at, so `def f(run): return run(BLOB)` was adjudicated as if it sat outside
+    # the body the parameter shadows. Past the header colon the tokens are the
+    # suite's, so that is the indent they are read at.
+    header = last + 1
+    if stmt[0].type == tokenize.NAME and stmt[0].string in _SUITE_HEADS:
+        header = _header_end_index(stmt)
     for j, tok in enumerate(stmt):
+        at_col = col if j <= header else col + 1
         if tok.type == tokenize.STRING:
             # A prefix is the only thing that can make this an f-string, so the
             # quote test rejects every ordinary literal for one character.
             if _FSTRING_OPAQUE and tok.string[:1] not in "\"'" and _is_fstring(tok.string):
-                _fstring_spans(tok, aliases, offsets, out, positional, stmt[0].start[1])
+                _fstring_spans(tok, aliases, offsets, out, positional, at_col)
             continue
         if tok.type != tokenize.NAME or j == last:
             continue
@@ -2160,7 +2354,7 @@ def _statement_spans(
         prev = stmt[j - 1] if j else None
         attribute = prev is not None and prev.type == tokenize.OP and prev.string == "."
         if nxt.type != tokenize.OP or nxt.string != "(":
-            if direct and attribute and nxt.type == tokenize.OP and nxt.string in ("=", ":"):
+            if direct and attribute and nxt.type == tokenize.OP and nxt.string in ("=", ":", ","):
                 if nxt.string == ":":
                     # `holder.eval: object = eval` parks the builtin exactly as
                     # the unannotated spelling does - the annotation is never
@@ -2178,7 +2372,16 @@ def _statement_spans(
                 # is named outright, so that is where the route is recorded: a
                 # file that hands `exec` or `eval` to an attribute has used it,
                 # whatever it does with it afterwards.
-                value = _strip_parens(_split_top(stmt, "=")[-1])
+                #
+                # `holder.eval, spare = eval, None` parks it exactly the same
+                # way, and the target list is the only difference: read the
+                # element the attribute is unpacked from, and fall back to the
+                # whole right-hand side when there is only one target.
+                value = _unpacked_value(stmt, j)
+                if value is None:
+                    if nxt.string == ",":
+                        continue  # a tuple this pass cannot line up: not a park
+                    value = _strip_parens(_split_top(stmt, "=")[-1])
                 if value and _names_builtin(value, receivers, funcs, aliases):
                     out.append(_Span(offsets.of(*tok.start), offsets.of(*value[-1].end)))
             continue
@@ -2231,7 +2434,7 @@ def _statement_spans(
             # it, so a local `m = model` in some function above cannot silence a
             # module-level call.
             if frontier is not None:
-                if _is_cancelled(frontier, start, stmt[0].start[1], declaring):
+                if _is_cancelled(frontier, start, at_col, declaring):
                     continue
         out.append(_Span(start, offsets.of(*nxt.end)))
 
@@ -2638,19 +2841,26 @@ class _ExecEvalPattern:
         # the assignment.
         local_shadows: dict = {}
         loaders = _Loaders()
+        # Every route spells one of the two words somewhere: a module alias at
+        # its call site (`b.exec(...)`), a function alias at its import (`from
+        # builtins import exec as run` - the collector only records a name
+        # imported from `_EXEC_NAMES`). So a member holding neither has no alias
+        # worth deriving, and `_scan` refuses the same text a moment later
+        # anyway. The test is what keeps the tokenize pass off it: 1.3 MiB of
+        # ordinary `builtins` statements spent 2.0s here to be rejected, and a
+        # member is allowed up to 64 MiB.
+        #
         # An escaped literal spells the module without the word appearing, so
         # that file has to be read too - but only when it also holds a call to
         # reach through the alias, since `_scan` returns nothing without one.
-        if (
+        if ("exec" in content or "eval" in content) and (
             "builtins" in content
             # A file that imports `import_module` binds a loader, and
             # `import_module(n).exec(...)` reaches the builtin without the word
             # `builtins` appearing anywhere.
             or "import_module" in content
-            or (
-                ("exec" in content or "eval" in content)
-                and (_RE_STRING_ESCAPE.search(content) or _RE_SPLIT_BUILTINS.search(content))
-            )
+            or _RE_STRING_ESCAPE.search(content)
+            or _RE_SPLIT_BUILTINS.search(content)
         ):
             failed: list = []
             # The aliases bound by something other than an import. An import is
@@ -2714,13 +2924,25 @@ class _ExecEvalPattern:
                 # Where an alias imported inside a function is visible, as the
                 # offsets of the scope that imported it.
                 local_imports: dict = {}
+                # Every compound header the statement sits under, as
+                # [indent, keyword, runs unconditionally]. `match` is what tells
+                # a `case` pattern apart from an ordinary variable named `case`,
+                # and the last field is what lets an `if True:` rebinding
+                # outlive its own dedent.
+                blocks: list = []
                 failed = []
                 for stmt in _statements(content, failed):
                     head = stmt[0]
                     col = head.start[1]
                     at = offsets.of(*head.start)
                     if levels:
-                        _cancel_close(opened, levels, at, col)
+                        _cancel_close(opened, levels, at, col, blocks)
+                    while blocks and blocks[-1][0] >= col:
+                        blocks.pop()
+                    in_match = bool(blocks) and blocks[-1][1] == "match"
+                    block = _opens_block(stmt)
+                    if block is not None:
+                        blocks.append((col, block[0], block[1]))
                     while scopes and scopes[-1][0] >= col:
                         _close_scope(
                             scopes.pop(),
@@ -2815,7 +3037,7 @@ class _ExecEvalPattern:
                         continue
                     _comprehension_shadows(stmt, candidates, offsets, local_shadows)
                     _lambda_shadows(stmt, candidates, offsets, local_shadows)
-                    _collect_rebindings(stmt, rebound, candidates, scoped)
+                    _collect_rebindings(stmt, rebound, candidates, scoped, in_match)
                     if scoped:
                         # Recorded one indent deeper than the header, which is
                         # what makes the span end at the first statement written
@@ -2825,7 +3047,13 @@ class _ExecEvalPattern:
                         # an unraised exception never made it, and Python
                         # deletes an exception target at the end of its handler
                         # - so nothing after the block may be cancelled by it.
-                        ends = offsets.of(*stmt[-1].end)
+                        #
+                        # Measured from the header's colon, not the last token:
+                        # `def f(run): return run(BLOB)` and `case run: run(BLOB)`
+                        # keep the suite glued to the header, so the last token
+                        # is the call's and the shadow would start after the very
+                        # call the parameter or the capture already governs.
+                        ends = offsets.of(*_header_end(stmt).end)
                         for name in scoped:
                             _cancel_add(cancel, opened, levels, name, ends, col + 1)
                         if scopes and opens is None and not in_class:
@@ -2905,15 +3133,18 @@ class _ExecEvalPattern:
                     # builtin and only then stops `b` being the module. Starting
                     # the span at the first token suppressed that call.
                     ends = offsets.of(*stmt[-1].end)
-                    if opens is not None:
-                        # A `def` or `class` binds its name before its own body
-                        # runs, and a one-line suite is re-yielded as its own
-                        # statement AFTER this one - so measuring from the last
-                        # token puts the binding past the body it governs, and
+                    if block is not None:
+                        # A compound header binds before its own suite runs, and
+                        # a one-line suite is re-yielded as its own statement
+                        # AFTER this one - so measuring from the last token puts
+                        # the binding past the body it governs, and
                         # `def run(): return run(BLOB)` was read as a call to the
-                        # imported builtin rather than as recursion. The header
-                        # end is where a multiline definition already ends.
-                        ends = scopes[-1][5]
+                        # imported builtin rather than as recursion, and
+                        # `with open(p) as b: b.exec(BLOB)` as the module. The
+                        # header end is where a multiline header already ends,
+                        # and everything the header evaluates - the context
+                        # expression, a walrus in a condition - sits before it.
+                        ends = offsets.of(*_header_end(stmt).end)
                     if scopes and opens is None:
                         # An assignment inside a `def` makes the name that
                         # function's local for the whole body, so the alias is

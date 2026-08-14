@@ -3769,3 +3769,146 @@ def test_a_combining_mark_stays_inside_an_identifier():
             f"{spelling} = None\n{nfc}(marshal.loads(BLOB))\n"
         )
         assert _high(rebound, "pkg/_infer.py") == [], "the rebinding is the same name"
+
+
+def test_a_member_without_exec_or_eval_never_reaches_the_tokenizer():
+    # Every route to the builtin spells one of the two words: a module alias at
+    # its call site, a function alias at its import. So a member holding
+    # neither has no alias worth deriving, and the alias pass - a tokenize over
+    # the whole member - used to run anyway on every file that merely mentions
+    # `builtins`. Measured on 1.3 MiB of ordinary `builtins` statements: 0.45 s
+    # before, 0.0007 s after, on members allowed up to 64 MiB.
+    quiet = "import builtins as b\n" + "".join(f"v{i} = b.len([{i}])\n" for i in range(200))
+    assert "exec" not in quiet and "eval" not in quiet
+    matcher = sp._ExecEvalPattern().for_text(quiet)
+    assert "b" not in matcher.receivers, "the file's own alias is not derived"
+    assert not matcher.funcs
+    assert list(matcher.finditer(quiet)) == []
+
+    # The pass still runs the moment the word is there, whichever route brings
+    # it: the skip may only drop work `_scan` would refuse a moment later.
+    for call, live in (
+        ("b.exec(marshal.loads(BLOB))", "receivers"),
+        ("run(marshal.loads(BLOB))", "funcs"),
+    ):
+        payload = f"{quiet}from builtins import exec as run\nimport marshal\n{call}\n"
+        loud = sp._ExecEvalPattern().for_text(payload)
+        assert getattr(loud, live), f"{call} still binds an alias"
+        assert list(loud.finditer(payload)), f"{call} is still reported"
+        assert _high(payload), f"{call} is still a HIGH"
+
+
+def test_an_unconditional_suite_keeps_its_rebinding_after_the_dedent():
+    # `if True:` always runs, and the statement below the block is reached only
+    # by falling off the end of that suite - so the rebinding it made is the
+    # live binding there. Ending the span at the dedent read the call below as
+    # the builtin again.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    call = "run(marshal.loads(BLOB))\n"
+    for cond in ("True", "1"):
+        payload = f"{prelude}if {cond}:\n    run = callback\n{call}"
+        assert _high(payload, "pkg/_infer.py") == [], f"`if {cond}:` always runs"
+    assert (
+        _high(f"{prelude}if True: run = callback\n{call}", "pkg/_infer.py") == []
+    ), "a one-line suite is the same suite"
+    assert (
+        _high(f"{prelude}if True:\n    if True:\n        run = callback\n{call}", "pkg/_infer.py")
+        == []
+    ), "a nested unconditional block is still unconditional"
+
+    # Every other header may not run, or may not run to the end, so its
+    # rebinding still stops at the dedent - and a call above the rebinding runs
+    # the builtin whatever the header is.
+    for header in ("if flag:", "while True:", "for x in items:", "try:", "with lock:"):
+        payload = f"{prelude}{header}\n    run = callback\n{call}"
+        assert _high(payload), f"`{header}` may leave the alias alone"
+    nested = f"{prelude}if flag:\n    if True:\n        run = callback\n{call}"
+    assert _high(nested), "an unconditional block inside a conditional one is conditional"
+    above = f"{prelude}if True:\n    {call}    run = callback\n"
+    assert _high(above), "the call above the rebinding runs the builtin"
+    rearmed = f"{prelude}if True:\n    run = callback\nfrom builtins import exec as run\n{call}"
+    assert _high(rearmed), "the import puts the builtin back in the name"
+
+
+def test_a_builtin_parked_through_an_unpacking_assignment_is_read():
+    # `holder.eval, spare = eval, None` hands the builtin to an attribute
+    # exactly as `holder.eval = eval` does. The comma is the only difference,
+    # and it left the assignment unread - so the call below it was excluded as
+    # an ordinary method and the file kept only the non-blocking MEDIUM.
+    prelude = "import marshal\n"
+    call = "holder.eval(marshal.loads(BLOB))\n"
+    for parked in ("holder.eval, spare = eval, None", "a, holder.eval = None, eval"):
+        assert _high(f"{prelude}{parked}\n{call}"), f"`{parked}` parks the builtin"
+
+    # The route is positional, so an element that is not the builtin parks
+    # nothing, and a shape the positions cannot be read from is left alone
+    # rather than guessed at.
+    for benign in (
+        "holder.eval, spare = compute, None",
+        "holder.eval, spare = pair",
+        "*rest, holder.eval = values",
+        "holder.eval, spare = None, eval",
+    ):
+        assert (
+            _high(f"{prelude}{benign}\n{call}", "pkg/_infer.py") == []
+        ), f"`{benign}` hands the attribute something else"
+
+
+def test_a_case_pattern_captures_the_subject():
+    # A bare name in a `case` pattern binds the subject, so the call in the
+    # suite is the subject rather than the imported builtin.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    call = "run(marshal.loads(BLOB))"
+    captured = f"{prelude}match callback:\n    case run:\n        {call}\n"
+    assert _high(captured, "pkg/_infer.py") == [], "`case run:` binds the subject"
+    assert (
+        _high(f"{prelude}match callback:\n    case run: {call}\n", "pkg/_infer.py") == []
+    ), "a one-line case suite is the same suite"
+    assert (
+        _high(f"{prelude}match s:\n    case Point(x = run):\n        {call}\n", "pkg/_infer.py")
+        == []
+    ), "a keyword pattern captures into its value"
+
+    # A value pattern reads a name, it does not bind one; a guard is an
+    # ordinary expression; and a case that does not match binds nothing, so the
+    # capture reaches its own suite and nothing below the `match`.
+    assert _high(
+        f"{prelude}match callback:\n    case mod.run:\n        {call}\n"
+    ), "`case mod.run:` is a value pattern"
+    assert _high(
+        f"{prelude}match s:\n    case _ if {call}:\n        pass\n"
+    ), "a guard reads the alias"
+    assert _high(
+        f"{prelude}match callback:\n    case run:\n        pass\n{call}\n"
+    ), "the capture does not reach below the match"
+    assert _high(
+        f"{prelude}match = 5\ncase = 6\n{call}\n"
+    ), "`match` and `case` are ordinary names here"
+
+
+def test_a_one_line_suite_starts_where_its_header_ends():
+    # `def f(run): return run(BLOB)` keeps the body glued to the header, so the
+    # last token is the call's - and measuring the parameter shadow from there
+    # started it after the very call the parameter governs.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    payload = f"{prelude}def f(run): return run(marshal.loads(BLOB))\n"
+    assert _high(payload, "pkg/_infer.py") == [], "the parameter is what is called"
+    module = "import builtins as b\nimport marshal\n"
+    for header, shadowed in (
+        ("for b in items:", "b.exec(marshal.loads(BLOB))"),
+        ("with open(p) as b:", "b.exec(marshal.loads(BLOB))"),
+    ):
+        one_line = f"{module}{header} {shadowed}\n"
+        assert _high(one_line, "pkg/_infer.py") == [], f"`{header}` shadows its own suite"
+
+    # The shadow reaches the suite and nothing else: a parameter of some other
+    # name leaves the alias alone, and the call below the block is the builtin.
+    assert _high(
+        f"{prelude}def f(x): return run(marshal.loads(x))\n"
+    ), "a parameter of another name shadows nothing"
+    assert _high(
+        f"{module}for x in items: b.exec(marshal.loads(BLOB))\n"
+    ), "a loop target of another name shadows nothing"
+    assert _high(
+        f"{module}for b in items: pass\nb.exec(marshal.loads(BLOB))\n"
+    ), "an empty loop leaves the alias exactly where it was"
