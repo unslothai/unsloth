@@ -34,6 +34,18 @@ REPO = Path(__file__).resolve().parents[2]
 STACK = REPO / "studio/install_python_stack.py"
 
 
+@pytest.fixture(autouse = True)
+def _no_ambient_pm_policy(monkeypatch):
+    """These tests are about the INDEX scrub, and they assert the default contract.
+
+    An inherited UNSLOTH_STRICT_PM_POLICY plus a cutoff pip cannot honour refuses the
+    fetch outright, which is correct behaviour and a different test's subject
+    (TestTheStrictFallbackRefusesWhatPipCannotHonour in the install-stack suite).
+    """
+    for name in ("UNSLOTH_STRICT_PM_POLICY", "UV_EXCLUDE_NEWER", "UV_NO_BUILD"):
+        monkeypatch.delenv(name, raising = False)
+
+
 def _load_real_index_env_scrub():
     """The module's OWN _install_env_for_cmd, so the scrub is executed, not re-implemented.
 
@@ -50,7 +62,12 @@ def _load_real_index_env_scrub():
     _sys.path.insert(0, str(REPO / "studio"))
     from backend.utils.uv_path_safety import register_tmpdir_for_cleanup as _register
 
+    # The printing helpers are stubbed rather than extracted: they pull in the whole
+    # colour/terminal stack, and these tests assert on the environment, not the text.
     ns: dict = {
+        "_step": lambda *a, **k: None,
+        "_red": lambda text: text,
+        "_safe_print": lambda *a, **k: None,
         "os": _os,
         "subprocess": subprocess,
         "sys": _sys,
@@ -68,6 +85,9 @@ def _load_real_index_env_scrub():
         ("def _strict_pm_policy(", "\n\n\n", 0),
         ("_PM_POLICY_FORCED_SOURCE_ENV_VARS = (", "\n)\n", 2),
         ("_PM_POLICY_RELAXED_ENV_VARS = (", "\n)\n", 2),
+        ("def _is_pip_fetch_cmd(", "\n\n\n", 0),
+        ("def _refuse_pip_under_untranslatable_policy(", "\n\n\n", 0),
+        ("def _untranslatable_strict_policy(", "\n\n\n", 0),
         ("def _relaxed_pip_policy_env(", "\n\n\n", 0),
         ("_PM_POLICY_CONFIG_KEYS = (", "\n)\n", 2),
         ("_PM_POLICY_SCOPED_CONFIG_KEYS = ", "\n", 0),
@@ -92,6 +112,7 @@ def _load_real_index_env_scrub():
         ("_PIP_CONFIG_REACHED_PIP = ", "\n", 0),
         ("def _windows_hidden_subprocess_kwargs(", "\n\n\n", 0),
         ("def _pip_config_policy(", "\n\n\n", 0),
+        ("def _pip_command_name(", "\n\n\n", 0),
         ("def _pip_config_as_pip_env(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),

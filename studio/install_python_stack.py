@@ -4044,6 +4044,13 @@ _PM_POLICY_RELAXED_ENV_VARS = (
 )
 
 
+def _is_pip_fetch_cmd(cmd: "list[str]") -> bool:
+    """True for a pip command that FETCHES something, which is what a policy binds."""
+    if cmd[:1] == ["uv"]:
+        return False
+    return "pip" in cmd and any(arg in ("install", "download", "wheel") for arg in cmd)
+
+
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     """Overrides that stop a hardened user pip config failing the installer's own pip.
 
@@ -4158,6 +4165,20 @@ def _file_exists(path: "Path") -> bool:
         return False
 
 
+def _pyproject_uv_table_by_line(text: str) -> bool:
+    """The 3.9/3.10 half of the test above: is there a [tool.uv] header in here?
+
+    The table itself or one of its subtables, not any table whose name merely starts the
+    same way: [tool.uvicorn] is somebody else's, and stopping the walk there drops the
+    parent policy uv does apply.
+    """
+    for line in text.splitlines():
+        header = _toml_line_value(line)
+        if header == "[tool.uv]" or header.startswith("[tool.uv."):
+            return True
+    return False
+
+
 def _pyproject_speaks_for_uv(path: "Path") -> bool:
     """True when a pyproject.toml carries a [tool.uv] TABLE, which ends uv's walk.
 
@@ -4172,9 +4193,7 @@ def _pyproject_speaks_for_uv(path: "Path") -> bool:
     try:
         import tomllib
     except ImportError:
-        return any(
-            _toml_line_value(line).startswith("[tool.uv") for line in text.splitlines()
-        )
+        return _pyproject_uv_table_by_line(text)
     try:
         document = tomllib.loads(text)
     except Exception:
@@ -4429,11 +4448,15 @@ _PIP_CONFIG_REACHED_PIP = False
 
 
 def _pip_config_policy(refresh: bool = False) -> "dict[str, tuple[str, str]]":
-    """The policy pip's own config FILES set, as {key: (rendered name, value)}.
+    """The policy pip's own config FILES set, as {(section, key): (rendered name, value)}.
 
     `pip config list` renders every file pip would load, including a PIP_CONFIG_FILE
     override, which is why this asks pip instead of guessing paths. The `:env:` section is
     dropped: those are the PIP_* variables, and they are read from the environment.
+
+    The section is kept because pip's own is: `[download] require-hashes = true` binds
+    `pip download` and nothing else, so carrying it into an install would fail a repair
+    over a policy that never covered it.
 
     Best effort and non-fatal: a venv that has no pip yet (uv venvs have none) answers
     empty, and _PIP_CONFIG_REACHED_PIP records that so the pip half can be asked again
@@ -4461,19 +4484,28 @@ def _pip_config_policy(refresh: bool = False) -> "dict[str, tuple[str, str]]":
             name = name.strip()
             if name.startswith(":env:"):
                 continue
+            section, _dot, _rest = name.partition(".")
             for key in _PM_POLICY_CONFIG_KEYS:
-                if not name.endswith(f".{key}") or key in policy:
+                if not name.endswith(f".{key}") or (section, key) in policy:
                     continue
                 # `require-hashes = false` is a policy switched off, not one to carry.
                 if _pm_policy_value_is_on(value):
-                    policy[key] = (name, value.strip().strip("\"\'"))
+                    policy[(section, key)] = (name, value.strip().strip("\"'"))
                 break
     _PIP_CONFIG_POLICY = policy
     _PIP_CONFIG_REACHED_PIP = reached
     return policy
 
 
-def _pip_config_as_pip_env() -> "dict[str, str]":
+def _pip_command_name(cmd: "list[str]") -> str:
+    """Which pip subcommand this is, for the config sections that name one."""
+    for name in ("install", "download", "wheel"):
+        if name in cmd:
+            return name
+    return ""
+
+
+def _pip_config_as_pip_env(cmd: "list[str]") -> "dict[str, str]":
     """pip.conf's policy as PIP_* variables, for a pinned command that reads no pip.conf.
 
     A pinned command points PIP_CONFIG_FILE at os.devnull, because the operator's index
@@ -4481,15 +4513,24 @@ def _pip_config_as_pip_env() -> "dict[str, str]":
     policy still has to survive that, and pip applies environment variables AFTER config
     files, so this is the channel that is left. Their own explicit PIP_* is never
     overwritten, and the no-binary family is never carried: it forces a source build.
+
+    Only the sections that bind THIS command: `[global]`, then the subcommand's own, which
+    overrides it the way pip resolves them. A `[download] require-hashes` must not fail a
+    torch install the operator never restricted.
     """
     if not _strict_pm_policy():
         return {}
     policy = _pip_config_policy()
+    resolved: "dict[str, str]" = {}
+    for section in ("global", _pip_command_name(cmd)):
+        for (config_section, key), (_name, value) in policy.items():
+            if config_section == section:
+                resolved[key] = value
     translated: "dict[str, str]" = {}
-    if "require-hashes" in policy and not os.environ.get("PIP_REQUIRE_HASHES"):
+    if "require-hashes" in resolved and not os.environ.get("PIP_REQUIRE_HASHES"):
         translated["PIP_REQUIRE_HASHES"] = "1"
-    if "only-binary" in policy and not os.environ.get("PIP_ONLY_BINARY"):
-        translated["PIP_ONLY_BINARY"] = policy["only-binary"][1]
+    if "only-binary" in resolved and not os.environ.get("PIP_ONLY_BINARY"):
+        translated["PIP_ONLY_BINARY"] = resolved["only-binary"]
     return translated
 
 
@@ -4806,6 +4847,13 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     so a pinned command reads no config in either mode and policy travels by environment.
     """
     strict = _strict_pm_policy()
+    if strict and _is_pip_fetch_cmd(cmd) and _refuse_pip_under_untranslatable_policy(
+        " ".join(cmd[:3])
+    ):
+        # Every pip fetch passes through here, which is the only place that catches the
+        # ones pip_install() does not drive: the bootstrap's own pip upgrade and the XPU
+        # `pip download`. pip cannot honour the cutoff, so under the switch it does not run.
+        sys.exit(1)
     if not _is_pinned_index_cmd(cmd):
         overrides = _uv_policy_as_pip_policy() if strict else _relaxed_pip_policy_env(cmd)
         if not overrides:
@@ -4834,7 +4882,7 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     env.update(_uv_policy_as_pip_policy())
     # pip's own configuration decides last for a pip command: this is the file the
     # PIP_CONFIG_FILE above just took away, and the operator wrote it for pip.
-    env.update(_pip_config_as_pip_env())
+    env.update(_pip_config_as_pip_env(cmd))
     return env
 
 

@@ -577,7 +577,11 @@ class TestStrictPmPolicyOptOut:
     )
 
     def test_non_pinned_pip_inherits_the_policy_verbatim(self):
-        with mock.patch.dict(os.environ, self.HOSTILE):
+        # Without the cutoff, which pip cannot honour at all: a pip command under THAT is
+        # refused outright, and TestTheStrictFallbackRefusesWhatPipCannotHonour pins it.
+        env = dict(self.HOSTILE)
+        env.pop("UV_EXCLUDE_NEWER", None)
+        with mock.patch.dict(os.environ, env):
             assert (
                 ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
                 is None
@@ -906,6 +910,39 @@ class TestPipConfigPolicySurvivesThePin:
         )
         assert env["PIP_ONLY_BINARY"] == "some-other-package"
 
+    def test_a_command_scoped_section_stays_on_its_command(self):
+        """`[download] require-hashes = true` binds `pip download` and nothing else, so
+        carrying it into a torch install fails a repair the operator never restricted."""
+        env = self._pinned_env(
+            "download.require-hashes='true'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )
+        assert "PIP_REQUIRE_HASHES" not in env
+
+    def test_a_matching_section_is_carried(self):
+        result = mock.Mock(returncode = 0, stdout = "download.require-hashes='true'\n")
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "download", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_REQUIRE_HASHES"] == "1"
+
+    def test_the_command_section_overrides_global(self):
+        result = mock.Mock(
+            returncode = 0,
+            stdout = "global.only-binary=':all:'\ninstall.only-binary='numpy'\n",
+        )
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_ONLY_BINARY"] == "numpy"
+
     def test_the_default_mode_still_drops_it(self):
         """Without the switch this is the #8530 relaxation, and it stays: the pinned
         specs carry no hashes, so honouring the file fails every torch repair."""
@@ -993,6 +1030,36 @@ class TestTheStrictFallbackRefusesWhatPipCannotHonour:
         assert self._pip_is_the_only_backend(
             monkeypatch, {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD": "1"}
         )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["python", "-m", "pip", "install", "--upgrade", "pip"],
+            ["python", "-m", "pip", "download", "pytorch-triton-xpu", "-d", "/tmp/x"],
+        ],
+    )
+    def test_every_direct_pip_fetch_is_refused(self, cmd):
+        """The bootstrap's own pip upgrade and the XPU download do not go through
+        pip_install(), so the refusal sits where every pip command builds its
+        environment. Otherwise the switch lets those two fetch past the cutoff."""
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"},
+                clear = True,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            ips._install_env_for_cmd(cmd)
+
+    def test_a_uv_command_is_not_refused(self):
+        """uv honours the cutoff itself, so it is only pip that cannot run under one."""
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"},
+            clear = True,
+        ):
+            ips._install_env_for_cmd(["uv", "pip", "install", "numpy"])
 
     def test_an_optional_install_declines_rather_than_exits(self, monkeypatch):
         """pip_install_try exists for installs with a follow-up, so it reports and
@@ -1318,6 +1385,20 @@ class TestUvConfigDiscoveryMatchesUv:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home" / ".config"))
         monkeypatch.chdir(project)
         assert self._keys() == ["uv.toml: require-hashes"]
+
+    @pytest.mark.parametrize(
+        "header, ends_the_walk",
+        [
+            ("[tool.uv]", True),
+            ("[tool.uv.pip]", True),
+            ("[tool.uvicorn]", False),
+            ("# [tool.uv]", False),
+        ],
+    )
+    def test_the_fallback_matches_the_uv_table_exactly(self, header, ends_the_walk):
+        """[tool.uvicorn] is somebody else's table. Ending the walk there drops the parent
+        policy uv does apply, which under the switch is the source build it forbade."""
+        assert ips._pyproject_uv_table_by_line(f"{header}\nx = 1\n") is ends_the_walk
 
     def test_the_line_scanner_honours_the_same_precedence(self, tmp_path):
         project, user = tmp_path / "a.toml", tmp_path / "b.toml"
