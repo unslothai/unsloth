@@ -90,7 +90,15 @@ export function AskApp(): ReactElement {
         setErrorKey(null);
         setPhase("input");
         setShowNonce((nonce) => nonce + 1);
-        void fetchPillSettings().catch(() => undefined);
+        void fetchPillSettings()
+          .then((settings) =>
+            setModelLabel(
+              settings.defaultModel
+                ? shortModelName(settings.defaultModel)
+                : null,
+            ),
+          )
+          .catch(() => undefined);
       });
       const unlistenHide = await listen("ask://hide", () => {
         abortRef.current?.abort();
