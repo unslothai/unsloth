@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import remend from "remend";
-import { parseMarkdownIntoBlocks } from "streamdown";
+import { parseMarkdownIntoBlocks, Streamdown } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
@@ -176,4 +176,47 @@ test("a code character class does not disable incremental parsing", () => {
   const source = `\`\`\`js\nconst token = /[^\\s]+/;\n\`\`\`\n\n${paragraphs(100)}`;
   const render = new IncrementalMarkdownCache().update(source);
   assert.ok(render.markdown.length < source.length / 4);
+});
+
+test("Streamdown re-renders only when the Markdown string changes", () => {
+  // Its memo comparator is what decides whether the parser callback runs again,
+  // and it does not compare that callback. Retaining a block therefore has to
+  // change the Markdown too, or the retained block never reaches the DOM.
+  const { compare } = Streamdown as unknown as {
+    compare: (previous: object, next: object) => boolean;
+  };
+  const shared = { mode: "streaming", isAnimating: true, children: "reply" };
+
+  assert.equal(
+    compare(
+      { ...shared, parseMarkdownIntoBlocksFn: () => [] },
+      { ...shared, parseMarkdownIntoBlocksFn: () => [] },
+    ),
+    true,
+  );
+  assert.equal(compare(shared, { ...shared, children: "longer reply" }), false);
+});
+
+test("a repeating reply keeps displaying every retained block", () => {
+  // A reply that repeats a line leaves the tail unchanged when an update
+  // retains exactly what it appended, so the cache must not hand Streamdown a
+  // Markdown string it already holds.
+  const line = "I cannot provide that information.\n\n";
+  const step = line.length;
+  const source = `Here is the answer.\n\n${line.repeat(60)}`;
+  const cache = new IncrementalMarkdownCache();
+  let displayedMarkdown: string | null = null;
+  let displayed: string[] = [];
+
+  for (let length = step; length <= source.length; length += step) {
+    const input = source.slice(0, length);
+    const render = cache.update(input);
+    if (render.markdown !== displayedMarkdown) {
+      displayedMarkdown = render.markdown;
+      displayed = render.parseMarkdownIntoBlocks(render.markdown);
+    }
+    assert.deepEqual(displayed, parseMarkdownIntoBlocks(remend(input)));
+    // Retaining one update later must not let the live tail track the reply.
+    assert.ok(render.markdown.length < step * 6);
+  }
 });

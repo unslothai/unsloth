@@ -425,6 +425,127 @@ export type IncrementalMarkdownRender = {
   parseMarkdownIntoBlocks: (markdown: string) => string[];
 };
 
+// Marker facts the retained prefix carries into the tail repair.
+type RetainedContext = {
+  multilineKatex: boolean;
+  bold: boolean;
+  singleAsterisk: boolean;
+  singleUnderscore: boolean;
+  firstSingleAsterisk: "inlineCode" | "normal" | null;
+  firstSingleUnderscore: "inlineCode" | "normal" | null;
+  firstBoldOrSingleUnderscore: "bold" | "singleUnderscore" | null;
+};
+
+const createRetainedContext = (): RetainedContext => ({
+  multilineKatex: false,
+  bold: false,
+  singleAsterisk: false,
+  singleUnderscore: false,
+  firstSingleAsterisk: null,
+  firstSingleUnderscore: null,
+  firstBoldOrSingleUnderscore: null,
+});
+
+const singleUnderscoreContext = (context: RetainedContext): string => {
+  if (!context.singleUnderscore) {
+    return "";
+  }
+  return context.firstSingleUnderscore === "inlineCode"
+    ? INLINE_CODE_UNDERSCORE_CONTEXT
+    : SINGLE_UNDERSCORE_CONTEXT;
+};
+
+const singleAsteriskContext = (context: RetainedContext): string => {
+  if (!context.singleAsterisk) {
+    return "";
+  }
+  return context.firstSingleAsterisk === "inlineCode"
+    ? INLINE_CODE_ASTERISK_CONTEXT
+    : SINGLE_ASTERISK_CONTEXT;
+};
+
+const emphasisContext = (context: RetainedContext): string => {
+  const bold = context.bold ? BOLD_CONTEXT : "";
+  const underscore = singleUnderscoreContext(context);
+  return context.firstBoldOrSingleUnderscore === "singleUnderscore"
+    ? underscore + bold
+    : bold + underscore;
+};
+
+// Taking the context as a value lets a candidate commit be priced before it is
+// applied, which the repeated-Markdown check in update() needs.
+function repairTail(tail: string, context: RetainedContext): string {
+  const prefix =
+    emphasisContext(context) +
+    singleAsteriskContext(context) +
+    (context.multilineKatex ? MULTILINE_KATEX_CONTEXT : "");
+  if (!prefix) {
+    return remend(tail);
+  }
+  return remend(prefix + tail).slice(prefix.length);
+}
+
+const advanceContext = (
+  context: RetainedContext,
+  parity: RepairParity,
+  committedText: string,
+): RetainedContext => ({
+  multilineKatex: context.multilineKatex || committedText.includes("$$"),
+  bold: context.bold || parity.boldCandidate,
+  singleAsterisk: context.singleAsterisk || parity.singleAsteriskCandidate,
+  singleUnderscore:
+    context.singleUnderscore || parity.singleUnderscoreCandidate,
+  firstSingleAsterisk:
+    context.firstSingleAsterisk ?? parity.firstSingleAsteriskCandidate,
+  firstSingleUnderscore:
+    context.firstSingleUnderscore ?? parity.firstSingleUnderscoreCandidate,
+  firstBoldOrSingleUnderscore:
+    context.firstBoldOrSingleUnderscore ?? parity.firstBoldOrSingleUnderscore,
+});
+
+type CommitBoundary = {
+  count: number;
+  length: number;
+  // The parity at the boundary, or null when no block can be retained.
+  parity: RepairParity | null;
+  repairBroke: boolean;
+};
+
+// Remend may synthesize closing syntax at the end of an incomplete tail.
+// Never retain synthetic or mid-string repaired text. Scan forward once,
+// recording the latest exact boundary whose global repair parity is neutral.
+function findCommitBoundary(
+  tail: string,
+  blocks: string[],
+  candidateCount: number,
+): CommitBoundary {
+  const parity = createRepairParity();
+  const commit: CommitBoundary = {
+    count: 0,
+    length: 0,
+    parity: null,
+    repairBroke: false,
+  };
+  let exactLength = 0;
+
+  for (let index = 0; index < candidateCount; index += 1) {
+    const block = blocks[index];
+    if (!tail.startsWith(block, exactLength)) {
+      commit.repairBroke = true;
+      break;
+    }
+    exactLength += block.length;
+    updateRepairParity(parity, block);
+    if (hasNeutralRepairParity(parity)) {
+      commit.count = index + 1;
+      commit.length = exactLength;
+      commit.parity = { ...parity };
+    }
+  }
+
+  return commit;
+}
+
 // Streamdown normally repairs and lexes the entire growing reply on every
 // update. Retain blocks that are safely behind a rollback window and give
 // Streamdown only the active tail. The parser callback puts the retained blocks
@@ -433,79 +554,33 @@ export class IncrementalMarkdownCache {
   private source = "";
   private tail = "";
   private committedBlocks: string[] = [];
-  private hasMultilineKatexContext = false;
-  private hasBoldContext = false;
-  private hasSingleAsteriskContext = false;
-  private hasSingleUnderscoreContext = false;
-  private firstSingleAsteriskContext: "inlineCode" | "normal" | null = null;
-  private firstSingleUnderscoreContext: "inlineCode" | "normal" | null = null;
-  private firstBoldOrSingleUnderscoreContext:
-    | "bold"
-    | "singleUnderscore"
-    | null = null;
+  private context = createRetainedContext();
   private fullDocumentMode = false;
+  private lastMarkdown: string | null = null;
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
     ...this.committedBlocks,
     ...parseMarkdownIntoBlocks(markdown),
   ];
 
-  private getSingleUnderscoreContext(): string {
-    if (!this.hasSingleUnderscoreContext) {
-      return "";
-    }
-    return this.firstSingleUnderscoreContext === "inlineCode"
-      ? INLINE_CODE_UNDERSCORE_CONTEXT
-      : SINGLE_UNDERSCORE_CONTEXT;
-  }
-
-  private getSingleAsteriskContext(): string {
-    if (!this.hasSingleAsteriskContext) {
-      return "";
-    }
-    return this.firstSingleAsteriskContext === "inlineCode"
-      ? INLINE_CODE_ASTERISK_CONTEXT
-      : SINGLE_ASTERISK_CONTEXT;
-  }
-
-  private getEmphasisContext(): string {
-    const bold = this.hasBoldContext ? BOLD_CONTEXT : "";
-    const underscore = this.getSingleUnderscoreContext();
-    return this.firstBoldOrSingleUnderscoreContext === "singleUnderscore"
-      ? underscore + bold
-      : bold + underscore;
-  }
-
-  private repairTail(): string {
-    const context =
-      this.getEmphasisContext() +
-      this.getSingleAsteriskContext() +
-      (this.hasMultilineKatexContext ? MULTILINE_KATEX_CONTEXT : "");
-    if (!context) {
-      return remend(this.tail);
-    }
-    return remend(context + this.tail).slice(context.length);
+  // Streamdown memoises the whole component on the Markdown string and ignores
+  // the parser callback, so the string is the only thing that can schedule a
+  // render. Record what it was last given.
+  private render(markdown: string): IncrementalMarkdownRender {
+    this.lastMarkdown = markdown;
+    return { markdown, parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks };
   }
 
   private resetIncrementalState(markdown: string): void {
     this.tail = markdown;
     this.committedBlocks = [];
-    this.hasMultilineKatexContext = false;
-    this.hasBoldContext = false;
-    this.hasSingleAsteriskContext = false;
-    this.hasSingleUnderscoreContext = false;
-    this.firstSingleAsteriskContext = null;
-    this.firstSingleUnderscoreContext = null;
-    this.firstBoldOrSingleUnderscoreContext = null;
+    this.context = createRetainedContext();
   }
 
   private renderFullDocument(markdown: string): IncrementalMarkdownRender {
     this.resetIncrementalState(markdown);
     this.fullDocumentMode = true;
-    return {
-      markdown: remend(markdown),
-      parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
-    };
+    return this.render(remend(markdown));
   }
 
   private updateTail(markdown: string): void {
@@ -526,7 +601,7 @@ export class IncrementalMarkdownCache {
 
     this.updateTail(markdown);
 
-    const repaired = this.repairTail();
+    const repaired = repairTail(this.tail, this.context);
 
     // Streamdown deliberately turns a repaired document containing footnotes
     // into one block so definitions can resolve references anywhere in the
@@ -541,83 +616,42 @@ export class IncrementalMarkdownCache {
     const blocks = parseMarkdownIntoBlocks(repaired);
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
     if (candidateCount === 0) {
-      return {
-        markdown: repaired,
-        parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
-      };
+      return this.render(repaired);
     }
 
-    const parity = createRepairParity();
-    let exactLength = 0;
-    let commitCount = 0;
-    let committedLength = 0;
-    let committedHasBoldCandidate = false;
-    let committedHasSingleAsteriskCandidate = false;
-    let committedHasSingleUnderscoreCandidate = false;
-    let committedFirstSingleAsterisk: "inlineCode" | "normal" | null = null;
-    let committedFirstSingleUnderscore: "inlineCode" | "normal" | null = null;
-    let committedFirstBoldOrSingleUnderscore:
-      | "bold"
-      | "singleUnderscore"
-      | null = null;
-    let repairBroke = false;
-
-    // Remend may synthesize closing syntax at the end of an incomplete tail.
-    // Never retain synthetic or mid-string repaired text. Scan forward once,
-    // recording the latest exact boundary whose global repair parity is neutral.
-    for (let index = 0; index < candidateCount; index += 1) {
-      const block = blocks[index];
-      if (!this.tail.startsWith(block, exactLength)) {
-        repairBroke = true;
-        break;
-      }
-      exactLength += block.length;
-      updateRepairParity(parity, block);
-      if (hasNeutralRepairParity(parity)) {
-        commitCount = index + 1;
-        committedLength = exactLength;
-        committedHasBoldCandidate = parity.boldCandidate;
-        committedHasSingleAsteriskCandidate = parity.singleAsteriskCandidate;
-        committedHasSingleUnderscoreCandidate =
-          parity.singleUnderscoreCandidate;
-        committedFirstSingleAsterisk = parity.firstSingleAsteriskCandidate;
-        committedFirstSingleUnderscore = parity.firstSingleUnderscoreCandidate;
-        committedFirstBoldOrSingleUnderscore =
-          parity.firstBoldOrSingleUnderscore;
-      }
-    }
+    const commit = findCommitBoundary(this.tail, blocks, candidateCount);
 
     // A mid-string repair can never become a raw prefix on a later append, so
     // make that fallback sticky. A temporarily unbalanced marker can close in a
     // later block, so keep its repaired tail live and retry on the next update.
-    if (commitCount === 0) {
-      if (repairBroke) {
+    if (!commit.parity) {
+      if (commit.repairBroke) {
         return this.renderFullDocument(markdown);
       }
-      return {
-        markdown: repaired,
-        parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
-      };
+      return this.render(repaired);
     }
 
-    this.committedBlocks.push(...blocks.slice(0, commitCount));
-    this.hasBoldContext ||= committedHasBoldCandidate;
-    this.hasSingleAsteriskContext ||= committedHasSingleAsteriskCandidate;
-    this.hasSingleUnderscoreContext ||= committedHasSingleUnderscoreCandidate;
-    this.firstSingleAsteriskContext ??= committedFirstSingleAsterisk;
-    this.firstSingleUnderscoreContext ??= committedFirstSingleUnderscore;
-    this.firstBoldOrSingleUnderscoreContext ??=
-      committedFirstBoldOrSingleUnderscore;
-    const committedText = this.tail.slice(0, committedLength);
-    if (committedText.includes("$$")) {
-      this.hasMultilineKatexContext = true;
-    }
-    this.tail = this.tail.slice(committedLength);
+    const nextContext = advanceContext(
+      this.context,
+      commit.parity,
+      this.tail.slice(0, commit.length),
+    );
+    const nextTail = this.tail.slice(commit.length);
+    const nextMarkdown = repairTail(nextTail, nextContext);
 
-    return {
-      markdown: this.repairTail(),
-      parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
-    };
+    // A repeating reply can leave the tail unchanged once a block is retained.
+    // Streamdown would then see the Markdown it already holds and skip the
+    // render, so the retained blocks would never be displayed. Keep them in the
+    // live tail instead; the next update commits them with a longer string.
+    if (nextMarkdown === this.lastMarkdown) {
+      return this.render(repaired);
+    }
+
+    this.committedBlocks.push(...blocks.slice(0, commit.count));
+    this.context = nextContext;
+    this.tail = nextTail;
+
+    return this.render(nextMarkdown);
   }
 }
 
