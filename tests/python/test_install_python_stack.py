@@ -567,9 +567,7 @@ class TestStrictPmPolicyOptOut:
     def test_pinned_cmd_keeps_the_policy_it_can_carry(self):
         """Policy travels by environment on a pinned command, and the index scrub the pin
         needs is untouched by the switch."""
-        with mock.patch.dict(
-            os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")
-        ):
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
