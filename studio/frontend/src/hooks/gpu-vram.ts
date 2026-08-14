@@ -24,11 +24,9 @@ export interface VramReportingGpu {
 
 /** Sum dedicated VRAM while counting a shared host-memory pool only once.
  *
- * The backend rounds each device to 2dp before sending it, so adding the
- * devices back up reintroduces binary floating point error: three B200s at
- * 179.06 GiB each sum to 537.1800000000001. Not every caller rounds before
- * printing the total, so the sum is returned at the precision the devices
- * arrived with. */
+ * Devices arrive rounded to 2dp, so summing them reintroduces float error
+ * (three B200s at 179.06 give 537.1800000000001) and not every caller rounds
+ * again before printing. Round back to the precision they arrived with. */
 export function aggregateGpuMemoryTotalGb(
   devices: MemoryTotalDevice[],
 ): number {
