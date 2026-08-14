@@ -171,6 +171,9 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     binary = appdir / "usr/bin/unsloth-studio"
     binary.parent.mkdir(parents = True)
     shutil.copy2("/bin/true", binary)
+
+    (appdir / "Unsloth.png").touch()
+    (appdir / ".DirIcon").symlink_to("Unsloth.png")
     apprun = appdir / "AppRun"
     apprun.write_text(
         '#!/bin/sh\n. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\nexit 0\n',
@@ -271,8 +274,9 @@ def test_managed_appimage_children_preserve_host_library_paths():
     assert 'cmd.env_remove("PYTHONHOME")' in process_source
     assert 'cmd.env_remove("PYTHONPATH")' in process_source
 
-    assert process_source.count('cmd.env_remove("GIO_MODULE_DIR")') == 2
-    assert process_source.count('cmd.env_remove("GIO_EXTRA_MODULES")') == 2
+    # One cleanup each for std managed children, Tokio managed children, and host launchers.
+    production_source = process_source.split('#[cfg(all(test, target_os = "linux"))]', 1)[0]
+    assert production_source.count("for name in APPIMAGE_GUI_ONLY_VARS") == 3
     for source_path, (call, expected) in child_process_calls.items():
         assert source_path.read_text(encoding = "utf-8").count(call) == expected
 
