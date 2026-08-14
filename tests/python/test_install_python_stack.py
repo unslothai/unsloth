@@ -1359,6 +1359,82 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._stage_replacement("unsloth-zoo @ git+https://example/x") is None
         assert "UV_OFFLINE" in capsys.readouterr().err
 
+    def test_a_find_links_origin_does_not_displace_the_real_index(self, monkeypatch):
+        """uv annotates a flat source with a file:// URL. That belongs in
+        PIP_FIND_LINKS, which is already set, and must not become PIP_INDEX_URL: an
+        sdist picked out of a flat directory still needs the index for its build
+        backend, so staging would abort."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = (
+                b"--index-url https://pypi.org/simple\n"
+                b"--find-links /opt/wheels\n"
+                b"unsloth-zoo==1.0\n"
+                b"    # from file:///opt/wheels\n"
+            ),
+        )
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_INDEX_URL"] == "https://pypi.org/simple"
+        assert overrides["PIP_FIND_LINKS"] == "/opt/wheels"
+
+    def test_a_sole_unreadable_record_is_made_uninstallable(self, tmp_path):
+        """Quarantining the only record leaves pip nothing to uninstall, so the
+        staged wheel is laid over the existing tree and any module the new release
+        dropped stays on disk, importable, while the repair reports success.
+
+        Verified against a real venv: with the METADATA corrupted pip show raises
+        UnicodeDecodeError for the whole environment; after this rewrite pip
+        uninstalls the package and removes its entire payload."""
+        record = tmp_path / "realpkg-1.2.3.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        (record / "RECORD").write_text("realpkg/__init__.py,,\n")
+
+        assert ips._rewrite_minimal_metadata(str(record), "realpkg") is True
+
+        written = (record / "METADATA").read_text()
+        assert "Name: realpkg" in written
+        # The version comes from the directory name, which is where importlib's own
+        # fallback reads it when METADATA cannot be parsed.
+        assert "Version: 1.2.3" in written
+
+    def test_a_record_without_a_manifest_fails_closed(self, tmp_path):
+        """No RECORD means neither pip nor this installer knows which files belong
+        to the package, so a replacement laid over them would leave whatever the new
+        release no longer ships behind."""
+        record = tmp_path / "realpkg-1.2.3.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        assert ips._rewrite_minimal_metadata(str(record), "realpkg") is False
+
+    def test_an_unversioned_directory_fails_closed(self, tmp_path):
+        record = tmp_path / "realpkg.dist-info"
+        record.mkdir()
+        (record / "RECORD").write_text("realpkg/__init__.py,,\n")
+        assert ips._rewrite_minimal_metadata(str(record), "realpkg") is False
+
+    def test_the_repair_refuses_when_the_only_record_cannot_be_made_usable(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        record = tmp_path / "unsloth-2026.8.12.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: [""])
+        monkeypatch.setattr(
+            ips.install_manifest, "invalid_metadata_paths", lambda _n: [str(record)]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+
+        def fake_stage(*args, **kwargs):
+            raise AssertionError("nothing may be staged before the records are usable")
+
+        monkeypatch.setattr(ips, "_stage_replacement", fake_stage)
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert "Recreate the environment" in capsys.readouterr().err
+        # The record is left where it was, not quarantined into a temporary directory.
+        assert record.is_dir()
+
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
@@ -1534,7 +1610,9 @@ class TestDuplicateCoreMetadataRepair:
         malformed = tmp_path / "unsloth-2026.8.12.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
-        probes = iter(([""], [], ["2026.8.15"]))
+        # Unreadable BESIDE a readable record: a sole unreadable one is rewritten so
+        # pip can uninstall its payload, which is a different path.
+        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
 
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(
@@ -1555,7 +1633,7 @@ class TestDuplicateCoreMetadataRepair:
         malformed = tmp_path / "unsloth-2026.8.12.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
-        probes = iter(([""], [], ["2026.8.15"]))
+        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         seen = []
 
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))

@@ -3969,6 +3969,31 @@ def _overlay_source_spec(name: str, local_repo: str) -> str:
     return ""
 
 
+def _rewrite_minimal_metadata(path: str, name: str) -> bool:
+    """Replace an unparseable METADATA with the least pip needs to uninstall by RECORD.
+
+    Returns False when there is no RECORD to uninstall from, which is the one case
+    that has to fail closed: without it neither pip nor this installer knows which
+    files belong to the package, and laying a replacement over them would leave
+    whatever the new release no longer ships behind, still importable.
+
+    The version is taken from the directory name, which is where importlib's own
+    fallback reads it from when METADATA cannot be parsed.
+    """
+    if not os.path.isfile(os.path.join(path, "RECORD")):
+        return False
+    stem = os.path.basename(path.rstrip(os.sep)).removesuffix(".dist-info")
+    _package, separator, version = stem.rpartition("-")
+    if not separator or not version:
+        return False
+    try:
+        with open(os.path.join(path, "METADATA"), "w", encoding = "utf-8") as handle:
+            handle.write(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+    except OSError:
+        return False
+    return True
+
+
 class _QuarantinedMetadata:
     """Invalid metadata directories moved aside, restorable until committed.
 
@@ -4166,6 +4191,26 @@ def _repair_duplicate_core_metadata(
         for name, record_count in duplicates:
             _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
             invalid_paths = install_manifest.invalid_metadata_paths(name)
+            if invalid_paths and len(invalid_paths) == record_count:
+                # Every record for this package is unreadable. Quarantining them all
+                # would leave pip nothing to uninstall, so the staged wheel would be
+                # laid over the existing tree and any module the new release dropped
+                # would stay on disk, importable, while the repair reported success.
+                # Give pip a parseable METADATA beside the intact RECORD instead, so
+                # it can remove exactly the files that record lists.
+                if not all(_rewrite_minimal_metadata(path, name) for path in invalid_paths):
+                    _safe_print(
+                        _red(
+                            f"   the only metadata for {name} is unreadable and has no "
+                            "usable RECORD, so its files cannot be removed safely. "
+                            "Recreate the environment to repair it."
+                        ),
+                        file = sys.stderr,
+                    )
+                    return False
+                importlib.invalidate_caches()
+                record_count = len(install_manifest.installed_versions(name))
+                invalid_paths = []
             # Move the unreadable records aside rather than delete them: pip
             # cannot run while they are in place, and staging can still fail.
             if not quarantine.take(invalid_paths):
@@ -4607,7 +4652,12 @@ def _credentialed_index(origin: str, emitted: "list[str]") -> str:
                 return url
         if matches:
             return matches[0]
-    return origin or (emitted[0] if emitted else "")
+    # The origin is not one of the emitted indexes, so it is a find-links source --
+    # uv annotates those with a file:// or directory URL. That belongs in
+    # PIP_FIND_LINKS, which is already set from the emitted find-links lines, and
+    # must not displace the real index: an sdist picked out of a flat directory still
+    # needs the index for its build backend.
+    return emitted[0] if emitted else ""
 
 
 def _is_local_source(requirement: str) -> bool:
