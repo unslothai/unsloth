@@ -199,10 +199,52 @@ test("single-dollar parity affects the retained tail repair", () => {
   }
 });
 
-test("a code character class does not disable incremental parsing", () => {
-  const source = `\`\`\`js\nconst token = /[^\\s]+/;\n\`\`\`\n\n${paragraphs(100)}`;
-  const render = new IncrementalMarkdownCache().update(source);
-  assert.ok(render.markdown.length < source.length / 4);
+test("a code character class matches Streamdown's own footnote short-circuit", () => {
+  // `\s` is outside `[\w-]`, so this one never looked like a footnote and keeps
+  // retaining.
+  const escaped = `\`\`\`js\nconst token = /[^\\s]+/;\n\`\`\`\n\n${paragraphs(100)}`;
+  const render = new IncrementalMarkdownCache().update(escaped);
+  assert.ok(render.markdown.length < escaped.length / 4);
+
+  // `[^a-z]` does match, and Streamdown's splitter short-circuits on the same
+  // pair of raw regexes and returns the whole reply as one block, so the
+  // full-document path is the answer that agrees with it.
+  const matching = `\`\`\`js\nconst re = /[^a-z]/;\n\`\`\`\n\n${paragraphs(100)}`;
+  assert.equal(parseMarkdownIntoBlocks(remend(matching)).length, 1);
+  const fallback = new IncrementalMarkdownCache().update(matching);
+  assert.equal(fallback.markdown, remend(matching));
+  assert.deepEqual(
+    fallback.parseMarkdownIntoBlocks(fallback.markdown),
+    parseMarkdownIntoBlocks(remend(matching)),
+  );
+});
+
+test("a marker the reply never closes gives up on the retained prefix", () => {
+  // Without this the boundary scan is paid on every update on top of the full
+  // repair it exists to replace, which is slower than not being there at all.
+  const source = `\`\`\`sh\necho $HOME\n\`\`\`\n\n${paragraphs(4000)}`;
+  const cache = new IncrementalMarkdownCache();
+  const render = cache.update(source);
+
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+  assert.deepEqual(
+    render.parseMarkdownIntoBlocks(render.markdown),
+    parseMarkdownIntoBlocks(remend(source)),
+  );
+
+  // A short-lived imbalance still recovers, so the budget has to be well above
+  // an ordinary unclosed marker.
+  const transient = `Match *.py files here.\n\n${paragraphs(20)}`;
+  const transientCache = new IncrementalMarkdownCache();
+  transientCache.update(transient);
+  assert.equal(
+    (transientCache as unknown as { fullDocumentMode: boolean })
+      .fullDocumentMode,
+    false,
+  );
 });
 
 test("an edit that drops retained blocks moves the render identity", () => {

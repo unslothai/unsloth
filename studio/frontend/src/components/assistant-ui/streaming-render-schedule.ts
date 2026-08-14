@@ -8,6 +8,11 @@ import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 // The block list interleaves "\n\n" separators, so this is about four
 // paragraphs of slack for a construct that a later line can still reinterpret.
 const ROLLBACK_BLOCKS = 8;
+// A marker the reply never closes leaves the tail growing with nothing to
+// retain, and the scan for a boundary is then paid on top of the full repair it
+// was meant to replace. Give up at a character budget, because characters are
+// what that scan costs, and a transient imbalance closes far below this.
+const STALLED_TAIL_CHARACTERS = 32_768;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
 const MULTILINE_KATEX_CONTEXT = "$$\n$$\n\n";
@@ -720,10 +725,12 @@ export class IncrementalMarkdownCache {
     const commit = findCommitBoundary(this.tail, blocks, candidateCount);
 
     // A mid-string repair can never become a raw prefix on a later append, so
-    // make that fallback sticky. A temporarily unbalanced marker can close in a
-    // later block, so keep its repaired tail live and retry on the next update.
+    // make that fallback sticky, and do the same once the tail has grown past
+    // the budget with nothing to show for it. A temporarily unbalanced marker
+    // can close in a later block, so below that keep the repaired tail live and
+    // retry on the next update.
     if (!commit.parity) {
-      if (commit.repairBroke) {
+      if (commit.repairBroke || this.tail.length > STALLED_TAIL_CHARACTERS) {
         return this.renderFullDocument(markdown);
       }
       return this.render(repaired);
