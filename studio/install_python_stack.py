@@ -4278,9 +4278,7 @@ def _uv_config_candidates() -> "list[Path]":
     # uv discovers from --project / UV_PROJECT if it has one, else from --directory /
     # UV_WORKING_DIR, which it changes to before running. Both checked on uv 0.12.1: a
     # uv.toml under either applies while the original cwd has none.
-    _root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get(
-        "UV_WORKING_DIR", ""
-    ).strip()
+    _root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get("UV_WORKING_DIR", "").strip()
     try:
         _here = Path(_root) if _root else Path.cwd()
     except OSError:  # a deleted cwd is not worth failing an install over
