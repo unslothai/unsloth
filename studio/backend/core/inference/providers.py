@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
@@ -687,6 +687,11 @@ def _metadata_address(address: str) -> bool:
     return ip in _METADATA_IPS
 
 
+# What httpx leaves unescaped in a host: RFC 3986 sub-delims plus the WHATWG
+# set. Kept in step with its `_urlparse.encode_host`.
+_HOST_SAFE_CHARS = "!$&'()*+,;=" + '"`{}%|\\'
+
+
 def _transport_host(hostname: str) -> str:
     """The ASCII host httpx will dial, so the checked name is the dialled name.
 
@@ -696,8 +701,17 @@ def _transport_host(hostname: str) -> str:
     resolver and as xn--strae-oqa.de through httpx, which are different hosts
     owned by different people. Mirrors httpx's `_urlparse.encode_host`.
     """
+    try:
+        # An address is dialled as written; quoting one would corrupt IPv6.
+        ipaddress.ip_address(hostname)
+        return hostname
+    except ValueError:
+        pass
     if hostname.isascii():
-        return hostname.lower()
+        # httpx percent-encodes what RFC 3986 does not allow in a reg-name, so
+        # safe^alias.example is dialled as safe%5Ealias.example, a name whose
+        # parent zone can answer differently. Same quoting, same name.
+        return quote(hostname.lower(), safe = _HOST_SAFE_CHARS)
     try:
         import idna
         return idna.encode(hostname.lower()).decode("ascii")

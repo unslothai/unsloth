@@ -233,6 +233,38 @@ def test_the_opt_in_path_does_not_re_resolve_after_a_timeout(monkeypatch):
     assert len(calls) == 2
 
 
+def test_an_ascii_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
+    """httpx percent-encodes what a reg-name may not hold; so does the lookup."""
+    seen = []
+
+    def _record(host, port, *args, **kwargs):
+        seen.append(host)
+        if host == "safe%5Ealias.attacker.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://safe^alias.attacker.test/v1")
+    assert seen == ["safe%5Ealias.attacker.test"]
+
+
+def test_the_resolved_name_matches_what_httpx_would_dial():
+    """Pins _transport_host against httpx itself, for the shapes that differ."""
+    httpx = pytest.importorskip("httpx")
+    for host in [
+        "safe^alias.attacker.test",
+        "faß.attacker.test",
+        "例え.テスト",
+        "API.OpenAI.com",
+        "my_ollama",
+        "192.168.1.50",
+        "gw.example",
+    ]:
+        dialled = httpx.URL(f"http://{host}/").raw_host.decode("ascii")
+        assert _providers._transport_host(host) == dialled, host
+
+
 def test_a_unicode_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
     """getaddrinfo speaks IDNA 2003, httpx IDNA 2008, and they differ on ß."""
     seen = []
