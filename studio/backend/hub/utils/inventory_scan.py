@@ -1576,7 +1576,7 @@ _SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
 
 
 def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
-    """Whether *snapshot* itself carries a ROOT ``model_index.json``.
+    """Whether *snapshot* carries a conventional or modular root pipeline index.
 
     The snapshot-scoped twin of :func:`repo_has_pipeline_index`, for callers that already know the
     ONE directory their row loads from. ``from_pretrained`` reads the manifest at the root of the
@@ -1585,7 +1585,10 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
     if snapshot is None:
         return False
     try:
-        return (Path(snapshot) / "model_index.json").is_file()
+        root = Path(snapshot)
+        return (root / "model_index.json").is_file() or (
+            root / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 

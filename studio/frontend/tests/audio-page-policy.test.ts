@@ -167,6 +167,10 @@ test("hidden MiniMax instructions are not sent to speech models", () => {
 
 test("local native audio architecture metadata drives runtime and consent", () => {
   assert.match(modelPickerSource, /audioType: adapter\.audioType \?\? null/);
+  assert.match(audioPageSource, /audioType: lora\.audio_type \?\? null/);
+  assert.match(modelPickerSource, /audioType: model\.audioType \?\? null/);
+  assert.match(modelPickerSource, /localModelMeta\(false, m\.task, m\.audio_type\)/);
+  assert.match(modelPickerSource, /audioType: c\.audio_type \?\? null/);
   assert.match(audioPageSource, /usesNativeAudioRuntime\(id, meta\.audioType\)/);
   assert.match(
     audioPageSource,

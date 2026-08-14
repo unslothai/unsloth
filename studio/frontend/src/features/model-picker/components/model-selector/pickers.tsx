@@ -2300,6 +2300,7 @@ function localPathTooltip(
 function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
+  audioType?: string | null,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2307,6 +2308,7 @@ function localModelMeta(
     isDownloaded: true,
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
+    audioType: audioType ?? null,
   };
 }
 
@@ -4967,6 +4969,7 @@ export function HubModelPicker({
                 loadId: c.load_id,
                 isDownloaded: true,
                 pipelineTag: c.task ?? null,
+                audioType: c.audio_type ?? null,
               })
             }
             vramStatus={null}
@@ -4985,6 +4988,7 @@ export function HubModelPicker({
                   isDownloaded: true,
                   isGguf: false,
                   pipelineTag: c.task ?? null,
+                  audioType: c.audio_type ?? null,
                 })
               }
             />
@@ -5065,6 +5069,7 @@ export function HubModelPicker({
                 isDownloaded: true,
                 isGguf: model.isGguf === true,
                 pipelineTag,
+                audioType: model.audioType ?? null,
               })
             }
             vramStatus={null}
@@ -5718,7 +5723,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -5759,7 +5764,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -5863,7 +5868,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -5904,7 +5909,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -5995,7 +6000,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6032,7 +6037,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />

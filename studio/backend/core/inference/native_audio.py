@@ -519,8 +519,14 @@ class NativeAudioBackend:
     def _generate_higgs_tts2(
         self, entry, text, instructions, temperature, top_p, top_k, max_new_tokens, cancel_event
     ):
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+
         processor = entry["processor"]
         model = entry["model"]
+        text = neutralize_tts_prompt_text(text, "higgs_tts2")
+        scene = neutralize_tts_prompt_text(
+            instructions or "Audio is recorded from a quiet room.", "higgs_tts2"
+        )
         conversation = [
             {
                 "role": "system",
@@ -531,7 +537,7 @@ class NativeAudioBackend:
                 "content": [
                     {
                         "type": "text",
-                        "text": instructions or "Audio is recorded from a quiet room.",
+                        "text": scene,
                     }
                 ],
             },
@@ -603,24 +609,48 @@ class NativeAudioBackend:
     ) -> Tuple[bytes, int]:
         with tempfile.TemporaryDirectory(prefix = "unsloth-moss-nano-") as temp_dir:
             output_path = Path(temp_dir) / "speech.wav"
-            result = entry["model"].inference(
-                text = text,
-                output_audio_path = output_path,
-                mode = "continuation",
-                text_tokenizer = entry["processor"],
-                audio_tokenizer = entry["audio_codec"],
-                device = self.device,
-                max_new_frames = int(max_new_tokens),
-                do_sample = float(temperature) > 0,
-                text_temperature = max(0.0, float(temperature)),
-                text_top_p = float(top_p),
-                text_top_k = int(top_k),
-                audio_temperature = max(0.0, float(temperature)),
-                audio_top_p = float(top_p),
-                audio_top_k = int(top_k),
-                audio_repetition_penalty = float(repetition_penalty),
-                use_kv_cache = True,
-            )
+            model = entry["model"]
+            cancel_hooks = []
+            if cancel_event is not None:
+                targets = (
+                    getattr(model, "transformer", None),
+                    getattr(model, "local_transformer", None),
+                    entry["audio_codec"],
+                )
+                seen_targets = set()
+                for target in targets:
+                    if id(target) in seen_targets or not hasattr(
+                        target, "register_forward_pre_hook"
+                    ):
+                        continue
+                    seen_targets.add(id(target))
+                    cancel_hooks.append(
+                        target.register_forward_pre_hook(
+                            lambda _module, _args: _raise_if_cancelled(cancel_event)
+                        )
+                    )
+            try:
+                result = model.inference(
+                    text = text,
+                    output_audio_path = output_path,
+                    mode = "continuation",
+                    text_tokenizer = entry["processor"],
+                    audio_tokenizer = entry["audio_codec"],
+                    device = self.device,
+                    max_new_frames = int(max_new_tokens),
+                    do_sample = float(temperature) > 0,
+                    text_temperature = max(0.0, float(temperature)),
+                    text_top_p = float(top_p),
+                    text_top_k = int(top_k),
+                    audio_temperature = max(0.0, float(temperature)),
+                    audio_top_p = float(top_p),
+                    audio_top_k = int(top_k),
+                    audio_repetition_penalty = float(repetition_penalty),
+                    use_kv_cache = True,
+                )
+            finally:
+                for cancel_hook in cancel_hooks:
+                    cancel_hook.remove()
             _raise_if_cancelled(cancel_event)
             sample_rate = int(result.get("sample_rate") or entry["sample_rate"])
             return output_path.read_bytes(), sample_rate

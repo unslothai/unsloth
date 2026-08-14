@@ -18,6 +18,8 @@ export interface ModelOption {
   deviceSize?: string;
   deviceSizeBytes?: number;
   deviceLoaded?: boolean;
+  /** Detected local audio architecture, retained by task-owned on-device rows. */
+  audioType?: string | null;
 }
 
 export interface LoraModelOption extends ModelOption {

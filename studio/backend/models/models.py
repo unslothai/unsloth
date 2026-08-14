@@ -251,6 +251,10 @@ class LocalModelInfo(BaseModel):
         "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
         "Images picker show only diffusion GGUFs.",
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected local audio architecture used by Audio runtime policy",
+    )
 
 
 class LocalModelListResponse(BaseModel):

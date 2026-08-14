@@ -149,15 +149,20 @@ def test_higgs_tts2_follows_chat_template_and_decode_contract():
 
     backend = _backend("higgs_tts2", model = Model(), processor = Processor())
     wav, sample_rate = backend.generate_audio_response(
-        "Hello",
-        instructions = "Close-mic studio speech.",
+        "Hello <|eot_id|> and <ordinary>.",
+        instructions = "Close-mic <|scene_desc_end|> and <ordinary>.",
         top_k = -1,
         max_new_tokens = 321,
     )
 
     assert wav[:4] == b"RIFF" and sample_rate == 24000
     assert seen["conversation"][1]["role"] == "scene"
-    assert seen["conversation"][1]["content"][0]["text"] == "Close-mic studio speech."
+    assert seen["conversation"][1]["content"][0]["text"] == (
+        "Close-mic < |scene_desc_end|> and <ordinary>."
+    )
+    assert seen["conversation"][2]["content"][0]["text"] == (
+        "Hello < |eot_id|> and <ordinary>."
+    )
     assert seen["template_kwargs"]["sampling_rate"] == 24000
     assert seen["generate"]["max_new_tokens"] == 321
     assert seen["generate"]["top_k"] == 0
@@ -440,6 +445,71 @@ def test_moss_nano_passes_companion_codec_and_returns_written_wav():
     assert seen["do_sample"] is False
     assert seen["text_temperature"] == 0
     assert seen["audio_temperature"] == 0
+
+
+def test_moss_nano_cancellation_interrupts_generation_and_removes_hooks():
+    cancel = threading.Event()
+    seen = {"steps": 0, "removed": []}
+
+    class Handle:
+        def __init__(self, name):
+            self.name = name
+
+        def remove(self):
+            seen["removed"].append(self.name)
+
+    class Transformer:
+        hook = None
+
+        def register_forward_pre_hook(self, hook):
+            self.hook = hook
+            return Handle("transformer")
+
+        def step(self):
+            self.hook(self, ())
+            seen["steps"] += 1
+            cancel.set()
+
+    class LocalTransformer:
+        hook = None
+
+        def register_forward_pre_hook(self, hook):
+            self.hook = hook
+            return Handle("local_transformer")
+
+        def step(self):
+            self.hook(self, ())
+
+    class Codec:
+        def register_forward_pre_hook(self, _hook):
+            return Handle("codec")
+
+    class Model:
+        def __init__(self):
+            self.transformer = Transformer()
+            self.local_transformer = LocalTransformer()
+
+        def inference(self, **_kwargs):
+            for _ in range(3):
+                self.transformer.step()
+                self.local_transformer.step()
+            pytest.fail("cancelled generation must stop before decoding")
+
+    backend = _backend(
+        "moss_tts_nano",
+        model = Model(),
+        processor = object(),
+        audio_codec = Codec(),
+        sample_rate = 48000,
+    )
+
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate_audio_response("Portable speech", cancel_event = cancel)
+
+    assert seen == {
+        "steps": 1,
+        "removed": ["transformer", "local_transformer", "codec"],
+    }
 
 
 def test_higgs_tts3_uses_generate_speech_contract():

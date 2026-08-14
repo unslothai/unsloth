@@ -146,6 +146,10 @@ class LocalModelInfo(BaseModel):
             "those lists."
         ),
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected local audio architecture used by Audio runtime policy",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -238,6 +242,7 @@ class CachedGgufResponse(BaseModel):
 
 
 class CachedModelRepo(CachedRepoBase):
+    audio_type: Optional[str] = None
     quant_method: Optional[str] = None
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None

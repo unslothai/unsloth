@@ -210,6 +210,13 @@ _TTS_MARKUP_BY_CODEC = {
     # (model_config.py:992-995), and add_special_tokens = True makes the document boundaries
     # forgeable from the text too (#7066).
     "csm": re.compile(r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"),
+    # Higgs TTS 2 renders scene and chat-role boundaries before opening the audio stream.
+    # Both the spoken text and the scene description are inserted verbatim by its template.
+    "higgs_tts2": re.compile(
+        r"<(?=\|(?:begin_of_text|end_of_text|start_header_id|end_header_id"
+        r"|scene_desc_start|scene_desc_end|eot_id|audio_out_bos|AUDIO_OUT"
+        r"|audio_eos|reserved_special_token_6)\|>)"
+    ),
     # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
     "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
 }

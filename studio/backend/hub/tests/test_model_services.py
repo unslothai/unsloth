@@ -907,7 +907,7 @@ def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     calls, started, releases = 0, [event(), event()], [event(), event()]
     loaded, both_loaded, task_calls, epoch = 0, event(), [], [0]
     epoch_reads, retried = [0], event()
-    model = SimpleNamespace(id = "model")
+    model = SimpleNamespace(id = "model", path = "model")
     model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
     response = SimpleNamespace(models = [model])
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
@@ -1780,7 +1780,15 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
 _SNAPSHOT_SHA = "a" * 40
 
 
-def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: str):
+def _diffusion_scan(
+    monkeypatch,
+    tmp_path,
+    repo_id: str,
+    files: list,
+    *,
+    task: str | None,
+    modular_manifest: dict | None = None,
+):
     """One cached diffusion repo through _scan_cached_models, with the download-partial signal
     forced off so only the pipeline-shape checks can flag the row.
 
@@ -1796,6 +1804,10 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         target = snapshot / f.file_name
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_bytes(b"\0" * min(int(f.size_on_disk), 4096))
+    if modular_manifest is not None:
+        (snapshot / "modular_model_index.json").write_text(
+            json.dumps(modular_manifest), encoding = "utf-8"
+        )
     refs = repo_path / "refs"
     refs.mkdir(parents = True, exist_ok = True)
     (refs / "main").write_text(_SNAPSHOT_SHA)
@@ -1859,6 +1871,28 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
         task = "text-to-image",
     )
 
+    assert row["partial"] is False
+    assert row["single_file"] is False
+
+
+def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch, tmp_path):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "MiniMaxAI/MiniMax-Music3",
+        [
+            _file("modular_model_index.json", 900),
+            _file("transformer/diffusion_pytorch_model.safetensors", 4_000_000_000),
+        ],
+        task = None,
+        modular_manifest = {
+            "_class_name": "MiniMaxMusic3ModularPipeline",
+            "_blocks_class_name": "MiniMaxMusic3Blocks",
+        },
+    )
+
+    assert row["task"] == "text-to-speech"
+    assert row["audio_type"] == "minimax_music3"
     assert row["partial"] is False
     assert row["single_file"] is False
 

@@ -793,6 +793,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 # config.json), payload_snapshots came back empty, and every cached diffusion base
                 # pipeline was force-flagged partial and dropped from the On Device lists.
                 ("model_index.json", "has_config"),
+                # Modular Diffusers pipelines use this root manifest instead. Saved or custom
+                # modular snapshots may omit both conventional root manifests.
+                ("modular_model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
                 try:
@@ -1036,12 +1039,19 @@ def _scan_cached_models(
                 # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
+                try:
+                    from core.inference.native_audio import native_audio_type_from_local_path
+
+                    native_audio_type = native_audio_type_from_local_path(str(load_snapshot or ""))
+                except Exception:
+                    native_audio_type = None
                 row_task = (
                     "automatic-speech-recognition"
                     if is_whisper_stt
                     else (
                         "text-to-speech"
-                        if local_metadata.get("pipeline_tag") == "text-to-speech"
+                        if native_audio_type
+                        or local_metadata.get("pipeline_tag") == "text-to-speech"
                         else _cached_row_task(repo_info, gguf = False)
                     )
                 )
@@ -1057,6 +1067,7 @@ def _scan_cached_models(
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
+                    "audio_type": native_audio_type,
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(

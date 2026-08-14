@@ -1849,6 +1849,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 lora.export_type === "merged"
                   ? `Fine-tuned - ${lora.base_model || "unknown base"}`
                   : `LoRA - ${lora.base_model || "unknown base"}`,
+              audioType: lora.audio_type ?? null,
             })),
         );
       })

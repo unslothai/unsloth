@@ -1177,7 +1177,17 @@ async def list_local_models(
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
         # Tag each model with its task so the Images picker can filter to diffusion.
-        models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+        from core.inference.native_audio import native_audio_type_from_local_path
+
+        models = [
+            m.model_copy(
+                update = {
+                    "task": _local_model_task(m),
+                    "audio_type": native_audio_type_from_local_path(m.path),
+                }
+            )
+            for m in models
+        ]
 
         return LocalModelListResponse(
             models_dir = str(models_root),
@@ -4339,6 +4349,13 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         except Exception:
             pass
         return None
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+
+        if native_audio_type_from_local_path(path):
+            return "text-to-speech"
+    except Exception:
+        pass
     if _local_is_diffusers(model):
         # A local diffusers pipeline can be a VIDEO family, not just image; tag it text-to-video so it surfaces in the Video picker.
         try:

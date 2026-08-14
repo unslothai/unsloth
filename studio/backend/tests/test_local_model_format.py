@@ -15,6 +15,8 @@ No GPU/network: only file names and sizes are inspected.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
 import types
 from pathlib import Path
@@ -289,6 +291,58 @@ def test_local_task_none_for_plain_llm(tmp_path):
     _touch(d / "config.json")
     _touch(d / "model.safetensors")
     assert models_route._local_model_task(_local(d, model_id = "meta-llama/Llama-3.1-8B")) is None
+
+
+def test_local_task_tags_minimax_music3_modular_pipeline(tmp_path):
+    d = tmp_path / "music3"
+    d.mkdir()
+    (d / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+
+    assert models_route._local_model_task(_local(d, model_format = "safetensors")) == (
+        "text-to-speech"
+    )
+
+
+def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch, tmp_path):
+    models_dir = tmp_path / "models"
+    d = models_dir / "music3"
+    d.mkdir(parents = True)
+    (d / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+    sources = types.SimpleNamespace(
+        hf_cache_dir = models_dir,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = [],
+    )
+
+    async def scan(_models_root, _sources):
+        return [_local(d, model_format = "safetensors", id = str(d))]
+
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(models_route, "_shared_compat_local_inventory_scan", scan)
+
+    response = asyncio.run(
+        models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
+    )
+
+    assert response.models[0].task == "text-to-speech"
+    assert response.models[0].audio_type == "minimax_music3"
 
 
 def test_local_task_tags_video_pipeline_dir(tmp_path):
