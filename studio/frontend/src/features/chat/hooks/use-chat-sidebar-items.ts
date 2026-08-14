@@ -246,12 +246,19 @@ export async function archiveAllChatItems(
   requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
-  await Promise.all(
+  try {
     // Silent: the notifyChatHistoryUpdated() below covers the whole batch as one change.
-    toArchive.map((t) =>
-      updateStoredChatThread(t.id, { archived: true }, { notify: false }),
-    ),
-  );
+    await Promise.all(
+      toArchive.map((t) =>
+        updateStoredChatThread(t.id, { archived: true }, { notify: false }),
+      ),
+    );
+  } catch (error) {
+    // Silent updates mean a partial batch announces itself nowhere, so whatever did
+    // archive would stay listed here and in every other tab until some later change.
+    notifyChatHistoryUpdated();
+    throw error;
+  }
 
   // Reset only when this action archived the active single thread or compare
   // pair. An already-archived chat opened from the archive is not in
