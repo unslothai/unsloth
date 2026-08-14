@@ -309,9 +309,9 @@ def test_every_arm_filtered_copy_is_cleaned_up():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     calls = source.count("= Get-ArmFilteredRequirements ")
     cleanups = source.count("\n                Remove-ArmFilteredRequirements\n")
-    assert (
-        calls and calls == cleanups
-    ), f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
+    assert calls and calls == cleanups, (
+        f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
+    )
 
 
 def test_a_failed_install_does_not_leave_the_tier_in_the_callers_shell():
@@ -466,7 +466,6 @@ def test_filter_drops_and_lifts_on_an_arm64_host():
     assert "# keep me" in out
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_lifts_follow_the_venv_interpreter_not_the_host():
     """An emulated x64 venv on an ARM64 machine has wheels for the pinned versions,
     and verification judges it by them. Keyed off the host, a tier install into that
@@ -477,6 +476,7 @@ def test_lifts_follow_the_venv_interpreter_not_the_host():
     assert "$applyLifts = ((Get-HostMachineArch)" not in body
 
 
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_lifts_do_not_apply_on_an_x64_host():
     """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install as well. There the
     pinned versions are the tested ones and every one of them has a win_amd64 wheel,
@@ -486,6 +486,27 @@ def test_lifts_do_not_apply_on_an_x64_host():
     assert "datasets==" not in out
     assert "pymupdf==1.27.2.3" in out
     assert "pymupdf>=1.28.2" not in out
+
+
+def test_every_test_that_runs_powershell_is_guarded():
+    """The decorator sat on a source-only test while its executing neighbour had none,
+    so the file failed with FileNotFoundError anywhere pwsh is absent. Checked by AST
+    rather than by eye: the two kinds of test look alike and sit next to each other."""
+    import ast
+
+    tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
+    unguarded = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name.startswith("test_")
+        and any(
+            isinstance(inner, ast.Call) and getattr(inner.func, "id", "") == "_pwsh"
+            for inner in ast.walk(node)
+        )
+        and not any("skipif" in ast.unparse(dec) for dec in node.decorator_list)
+    ]
+    assert not unguarded, f"these run pwsh without the availability guard: {unguarded}"
 
 
 # ── The inference-only tier picks NATIVE ARM64, and picks it deliberately ──
