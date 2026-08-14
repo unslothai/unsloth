@@ -13,6 +13,7 @@ import {
   uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
+import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
   type RagDocument,
   type TerminalJobStatus,
@@ -238,9 +239,17 @@ export function useRagDocuments(
           return [...merged, ...pendingLocal];
         });
       } catch (err) {
-        toast.error("Failed to load documents", {
-          description: err instanceof Error ? err.message : String(err),
-        });
+        // A superseded request's failure describes a scope that is no longer
+        // shown, and a host where RAG cannot run answers 503 to every one of
+        // these: neither is worth a toast per composer opened.
+        if (
+          refreshSeq.current === requestId &&
+          !useRagAvailabilityStore.getState().isUnavailable()
+        ) {
+          toast.error("Failed to load documents", {
+            description: err instanceof Error ? err.message : String(err),
+          });
+        }
       } finally {
         if (!opts?.quiet) setLoading(false);
       }

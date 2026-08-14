@@ -122,3 +122,36 @@ test("the scope-change effect takes a ticket on the way out", () => {
     "clearing the scope must outrank a refresh already in flight",
   );
 });
+
+// A superseded request's failure describes a scope that is no longer shown, and
+// a host where the vector extension cannot load answers 503 to every project
+// source request: neither is worth a toast per composer opened.
+test("a failure is only reported for the request still being awaited", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /refreshSeq\.current === requestId &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
+  );
+});
+
+// The composer mounts a project scope for every project chat, so a host that
+// cannot run RAG would issue and fail one request per chat opened.
+test("no project scope is opened where RAG cannot run", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/rag/components/thread-documents-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /projectId && !ragUnavailable \? \{ type: "project", projectId \} : null/,
+  );
+});

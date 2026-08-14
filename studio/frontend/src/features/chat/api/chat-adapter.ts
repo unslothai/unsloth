@@ -1772,6 +1772,17 @@ async function resolveChatInstructions(
 // navigation between those calls could mix two projects into one request.
 const composerProjectByPendingThread = new Map<string, string | null>();
 
+/** The project the run started in, kept for the whole run. Only the first send
+ * for a thread records one: a later run finds the row and never consults it. */
+function rememberComposerProjectForRun(
+  threadId: string,
+  projectId: string | null,
+): void {
+  if (!composerProjectByPendingThread.has(threadId)) {
+    composerProjectByPendingThread.set(threadId, projectId);
+  }
+}
+
 async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
@@ -3471,12 +3482,21 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // Before the first await: hydration and a model load both run before the
+      // first resolveProjectId, and a send survives navigation, so reading the
+      // composer's project later can hand this run the project the user moved
+      // to. Only consulted while the thread's own row is still missing.
+      const composerProjectIdAtSend =
+        useChatRuntimeStore.getState().activeProjectId ?? null;
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      if (resolvedThreadId) {
+        rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
+      }
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),

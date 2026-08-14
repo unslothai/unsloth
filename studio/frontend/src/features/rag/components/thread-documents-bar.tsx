@@ -41,6 +41,7 @@ import {
   listProjectDocuments,
   listThreadDocuments,
 } from "../api/rag-api";
+import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
   type DocumentStatus,
   RAG_UPLOAD_ACCEPT,
@@ -142,10 +143,12 @@ function InheritedProjectSources({
  * The project the displayed chat belongs to. Read from the chat's own row, not
  * the global activeProjectId: the chat page updates that only after its own
  * async lookup, so during a navigation it still names the project the user just
- * left. Null while unresolved, which suppresses the project affordances rather
- * than pointing them at the wrong project.
+ * left. `undefined` while unresolved, which holds the attach controls instead
+ * of reading as "not in a project" and filing the file into the chat.
  */
-function useThreadProjectId(threadId: string | null): string | null {
+function useThreadProjectId(
+  threadId: string | null,
+): string | null | undefined {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [resolved, setResolved] = useState<{
     threadId: string;
@@ -196,7 +199,7 @@ function useThreadProjectId(threadId: string | null): string | null {
   }
   return resolved?.threadId === threadId && resolved.trigger === activeProjectId
     ? resolved.projectId
-    : null;
+    : undefined;
 }
 
 /** The composer's attach control. Wording and glyph follow the active target, so
@@ -358,11 +361,26 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = null;
   }, [threadId]);
 
+  // A composer abandoned before it became a chat leaves its choice under the
+  // pending key, where the next new chat would read it as its own. Adoption
+  // already removes the key, so this only ever drops an unclaimed one.
+  useEffect(
+    () => () =>
+      useChatRuntimeStore.getState().clearPendingProjectAttachmentTarget(),
+    [],
+  );
+
   // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
   // but a KB preference left over while the pill is off does not.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
+  // Until the chat's row has been read, which project it belongs to is unknown.
+  // Attaching in that window would file the file by guess.
+  const projectUnresolved = threadProjectId === undefined;
   const projectId =
-    ragEnabled && ragSource.type === "kb" ? null : threadProjectId;
+    ragEnabled && ragSource.type === "kb" ? null : (threadProjectId ?? null);
+  // A host where the vector extension cannot load answers 503 to every project
+  // source request, so do not open a scope it can only fail.
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   // This chat's own choice if it made one, otherwise the saved default. Keeps a
   // pick in one chat from redirecting every other chat in the project.
   const projectAttachmentTarget =
@@ -399,7 +417,7 @@ export function ThreadDocumentsBar({
     upload: uploadToProject,
     remove: removeFromProject,
   } = useRagDocuments(
-    projectId ? { type: "project", projectId } : null,
+    projectId && !ragUnavailable ? { type: "project", projectId } : null,
     projectLister,
   );
 
@@ -502,6 +520,11 @@ export function ThreadDocumentsBar({
     if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
       return;
     }
+    // Hold the batch rather than draining it into the wrong scope. The intents
+    // stay in the store, so this runs again once the row has been read.
+    if (projectUnresolved) {
+      return;
+    }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
@@ -531,6 +554,7 @@ export function ThreadDocumentsBar({
     );
   }, [
     hasPendingAttachments,
+    projectUnresolved,
     nativeAttachmentTargetKey,
     attach,
     ragEnabled,
@@ -571,7 +595,8 @@ export function ThreadDocumentsBar({
     ) : null;
   }
 
-  const busy = uploading || projectUploading;
+  // Attaching before the chat's project is known would file the file by guess.
+  const busy = uploading || projectUploading || projectUnresolved;
   const chipCount = documents.length + projectDocuments.length;
 
   return (

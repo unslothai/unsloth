@@ -1323,6 +1323,8 @@ type ChatRuntimeStore = {
   ) => void;
   /** Carry a choice made before the chat existed onto its new id. */
   adoptPendingProjectAttachmentTarget: (threadId: string) => void;
+  /** Drop a choice made in a composer that never became a chat. */
+  clearPendingProjectAttachmentTarget: () => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
@@ -2508,6 +2510,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.projectAttachmentTargetByThread };
       delete next[PENDING_CHAT_ATTACHMENT_KEY];
       next[threadId] = pending;
+      return { projectAttachmentTargetByThread: next };
+    }),
+  clearPendingProjectAttachmentTarget: () =>
+    set((state) => {
+      const byThread = state.projectAttachmentTargetByThread;
+      if (!(PENDING_CHAT_ATTACHMENT_KEY in byThread)) {
+        return state;
+      }
+      const next = { ...byThread };
+      delete next[PENDING_CHAT_ATTACHMENT_KEY];
       return { projectAttachmentTargetByThread: next };
     }),
   setRagSource: (ragSource) =>
