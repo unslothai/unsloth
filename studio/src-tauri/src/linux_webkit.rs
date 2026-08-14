@@ -8,6 +8,11 @@ const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
+// both the proprietary and open nvidia modules publish this; nouveau does not and is unaffected
+const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
+
+const NVIDIA_REASON: &str = "NVIDIA driver loaded";
+const WAYLAND_REASON: &str = "Wayland session";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderingWorkaround {
@@ -26,7 +31,8 @@ impl RenderingWorkaround {
 
 #[derive(Debug, PartialEq, Eq)]
 enum RenderingPlan {
-    Apply(RenderingWorkaround),
+    /// The workaround to apply, and why, for the startup log.
+    Apply(RenderingWorkaround, &'static str),
     PreserveEnvironment,
 }
 
@@ -44,12 +50,18 @@ fn supports_force_shared_memory((major, minor, _micro): (u32, u32, u32)) -> bool
 fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
+    nvidia_driver_loaded: bool,
 ) -> RenderingPlan {
     // Presence is an operator override, including `=0` and an empty value. Do
     // not combine the modern shared-memory switch with legacy instructions a
     // user may already carry in a launcher or environment.d file.
     if env(FORCE_SHARED_MEMORY).is_some() || env(DISABLE_DMABUF).is_some() {
         return RenderingPlan::PreserveEnvironment;
+    }
+
+    // webkit's isNVIDIA fix (bug 262607) is session-independent, so x11 needs this too
+    if nvidia_driver_loaded {
+        return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON);
     }
 
     let configured_backends = env(GDK_BACKEND);
@@ -79,7 +91,11 @@ fn rendering_plan(
         // it, so use the renderer-disable workaround supported by 2.42.
         RenderingWorkaround::DisableDmabuf
     };
-    RenderingPlan::Apply(workaround)
+    RenderingPlan::Apply(workaround, WAYLAND_REASON)
+}
+
+fn nvidia_driver_loaded() -> bool {
+    std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH).exists()
 }
 
 fn runtime_webkit_version() -> (u32, u32, u32) {
@@ -96,13 +112,17 @@ fn runtime_webkit_version() -> (u32, u32, u32) {
 
 /// Select a compatible WebKitGTK rendering transport before GTK initialization.
 ///
-/// Returns the variable applied by this launch, if any.
-pub fn configure_wayland_renderer() -> Option<&'static str> {
-    match rendering_plan(|name| std::env::var_os(name), runtime_webkit_version()) {
-        RenderingPlan::Apply(workaround) => {
+/// Returns the variable applied by this launch and the reason for it, if any.
+pub fn configure_linux_renderer() -> Option<(&'static str, &'static str)> {
+    match rendering_plan(
+        |name| std::env::var_os(name),
+        runtime_webkit_version(),
+        nvidia_driver_loaded(),
+    ) {
+        RenderingPlan::Apply(workaround, reason) => {
             let variable = workaround.variable();
             std::env::set_var(variable, "1");
-            Some(variable)
+            Some((variable, reason))
         }
         RenderingPlan::PreserveEnvironment => None,
     }
@@ -114,7 +134,11 @@ mod tests {
 
     const MODERN_WEBKIT: (u32, u32, u32) = (2, 44, 0);
 
-    fn plan_with_version(vars: &[(&str, &str)], webkit_version: (u32, u32, u32)) -> RenderingPlan {
+    fn plan_on_host(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        nvidia_driver_loaded: bool,
+    ) -> RenderingPlan {
         rendering_plan(
             |name| {
                 vars.iter()
@@ -122,18 +146,27 @@ mod tests {
                     .map(|(_, value)| OsString::from(value))
             },
             webkit_version,
+            nvidia_driver_loaded,
         )
+    }
+
+    fn plan_with_version(vars: &[(&str, &str)], webkit_version: (u32, u32, u32)) -> RenderingPlan {
+        plan_on_host(vars, webkit_version, false)
     }
 
     fn plan(vars: &[(&str, &str)]) -> RenderingPlan {
         plan_with_version(vars, MODERN_WEBKIT)
     }
 
+    fn plan_on_nvidia(vars: &[(&str, &str)]) -> RenderingPlan {
+        plan_on_host(vars, MODERN_WEBKIT, true)
+    }
+
     #[test]
     fn wayland_uses_shared_memory_transport() {
         assert_eq!(
             plan(&[(WAYLAND_DISPLAY, "wayland-0")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory)
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
     }
 
@@ -141,13 +174,46 @@ mod tests {
     fn explicit_wayland_without_a_display_variable_still_applies() {
         assert_eq!(
             plan(&[(GDK_BACKEND, "wayland")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory)
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
     }
 
     #[test]
-    fn x11_session_keeps_webkit_defaults() {
+    fn an_x11_session_off_nvidia_keeps_webkit_defaults() {
         assert_eq!(plan(&[]), RenderingPlan::PreserveEnvironment);
+    }
+
+    #[test]
+    fn nvidia_on_x11_disables_the_dmabuf_renderer() {
+        assert_eq!(
+            plan_on_nvidia(&[]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+        );
+    }
+
+    #[test]
+    fn nvidia_under_an_explicit_x11_backend_still_applies() {
+        assert_eq!(
+            plan_on_nvidia(&[(GDK_BACKEND, "x11")]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+        );
+    }
+
+    #[test]
+    fn nvidia_on_wayland_takes_the_stronger_switch_over_shared_memory() {
+        // isNVIDIA returns before SharedMemory is added, so FORCE_SHM is not equivalent
+        assert_eq!(
+            plan_on_nvidia(&[(WAYLAND_DISPLAY, "wayland-0")]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+        );
+    }
+
+    #[test]
+    fn an_operator_override_outranks_the_nvidia_default() {
+        assert_eq!(
+            plan_on_nvidia(&[(FORCE_SHARED_MEMORY, "0")]),
+            RenderingPlan::PreserveEnvironment
+        );
     }
 
     #[test]
@@ -170,7 +236,7 @@ mod tests {
     fn a_gdk_wildcard_can_select_wayland_without_a_display_variable() {
         assert_eq!(
             plan(&[(GDK_BACKEND, "*")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory)
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
     }
 
@@ -178,7 +244,7 @@ mod tests {
     fn old_webkit_uses_the_legacy_renderer_switch() {
         assert_eq!(
             plan_with_version(&[(WAYLAND_DISPLAY, "wayland-0")], (2, 42, 7)),
-            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf)
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, WAYLAND_REASON)
         );
     }
 
@@ -186,7 +252,7 @@ mod tests {
     fn webkit_244_uses_force_shm() {
         assert_eq!(
             plan_with_version(&[(WAYLAND_DISPLAY, "wayland-0")], (2, 44, 0)),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory)
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
     }
 
