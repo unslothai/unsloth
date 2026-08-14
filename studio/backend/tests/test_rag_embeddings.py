@@ -16,6 +16,22 @@ import pytest
 from core.rag import config, embeddings
 
 
+# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
+# (apport on Ubuntu), which reads the whole core before the child is reaped. Marking
+# the child non-dumpable first keeps the SIGSEGV this test needs and writes no core.
+# RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores it.
+# prctl is Linux-only, so the call is guarded and does nothing elsewhere.
+_CRASHING_UNLESS_CPU_SCRIPT = (
+    "import ctypes, sys\n"
+    "if sys.argv[1] != 'cpu':\n"
+    "    try:\n"
+    "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "    ctypes.string_at(0)\n"
+)
+
+
 @pytest.fixture(autouse = True)
 def _pin_st_backend(monkeypatch):
     # Tests patch ST internals (_get), so force the ST backend.
@@ -501,7 +517,7 @@ def test_a_real_crashing_child_moves_the_load_to_cpu(monkeypatch):
     monkeypatch.setattr(
         torch_device_probe,
         "_PROBE_SCRIPT",
-        "import ctypes, sys\nif sys.argv[1] != 'cpu': ctypes.string_at(0)",
+        _CRASHING_UNLESS_CPU_SCRIPT,
     )
     torch_device_probe.device_can_allocate.cache_clear()
     monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
