@@ -8,7 +8,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "../utils/chat-history-storage";
-import { mcpServerFromProvenance } from "../utils/mcp-tool-name";
+import { formatMcpToolName, mcpServerFromProvenance } from "../utils/mcp-tool-name";
 import { attachmentsPastedText } from "../utils/pasted-text.ts";
 
 export interface ChatSearchItem {
@@ -103,7 +103,14 @@ function extractText(message: MessageRecord): string {
     } else if (p.type === "tool-call") {
       if (typeof p.toolName === "string") parts.push(p.toolName);
       const mcpServer = mcpServerFromProvenance(p.provenance);
-      if (mcpServer) parts.push(mcpServer);
+      if (mcpServer) {
+        parts.push(mcpServer);
+        // Index the rendered "Server · tool" label too, so pasting the label
+        // shown on the card (with its separator) matches this conversation.
+        const label =
+          typeof p.toolName === "string" ? formatMcpToolName(p.toolName, mcpServer) : null;
+        if (label) parts.push(label);
+      }
       const args = searchableText(typeof p.argsText === "string" ? p.argsText : p.args);
       if (args) parts.push(args);
       const result = searchableText(p.result);

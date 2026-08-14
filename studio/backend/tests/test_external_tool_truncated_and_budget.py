@@ -366,3 +366,80 @@ def test_disabled_call_card_is_opened_before_it_is_closed(executed):
 
     assert executed == []
     assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start")
+
+
+def test_truncated_mcp_call_card_carries_server_display_name(tmp_path, monkeypatch, executed):
+    """The unrun card for a truncated MCP call must show the server display name."""
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+
+    turn = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "m1",
+                        "function": {"name": "mcp__srv1__create_issue", "arguments": '{"tit'},
+                    }
+                ]
+            }
+        ),
+        _sse(finish = "length"),
+        _DONE,
+    ]
+    lines = _run(FakeTransport([turn]), tools = [WEB, _tool("mcp__srv1__create_issue")])
+
+    assert executed == []
+    assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start") == ["m1"]
+    assert _events(lines, "tool_start")[0]["provenance"].get("mcp_server") == "GitHub"
+    assert _events(lines, "tool_end")[0]["provenance"].get("mcp_server") == "GitHub"
+
+
+def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeypatch, executed):
+    """The unrun card for a budget-exhausted MCP call must show the display name."""
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+
+    turns = [
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {"name": "web_search", "arguments": '{"query":"a"}'},
+                        },
+                        {
+                            "index": 1,
+                            "id": "m1",
+                            "function": {
+                                "name": "mcp__srv1__create_issue",
+                                "arguments": '{"title":"b"}',
+                            },
+                        },
+                    ]
+                }
+            ),
+            _sse(finish = "tool_calls"),
+            _DONE,
+        ],
+        [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+    ]
+    lines = _run(
+        FakeTransport(turns), tools = [WEB, _tool("mcp__srv1__create_issue")], max_calls = 1
+    )
+
+    assert len(executed) == 1, "the budget must still be enforced"
+    mcp_starts = [
+        e for e in _events(lines, "tool_start") if e["tool_name"] == "mcp__srv1__create_issue"
+    ]
+    assert len(mcp_starts) == 1
+    assert mcp_starts[0]["provenance"].get("mcp_server") == "GitHub"
