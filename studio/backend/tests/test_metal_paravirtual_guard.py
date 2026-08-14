@@ -630,17 +630,16 @@ def test_a_text_only_gguf_is_unaffected_either_way():
 
 def test_the_drop_precedes_everything_the_projector_feeds():
     """launch_mmproj_path drives the --mmproj flag, the mmproj VRAM budget and the
-    audio-encoder probe, so clearing it later would launch a projector the guard believes
-    it dropped (or offer audio input that is gone)."""
+    capability probe, so clearing it later would launch a projector the guard believes
+    it dropped (or offer audio or image input that is gone)."""
     src = _load_model_source()
     gate_at = src.index("_pv_mmproj_unpinnable = bool(")
     assert gate_at < src.index('cmd.extend(["--mmproj", launch_mmproj_path])')
     assert gate_at < src.index("self._mmproj_vram_bytes(launch_mmproj_path)")
-    # The probe reads only the projector that the launch resolved and kept.
-    assert gate_at < src.index("if launch_mmproj_path:")
-    assert gate_at < src.index(
-        "read_mmproj_audio_capability(launch_mmproj_path)"
-    )
+    # The probe receives only the projector that the launch resolved and kept. It answers
+    # audio and image input alike, so a dropped projector advertises neither.
+    assert gate_at < src.index("_mmproj_probe = launch_mmproj_path")
+    assert gate_at < src.index("mmproj_capabilities(_mmproj_probe)")
     # ...and the session flag the frontend reads follows the same variable.
     assert "self._is_vision = effective_is_vision" in src
 

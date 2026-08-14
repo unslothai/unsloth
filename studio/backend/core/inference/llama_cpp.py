@@ -3802,6 +3802,8 @@ class LlamaCppBackend:
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
+        # clip.has_vision_encoder, set at load; True keeps an undeclared projector capable.
+        self._mmproj_accepts_image: bool = True
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
@@ -3863,7 +3865,9 @@ class LlamaCppBackend:
 
     @property
     def is_vision(self) -> bool:
-        return self._is_vision
+        """Whether this model takes image input; ``_is_vision`` only records that a
+        projector was attached, which happens for audio input too."""
+        return self._is_vision and self._mmproj_accepts_image
 
     @property
     def is_diffusion(self) -> bool:
@@ -14863,21 +14867,22 @@ class LlamaCppBackend:
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)
 
-                # Audio input straight from the finalized mmproj
-                # (clip.has_audio_encoder), independent of token names. Inherited
-                # LLAMA_ARG_* values are scrubbed from the child and therefore
-                # must not affect this launch's advertised capabilities.
+                # Audio and image capability straight from the finalized mmproj,
+                # independent of token names. Inherited LLAMA_ARG_* values are
+                # scrubbed from the child and therefore must not affect this
+                # launch's advertised capabilities.
                 self._mmproj_has_audio = False
-                if launch_mmproj_path:
+                self._mmproj_accepts_image = True
+                _mmproj_probe = launch_mmproj_path
+                if _mmproj_probe:
                     try:
-                        from utils.models.gguf_metadata import (
-                            read_mmproj_audio_capability,
-                        )
-                        self._mmproj_has_audio = bool(
-                            read_mmproj_audio_capability(launch_mmproj_path)
-                        )
+                        from utils.models.gguf_metadata import mmproj_capabilities
+
+                        has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)
+                        self._mmproj_has_audio = has_audio
+                        self._mmproj_accepts_image = accepts_image
                     except Exception as e:
-                        logger.debug(f"mmproj audio-capability read failed: {e}")
+                        logger.debug(f"mmproj capability read failed: {e}")
 
                 # Gated like every other optional flag, but failing OPEN: these
                 # are emitted on every launch, so an unreadable --help keeps
@@ -17707,6 +17712,7 @@ class LlamaCppBackend:
             self._audio_probed = False
             self._has_audio_input = False
             self._mmproj_has_audio = False
+            self._mmproj_accepts_image = True
             self._port = None
             self._healthy = False
             self._context_length = None

@@ -67,15 +67,26 @@
 # The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
 # budget (60h at time of writing; Kaggle's documented baseline is 30h and the
 # surplus is a discretionary "floating" allowance that can be withdrawn). This
-# workflow is allotted 40 GPU-h/week of it, held in four independent layers:
+# 50 of those 60 go to CI and the last 10 are held for human use. That 50 is
+# SHARED with kaggle-t4-studio-gpu-ci.yml, which is the expensive leg: ~0.75
+# GPU-h per launch against this one's ~0.25, on a larger eligible event stream.
+# The split is Studio 35, this leg 15, and the reserves below are what enforce
+# the priority rather than a comment: this leg stands down at 40h spent
+# account-wide, Studio runs on to 50h. A change to either rate is a change to
+# both budget blocks.
+#
+# This workflow is allotted 15 GPU-h/week of it, held in four independent layers:
 #
 #   1. paths filters, which turn a four-figure event count into a two-figure one.
 #   2. A sampling gate (.github/scripts/kaggle_t4_ci/gate.py), derived from the
 #      run id so a re-run cannot reroll the dice.
 #   3. A quota floor: the gate reads Kaggle's accelerator-quota API and refuses
 #      to start unless what remains covers this run's worst case PLUS a 20h
-#      reserve. Against a 60h account that reserve makes the 40h allowance a
+#      reserve. Against a 60h account that reserve makes the 15h allowance a
 #      HARD ceiling rather than an average, whatever the sampling rate does.
+#      It is 10 higher than the Studio leg's 10 on purpose: the two share one
+#      account and the cheap leg is the one that should yield the tail of the
+#      week to the expensive one rather than race it for the same hours.
 #   4. A concurrency check. Kaggle caps concurrent batch GPU kernels at 2 per
 #      ACCOUNT; this job uses both, and only when the account is otherwise idle,
 #      since one kernel belonging to anyone else stands it down entirely. See
@@ -113,14 +124,20 @@
 #     TOTAL, expected                             ~0.25 h  (rounded up)
 #
 #   SAMPLING RATE, solved at the pessimistic end of the eligible range and
-#   targeting 30h rather than the full 40, so a busy week does not spend the
+#   targeting 9h rather than the full 15, so a busy week does not spend the
 #   allowance before the quota floor intervenes:
-#     231 x r x 0.25 h = 30 h   ->   r = 0.52, set to 40% (--percent 40)
+#     231 x r x 0.25 h = 9 h   ->   r = 0.156, set to 15% (--percent 15)
 #
-#   EXPECTED SPEND at 40%:
-#     quiet week   88 x 0.40 x 0.25 =   8.8 GPU-h
-#     busy week   231 x 0.40 x 0.25 =  23.1 GPU-h
-#   against the 40 GPU-h allowance: 15% to 39% of the 60h account.
+#   EXPECTED SPEND at 15%:
+#     quiet week   88 x 0.15 x 0.25 =   3.3 GPU-h  (13 launches)
+#     busy week   231 x 0.15 x 0.25 =   8.7 GPU-h  (35 launches)
+#   against the 15 GPU-h allowance: 5% to 14% of the 60h account.
+#
+#   An earlier revision of this block ran 40% for ~23 GPU-h/week, sized against
+#   a 40h allowance from before the Studio leg existed. Two legs at ~23 each is
+#   46 of the 50 CI is allowed, with the whole margin gone on the cheaper one.
+#   15% is that rate re-solved against the 15h share, not a throttle applied to
+#   a rate that was still correct.
 #
 #   The rate is set for THIS payload set and does not survive a change to it:
 #   wiring the grpo leg would roughly double kernel 2 and put a busy week over
@@ -131,8 +148,9 @@
 #   deletion the launcher can pay for, is 8 GPU-h: derived from launch.py's own
 #   constants at --budget-hours below, and far above the 0.25h a run costs. It
 #   is what the gate RESERVES, not what CI is expected to spend. Layer 3 is the
-#   control: the 20h reserve stops CI at 40h spent whatever the arithmetic above
-#   got wrong. The sampling rate sets the EXPECTED spend; the reserve sets the
+#   control: the 20h reserve stops this leg at 40h spent account-wide, whatever
+#   the arithmetic above got wrong. The sampling rate sets the EXPECTED spend;
+#   the reserve sets the
 #   ceiling.
 #
 # ---------------------------------------------------------------------
@@ -317,11 +335,14 @@ jobs:
       # than checking the number, so lowering PUSH_ATTEMPTS or the delete
       # ceilings lowers what has to be reserved here.
       #
-      # reserve-hours turns the 40 GPU-h/week allowance into a hard ceiling: the
-      # account budget is 60h, so refusing to start below 20h remaining means CI
-      # can never have spent more than 40h in a week, whatever the sampling
-      # estimate above got wrong. Raise it to throttle CI harder, but not above
-      # roughly 45 or CI never runs on a week with any other usage.
+      # reserve-hours turns the 15 GPU-h/week allowance into a hard ceiling: the
+      # account budget is 60h, so refusing to start below 20h remaining means
+      # this leg can never have spent more than 40h in a week, whatever the
+      # sampling estimate above got wrong. It is deliberately 10 above the
+      # Studio leg's 10, which is what makes this the leg that yields: the
+      # lower of the two reserves is what implements "CI may use up to 50 of
+      # the 60 hours". Raise it to throttle harder, but not above roughly 45 or
+      # it never runs at all on a week with any other usage.
       #
       # The event ACTION and the label just applied go in too, and are what
       # stops the `labeled` trigger multiplying runs: it fires on EVERY label,
@@ -344,7 +365,7 @@ jobs:
           EVENT_LABEL: ${{ github.event.label.name }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
-            --percent 40 \
+            --percent 15 \
             --force '${{ inputs.force || 'false' }}' \
             --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \

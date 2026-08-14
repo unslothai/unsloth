@@ -389,7 +389,7 @@ def test_a_log_record_that_splits_the_report_is_still_read(tmp_path):
     assert [r["label"] for r in launch.extract_reports(tmp_path)] == ["canary"]
 
 
-def test_every_push_attempt_gets_its_own_slug(monkeypatch):
+def test_every_push_attempt_gets_its_own_slug(tmp_path, monkeypatch):
     """Retrying onto one slug pushes a SECOND session and hides the first.
 
     A push to an existing id creates a new VERSION and starts another batch
@@ -398,6 +398,11 @@ def test_every_push_attempt_gets_its_own_slug(monkeypatch):
     session only. A retry after a lost response therefore reads the wrong
     execution's evidence while the first keeps billing unseen.
     """
+    # The accepted push records its slug in the in-flight registry, so point
+    # that at the tmp dir: otherwise this test files a kernel that does not
+    # exist into the real registry and every later launcher's orphan sweep
+    # tries, and fails, to delete it.
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     attempts: list[list[str]] = []
     deleted: list[str] = []
 
@@ -425,6 +430,10 @@ def test_every_push_attempt_gets_its_own_slug(monkeypatch):
     # before the next adds a second concurrent session.
     assert deleted == [s for s in slugs[:-1]]
     assert pushed["attempts"] == slugs
+    # Only the accepted attempt is left for release to reclaim; the discarded
+    # ones are gone, and registering those would leave the next launcher
+    # sweeping for kernels that never existed.
+    assert [e["slug"] for e in launch._inflight_read()] == [slugs[-1]]
 
 
 def _drive_main(
