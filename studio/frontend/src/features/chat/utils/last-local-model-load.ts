@@ -138,7 +138,9 @@ export async function readLastLocalModelLoad(
         if (
           legacy &&
           legacy.loadedAt !== null &&
-          (backendLoadedAt === null || legacy.loadedAt > backendLoadedAt)
+          (backendLoadedAt === null
+            ? legacy.pendingSync
+            : legacy.loadedAt > backendLoadedAt)
         ) {
           // A local record the backend has not seen: a load whose PUT was
           // dropped at teardown (pendingSync), or one written by a still-open
@@ -147,6 +149,9 @@ export async function readLastLocalModelLoad(
           // with its original load time even when the model identity matches
           // the backend record: the backend timestamp must advance, or an
           // older dropped write on another surface would later outrank it.
+          // An unstamped backend record (pre-loaded_at writer) gives no such
+          // order, so only a pending shadow -- this surface's own dropped
+          // write -- outranks it; a plain stale shadow must not clobber it.
           recordLastLocalModelLoad({
             ...legacy.record,
             loadedAt: legacy.loadedAt,
