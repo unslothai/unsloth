@@ -770,8 +770,9 @@ def _vt_verdict(err: str) -> str:
 @windows_only
 @powershell_51_only
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
-@pytest.mark.parametrize("wt_session", ["", "1a2b3c4d-0000-0000-0000-000000000000"],
-                         ids = ["no-WT_SESSION", "WT_SESSION"])
+@pytest.mark.parametrize(
+    "wt_session", ["", "1a2b3c4d-0000-0000-0000-000000000000"], ids = ["no-WT_SESSION", "WT_SESSION"]
+)
 def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path, wt_session: str) -> None:
     """Skipping csc.exe must not change one byte the user sees.
 
