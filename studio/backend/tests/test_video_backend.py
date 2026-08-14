@@ -4860,6 +4860,73 @@ def test_background_generation_waits_for_replacement_and_completes(
     assert generated_with[0] is not old_pipe
 
 
+def test_queued_background_generation_revalidates_the_replacement_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    old_family = backend._state.family
+    replacement_family = dataclasses.replace(old_family, name = "replacement-family")
+
+    validated: list[str] = []
+
+    def validate_shape(family, **_kwargs):
+        validated.append(family.name)
+        if family is replacement_family:
+            raise ValueError("replacement family rejects this shape")
+
+    monkeypatch.setattr(video_mod, "validate_video_request_shape", validate_shape)
+
+    waiting = threading.Event()
+    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    with backend._lock:
+        backend._teardown_waiters = 1
+
+    backend.begin_generate(prompt = "queued for another family", width = 768, height = 512)
+    assert waiting.wait(5), "background generation did not wait for replacement"
+
+    with backend._lock:
+        backend._state = dataclasses.replace(backend._state, family = replacement_family)
+        backend._release_teardown_locked()
+
+    deadline = time.monotonic() + 5
+    while backend.generate_progress()["active"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    progress = backend.generate_progress()
+    assert progress["phase"] == "failed", progress
+    assert progress["error"] == "replacement family rejects this shape"
+    assert validated == [old_family.name, replacement_family.name]
+
+
+def test_cancel_wakes_a_background_generation_waiting_for_teardown(fake_runtime, tmp_path):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    waiting = threading.Event()
+    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    with backend._lock:
+        backend._teardown_waiters = 1
+
+    try:
+        backend.begin_generate(prompt = "cancel while queued", steps = 2)
+        assert waiting.wait(5), "background generation did not wait for teardown"
+        assert backend.cancel_generate() is True
+
+        deadline = time.monotonic() + 5
+        while backend.generate_progress()["active"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        progress = backend.generate_progress()
+        assert progress["phase"] == "failed", progress
+        assert progress["error"] == VIDEO_CANCELLED_MSG
+        assert backend._teardown_waiters == 1, "test teardown drained before cancellation exited"
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+
+
 def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)

@@ -1072,17 +1072,34 @@ class VideoBackend:
         if self._teardown_waiters == 0:
             self._teardown_drained.notify_all()
 
+    def _cancel_active_generation_locked(self) -> bool:
+        """Cancel the active or queued job and wake admission so it can exit promptly."""
+        cancel = self._active_generate_cancel
+        if cancel is None:
+            return False
+        cancel.set()
+        self._teardown_drained.notify_all()
+        return True
+
     @contextlib.contextmanager
-    def _generation_slot(self):
-        """Hold the generation lock, yielding to a teardown already queued for it."""
+    def _generation_slot(self, cancel_event: Optional[threading.Event] = None):
+        """Hold the generation lock, yielding to queued teardown or cancellation."""
         while True:
             self._generate_lock.acquire()
             with self._lock:
-                if not self._teardown_waiters:
+                cancelled = cancel_event is not None and cancel_event.is_set()
+                if not cancelled and not self._teardown_waiters:
                     break
             self._generate_lock.release()
+            if cancelled:
+                raise RuntimeError(VIDEO_CANCELLED_MSG)
             with self._teardown_drained:
-                self._teardown_drained.wait_for(lambda: self._teardown_waiters == 0)
+                self._teardown_drained.wait_for(
+                    lambda: self._teardown_waiters == 0
+                    or (cancel_event is not None and cancel_event.is_set())
+                )
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
         try:
             yield
         finally:
@@ -1931,8 +1948,7 @@ class VideoBackend:
         with self._lock:
             if token is not None and token != self._load_token:
                 raise RuntimeError("Video load was cancelled or superseded.")
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
+            self._cancel_active_generation_locked()
             self._teardown_waiters += 1
         with self._generate_lock:
             with self._lock:
@@ -3258,8 +3274,7 @@ class VideoBackend:
             if _load_token is not None and _load_token != self._load_token:
                 raise RuntimeError("Video load was cancelled or superseded.")
             # Signal a generation from the PREVIOUS model (the token check above bailed a superseded worker).
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
+            self._cancel_active_generation_locked()
             # Same fence unload() takes, raised BEFORE the barrier: a queued generation holds no cancel event, so the signal
             # above cannot reach it and it would slip through the moment the barrier released _generate_lock.
             assert _teardown_reservation is not None
@@ -4792,6 +4807,7 @@ class VideoBackend:
             fam = getattr(self._state, "family", None)
             if fam is not None:
                 validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
+            validated_state = self._state
             self._generate_job_active = True
             # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
             self._active_generate_cancel = cancel
@@ -4824,6 +4840,7 @@ class VideoBackend:
                 flow_shift = flow_shift,
                 audio_flow_shift = audio_flow_shift,
                 cancel_event = cancel,
+                _validated_state = validated_state,
             ),
             daemon = True,
         ).start()
@@ -4958,10 +4975,11 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
+        _validated_state: Optional[_VideoLoadState] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
-        with self._generation_slot():
+        with self._generation_slot(cancel):
             with self._lock:
                 state = self._state
                 if state is None:
@@ -4977,6 +4995,14 @@ class VideoBackend:
                 # the pipeline sits on the selected one.
                 self._state_device_target(state)
                 fam = state.family
+                # begin_generate validates synchronously against the state visible when the job
+                # is accepted. Admission may then wait through a replacement, so repeat the shape
+                # check against the exact state that will denoise instead of silently snapping a
+                # request that only the previous family supported.
+                if _validated_state is not None and state is not _validated_state:
+                    validate_video_request_shape(
+                        fam, width = width, height = height, num_frames = num_frames
+                    )
                 first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
                     fam, state.h3_task, first_frame, last_frame, width, height
                 )
@@ -5806,11 +5832,7 @@ class VideoBackend:
     def cancel_generate(self) -> bool:
         """Signal the in-flight generation to stop at its next step callback."""
         with self._lock:
-            cancel = self._active_generate_cancel
-            if cancel is None:
-                return False
-            cancel.set()
-            return True
+            return self._cancel_active_generation_locked()
 
     # ── teardown + status ────────────────────────────────────────────────────
 
@@ -5833,8 +5855,7 @@ class VideoBackend:
             self._load_token += 1
             self._cancel_event.set()
             self._loading = None
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
+            self._cancel_active_generation_locked()
             # Fence generations queued behind the active one too: they hold no cancel event, so the signal cannot reach them.
             self._teardown_waiters += 1
         # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free while
