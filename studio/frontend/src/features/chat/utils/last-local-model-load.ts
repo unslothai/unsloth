@@ -227,7 +227,7 @@ export function recordLastLocalModelLoad(input: {
           gguf_variant?: unknown;
           // biome-ignore lint/style/useNamingConvention: API schema
           loaded_at?: unknown;
-        // biome-ignore lint/style/useNamingConvention: API schema
+          // biome-ignore lint/style/useNamingConvention: API schema
           server_now?: unknown;
         };
         serverRecord = toRecord({
