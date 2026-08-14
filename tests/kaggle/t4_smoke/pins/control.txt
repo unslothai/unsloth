@@ -8,8 +8,10 @@
 #
 # Every version here is evidence rather than preference: each is one a real T4
 # session resolved on its own from the base install (unsloth_zoo with deps,
-# unsloth --no-deps, bitsandbytes), so pinning refuses silent drift rather than
-# changing the environment.
+# unsloth, bitsandbytes), so pinning refuses silent drift rather than changing
+# the environment. Those sessions installed unsloth with --no-deps, which the
+# base install no longer does; the five packages below are unaffected, since
+# unsloth's own pyproject.toml declares none of them.
 #
 # transformers and trl are the pair recorded in the `environment` block of
 # tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json, the trace the committed

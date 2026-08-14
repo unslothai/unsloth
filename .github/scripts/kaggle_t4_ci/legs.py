@@ -115,10 +115,33 @@ class Leg:
 COMMON_FILES = ("versions.py", "canary_dataset.jsonl", "training_evidence.py")
 
 # The install prefix shared by every leg. unsloth_zoo first and WITH deps, then
-# unsloth --no-deps on top so the overlay does not fight the set zoo resolved,
-# then bitsandbytes, which neither pulls and the image does not carry, and
-# without which `import unsloth` raises.
-BASE_INSTALL = ((ZOO,), ("--no-deps", UNSLOTH), ("bitsandbytes",))
+# unsloth on top, then bitsandbytes, which neither pulls and the image does not
+# carry, and without which `import unsloth` raises.
+#
+# UNSLOTH RESOLVES ITS DEPENDENCIES, and used to carry --no-deps so the overlay
+# could not walk the set zoo had just resolved. That made the one file this
+# workflow watches for packaging changes -- pyproject.toml is in its trigger
+# paths -- the one thing it could not test: pip enforces the requirements of
+# packages IN a resolution (see the frontier leg), so with the tested
+# distribution outside every resolution, a dependency it adds is never
+# installed, one it tightens is never checked against what is here, and the
+# import probe still passes whenever the dependency is reached by a delayed
+# code path. `pip install unsloth` is what a user runs, and this is now the
+# same call.
+#
+# The --no-deps concern is answered by what unsloth actually declares: typer,
+# rich, pydantic, pyyaml, nest-asyncio, structlog and click, none of which zoo
+# resolves and none of which any leg pins, so there is nothing here for pip to
+# fight over. A pyproject that DOES name one of zoo's packages would move it,
+# and that is the regression this exists to show rather than a side effect to
+# suppress -- a user's install would move it too.
+BASE_INSTALL = ((ZOO,), (UNSLOTH,), ("bitsandbytes",))
+
+# The distribution under test, read off the requirement above rather than
+# restated: the verify cell asks pip whether THIS distribution's declared
+# requirements are satisfied, and a name that drifted from the one actually
+# installed would check nothing and say so quietly.
+PACKAGE_UNDER_TEST = UNSLOTH.split("@", 1)[0].strip()
 
 SMOKE_FILES = COMMON_FILES + ("run_t4_smoke.py", "determinism.py")
 

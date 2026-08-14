@@ -2055,6 +2055,44 @@ def test_an_interrupted_probe_is_not_reported_as_a_missing_dependency(tmp_path, 
     assert reports == []
 
 
+def test_a_declared_requirement_the_environment_lacks_is_a_verdict(tmp_path, monkeypatch):
+    """The import probe answers a weaker question than pyproject.toml asks.
+
+    A requirement reached only by a delayed code path is absent all through a
+    green run, so a commit that drops one, or tightens one past what is
+    installed, reached a user at `pip install unsloth` and reached this job not
+    at all -- while pyproject.toml sits in its trigger paths.
+    """
+    line = "unsloth 2026.8.15 requires nest-asyncio, which is not installed."
+    raised, stdout, reports = _drive_verify_cell(tmp_path, monkeypatch, pip_check = line + "\n")
+
+    assert "REQUIREMENTS_UNSATISFIED" in stdout
+    assert len(reports) == 1, stdout
+    assert reports[0]["passed"] is False
+    assert any(line in f for f in reports[0]["failures"])
+    assert isinstance(raised, SystemExit)
+
+
+def test_another_distributions_conflict_is_not_this_legs_verdict(tmp_path, monkeypatch):
+    """Only the lines pip attributes to the distribution under test count.
+
+    The line below is one the frontier leg installs ON PURPOSE, and the Kaggle
+    image carries pre-existing conflicts of its own. Reading the exit code, or
+    matching the name loosely, would turn both into a red leg that says nothing
+    about the commit.
+    """
+    raised, stdout, reports = _drive_verify_cell(
+        tmp_path,
+        monkeypatch,
+        pip_check = (
+            "unsloth-zoo 2026.8.10 has requirement transformers<=5.5.0, "
+            "but you have transformers 5.15.0.\n"
+        ),
+    )
+    assert raised is None, stdout
+    assert reports == []
+
+
 def test_the_sources_are_materialised_before_the_first_install(tmp_path):
     """The control leg installs from a pin file carried inside the notebook.
 
@@ -2137,6 +2175,34 @@ def test_the_grpo_leg_probes_vllm_before_it_spends_the_session(tmp_path):
     assert "vllm" in LEGS["grpo"].imports
     verify = _cell(_payload_notebooks(_build(tmp_path / "g", "grpo"))["t4_grpo.ipynb"], 2)
     assert '"vllm"' in verify
+
+
+def test_every_leg_resolves_the_dependencies_of_the_package_under_test(tmp_path):
+    """--no-deps on the tested distribution is a resolution it never joins.
+
+    pip enforces the requirements of packages IN a resolution and merely warns
+    about the rest (the frontier leg's comment is the measurement), so with the
+    commit under test outside every one of them, a dependency it adds is never
+    installed and one it tightens is never checked -- and pyproject.toml is in
+    this workflow's trigger paths precisely because it is meant to be. The
+    requirement is built from the template the legs share, so a leg that names
+    its own is caught rather than skipped.
+    """
+    from legs import LEGS, PACKAGE_UNDER_TEST, UNSLOTH, expand_install
+
+    requirement = UNSLOTH.format(unsloth_ref = "abc123", zoo_ref = "def456")
+    for name, leg in LEGS.items():
+        groups = expand_install(leg, unsloth_ref = "abc123", zoo_ref = "def456", payload_dir = SMOKE_DIR)
+        owning = [g for g in groups if requirement in g]
+        assert len(owning) == 1, f"{name} installs the tested commit {len(owning)} times: {groups}"
+        assert "--no-deps" not in owning[0], f"{name} installs it without resolving its deps"
+
+    # The name the verify cell asks pip about is the name pip installs. Two
+    # spellings would leave the consistency check reading another package's
+    # lines, which is to say none.
+    assert requirement.startswith(PACKAGE_UNDER_TEST + " @"), requirement
+    verify = _cell(_payload_notebooks(_build(tmp_path))["t4_control.ipynb"], 2)
+    assert f"OWNER = {json.dumps(PACKAGE_UNDER_TEST)}" in verify
 
 
 def test_the_grpo_leg_installs_vllm_before_anything_pulls_torch(tmp_path):

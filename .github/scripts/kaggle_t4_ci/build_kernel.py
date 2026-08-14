@@ -56,7 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from legs import KERNELS, Leg, expand_install, resolve  # noqa: E402
+from legs import KERNELS, PACKAGE_UNDER_TEST, Leg, expand_install, resolve  # noqa: E402
 
 DRIVER_SENTINEL = "KAGGLE_T4_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_T4_CI_PAYLOAD"
@@ -232,7 +232,7 @@ print("{PAYLOAD_SENTINEL} install done", flush=True)
 # Without this, a missing dependency surfaces as a traceback buried in a
 # child process's captured stdout, forty minutes and one GPU session later.
 # Here it surfaces immediately, named, in the driver log.
-import importlib, json, sys
+import importlib, json, subprocess, sys
 # Everything above was pip-installed AFTER this interpreter started, and the
 # import system caches the directory listing of each sys.path entry. Without
 # this, a just-installed package can be invisible to the very next import.
@@ -338,6 +338,47 @@ except BaseException as exc:
     }}), flush=True)
     raise
 
+# Is what the distribution under test DECLARES it needs actually satisfied?
+#
+# The import probe above asks the weaker question: a requirement reached only
+# by a delayed code path is absent all through a green run. pyproject.toml is
+# in this workflow's trigger paths, so a commit that drops a requirement, adds
+# one this image cannot satisfy, or tightens a bound past what is installed
+# arrives here to be tested, and `pip install unsloth` is where a user meets
+# it. LAST of the three checks because it is the only one that says nothing
+# about whether this session can run: a card it cannot use is the more urgent
+# verdict, and the GPU probe re-raises before reaching this.
+#
+# `pip check` is pip's own answer rather than a re-implementation of version
+# comparison, and ONLY the lines owned by the distribution under test are read.
+# The Kaggle image carries pre-existing conflicts of its own, and the frontier
+# leg deliberately installs a transformers that unsloth_zoo's metadata forbids;
+# both are other packages' lines and neither is this leg's verdict.
+OWNER = {json.dumps(PACKAGE_UNDER_TEST)}
+def _owned(line):
+    head = line.strip().split(" ")[0].lower().replace("_", "-")
+    return head == OWNER.lower().replace("_", "-")
+_check = subprocess.run([sys.executable, "-m", "pip", "check"],
+                        capture_output=True, text=True)
+unsatisfied = [ln.strip() for ln in (_check.stdout + _check.stderr).splitlines()
+               if _owned(ln)]
+if unsatisfied:
+    print("{PAYLOAD_SENTINEL} REQUIREMENTS_UNSATISFIED "
+          + json.dumps(unsatisfied), flush=True)
+    # A VERDICT, for the third time in this cell and for the same reason: the
+    # run cell below is the only other thing that writes a report, it is never
+    # reached from here, and a leg that reported nothing leaves the workflow
+    # green.
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "requirements",
+        "passed": False,
+        "versions_flat": RESOLVED,
+        "failures": ["declared requirement unsatisfied -- " + u
+                     for u in unsatisfied],
+    }}), flush=True)
+    raise SystemExit("declared requirements unsatisfied: "
+                     + "; ".join(unsatisfied))
 """
 
     argv = list(leg.args) + _shared_args_for(leg, tuple(extra_args))
