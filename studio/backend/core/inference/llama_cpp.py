@@ -11181,6 +11181,58 @@ class LlamaCppBackend:
         return out if found else None
 
     @staticmethod
+    def _reset_quantized_v_cache(cmd: list[str], reason: str) -> list[str]:
+        """Return cmd with any quantized V cache reset to f16, for a launch that
+        runs without flash attention.
+
+        A quantized V cache requires flash attention in llama.cpp: the init aborts
+        with "V cache quantization requires flash_attn". A quantized K cache has no
+        such requirement and runs fine without FA, so it is left untouched --
+        resetting it would needlessly enlarge the K cache and can OOM a
+        memory-constrained config. Main and draft are both reset (the draft context
+        shares the global --flash-attn flag, so its V cache aborts too) to f16 (the
+        llama.cpp default); non-quantized types -- f16/bf16/f32 -- run fine without
+        FA and are left untouched. The value is rewritten in place so the list
+        length is preserved for downstream slices.
+        """
+        out = list(cmd)
+        _v_cache_flags = (
+            "--cache-type-v",
+            "-ctv",
+            "--cache-type-v-draft",
+            "--spec-draft-type-v",
+            "-ctvd",
+        )
+        _cache_reset = False
+        for i, tok in enumerate(out):
+            # llama.cpp rewrites '_' to '-' for any argv token starting with
+            # '--' before matching, so a legal pass-through spelling such as
+            # --cache_type_v parses as --cache-type-v and still enables a
+            # quantized V cache. Canonicalize the flag name the same way so the
+            # reset recognizes the underscore aliases too; short flags (-ctv)
+            # and the type value are left untouched.
+            name = _flag_name(tok)
+            if name not in _v_cache_flags:
+                continue
+            if "=" in tok:
+                flag, _, value = tok.partition("=")
+                if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i] = f"{flag}=f16"
+                    _cache_reset = True
+            elif i + 1 < len(out):
+                if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i + 1] = "f16"
+                    _cache_reset = True
+        if _cache_reset:
+            logger.info(
+                "V cache dtype reset to f16 because flash attention is off (%s): a "
+                "quantized V cache requires flash attention in llama.cpp. The K "
+                "cache is left untouched.",
+                reason,
+            )
+        return out
+
+    @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
@@ -11225,52 +11277,12 @@ class LlamaCppBackend:
         for i in reversed(bare_at):
             del out[i]
 
-        # A quantized V cache requires flash attention in llama.cpp: the init
-        # aborts with "V cache quantization requires flash_attn". A quantized K
-        # cache has no such requirement and runs fine without FA, so it is left
-        # untouched -- resetting it would needlessly enlarge the K cache and can
-        # OOM a memory-constrained config. Studio launches with FA on, so a
-        # quantized --cache-type-v is legal at launch but would make THIS FA-off
-        # retry crash on init instead of recovering. Reset a quantized V cache --
-        # main and draft (the draft context shares the global --flash-attn flag,
-        # so its V cache aborts too) -- to f16 (the llama.cpp default);
-        # non-quantized types -- f16/bf16/f32 -- run fine without FA and are left
-        # untouched. The value is rewritten in place so the list length is
-        # preserved for downstream slices, matching the flash-attn flip above.
-        _v_cache_flags = (
-            "--cache-type-v",
-            "-ctv",
-            "--cache-type-v-draft",
-            "--spec-draft-type-v",
-            "-ctvd",
+        # Studio launches with FA on, so a quantized --cache-type-v is legal at
+        # launch but would make THIS FA-off retry crash on init instead of
+        # recovering.
+        return LlamaCppBackend._reset_quantized_v_cache(
+            out, "disabled by the crash-recovery fallback"
         )
-        _cache_reset = False
-        for i, tok in enumerate(out):
-            # llama.cpp rewrites '_' to '-' for any argv token starting with
-            # '--' before matching, so a legal pass-through spelling such as
-            # --cache_type_v parses as --cache-type-v and still enables a
-            # quantized V cache. Canonicalize the flag name the same way so the
-            # reset recognizes the underscore aliases too; short flags (-ctv)
-            # and the type value are left untouched.
-            name = _flag_name(tok)
-            if name not in _v_cache_flags:
-                continue
-            if "=" in tok:
-                flag, _, value = tok.partition("=")
-                if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
-                    out[i] = f"{flag}=f16"
-                    _cache_reset = True
-            elif i + 1 < len(out):
-                if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
-                    out[i + 1] = "f16"
-                    _cache_reset = True
-        if _cache_reset:
-            logger.info(
-                "V cache dtype reset to f16 because flash attention was disabled "
-                "by the crash-recovery fallback (quantized V cache requires flash "
-                "attention in llama.cpp; the K cache is left untouched)."
-            )
-        return out
 
     @staticmethod
     def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
@@ -14933,6 +14945,18 @@ class LlamaCppBackend:
                     logger.info(
                         "Dropped inherited LLAMA_ARG_FLASH_ATTN: this build has no --flash-attn."
                     )
+                # The same build cannot run a quantized V cache either, and the
+                # KV type is emitted from the user's setting with no flash-attn
+                # coupling. The crash-recovery rung resets V for exactly this
+                # abort, but it only fires when the argv had a flag to turn off,
+                # so on a build that never had one nothing would catch it.
+                if _flash_attn_known_off:
+                    cmd = self._reset_quantized_v_cache(cmd, "this build has no --flash-attn")
+                    if self._drop_env_quantized_v_cache(env):
+                        logger.info(
+                            "Dropped inherited quantized V-cache env: this build "
+                            "has no --flash-attn."
+                        )
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade

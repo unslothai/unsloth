@@ -357,3 +357,77 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
         LLAMA_ARG_FLASH_ATTN must reach llama-server untouched."""
         env = _flash_attn_env_scrub(known_off = False)
         assert env["LLAMA_ARG_FLASH_ATTN"] == "1"
+
+
+def _flagless_v_cache_fixup(*, known_off: bool, cmd: list, env: dict) -> tuple:
+    """Run load_model's real flagless-build V-cache fixup over cmd and env."""
+    source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    blocks = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.If)
+        and "_reset_quantized_v_cache"
+        in {a.attr for a in ast.walk(node) if isinstance(a, ast.Attribute)}
+    ]
+    assert len(blocks) == 1, f"expected one V-cache fixup block, found {len(blocks)}"
+    scope = {
+        "self": LlamaCppBackend,
+        "logger": logging.getLogger(__name__),
+        "_flash_attn_known_off": known_off,
+        "cmd": list(cmd),
+        "env": dict(env),
+    }
+    exec(ast.unparse(ast.Module(body = blocks, type_ignores = [])), scope)
+    return scope["cmd"], scope["env"]
+
+
+class TestAFlaglessBuildCannotRunAQuantizedVCache:
+    """Dropping --flash-attn has to take the quantized V cache with it.
+
+    llama.cpp aborts init with "V cache quantization requires flash_attn", and
+    the KV type is emitted straight from the user's setting with no flash-attn
+    coupling. The crash-recovery rung resets V for exactly this abort, but
+    _with_flash_attn_off returns None when the argv has no flag to turn off, so
+    on a build that never had one nothing downstream would catch it.
+    """
+
+    CMD = [
+        "llama-server",
+        "-m",
+        "m.gguf",
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+    ]
+
+    def test_the_v_cache_is_reset_and_the_k_cache_is_not(self):
+        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {})
+        assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
+        assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
+
+    def test_the_recovery_rung_would_not_have_caught_it(self):
+        assert LlamaCppBackend._with_flash_attn_off(self.CMD) is None
+
+    def test_the_inherited_quantized_v_env_goes_too(self):
+        _, env = _flagless_v_cache_fixup(
+            known_off = True,
+            cmd = self.CMD,
+            env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0", "LLAMA_ARG_CACHE_TYPE_K": "q8_0"},
+        )
+        assert "LLAMA_ARG_CACHE_TYPE_V" not in env
+        assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
+
+    def test_a_build_that_has_the_flag_keeps_its_quantized_v_cache(self):
+        cmd, env = _flagless_v_cache_fixup(
+            known_off = False,
+            cmd = self.CMD,
+            env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"},
+        )
+        assert cmd == self.CMD
+        assert env == {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
+
+    @pytest.mark.parametrize("value", ["f16", "bf16", "f32"])
+    def test_an_unquantized_v_cache_is_left_alone(self, value):
+        cmd = [c if c != "q8_0" else value for c in self.CMD]
+        assert _flagless_v_cache_fixup(known_off = True, cmd = cmd, env = {})[0] == cmd
