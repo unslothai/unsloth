@@ -274,6 +274,80 @@ test("a model loaded before hydration keeps its own defaults", async () => {
   assert.equal(params.topP, 0.5);
 });
 
+// The model already resident when Studio starts is the one the saved global set
+// describes, so its recommendation must not stand in front of the settings the
+// user saved for it. An upgraded install has only that global set.
+test("the resident model keeps the settings saved for it", async () => {
+  settingsHttp.settings = {
+    inferenceParams: { temperature: 0.2, systemPrompt: "tuned" },
+  };
+  settingsHttp.hold();
+  useChatRuntimeStore.setState({
+    // Nothing selected yet: a local checkpoint is not persisted, the first
+    // status publishes it. The starting sampling differs from the status, so
+    // the recommendation really does move it.
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: "",
+      temperature: 0.5,
+    },
+    paramsByModel: {},
+    settingsHydrated: false,
+  });
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  applyStatus(QWEN);
+
+  settingsHttp.release?.();
+  await hydrating;
+
+  const params = useChatRuntimeStore.getState().params;
+  assert.equal(
+    params.temperature,
+    0.2,
+    "the saved value, not the recommendation",
+  );
+  assert.equal(params.systemPrompt, "tuned");
+});
+
+// A restore after a hidden auto-load steps off the model that load put there.
+test("a restore does not remember the model a hidden load left", () => {
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      temperature: 0.77,
+    },
+    paramsByModel: {},
+  });
+
+  useChatRuntimeStore.getState().setCheckpoint(LLAMA, undefined, {
+    trackQueuedSettings: false,
+    persist: false,
+  });
+
+  assert.deepEqual(useChatRuntimeStore.getState().paramsByModel, {});
+});
+
+// A visible switch still records it.
+test("a visible switch remembers the model being left", () => {
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      temperature: 0.77,
+    },
+    paramsByModel: {},
+  });
+
+  useChatRuntimeStore.getState().setCheckpoint(LLAMA);
+
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN]?.temperature,
+    0.77,
+  );
+});
+
 // A model's defaults are not settings it was used with. Recording them makes
 // the next defaults hook replay them over itself: a fresh Qwen3 load applied
 // the load response, recorded it, and then the thinking-mode params were

@@ -1267,7 +1267,12 @@ type ChatRuntimeStore = {
   setCheckpoint: (
     modelId: string,
     ggufVariant?: string | null,
-    options?: { trackQueuedSettings?: boolean },
+    options?: {
+      trackQueuedSettings?: boolean;
+      /** False when the switch only puts back what was on screen before a
+       * hidden load, so the model it steps off was never the user's. */
+      persist?: boolean;
+    },
   ) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
@@ -1667,8 +1672,16 @@ let modelDefaultsBeforeHydration: {
 function noteModelDefaultsBeforeHydration(
   checkpoint: string,
   changed: PersistedInferenceParams,
+  replacedAnotherModel: boolean,
 ): void {
   if (modelDefaultsBeforeHydration?.checkpoint !== checkpoint) {
+    // Only a model that replaced another one. The model already resident at
+    // startup is the one the saved global set describes, so its defaults must
+    // not stand in front of the settings the user saved for it.
+    if (!replacedAnotherModel) {
+      modelDefaultsBeforeHydration = null;
+      return;
+    }
     modelDefaultsBeforeHydration = { checkpoint, keys: new Set() };
   }
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
@@ -2048,7 +2061,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (options?.persist !== false && state.settingsHydrated) {
         persistParamEdit(changedParams, paramsByModel, nextParams.checkpoint);
       } else if (fromModelDefaults && !state.settingsHydrated) {
-        noteModelDefaultsBeforeHydration(nextParams.checkpoint, changedParams);
+        noteModelDefaultsBeforeHydration(
+          nextParams.checkpoint,
+          changedParams,
+          checkpointChanged && state.params.checkpoint !== "",
+        );
       }
       return {
         params: nextParams,
@@ -2231,9 +2248,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
       // Remember what the outgoing model was running with before replacing it.
-      const outgoing = checkpointChanged
-        ? rememberOutgoingModel(state, state.params)
-        : null;
+      // Not for a restore: the model it steps off is the one a background load
+      // put there, and its load defaults are not settings the user chose.
+      const outgoing =
+        checkpointChanged && options?.persist !== false
+          ? rememberOutgoingModel(state, state.params)
+          : null;
       const baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,

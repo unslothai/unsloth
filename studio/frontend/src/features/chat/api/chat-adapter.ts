@@ -1987,6 +1987,8 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   liveUsage
     .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
+      // The model being stepped off is the one the background load put there.
+      persist: false,
     });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
