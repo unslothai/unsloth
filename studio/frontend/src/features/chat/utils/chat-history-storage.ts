@@ -575,6 +575,7 @@ export type StoredChatThreadReadResult = {
 
 export async function getStoredChatThreadReadResult(
   threadId: string,
+  options: { bounded?: boolean } = {},
 ): Promise<StoredChatThreadReadResult> {
   // Incognito threads are never stored, so the lookup can only come back
   // empty -- short-circuit it instead of doing a Dexie read + backend GET.
@@ -587,7 +588,10 @@ export async function getStoredChatThreadReadResult(
   const legacyThread = await db.threads.get(threadId);
   let backendThread: ThreadRecord | null;
   try {
-    backendThread = await getChatThread(threadId);
+    // Bounded for a caller that is gating the UI on this read: an unbounded GET that
+    // never answers leaves the request open for the life of the page, and every retry
+    // opens another.
+    backendThread = await getChatThread(threadId, { bounded: options.bounded });
   } catch (error) {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
       return { thread: legacyThread, cacheable: false };

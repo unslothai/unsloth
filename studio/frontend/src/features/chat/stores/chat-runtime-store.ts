@@ -404,15 +404,23 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
   // thread whose row has not been created yet answers 404, where the normal path
   // would have created it first. visibilitychange is not terminal (it fires on
   // every tab switch), and the page is still there to await the ensure.
+  // Chats whose newest values have just gone out, so an older unsettled snapshot for
+  // the same chat is not sent after them: each beacon takes a higher seq than the last,
+  // which would make the stale one the winner.
+  const sentNewest = new Set<string>();
+  const flushedThreadId = threadSettingsWriteThreadId;
   flushThreadScopedSettingsWrite(terminal);
+  if (terminal && flushedThreadId !== null) sentNewest.add(flushedThreadId);
   // An edit made while its chat's read was still out lives only in heldThreadScopedEdits,
   // so the flush above does not see it. Effect cleanup is not guaranteed during unload and
   // its ordinary fetch would not outlive the page anyway, so send it from here, keepalive.
   if (terminal) {
-    commitHeldThreadScopedEditsToTheirThread(true);
+    const heldThreadId = pendingPairingThreadId;
+    void commitHeldThreadScopedEditsToTheirThread(true);
+    if (heldThreadId !== null) sentNewest.add(heldThreadId);
     // And anything an earlier visibilitychange already flushed the normal way, which
     // this event would otherwise leave to a fetch the page is about to cancel.
-    beaconUnsettledThreadSettingsWrites();
+    beaconUnsettledThreadSettingsWrites(sentNewest);
   }
   // An edit still waiting on hydration is a user edit like any other, and the
   // tab is going away, so send it rather than let the next session hydrate over it.
@@ -731,6 +739,13 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   return activeThreadScopedSettings?.[key];
 }
 
+/**
+ * Fields the user has just set on the open chat, as opposed to ones a model's
+ * capabilities moved in the store. The preservations below exist to stop a clamp erasing
+ * a stored choice; they must not also undo a choice the user has only now made.
+ */
+const explicitlyEditedThreadFields = new Set<string>();
+
 // The pills chat-page clamps to the selected model's capabilities.
 const CLAMPED_PILL_KEYS = [
   "toolsEnabled",
@@ -767,8 +782,13 @@ function buildThreadScopedSnapshot(
   // Same for deep research, which apply() also holds back (external models and incognito
   // cannot run it). Without this, toggling any other pill in such a chat erases the true
   // it had stored, and it comes back off once the chat is on a local model again.
+  //
+  // Unless the user just changed it themselves: enabling Search, Code or Images clears
+  // deep research deliberately, and restoring it here would ignore that and bring it
+  // back, alongside Search, the moment the chat is on a local model again.
   if (
     threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
     activeThreadScopedSettings?.deepResearchEnabled === true &&
     settings.deepResearchEnabled !== true &&
     (externalCheckpointRefusesDeepResearch(
@@ -783,6 +803,7 @@ function buildThreadScopedSnapshot(
   // leave thinking on once the chat is back on a model where it is optional.
   if (
     threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
     activeThreadScopedSettings?.reasoningEnabled === false &&
     settings.reasoningEnabled !== false &&
     useChatRuntimeStore.getState().reasoningAlwaysOn
@@ -806,6 +827,7 @@ function buildThreadScopedSnapshot(
       if (
         modelLoaded &&
         !capable[key] &&
+        !explicitlyEditedThreadFields.has(key) &&
         activeThreadScopedSettings?.[key] === true &&
         settings[key] !== true
       ) {
@@ -816,6 +838,9 @@ function buildThreadScopedSnapshot(
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
+  // Spent: this snapshot has taken them into account, and the next one is about
+  // whatever the user does next.
+  explicitlyEditedThreadFields.clear();
   return settings;
 }
 
@@ -858,8 +883,9 @@ export function replayUnconfirmedThreadSettings(): void {
     localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
     return;
   }
+  const sent: Promise<unknown>[] = [];
   for (const [threadId, body] of Object.entries(pending)) {
-    void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+    const request = authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -871,8 +897,17 @@ export function replayUnconfirmedThreadSettings(): void {
         if (res.ok) forgetReplayedThreadSettings(threadId);
       })
       .catch(() => undefined);
+    sent.push(request);
   }
+  // Every snapshot write waits for this. The replay carries the PREVIOUS session's
+  // writer id, so the server treats it as unrelated to anything this session sends and
+  // will apply it whenever it arrives: on a slow connection a full snapshot from last
+  // time could land after an edit made just now and revert it.
+  threadSettingsReplaySettled = Promise.all(sent).then(() => undefined);
 }
+
+// Resolved once the previous session's unconfirmed writes have been answered.
+let threadSettingsReplaySettled: Promise<void> = Promise.resolve();
 
 /** Drop one entry, leaving the rest for the next attempt. */
 function forgetReplayedThreadSettings(threadId: string): void {
@@ -980,6 +1015,10 @@ function writeThreadScopedSettings(
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
+    // Last session's unconfirmed writes go first, or one of them can land on top of
+    // this edit: it carries a different writer id, so nothing on the server orders it.
+    .then(() => threadSettingsReplaySettled)
+    .catch(() => undefined)
     .then(async () => {
       // superseded while queued: sending this would undo the newer snapshot.
       if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
@@ -1073,26 +1112,41 @@ function trackUnsettledThreadSettingsWrite(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
 ): void {
-  unsettledThreadSettingsWrites.set(threadId, snapshot);
+  // Identity, not value: two ordinary edits both carry a null snapshot, so comparing
+  // the value let the first request's settle delete the second one's tracking, and a
+  // terminal event then found nothing to resend for a write still in flight.
+  const entry: UnsettledThreadSettingsWrite = { snapshot };
+  unsettledThreadSettingsWrites.set(threadId, entry);
   void writeThreadScopedSettings(threadId, snapshot).finally(() => {
-    if (unsettledThreadSettingsWrites.get(threadId) === snapshot) {
+    if (unsettledThreadSettingsWrites.get(threadId) === entry) {
       unsettledThreadSettingsWrites.delete(threadId);
     }
   });
 }
 
+type UnsettledThreadSettingsWrite = { snapshot: ThreadScopedSettings | null };
+
 /** Flushed but not yet acknowledged, so a terminal event can still resend it. */
 const unsettledThreadSettingsWrites = new Map<
   string,
-  ThreadScopedSettings | null
+  UnsettledThreadSettingsWrite
 >();
 
-/** Re-send anything a normal flush has not landed yet, with keepalive. */
-function beaconUnsettledThreadSettingsWrites(): void {
+/**
+ * Re-send anything a normal flush has not landed yet, with keepalive.
+ *
+ * `alreadySent` names the threads the terminal flush has just beaconed. Those carry the
+ * newest values, and every beacon takes a higher seq than the last, so re-sending an
+ * older unsettled snapshot for the same chat afterwards would make the stale one win.
+ */
+function beaconUnsettledThreadSettingsWrites(
+  alreadySent: ReadonlySet<string>,
+): void {
   const unsettled = [...unsettledThreadSettingsWrites];
   unsettledThreadSettingsWrites.clear();
-  for (const [threadId, snapshot] of unsettled) {
-    sendThreadScopedSettingsBeacon(threadId, snapshot);
+  for (const [threadId, entry] of unsettled) {
+    if (alreadySent.has(threadId)) continue;
+    sendThreadScopedSettingsBeacon(threadId, entry.snapshot);
   }
 }
 
@@ -1172,30 +1226,39 @@ function setThreadScopedSettingsPending(pending: boolean): void {
     useChatRuntimeStore.setState({ threadScopedSettingsPending: pending });
   }
   if (pending) {
-    if (!pairingSettled) {
-      pairingSettled = new Promise<void>((resolve) => {
-        resolvePairingSettled = resolve;
+    const threadId = pendingPairingThreadId;
+    if (threadId !== null && !pairingSettledByThreadId.has(threadId)) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => {
+        resolve = r;
       });
+      pairingSettledByThreadId.set(threadId, { promise, resolve });
     }
   } else {
-    resolvePairingSettled?.();
-    resolvePairingSettled = null;
-    pairingSettled = null;
+    for (const { resolve } of pairingSettledByThreadId.values()) resolve();
+    pairingSettledByThreadId.clear();
   }
 }
 
-let pairingSettled: Promise<void> | null = null;
-let resolvePairingSettled: (() => void) | null = null;
+// Per chat, not one for all of them: a run started for A must not be released by B's
+// pairing ending, or it resumes and reads B's settings for A's run.
+const pairingSettledByThreadId = new Map<
+  string,
+  { promise: Promise<void>; resolve: () => void }
+>();
 
 /**
- * Resolves once the open chat's own settings are known, or immediately if they already
+ * Resolves once `threadId`'s own settings are known, or immediately if they already
  * are. Every run goes through the adapter, so awaiting this there is what stops a
  * Reload, a Continue or an edit-and-send from starting on the installation defaults
  * that stand in while the read is out: a chat stored as "ask" would run as "off".
  * Bounded by the read's own timeout, so it cannot wait forever.
  */
-export function awaitThreadScopedPairing(): Promise<void> {
-  return pairingSettled ?? Promise.resolve();
+export function awaitThreadScopedPairing(
+  threadId: string | null | undefined,
+): Promise<void> {
+  if (!threadId) return Promise.resolve();
+  return pairingSettledByThreadId.get(threadId)?.promise ?? Promise.resolve();
 }
 
 /** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
@@ -1225,7 +1288,10 @@ export function commitHeldThreadScopedEditsToTheirThread(
   const held = heldThreadScopedEdits;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
-  pairingWindowDefaultsThreadId = null;
+  // pairingWindowDefaultsThreadId is deliberately NOT cleared: a failed read commits
+  // and then re-pairs the same chat, and the store holds the edit by then, so letting
+  // the retry resample would take that edit for the installation default. Leaving for a
+  // different chat resamples anyway, because the id no longer matches.
   setThreadScopedSettingsPending(false);
   if (threadId === null || held.length === 0) return Promise.resolve();
   const changes = heldThreadScopedChanges(held);
@@ -1262,6 +1328,10 @@ async function mergeThreadScopedSettingsIntoRow(
   const ticket = takeThreadSettingsWriteTicket(threadId);
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
+    .catch(() => undefined)
+    // Last session's unconfirmed writes go first, or one of them can land on top of
+    // this edit: it carries a different writer id, so nothing on the server orders it.
+    .then(() => threadSettingsReplaySettled)
     .catch(() => undefined)
     .then(async () => {
       if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
@@ -1305,6 +1375,7 @@ function captureThreadScopedEdit(
   if (threadId === null) return false;
   // both ids: between a switch and its snapshot arriving the store still holds the old values.
   if (threadId === threadScopedSettingsThreadId) {
+    explicitlyEditedThreadFields.add(field);
     scheduleThreadScopedSettingsWrite(threadId);
     return true;
   }
@@ -3249,6 +3320,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         globalThreadScopedDefaults = captured as ThreadScopedSettings;
       }
       threadScopedSettingsThreadId = threadId;
+      explicitlyEditedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)
         : null;

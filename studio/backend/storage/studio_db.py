@@ -1876,12 +1876,16 @@ def _write_chat_thread_settings_in_conn(
             # straggler. Held per writer, so a write from another tab in between does
             # not wipe the watermark this comparison depends on.
             return False
+        # Re-inserted, not just assigned, so this writer moves to the end and the map
+        # stays in least-recently-used order.
+        seqs.pop(writer, None)
         seqs[writer] = seq
-        # One entry per tab that has ever written, so bound it. The oldest watermarks
-        # belong to tabs that are long gone; a returning one starts from a fresh id.
-        if len(seqs) > _MAX_SETTINGS_WRITERS:
-            for stale in sorted(seqs, key = lambda w: seqs[w])[: len(seqs) - _MAX_SETTINGS_WRITERS]:
-                seqs.pop(stale, None)
+        # One entry per tab that has ever written, so bound it. Evicted by last use and
+        # never by counter: every session starts its own counter at 1, so comparing them
+        # across writers would throw out the newest tab and keep long-dead ones, leaving
+        # the active writer with no watermark for its own stragglers to be refused by.
+        while len(seqs) > _MAX_SETTINGS_WRITERS:
+            seqs.pop(next(iter(seqs)))
     stored = _json_loads(row["settings_json"], None)
     stored = stored if isinstance(stored, dict) else {}
     if clear:

@@ -3451,12 +3451,15 @@ export function createOpenAIStreamAdapter(
       // keeps the message-level controls from starting a run on the installation
       // defaults that stand in while the read is out, which for a chat stored as "ask"
       // would mean running tools without asking.
-      await awaitThreadScopedPairing();
+      // Bound to this run's own chat: a run for A released by B's pairing ending would
+      // resume and read B's settings for A.
+      const runThreadId =
+        unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
+      await awaitThreadScopedPairing(runThreadId);
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
-      const resolvedThreadId =
-        (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const resolvedThreadId = (runThreadId ?? runtime.activeThreadId) || undefined;
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),

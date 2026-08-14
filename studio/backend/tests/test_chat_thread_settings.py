@@ -574,3 +574,26 @@ def test_watermarks_do_not_grow_without_bound(tmp_path, monkeypatch):
     import json as _json
 
     assert len(_json.loads(raw)) <= studio_db._MAX_SETTINGS_WRITERS
+
+
+def test_the_newest_writer_is_not_the_first_evicted(tmp_path, monkeypatch):
+    # Every session starts its counter at 1, so evicting by counter throws out the tab
+    # that just arrived and keeps long-dead ones, leaving the active writer with no
+    # watermark for its own stragglers to be refused by.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    for i in range(studio_db._MAX_SETTINGS_WRITERS):
+        studio_db.write_chat_thread_settings(
+            "thread-1", merge = {"toolsEnabled": True}, seq = 500 + i, writer = f"old-{i}"
+        )
+    # a brand new tab, counter starting at 1
+    studio_db.write_chat_thread_settings(
+        "thread-1", merge = {"toolsEnabled": False}, seq = 1, writer = "fresh"
+    )
+    # its own straggler must still be refused
+    studio_db.write_chat_thread_settings(
+        "thread-1", merge = {"toolsEnabled": True}, seq = 1, writer = "fresh"
+    )
+
+    got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
+    assert got.toolsEnabled is False

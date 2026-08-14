@@ -1773,12 +1773,13 @@ function ThreadScopedSettingsSync({
       // over the values the user set and is written out again by the next edit.
       void awaitThreadScopedSettingsWrite(activeThreadId)
         .then(() =>
-          // Bounded, because this read is what holds sends back: the underlying GET has
-          // no timeout of its own, and one that never settles would park every send in
-          // the chat behind "Loading this chat's settings" with nothing to release it.
-          // A timeout is a failed attempt like any other, so it retries and then gives up.
+          // Bounded, because this read is what holds sends back: an unbounded GET that
+          // never settles would park every send in the chat behind "Loading this chat's
+          // settings" with nothing to release it, and leave the request open besides.
+          // `bounded` aborts the fetch itself; the race is the backstop for the rest of
+          // the read. Either way a stall becomes a failed attempt, so it retries.
           Promise.race([
-            getStoredChatThreadReadResult(activeThreadId),
+            getStoredChatThreadReadResult(activeThreadId, { bounded: true }),
             new Promise<never>((_, reject) =>
               setTimeout(
                 () => reject(new Error("thread settings read timed out")),

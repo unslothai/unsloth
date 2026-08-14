@@ -142,10 +142,10 @@ test("a normal flush stays resendable until it lands", () => {
   const flush = slice(store, "function flushThreadScopedSettingsWrite", "\n}");
   assert.match(flush, /trackUnsettledThreadSettingsWrite\(threadId, snapshot\)/);
   const track = slice(store, "function trackUnsettledThreadSettingsWrite", "\n}");
-  assert.match(track, /unsettledThreadSettingsWrites\.set\(threadId, snapshot\)/);
+  assert.match(track, /unsettledThreadSettingsWrites\.set\(threadId, entry\)/);
   const terminal = slice(store, "function flushSettingsOnPageHidden", "\n}");
   assert.match(terminal, /commitHeldThreadScopedEditsToTheirThread\(true\)/);
-  assert.match(terminal, /beaconUnsettledThreadSettingsWrites\(\)/);
+  assert.match(terminal, /beaconUnsettledThreadSettingsWrites\(sentNewest\)/);
 });
 
 test("a capability clamp never overwrites the preference the chat stored", () => {
@@ -263,7 +263,7 @@ test("every run waits for the chat's settings, not just the composer", () => {
   // adapter, so the wait belongs there.
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
   const run = slice(adapter, "await useChatRuntimeStore.getState().hydratePersistedSettings();", "let runtime =");
-  assert.match(run, /await awaitThreadScopedPairing\(\);/);
+  assert.match(run, /await awaitThreadScopedPairing\(runThreadId\);/);
 });
 
 test("a replay entry survives a failed replay", () => {
@@ -293,4 +293,65 @@ test("forking settles a held edit, not just the debounce", () => {
   // and the pairing's own wait must NOT commit, or sync closes the window it just opened
   const await_ = slice(store, "export async function awaitThreadScopedSettingsWrite", "\n}");
   assert.doesNotMatch(await_, /commitHeldThreadScopedEditsToTheirThread/);
+});
+
+test("the run's wait is bound to the run's own chat", () => {
+  // One promise for all chats meant a run for A was released by B's pairing ending, and
+  // then read B's settings for A's run.
+  const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
+  assert.match(wait, /threadId: string \| null \| undefined/);
+  assert.match(wait, /pairingSettledByThreadId\.get\(threadId\)/);
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /await awaitThreadScopedPairing\(runThreadId\)/);
+});
+
+test("two unsettled writes for one chat do not cancel each other's tracking", () => {
+  // Both ordinary edits carry a null snapshot, so comparing by value let the first
+  // request's settle delete the second's entry.
+  const track = slice(store, "function trackUnsettledThreadSettingsWrite", "\n}");
+  assert.match(track, /const entry: UnsettledThreadSettingsWrite = \{ snapshot \}/);
+  assert.match(track, /unsettledThreadSettingsWrites\.get\(threadId\) === entry/);
+});
+
+test("a terminal event does not send a stale snapshot after the newest one", () => {
+  // Each beacon takes a higher seq than the last, so re-sending an older unsettled
+  // snapshot for a chat already flushed would make the stale one win.
+  const terminal = slice(store, "function flushSettingsOnPageHidden", "\n}");
+  assert.match(terminal, /const sentNewest = new Set<string>\(\)/);
+  assert.match(terminal, /beaconUnsettledThreadSettingsWrites\(sentNewest\)/);
+  const beacon = slice(store, "function beaconUnsettledThreadSettingsWrites", "\n}");
+  assert.match(beacon, /if \(alreadySent\.has\(threadId\)\) continue;/);
+});
+
+test("last session's replay is ordered before this session's writes", () => {
+  // The replay carries the previous session's writer id, so nothing on the server
+  // orders it against an edit made now; on a slow link it can land second and revert it.
+  assert.match(store, /let threadSettingsReplaySettled: Promise<void>/);
+  const write = slice(store, "function writeThreadScopedSettings", "\n}");
+  assert.match(write, /\.then\(\(\) => threadSettingsReplaySettled\)/);
+});
+
+test("a retry keeps the defaults snapshot it already took", () => {
+  // retryThreadRead commits and re-pairs the same chat, so clearing the id here would
+  // let the retry resample the store, which by then holds the held edit.
+  const commit = slice(
+    store,
+    "export function commitHeldThreadScopedEditsToTheirThread",
+    "\n}",
+  );
+  assert.doesNotMatch(commit, /pairingWindowDefaultsThreadId = null;/);
+});
+
+test("an explicit clear beats a capability preservation", () => {
+  // Enabling Search clears Deep Research deliberately; restoring the stored true would
+  // bring it back, alongside Search, once the chat is on a local model again.
+  const build = slice(store, "function buildThreadScopedSnapshot", "\n}");
+  assert.match(build, /!explicitlyEditedThreadFields\.has\("deepResearchEnabled"\)/);
+  const capture = slice(store, "function captureThreadScopedEdit", "\n}");
+  assert.match(capture, /explicitlyEditedThreadFields\.add\(field\)/);
+});
+
+test("the thread read that gates sends aborts when it times out", () => {
+  const sync = slice(provider, "const sync = () => {", "// The read did not answer");
+  assert.match(sync, /getStoredChatThreadReadResult\(activeThreadId, \{ bounded: true \}\)/);
 });
