@@ -186,6 +186,33 @@ test("a code character class does not disable incremental parsing", () => {
   assert.ok(render.markdown.length < source.length / 4);
 });
 
+test("an edit that drops retained blocks moves the render identity", () => {
+  // Deleting exactly the retained prefix leaves the live tail, and with it the
+  // only thing Streamdown compares, unchanged.
+  const source = paragraphs(30);
+  const cache = new IncrementalMarkdownCache();
+  const streamed = cache.update(source);
+  assert.ok(streamed.markdown.length < source.length / 3);
+  const streamedGeneration = cache.renderGeneration;
+
+  const edited = cache.update(streamed.markdown);
+  assert.equal(edited.markdown, streamed.markdown);
+  assert.notEqual(cache.renderGeneration, streamedGeneration);
+  assert.deepEqual(
+    edited.parseMarkdownIntoBlocks(edited.markdown),
+    parseMarkdownIntoBlocks(remend(streamed.markdown)),
+  );
+
+  // A reply that only grows never remounts, including while the stabilizer
+  // withholds an ambiguous trailing line.
+  const streaming = new IncrementalMarkdownCache();
+  for (let length = 1; length <= source.length; length += 5) {
+    streaming.update(source.slice(0, length));
+    streaming.update(`${source.slice(0, length)}* **`);
+  }
+  assert.equal(streaming.renderGeneration, 0);
+});
+
 test("Streamdown re-renders only when the Markdown string changes", () => {
   // Its memo comparator is what decides whether the parser callback runs again,
   // and it does not compare that callback. Retaining a block therefore has to

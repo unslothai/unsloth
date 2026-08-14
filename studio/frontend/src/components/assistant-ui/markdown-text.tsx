@@ -457,6 +457,8 @@ const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
   // Parts are keyed by index, so switching conversations hands this instance a different
   // message, and Streamdown only extends its parsed blocks: key it per message instead.
+  // The cache generation joins the key for the one case the Markdown string cannot
+  // express, an edit that drops retained blocks without changing the live tail.
   const messageId = useAuiState(({ message }) => message.id);
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
@@ -487,7 +489,7 @@ const MarkdownTextImpl = () => {
   return (
     <div data-status={status.type} className="min-w-0 max-w-full">
       <Streamdown
-        key={messageId}
+        key={`${messageId}:${incrementalCache.renderGeneration}`}
         mode="streaming"
         parseIncompleteMarkdown={!incrementalRender}
         parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}

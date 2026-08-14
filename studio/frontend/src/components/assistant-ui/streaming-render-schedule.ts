@@ -594,6 +594,9 @@ export class IncrementalMarkdownCache {
   private context = createRetainedContext();
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
+  private droppedRetainedBlocks = false;
+  // Bumped only when the Markdown string alone cannot signal a changed render.
+  renderGeneration = 0;
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
     ...this.committedBlocks,
@@ -602,13 +605,19 @@ export class IncrementalMarkdownCache {
 
   // Streamdown memoises the whole component on the Markdown string and ignores
   // the parser callback, so the string is the only thing that can schedule a
-  // render. Record what it was last given.
+  // render. Retaining a block can wait for a string that differs, but dropping
+  // retained blocks cannot, so that case moves the render identity instead.
   private render(markdown: string): IncrementalMarkdownRender {
+    if (this.droppedRetainedBlocks && markdown === this.lastMarkdown) {
+      this.renderGeneration += 1;
+    }
+    this.droppedRetainedBlocks = false;
     this.lastMarkdown = markdown;
     return { markdown, parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks };
   }
 
   private resetIncrementalState(markdown: string): void {
+    this.droppedRetainedBlocks ||= this.committedBlocks.length > 0;
     this.tail = markdown;
     this.committedBlocks = [];
     this.context = createRetainedContext();

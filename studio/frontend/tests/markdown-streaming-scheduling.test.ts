@@ -147,3 +147,14 @@ test("streaming reparses only the active Markdown tail", () => {
     "{incrementalRender?.parseMarkdownIntoBlocks}",
   );
 });
+
+test("dropping retained blocks moves Streamdown's render identity", () => {
+  // Streamdown compares only the Markdown string, so an edit that clears the
+  // retained blocks while leaving the live tail alone has to remount instead.
+  const streamdown = findChatStreamdown();
+  assert.ok(streamdown, "chat <Streamdown> is missing");
+  assert.equal(
+    jsxAttribute(streamdown, "key")?.initializer?.getText(source),
+    "{`${messageId}:${incrementalCache.renderGeneration}`}",
+  );
+});
