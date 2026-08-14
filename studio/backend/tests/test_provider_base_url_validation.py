@@ -238,6 +238,40 @@ def test_a_timed_out_lookup_is_not_remembered(monkeypatch):
     assert len(calls) == 2
 
 
+def test_a_resolver_slower_than_the_deadline_still_works_under_the_opt_in(monkeypatch):
+    """The opt-in path blocked unboundedly before; a slow answer is not a refusal."""
+    import time as _time
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)
+
+    def _slow(host, port, *args, **kwargs):
+        _time.sleep(0.2)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    assert validate_provider_base_url("https://slowdns.example/v1") == "https://slowdns.example/v1"
+
+
+def test_a_transient_failure_is_not_remembered(monkeypatch):
+    """One SERVFAIL must not refuse the same host for the next 300 seconds."""
+    attempts = []
+
+    def _flaky(host, port, *args, **kwargs):
+        attempts.append(host)
+        if len(attempts) == 1:
+            raise socket.gaierror("temporary failure in name resolution")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(socket, "getaddrinfo", _flaky)
+    # The first failure is retried by the opt-in fallback rather than cached,
+    # so it costs one extra lookup instead of five minutes of refusal.
+    for _ in range(2):
+        assert validate_provider_base_url("https://flaky.example/v1") == "https://flaky.example/v1"
+    assert len(attempts) > 1
+
+
 def test_stalled_lookups_do_not_pile_up(monkeypatch):
     """Past the in-flight cap the check reports no answer instead of a thread."""
     import time as _time

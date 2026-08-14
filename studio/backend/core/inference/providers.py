@@ -628,9 +628,9 @@ def _metadata_host(hostname: str) -> bool:
 _DNS_TIMEOUT_SECONDS = 2.0
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
-# hostname -> (expiry, addresses). ``None`` addresses means the resolver did not
-# answer, which the two callers below read in opposite directions.
-_dns_cache: dict[str, tuple[float, tuple[str, ...] | None]] = {}
+# hostname -> (expiry, addresses). Only answers land here; a failure and a
+# timeout are both cheap to repeat and wrong to remember.
+_dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 _dns_cache_lock = threading.Lock()
 # A lookup that times out is abandoned, not cancelled, so its thread lives until
 # the platform resolver gives up. Rotating hostnames defeat the cache and would
@@ -745,8 +745,13 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
         # transport waits longer than this and would still get the address a
         # deliberately slow authoritative server sends after the deadline.
         return None
-    addresses = tuple(resolved) if answered else None
+    if not answered:
+        # A failure is not cached either. It is cheap to repeat (the resolver
+        # says so immediately), and remembering it would turn one transient
+        # SERVFAIL into five minutes of refusal on the opt-in path.
+        return None
 
+    addresses = tuple(resolved)
     with _dns_cache_lock:
         if len(_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
             _dns_cache.clear()
@@ -775,9 +780,22 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
     except ValueError:
         resolved = _resolve_host(hostname, port, scheme)
         if resolved is None:
-            # Unlike the metadata check, this one fails closed: an operator who
-            # set the flag asked for anything unproven to be refused.
-            raise ValueError("Provider base URL hostname could not be resolved.") from None
+            # This path blocked on an unbounded getaddrinfo before the metadata
+            # check existed, and a resolver slower than that check's deadline is
+            # ordinary (the Linux default is 5s per server, twice). Falling back
+            # to the same unbounded call keeps a slow-but-working resolver from
+            # turning into a refusal here, where "no answer" fails closed.
+            import socket
+
+            try:
+                infos = socket.getaddrinfo(
+                    _transport_host(hostname),
+                    port or (443 if scheme == "https" else 80),
+                    type = socket.SOCK_STREAM,
+                )
+            except (OSError, UnicodeError) as exc:
+                raise ValueError("Provider base URL hostname could not be resolved.") from exc
+            resolved = tuple(str(info[4][0]) for info in infos)
         addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
     if not addresses or any(not ip.is_global for ip in addresses):
         raise ValueError(
