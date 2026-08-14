@@ -453,6 +453,94 @@ class TransformersUpgradeInfo(BaseModel):
     )
 
 
+class TransformersUpgradeCheckRequest(BaseModel):
+    """Ask whether loading a model needs a newer transformers than any installed overlay."""
+
+    model_name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 1024,
+        description = "Model identifier, local path or checkpoint directory to check.",
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token, so gated repos resolve their config.json"
+    )
+    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by
+    # the same precedence: a cached model loads from its pinned snapshot, whose
+    # config.json can name a different architecture than the repo's current one.
+    prefer_local_cache: bool = Field(
+        False,
+        description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
+    )
+    model_local_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Cache directory the caller selected for this model, if any.",
+    )
+    model_snapshot_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Exact snapshot the load is pinned to; takes precedence over "
+        "model_local_path, as it does for the remote-code scan.",
+    )
+    model_snapshot_repo_id: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "Repository the pinned snapshot belongs to, when it differs from model_name.",
+    )
+    resume_run_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Run this check precedes a resume of. Lets the answer say whether "
+        "installing would strand that checkpoint's exact 4-bit resume.",
+    )
+
+
+class TransformersUpgradeCheckResponse(BaseModel):
+    """Upgrade + quantization preflight for a load that does not run /validate.
+
+    /validate answers this for a chat load as part of a much larger check (GGUF
+    placement, VRAM coexistence, security review). Training needs the same two answers
+    on their own, before starting a worker that would die at model load with an
+    unrecognized-architecture error.
+    """
+
+    model_name: str = Field(..., description = "The identifier that was checked")
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the architecture is unknown to every installed transformers "
+        "but a newer transformers ships it; the caller should raise the install consent "
+        "dialog before starting the load.",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the consent dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model can load on the CURRENT transformers through its own "
+        "repo code, so a declined (or unavailable) install still has a path forward.",
+    )
+    latest_tier_active: bool = Field(
+        False,
+        description = "Whether the latest-transformers sidecar already routes this model.",
+    )
+    forces_16bit: bool = Field(
+        False,
+        description = "Whether a run started now would load 16-bit rather than bnb 4-bit: true "
+        "when the latest sidecar already routes the model, and when an install-only upgrade "
+        "would put it there. Lets the UI state the real precision before the run starts.",
+    )
+    install_breaks_exact_resume: bool = Field(
+        False,
+        description = "Set only for a resume_run_id: installing the offered release would "
+        "activate the latest sidecar, which permanently refuses that checkpoint's attested "
+        "4-bit model load mode. The caller must not offer the install when the run can "
+        "start without it.",
+    )
+
+
 class ValidateModelResponse(BaseModel):
     """Result of model validation.
 
