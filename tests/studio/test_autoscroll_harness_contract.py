@@ -68,7 +68,7 @@ def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
     # Playwright click fails that tree, so the verdict must read the actionability result and
     # not just the handler's own counter.
     source_text = source("playwright_research_freeze.py")
-    assert 'page.click(\'[data-smoke="click-probe"]\'' in source_text
+    assert "page.click('[data-smoke=\"click-probe\"]'" in source_text
     main = verdict("playwright_research_freeze.py")
     assert 'results["report"]["click_landed"]' in main
     assert 'results["report"]["clicks_registered"]' in main
