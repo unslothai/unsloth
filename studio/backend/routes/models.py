@@ -2354,7 +2354,9 @@ async def scan_model_remote_code(
         requested_scan_target = scan_target
         from core.inference.native_audio import native_audio_security_targets
 
-        requested_security_targets = native_audio_security_targets(requested_scan_target)
+        requested_security_targets = native_audio_security_targets(
+            requested_scan_target, hf_token = hf_token
+        )
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 

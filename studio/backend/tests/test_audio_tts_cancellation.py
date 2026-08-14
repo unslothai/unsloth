@@ -193,6 +193,45 @@ def test_higgs_scene_instructions_reduce_the_generation_budget(monkeypatch):
     assert generated[0]["max_new_tokens"] == expected
 
 
+def test_moss_instructions_are_included_in_context_guard(monkeypatch):
+    generated = []
+
+    class _Llama:
+        is_loaded = False
+        _is_audio = False
+
+    class _Backend:
+        active_model_name = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+        models = {active_model_name: {"is_audio": True, "audio_type": "moss_tts_local"}}
+
+        def generate_audio_response(self, **kwargs):
+            generated.append(kwargs)
+            return b"RIFFfake", 48000
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: 128)
+    payload = ChatCompletionRequest(
+        model = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+        messages = [{"role": "user", "content": "hello"}],
+        audio_instructions = "x" * 600,
+    )
+
+    with pytest.raises(inference_route.HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._generate_tts_wav(
+                "hello", payload, request = None, current_subject = "t"
+            )
+        )
+
+    assert excinfo.value.status_code == 400
+    assert generated == []
+
+
 def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)

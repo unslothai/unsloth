@@ -8916,7 +8916,7 @@ async def validate_model(
         from core.inference.native_audio import native_audio_security_targets
 
         security_targets = native_audio_security_targets(
-            config.identifier, getattr(config, "audio_type", None)
+            config.identifier, getattr(config, "audio_type", None), request.hf_token
         )
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
@@ -10195,9 +10195,11 @@ async def _generate_tts_wav(
             status_code = 400,
             detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
         )
-    if audio_type == "higgs_tts2":
-        scene = payload.audio_instructions or "Audio is recorded from a quiet room."
-        prompt_for_budget = f"{scene}\n{text}"
+    if audio_type in ("higgs_tts2", "moss_tts_local"):
+        instructions = payload.audio_instructions
+        if audio_type == "higgs_tts2":
+            instructions = instructions or "Audio is recorded from a quiet room."
+        prompt_for_budget = f"{instructions}\n{text}" if instructions else text
         _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget)
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before

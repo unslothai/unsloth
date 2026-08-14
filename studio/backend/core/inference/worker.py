@@ -372,7 +372,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         from core.inference.native_audio import native_audio_security_targets
 
         targets = native_audio_security_targets(
-            config["model_name"], getattr(mc, "audio_type", None)
+            config["model_name"], getattr(mc, "audio_type", None), hf_token
         )
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
@@ -1218,7 +1218,7 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = native_audio_security_targets(model_name)
+    _gate_targets = native_audio_security_targets(model_name, hf_token = _hf_token)
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(

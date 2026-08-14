@@ -81,6 +81,53 @@ def _read_local_audio_metadata(path: Path, filename: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _read_audio_metadata(
+    model_name: str, filename: str, hf_token: Optional[str] = None
+) -> dict[str, Any]:
+    """Read one bounded metadata file from a local checkpoint or Hub repo."""
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return {}
+    try:
+        path = Path(normalized).expanduser()
+        if path.is_file():
+            path = path.parent
+        if path.is_dir():
+            return _read_local_audio_metadata(path, filename)
+
+        from huggingface_hub import hf_hub_download
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        metadata_path = Path(
+            hf_hub_download(
+                repo_id = normalized,
+                filename = filename,
+                token = hf_token,
+                cache_dir = active_hf_hub_cache(),
+            )
+        )
+        return _read_local_audio_metadata(metadata_path.parent, metadata_path.name)
+    except Exception as exc:
+        logger.debug("Could not read native audio metadata %s from %s: %s", filename, normalized, exc)
+        return {}
+
+
+def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
+    """Resolve and freeze the codec source the publisher processor will load."""
+    processor_config = _read_audio_metadata(model_name, "processor_config.json", hf_token)
+    model_config = _read_audio_metadata(model_name, "config.json", hf_token)
+    nested = processor_config.get("audio_tokenizer")
+    candidates = (
+        processor_config.get("audio_tokenizer_name_or_path"),
+        nested.get("audio_tokenizer_name_or_path") if isinstance(nested, dict) else None,
+        model_config.get("audio_tokenizer_name_or_path"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return MOSS_LOCAL_CODEC_REPO
+
+
 def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
     """Recognize a local native-audio checkpoint from bounded metadata files."""
     normalized = str(model_name or "").strip()
@@ -123,11 +170,18 @@ def is_native_audio_model(model_name: str) -> bool:
     return _native_audio_type(model_name) is not None
 
 
-def native_audio_security_targets(model_name: str, audio_type: Optional[str] = None) -> list[str]:
+def native_audio_security_targets(
+    model_name: str,
+    audio_type: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> list[str]:
     """Repositories whose code or weights are loaded for this audio model."""
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
-    targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
+    if resolved_type == "moss_tts_local":
+        targets.append(_moss_local_codec_target(model_name, hf_token))
+    else:
+        targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
     return targets
 
 
@@ -364,7 +418,10 @@ class NativeAudioBackend:
 
         token_kwargs = self._token_kwargs(hf_token)
         processor = AutoProcessor.from_pretrained(
-            source, trust_remote_code = trust_remote_code, **token_kwargs
+            source,
+            trust_remote_code = trust_remote_code,
+            codec_path = _moss_local_codec_target(source, hf_token),
+            **token_kwargs,
         )
         audio_tokenizer = getattr(processor, "audio_tokenizer", None)
         if audio_tokenizer is not None and hasattr(audio_tokenizer, "to"):
@@ -473,6 +530,7 @@ class NativeAudioBackend:
             audio, sample_rate = self._generate_moss_local(
                 entry,
                 text,
+                instructions,
                 temperature,
                 top_p,
                 top_k,
@@ -568,6 +626,7 @@ class NativeAudioBackend:
         self,
         entry,
         text,
+        instructions,
         temperature,
         top_p,
         top_k,
@@ -576,7 +635,10 @@ class NativeAudioBackend:
         cancel_event,
     ):
         processor = entry["processor"]
-        batch = processor([[processor.build_user_message(text = text)]], mode = "generation")
+        batch = processor(
+            [[processor.build_user_message(text = text, instruction = instructions)]],
+            mode = "generation",
+        )
         kwargs = {
             "input_ids": batch["input_ids"].to(self.device),
             "attention_mask": batch["attention_mask"].to(self.device),

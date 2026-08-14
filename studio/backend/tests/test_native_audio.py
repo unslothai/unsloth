@@ -68,8 +68,26 @@ def test_local_minimax_modular_index_is_detected_without_config(tmp_path):
         ("multimodalart/higgs-audio-v3-tts-4b-transformers", HIGGS_TTS3_CODEC_REPO),
     ),
 )
-def test_native_audio_security_targets_include_companion_repositories(repo, companion):
+def test_native_audio_security_targets_include_companion_repositories(
+    repo, companion, monkeypatch
+):
+    monkeypatch.setattr(
+        "core.inference.native_audio._read_audio_metadata", lambda *_args, **_kwargs: {}
+    )
     assert native_audio_security_targets(repo) == [repo, companion]
+
+
+def test_moss_local_security_target_follows_checkpoint_processor_config(tmp_path):
+    custom_codec = "acme/custom-moss-codec"
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"audio_tokenizer_name_or_path": custom_codec}),
+        encoding = "utf-8",
+    )
+
+    assert native_audio_security_targets(str(tmp_path), "moss_tts_local") == [
+        str(tmp_path),
+        custom_codec,
+    ]
 
 
 def _backend(audio_type: str, **entry):
@@ -281,6 +299,51 @@ def test_higgs_tts3_preloads_codec_during_model_load(monkeypatch):
     assert seen == [("move", "cpu"), ("codec", None)]
 
 
+def test_moss_local_loader_uses_the_scanned_checkpoint_codec(monkeypatch, tmp_path):
+    seen = {}
+    custom_codec = "acme/custom-moss-codec"
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"audio_tokenizer_name_or_path": custom_codec}),
+        encoding = "utf-8",
+    )
+
+    class Processor:
+        audio_tokenizer = None
+        model_config = SimpleNamespace(sampling_rate = 48000)
+
+    class AutoProcessor:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            seen["processor_source"] = source
+            seen["codec_path"] = kwargs["codec_path"]
+            return Processor()
+
+    class Model:
+        def to(self, _device):
+            return self
+
+        def eval(self):
+            return self
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(*_args, **_kwargs):
+            return Model()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(AutoModel = AutoModel, AutoProcessor = AutoProcessor),
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cpu"
+    entry = {}
+    backend._load_moss_local(entry, str(tmp_path), None, True)
+
+    assert seen == {"processor_source": str(tmp_path), "codec_path": custom_codec}
+    assert entry["sample_rate"] == 48000
+
+
 def test_higgs_tts3_codec_failure_prevents_loaded_state(monkeypatch):
     class Model:
         config = SimpleNamespace(sample_rate = 24000)
@@ -400,10 +463,12 @@ def test_moss_local_uses_generation_messages_and_stereo_decode():
         processor = Processor(),
         sample_rate = 48000,
     )
-    wav, sample_rate = backend.generate_audio_response("Bonjour", max_new_tokens = 400)
+    wav, sample_rate = backend.generate_audio_response(
+        "Bonjour", instructions = "Warm and measured", max_new_tokens = 400
+    )
 
     assert wav[:4] == b"RIFF" and sample_rate == 48000
-    assert seen["message"] == {"text": "Bonjour"}
+    assert seen["message"] == {"text": "Bonjour", "instruction": "Warm and measured"}
     assert seen["mode"] == "generation"
     assert seen["generate"]["audio_top_k"] == 50
     assert seen["generate"]["do_sample"] is True
