@@ -39,7 +39,7 @@ from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
-from unforgettable.store.compile import list_standing, pack_standing
+from unforgettable.store.compile import list_standing, maybe_compile, pack_standing
 from unforgettable.store.records import (
     insert_inject_stats,
     insert_record,
@@ -398,6 +398,7 @@ async def _extract(
     )
     episode_rec = _write_draft(state, episode_draft, db_path)
     _write_rollouts(state, source_record_id=episode_rec["id"], db_path=db_path)
+    maybe_compile(db_path)
     if written_id is None:
         written_id = episode_rec["id"]
     state.keep_sim = False

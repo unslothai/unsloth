@@ -22,7 +22,7 @@ from typing import Any, Optional
 from unforgettable.eyes.probes import is_probe_title
 from unforgettable.rims.detect import TEST_COMMAND_TITLE
 from unforgettable.store.db import get_connection
-from unforgettable.store.records import get_record
+from unforgettable.store.records import get_record, list_records
 from unforgettable.store.titles import normalize_title
 
 COMPILE_MIN_HITS = 2
@@ -43,7 +43,23 @@ def _row_to_dict(row) -> dict[str, Any]:
 
 
 def procedure_hits(record_id: str, *, db_path=None) -> int:
-    return 0
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ru.episode_id)
+            FROM retrieve_uses ru
+            JOIN rollouts ro ON ro.episode_id = ru.episode_id
+            WHERE ru.record_id = ?
+              AND ru.contact = 'world'
+              AND ro.contact = 'world'
+              AND ro.outcome = 'pass'
+            """,
+            (record_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
 
 
 def _refusal_reason(
@@ -97,6 +113,21 @@ def refresh_compiled(db_path=None) -> list[str]:
             unpin_compiled(rid, db_path=db_path)
             dropped.append(rid)
     return dropped
+
+
+def maybe_compile(db_path=None) -> list[str]:
+    refresh_compiled(db_path)
+    pinned: list[str] = []
+    for rec in list_records(kinds=["procedure"], statuses=["active"], db_path=db_path):
+        rid = rec["id"]
+        if get_compiled(rid, db_path=db_path) is not None:
+            continue
+        hits = procedure_hits(rid, db_path=db_path)
+        if not is_compile_candidate(rec, hits=hits, explicit=False):
+            continue
+        pin_compiled(rid, explicit=False, db_path=db_path)
+        pinned.append(rid)
+    return pinned
 
 
 def pin_compiled(record_id: str, *, explicit: bool = False, db_path=None) -> dict[str, Any]:

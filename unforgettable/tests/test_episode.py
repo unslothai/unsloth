@@ -33,7 +33,7 @@ from unforgettable.host import (
 )
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
-from unforgettable.store.compile import pin_compiled
+from unforgettable.store.compile import get_compiled, pin_compiled
 from unforgettable.store.records import (
     get_record,
     insert_record,
@@ -669,3 +669,37 @@ def test_episode_standing_overflow_still_retrieved(tmp_path: Path):
     }
     assert newer["id"] in use_ids
     assert older["id"] in use_ids
+
+
+def test_episode_maybe_compile_after_second_world_pass(tmp_path: Path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=tmp_path / "memory.db",
+    )
+    host = FakeHost(tmp_path, [_ok("ok", "world"), _ok("ok", "world")])
+    request = EpisodeRequest(
+        messages=[{"role": "user", "content": "how do we run the formatter"}]
+    )
+    first = asyncio.run(run(host, request))
+    first_uses = {
+        row["record_id"]
+        for row in list_retrieve_uses(
+            episode_id=first.state.episode_id, db_path=host.db
+        )
+    }
+    assert rec["id"] in first_uses
+    assert get_compiled(rec["id"], db_path=host.db) is None
+    second = asyncio.run(run(host, request))
+    second_uses = {
+        row["record_id"]
+        for row in list_retrieve_uses(
+            episode_id=second.state.episode_id, db_path=host.db
+        )
+    }
+    assert rec["id"] in second_uses
+    compiled = get_compiled(rec["id"], db_path=host.db)
+    assert compiled is not None
+    assert not compiled["explicit"]

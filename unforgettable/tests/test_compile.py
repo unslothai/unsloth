@@ -20,12 +20,183 @@ from unforgettable.agents.retriever import RetrievePolicy, retrieve
 from unforgettable.store.compile import (
     format_standing,
     get_compiled,
+    is_compile_candidate,
     list_standing,
+    maybe_compile,
     pack_standing,
     pin_compiled,
+    procedure_hits,
     refresh_compiled,
 )
-from unforgettable.store.records import deprecate_record, insert_record
+from unforgettable.store.records import (
+    deprecate_record,
+    insert_record,
+    insert_retrieve_use,
+    insert_rollout,
+)
+
+
+def _world_pass_use(record_id: str, episode_id: str, db_path) -> None:
+    insert_retrieve_use(
+        episode_id=episode_id,
+        record_id=record_id,
+        contact="world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id=episode_id,
+        contact="world",
+        outcome="pass",
+        summary="ok",
+        db_path=db_path,
+    )
+
+
+def test_zero_hits_trusted_procedure_is_not_candidate(db_path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    assert procedure_hits(rec["id"], db_path=db_path) == 0
+    assert not is_compile_candidate(rec, hits=0, explicit=False)
+    assert maybe_compile(db_path) == []
+    assert get_compiled(rec["id"], db_path=db_path) is None
+
+
+def test_maybe_compile_pins_after_two_world_pass_hits(db_path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    _world_pass_use(rec["id"], "ep-1", db_path)
+    assert procedure_hits(rec["id"], db_path=db_path) == 1
+    assert maybe_compile(db_path) == []
+    assert get_compiled(rec["id"], db_path=db_path) is None
+    _world_pass_use(rec["id"], "ep-2", db_path)
+    assert procedure_hits(rec["id"], db_path=db_path) == 2
+    pinned = maybe_compile(db_path)
+    assert rec["id"] in pinned
+    row = get_compiled(rec["id"], db_path=db_path)
+    assert row is not None
+    assert not row["explicit"]
+    assert maybe_compile(db_path) == []
+
+
+def test_sim_only_retrieve_uses_do_not_count(db_path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    insert_retrieve_use(
+        episode_id="ep-sim-1",
+        record_id=rec["id"],
+        contact="sim",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-sim-1",
+        contact="world",
+        outcome="pass",
+        summary="ok",
+        db_path=db_path,
+    )
+    insert_retrieve_use(
+        episode_id="ep-sim-2",
+        record_id=rec["id"],
+        contact="sim",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-sim-2",
+        contact="world",
+        outcome="pass",
+        summary="ok",
+        db_path=db_path,
+    )
+    insert_retrieve_use(
+        episode_id="ep-sim-3",
+        record_id=rec["id"],
+        contact="world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-sim-3",
+        contact="sim",
+        outcome="pass",
+        summary="ok",
+        db_path=db_path,
+    )
+    assert procedure_hits(rec["id"], db_path=db_path) == 0
+    assert maybe_compile(db_path) == []
+    assert get_compiled(rec["id"], db_path=db_path) is None
+
+
+def test_probe_test_command_sim_proposed_cannot_auto_pin_with_hits(db_path):
+    probe = insert_record(
+        kind="procedure",
+        title="Probe: old login",
+        body="echo login\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    command = insert_record(
+        kind="procedure",
+        title="Test Command",
+        body="pytest\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    sim = insert_record(
+        kind="procedure",
+        title="Sim only playbook",
+        body="rehearse in the clone",
+        provenance="sim",
+        db_path=db_path,
+    )
+    proposed = insert_record(
+        kind="procedure",
+        title="Proposed playbook",
+        body="not admitted yet",
+        provenance="world",
+        status="proposed",
+        db_path=db_path,
+    )
+    refused = (probe, command, sim, proposed)
+    for rec in refused:
+        _world_pass_use(rec["id"], f"ep-a-{rec['id'][:8]}", db_path)
+        _world_pass_use(rec["id"], f"ep-b-{rec['id'][:8]}", db_path)
+        assert procedure_hits(rec["id"], db_path=db_path) == 2
+    assert maybe_compile(db_path) == []
+    for rec in refused:
+        assert get_compiled(rec["id"], db_path=db_path) is None
+        with pytest.raises(ValueError):
+            pin_compiled(rec["id"], explicit=False, db_path=db_path)
+        with pytest.raises(ValueError):
+            pin_compiled(rec["id"], explicit=True, db_path=db_path)
+
+
+def test_maybe_compile_leaves_explicit_pin(db_path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    pin_compiled(rec["id"], explicit=True, db_path=db_path)
+    assert maybe_compile(db_path) == []
+    row = get_compiled(rec["id"], db_path=db_path)
+    assert row is not None
+    assert row["explicit"] == 1
 
 
 def test_explicit_pin_trusted_world_procedure(db_path):
