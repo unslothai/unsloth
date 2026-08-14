@@ -3455,7 +3455,15 @@ export function createOpenAIStreamAdapter(
       // resume and read B's settings for A.
       const runThreadId =
         unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
-      await awaitThreadScopedPairing(runThreadId);
+      // Refused rather than run on whatever the store holds now: the wait only runs out
+      // for a chat the user left mid-read, and the settings on screen are then some
+      // other chat's. The run is recoverable by reopening the chat; a message sent with
+      // another chat's tools and permission level is not.
+      if (!(await awaitThreadScopedPairing(runThreadId))) {
+        throw new Error(
+          "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
+        );
+      }
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.

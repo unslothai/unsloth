@@ -263,14 +263,14 @@ test("every run waits for the chat's settings, not just the composer", () => {
   // adapter, so the wait belongs there.
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
   const run = slice(adapter, "await useChatRuntimeStore.getState().hydratePersistedSettings();", "let runtime =");
-  assert.match(run, /await awaitThreadScopedPairing\(runThreadId\);/);
+  assert.match(run, /await awaitThreadScopedPairing\(runThreadId\)/);
 });
 
 test("a replay entry survives a failed replay", () => {
   // authFetch resolves for 404 and 5xx, and the missing-row case this exists for is
   // exactly the one that 404s.
   const replay = slice(store, "export function replayUnconfirmedThreadSettings", "\n}");
-  assert.match(replay, /if \(res\.ok\) forgetReplayedThreadSettings\(threadId\)/);
+  assert.match(replay, /if \(res\.ok\) forgetReplayedThreadSettings\(threadId, body\)/);
   assert.doesNotMatch(
     replay,
     /localStorage\.removeItem\(THREAD_SETTINGS_REPLAY_KEY\);\n    if \(!raw\)/,
@@ -418,4 +418,73 @@ test("an unsaved chat's edit reaches the installation defaults without a round t
   );
   assert.match(effect, /isAssistantLocalThreadId\(activeThreadId\)/);
   assert.match(effect, /applyThreadScopedSettings\(null, null\)/);
+});
+
+test("a run whose pairing never settled is refused, not run on another chat's settings", () => {
+  // The wait only runs out for a chat left mid-read, whose gate is held shut on purpose;
+  // by then the store describes whatever chat the user moved to.
+  const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
+  assert.match(wait, /Promise<boolean>/);
+  assert.match(wait, /resolve\(false\)/);
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /if \(!\(await awaitThreadScopedPairing\(runThreadId\)\)\) \{/);
+  assert.match(adapter, /the message was not sent/);
+});
+
+test("the pairing wait outlasts the read it is waiting for", () => {
+  // Shorter than the read's own budget and an ordinary slow read would fail the send.
+  const waitMs = /THREAD_PAIRING_WAIT_MS = ([\d_]+)/.exec(store);
+  assert.ok(waitMs, "no pairing wait constant");
+  const pairing = Number(waitMs[1].replace(/_/g, ""));
+  const readMs = /THREAD_READ_TIMEOUT_MS = ([\d_]+)/.exec(provider);
+  const retries = /THREAD_READ_RETRIES = (\d+)/.exec(provider);
+  const gap = /THREAD_READ_RETRY_MS = ([\d_]+)/.exec(provider);
+  assert.ok(readMs && retries && gap, "no read budget constants");
+  const budget =
+    (Number(retries[1]) + 1) * Number(readMs[1].replace(/_/g, "")) +
+    Number(retries[1]) * Number(gap[1].replace(/_/g, ""));
+  assert.ok(
+    pairing > budget,
+    `pairing wait ${pairing}ms does not outlast the read budget ${budget}ms`,
+  );
+});
+
+test("a fork does not copy a row whose edit failed to reach it", () => {
+  // The replacement write reports failure by resolving false, so awaiting the chain
+  // alone cannot tell a saved edit from a lost one.
+  const await_ = slice(store, "export async function awaitThreadScopedSettingsWrite", "\n}");
+  assert.match(await_, /Promise<boolean>/);
+  assert.match(await_, /landed !== false/);
+  const settle = slice(store, "export async function settleThreadScopedSettingsForCopy", "\n}");
+  assert.match(settle, /if \(!\(await awaitThreadScopedSettingsWrite\(threadId\)\)\) \{/);
+  assert.match(settle, /throw new Error/);
+});
+
+test("a replay only clears the body it actually sent", () => {
+  // A terminal event in this session can store a newer body for the same thread while
+  // an older replay is still out; that newer one is unconfirmed by definition.
+  const replay = slice(store, "export function replayUnconfirmedThreadSettings", "\n}");
+  assert.match(replay, /forgetReplayedThreadSettings\(threadId, body\)/);
+  const forget = slice(store, "function forgetReplayedThreadSettings", "\n}");
+  assert.match(forget, /JSON\.stringify\(pending\[threadId\]\) !== JSON\.stringify\(expected\)/);
+});
+
+test("a provider constraint does not rewrite what the chat stored", () => {
+  // Kimi's builtin search may not run with thinking, so the composer moves the other
+  // pill with { persist: false } -- which bypasses the capture path on purpose. That
+  // value is the provider's, not the user's, and the next snapshot must not save it.
+  assert.match(store, /const constraintSuppressedThreadFields = new Set<string>\(\);/);
+  const reasoning = slice(store, "setReasoningEnabled: (reasoningEnabled, options)", "\n    }),");
+  assert.match(reasoning, /noteConstraintSuppressedThreadField\("reasoningEnabled"\)/);
+  const tools = slice(store, "setToolsEnabled: (toolsEnabled, options)", "\n    }),");
+  assert.match(tools, /noteConstraintSuppressedThreadField\("toolsEnabled"\)/);
+  const build = slice(store, "function buildThreadScopedSnapshot", "\nconst THREAD_SETTINGS_REPLAY_KEY");
+  assert.match(build, /keepsStoredValueUnderConstraint\("reasoningEnabled", threadId, settings\)/);
+  assert.match(build, /keepsStoredValueUnderConstraint\("toolsEnabled", threadId, settings\)/);
+  // but a choice the user makes themselves still wins, and the flag is the open chat's
+  const keeps = slice(store, "function keepsStoredValueUnderConstraint", "\n}");
+  assert.match(keeps, /!explicitlyEditedThreadFields\.has\(key\)/);
+  const capture = slice(store, "function captureThreadScopedEdit", "\n}");
+  assert.match(capture, /constraintSuppressedThreadFields\.delete\(field\)/);
+  assert.match(store, /constraintSuppressedThreadFields\.clear\(\);/);
 });
