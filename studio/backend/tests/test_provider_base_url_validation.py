@@ -273,7 +273,11 @@ def test_a_transient_failure_is_not_remembered(monkeypatch):
 
 
 def test_stalled_lookups_do_not_pile_up(monkeypatch):
-    """Past the in-flight cap the check reports no answer instead of a thread."""
+    """Past the in-flight cap the check reports no answer instead of a thread.
+
+    The workers this leaves behind wake up long after the fixture has replaced
+    the semaphore, which is why each releases the instance it took.
+    """
     import time as _time
 
     monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)

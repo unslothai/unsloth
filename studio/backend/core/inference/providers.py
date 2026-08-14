@@ -711,7 +711,10 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
         if cached is not None and cached[0] > now:
             return cached[1]
 
-    if not _dns_in_flight.acquire(blocking = False):
+    # Bound to a local: a worker abandoned at the deadline may outlive the
+    # global, and BoundedSemaphore raises if it releases one it never took.
+    in_flight = _dns_in_flight
+    if not in_flight.acquire(blocking = False):
         return None
 
     resolved: list[str] = []
@@ -730,7 +733,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
         finally:
             # Released by the worker, not the caller, so an abandoned lookup
             # frees its slot only once the resolver actually lets it go.
-            _dns_in_flight.release()
+            in_flight.release()
         resolved.extend(str(info[4][0]) for info in infos)
         answered = True
 
