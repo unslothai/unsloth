@@ -233,8 +233,11 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_cuda_build(self, mock_pip):
         out = _probe_result("||12.8")  # version "", hip "", cuda "12.8"
-        with patch.object(stack_mod, "_explicit_cpu_torch_index_url",
-                          return_value = "https://download.pytorch.org/whl/cpu"):
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
             with patch.object(stack_mod.subprocess, "run", return_value = out):
                 stack_mod._ensure_cpu_torch()
         assert mock_pip.called, "a CUDA build under an explicit CPU pin must be replaced"
@@ -243,8 +246,11 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_rocm_build(self, mock_pip):
         out = _probe_result("|7.1.12345|")  # version "", hip set
-        with patch.object(stack_mod, "_explicit_cpu_torch_index_url",
-                          return_value = "https://download.pytorch.org/whl/cpu"):
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
             with patch.object(stack_mod.subprocess, "run", return_value = out):
                 stack_mod._ensure_cpu_torch()
         assert mock_pip.called, "a ROCm build under an explicit CPU pin must be replaced"
@@ -254,8 +260,11 @@ class TestVersionlessBuildsStillClassify:
     def test_cpu_pin_leaves_a_cpu_build_with_no_version_alone(self, mock_pip):
         # Every field empty is a CPU build with an unreadable version, which the old
         # probe reported as "cpu": nothing to repair under a CPU pin.
-        with patch.object(stack_mod, "_explicit_cpu_torch_index_url",
-                          return_value = "https://download.pytorch.org/whl/cpu"):
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
             with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("||")):
                 stack_mod._ensure_cpu_torch()
         mock_pip.assert_not_called()
@@ -265,10 +274,14 @@ class TestVersionlessBuildsStillClassify:
     def test_cpu_pin_leaves_the_venv_alone_when_the_probe_said_nothing(self, mock_pip):
         # Exit 0 with no line of ours: we learned nothing, so we touch nothing. The
         # other side of the ""/None distinction from the two cases above.
-        with patch.object(stack_mod, "_explicit_cpu_torch_index_url",
-                          return_value = "https://download.pytorch.org/whl/cpu"):
-            with patch.object(stack_mod.subprocess, "run",
-                              return_value = _probe_result(raw = "unrelated chatter\n")):
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
+            with patch.object(
+                stack_mod.subprocess, "run", return_value = _probe_result(raw = "unrelated chatter\n")
+            ):
                 stack_mod._ensure_cpu_torch()
         mock_pip.assert_not_called()
 
@@ -279,8 +292,11 @@ class TestVersionlessBuildsStillClassify:
     def test_xpu_pin_still_repairs_a_versionless_build(self, mock_pip):
         # An unreadable version is not a supported +xpu build, and the pin is there to
         # force the family, which is what the old "repair" verdict did.
-        with patch.object(stack_mod, "_explicit_xpu_torch_index_url",
-                          return_value = "https://download.pytorch.org/whl/xpu"):
+        with patch.object(
+            stack_mod,
+            "_explicit_xpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/xpu",
+        ):
             with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("||")):
                 stack_mod._ensure_xpu_torch()
         assert mock_pip.called, "an unidentifiable build under an explicit XPU pin must be repaired"
