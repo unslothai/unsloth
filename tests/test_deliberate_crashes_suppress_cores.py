@@ -56,6 +56,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SELF = Path(__file__).resolve()
 
+_MAX_COLLECT_DEPTH = 25
+
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "temp", "build", "dist"}
 
 # Calls that can only be a deliberate fatal fault, keyed by the trailing attribute.
@@ -292,7 +294,11 @@ def _snippets(tree):
     sequences = _sequence_env(tree, owner)
     out = []
 
-    def collect(node, env):
+    def collect(node, env, depth = 0):
+        # A deeply nested literal is not a command vector, and recursing all the way
+        # into one raised RecursionError out of a file the scan only wanted to skim.
+        if depth > _MAX_COLLECT_DEPTH:
+            return
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             out.append(node.value)
         elif isinstance(node, ast.JoinedStr):
@@ -315,17 +321,17 @@ def _snippets(tree):
                 # subprocess usage, and folding only strings meant the child script
                 # inside it was never read.
                 for element in sequences[node.id]:
-                    collect(element, env)
+                    collect(element, env, depth + 1)
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             for element in node.elts:
-                collect(element, env)
+                collect(element, env, depth + 1)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             folded, _ = _fold(node, env)
             if folded is not None:
                 out.append(folded)
             else:
-                collect(node.left, env)
-                collect(node.right, env)
+                collect(node.left, env, depth + 1)
+                collect(node.right, env, depth + 1)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -436,6 +442,14 @@ _AFTER_EVERYTHING = (float("inf"), 0)
 _BRANCHING = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match)
 
 
+def _child_paths(scope, certain):
+    """`(child, certain)`. A branch's body may not run, but its `finally` always does."""
+    branching = isinstance(scope, _BRANCHING)
+    finally_body = scope.finalbody if isinstance(scope, ast.Try) else ()
+    for child in ast.iter_child_nodes(scope):
+        yield child, certain and (not branching or child in finally_body)
+
+
 def _dumpable_writes(
     scope,
     certain = True,
@@ -446,7 +460,7 @@ def _dumpable_writes(
     With `functions`, a call to a local helper counts too, at the call's position, as
     whatever that helper leaves dumpability set to.
     """
-    for child in ast.iter_child_nodes(scope):
+    for child, child_certain in _child_paths(scope, certain):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
         if isinstance(child, ast.Call):
@@ -454,8 +468,8 @@ def _dumpable_writes(
             if value is None and functions is not None:
                 value = _helper_leaves_dumpable(child, scope, functions)
             if value is not None:
-                yield _position(child), value, certain
-        yield from _dumpable_writes(child, certain and not isinstance(child, _BRANCHING), functions)
+                yield _position(child), value, child_certain
+        yield from _dumpable_writes(child, child_certain, functions)
 
 
 def _helper_leaves_dumpable(call, scope, functions):
@@ -470,7 +484,7 @@ def _helper_leaves_dumpable(call, scope, functions):
     # Calling an `async def` builds a coroutine and runs none of its body.
     if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(call, scope):
         return None
-    writes = [w for w in _dumpable_writes(target) if w[2]]
+    writes = [w for w in _dumpable_writes(target) if w[2] or w[1] == 0]
     return writes[-1][1] if writes else None
 
 
@@ -577,6 +591,17 @@ def _tree_crashes(tree) -> bool:
 
 
 _NESTED_EXEC = {"exec", "eval"}
+
+
+def _is_builtin_exec(func) -> bool:
+    if isinstance(func, ast.Name):
+        return func.id in _NESTED_EXEC
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in _NESTED_EXEC
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "builtins"
+    )
 _MAX_SNIPPET_DEPTH = 5
 
 
@@ -589,7 +614,10 @@ def _bindings_before(tree, scope, position):
     """
     env, maybe = {}, {}
     for owner_scope in (tree, scope) if scope is not tree else (tree,):
-        for node, certain in _assignments_before(owner_scope, position):
+        # A nested scope runs after the module body, so a global assigned below the
+        # `def` is still bound by the time the call gets there.
+        limit = _AFTER_EVERYTHING if owner_scope is tree and scope is not tree else position
+        for node, certain in _assignments_before(owner_scope, limit):
             pair = _assigned_pair(node)
             folded, _ids = _fold(pair[1], env)
             if not certain:
@@ -598,6 +626,7 @@ def _bindings_before(tree, scope, position):
                 continue
             # A certain rebind definitely replaces what was there, foldable or not.
             env.pop(pair[0].id, None)
+            maybe.pop(pair[0].id, None)
             if folded is not None:
                 env[pair[0].id] = folded
     return env, maybe
@@ -609,17 +638,15 @@ def _assignments_before(
     certain = True,
 ):
     """`(assignment, certain)` in source order, before `position`."""
-    for child in ast.iter_child_nodes(scope):
+    for child, child_certain in _child_paths(scope, certain):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
         if _assigned_pair(child) is not None and _position(child) < position:
-            yield child, certain
-        yield from _assignments_before(
-            child, position, certain and not isinstance(child, _BRANCHING)
-        )
+            yield child, child_certain
+        yield from _assignments_before(child, position, child_certain)
 
 
-def _nested_scripts(tree):
+def _nested_scripts(tree, inherited = False):
     """Source a snippet hands to exec/eval, or on to another child interpreter.
 
     `SCRIPT = 'exec("import os; os.abort()")'` parses cleanly and holds no crash call
@@ -631,14 +658,16 @@ def _nested_scripts(tree):
         if not isinstance(node, ast.Call):
             continue
         scope = owner.get(id(node), tree)
-        # A bare name only: `Runner().exec(...)` is not the builtin.
-        if isinstance(node.func, ast.Name) and node.func.id in _NESTED_EXEC:
+        # The builtin only, bare or via `builtins`: `Runner().exec(...)` is not it.
+        if _is_builtin_exec(node.func):
             argument = node.args[0] if node.args else None
             # Bindings AT the exec, so a name reused afterwards is not what runs.
             env, maybe = _bindings_before(tree, scope, _position(node))
             # Same interpreter, so dumpability carries into the payload, including
             # a restore a helper made between the clear and the exec.
-            inherited = _clears_dumpable_before(scope, _position(node), functions = functions)
+            carried = _clears_dumpable_before(
+                scope, _position(node), inherited = inherited, functions = functions
+            )
             payloads = []
             if argument is not None:
                 folded, _ids = _fold(argument, env)
@@ -648,7 +677,7 @@ def _nested_scripts(tree):
                     # A rebind that may not have run leaves the old value possible.
                     payloads.extend(maybe.get(argument.id, ()))
             for payload in payloads:
-                yield payload, inherited
+                yield payload, carried
         else:
             for nested in _snippets_of_call(node):
                 yield nested, False
@@ -688,8 +717,8 @@ def _snippet_state(
         return crashes, crashes and not suppressed
     crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree, inherited))
     if depth < _MAX_SNIPPET_DEPTH:
-        for nested, inherited in _nested_scripts(tree):
-            inner_crashes, inner_violates = _snippet_state(nested, depth + 1, inherited)
+        for nested, carried in _nested_scripts(tree, inherited):
+            inner_crashes, inner_violates = _snippet_state(nested, depth + 1, carried)
             crashes = crashes or inner_crashes
             violates = violates or inner_violates
     return crashes, violates
@@ -1086,6 +1115,50 @@ _FIXTURES = {
         "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
         "    ctypes.string_at(0)\n",
         False,  # the guarded clear is the documented shape and comes last
+    ),
+    "global_assigned_below_the_exec": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"def run():\\n    exec(INNER)\\n"
+        "INNER = 'import os; os.abort()'\\nrun()\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the body runs after the module, so the later global is bound
+    ),
+    "branch_candidate_then_a_definite_rebind": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'pass'\\nif cond:\\n    INNER = 'import os; os.abort()'\\n"
+        "INNER = 'pass'\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # the definite rebind rules out the branch value it replaced
+    ),
+    "helper_guarded_clear_before_a_nested_exec": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes, sys\\ndef clear():\\n    if sys.platform == \'linux\':\\n'
+        '        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\\nclear()\\n'
+        'exec(\'import os; os.abort()\')"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # a guarded clear counts the same inside a helper as inline
+    ),
+    "restore_in_a_finally_before_a_later_crash": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    try:\n        pass\n"
+        "    finally:\n        ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        True,  # reaching the crash proves the finally ran and undid the clear
+    ),
+    "inherited_dumpability_through_two_execs": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        "exec(\\\"exec('import os; os.abort()')\\\")\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # one interpreter throughout, so the clear reaches both levels
+    ),
+    "builtins_exec_payload": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"import builtins\\nbuiltins.exec('import os; os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # builtins.exec is the builtin, spelled out
     ),
 }
 
