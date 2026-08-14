@@ -145,6 +145,8 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
+export { extractYoutubeVideoId } from "./utils/youtube-url";
+export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentText,

@@ -456,6 +456,25 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
+    // What the running server was actually invoked with. Without this a tab opened
+    // while a model was already loaded knows nothing about its pass-through
+    // arguments (the switch path is where they were recorded), and a rollback after
+    // a failed switch restores that model without them: the failed target is left
+    // resident, so an omitted field cannot inherit across models either.
+    //
+    // Adopted from every settled status, not only a first read or a model change:
+    // another tab or an API client can reload the SAME model and variant with
+    // different arguments, or with none, and a baseline pinned at the first read
+    // would resend the old list from the rollback path and resurrect arguments that
+    // are not running. seedLoadParams is the guard that matters here, and it is the
+    // same one the rest of this block uses: while a load is in flight performLoad
+    // owns these values, so a poll that answers mid-switch cannot overwrite them.
+    // A backend that does not publish the field changes nothing.
+    ...(status.requested_llama_extra_args !== undefined &&
+      (status.is_gguf ?? true) &&
+      seedLoadParams && {
+        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
+      }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
