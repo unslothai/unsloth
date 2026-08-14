@@ -3866,7 +3866,6 @@ class ModelConfig:
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
-                    # Resolve the cached copy for the selected variant once.
                     from core.inference.llama_cpp import cached_gguf_for_load
 
                     verified_file = cached_gguf_for_load(

@@ -7736,7 +7736,6 @@ class LlamaCppBackend:
                 return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
             if hf_repo:
                 hf_variant = getattr(intent, "hf_variant", None)
-                # Reuse the file already verified during config resolution.
                 verified = cls._verified_cached_gguf(intent, hf_repo, hf_variant)
                 if verified:
                     verdict = cls._non_chat_gguf_refusal_for_path(verified, identifier)
