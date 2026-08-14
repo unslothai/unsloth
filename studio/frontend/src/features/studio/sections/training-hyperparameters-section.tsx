@@ -276,7 +276,6 @@ export function TrainingHyperparametersSection({
               }
             >
               <Input
-                id="training-save-steps"
                 type="number"
                 step="0.001"
                 value={store.weightDecay}
@@ -350,6 +349,7 @@ export function TrainingHyperparametersSection({
               }
             >
               <Input
+                id="training-save-steps"
                 type="number"
                 value={store.saveSteps}
                 onChange={(event) =>
