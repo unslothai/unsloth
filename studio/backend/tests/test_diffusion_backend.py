@@ -7479,9 +7479,7 @@ def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tm
         except RuntimeError as exc:
             outcome["error"] = str(exc)
 
-    generation_worker = threading.Thread(
-        target = generate, name = "generation-under-test", daemon = True
-    )
+    generation_worker = threading.Thread(target = generate, name = "generation-under-test", daemon = True)
     generation_worker.start()
     generation_worker.join(5)
     teardown_worker.join(5)
