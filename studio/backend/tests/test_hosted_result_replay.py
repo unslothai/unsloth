@@ -318,9 +318,15 @@ def test_a_start_event_alone_adds_nothing(executed):
     assert "web_search result" not in replayed
 
 
-@pytest.mark.parametrize("result", ["", "   ", None, 42, {"a": 1}])
+@pytest.mark.parametrize("result", [None, 42, {"a": 1}])
 def test_a_malformed_result_is_ignored(executed, result):
-    """A provider is not trusted to send a usable string here."""
+    """A provider is not trusted to send a usable string here.
+
+    A non-string is a malformed frame rather than an outcome, so nothing is
+    recorded for it. An empty or blank string is different: the provider did
+    report an outcome, and that case is
+    ``test_a_silent_hosted_execution_still_reaches_the_next_turn``.
+    """
     transport = FakeTransport(
         [
             [
@@ -844,3 +850,113 @@ def test_a_hosted_page_keeps_a_files_line_of_its_own(executed):
     replayed = _replayed(transport)
     assert "How the envelope looks" in replayed
     assert "plot.png" in replayed, "the page's own __FILES__ line was stripped"
+
+
+# ── a call that ran is a call the next turn hears about ──────────────
+
+
+def test_a_silent_hosted_execution_still_reaches_the_next_turn(executed):
+    """Gemini reports code that printed nothing as an empty result.
+
+    ``codeExecutionResult.output`` is "" on a successful run whose code only
+    wrote a file or defined a name, and the executed code is carried on the
+    tool_start alone -- never as assistant text. Skipping an entry on an empty
+    result therefore drops the whole execution, which is the loss this replay
+    exists to prevent.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "code_a",
+                        "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
+                    }
+                ),
+                _hosted_event(
+                    {"type": "tool_end", "tool_call_id": "code_a", "result": ""}
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "df.to_parquet" in replayed, "the execution vanished from the replay"
+    assert "(no output)" in replayed
+
+
+def test_a_start_with_no_end_is_still_left_out(executed):
+    """The other half of the same rule: a call that never finished says nothing.
+
+    A stream cut between the two halves leaves a start on its own, and reporting
+    that as a result would tell the next turn an execution completed when the
+    provider never said so.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "code_a",
+                        "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "df.to_parquet" not in replayed
+    assert "no output" not in replayed
+
+
+def test_a_long_hosted_argument_says_it_was_cut(executed):
+    """Anthropic passes the model's whole tool input through as arguments.
+
+    A ``create`` carries the entire file body there and answers with only
+    "Created", so the label is the sole record of what was written. Cut without
+    a notice it reads as a complete line that simply stops.
+    """
+    body = "# line\n" * 600
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "code_a",
+                        "arguments": {
+                            "kind": "text_editor",
+                            "command": "create",
+                            "path": "/tmp/a.py",
+                            "file_text": body,
+                        },
+                    }
+                ),
+                _hosted_event(
+                    {"type": "tool_end", "tool_call_id": "code_a", "result": "Created"}
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "truncated" in replayed, "the label was cut with no notice"
+    assert "Created" in replayed

@@ -118,7 +118,7 @@ _USAGE_DETAIL_FIELDS = (
 _STEP_DONE = object()
 
 
-def _truncate_for_model(text: str, limit: int | None = None) -> str:
+def _truncate_for_model(text: str, limit: int | None = None, *, joiner: str = "\n") -> str:
     """Hold a hosted result to the same cap a local result gets.
 
     Read off ``tools`` rather than copied, so an install that lowers
@@ -130,7 +130,12 @@ def _truncate_for_model(text: str, limit: int | None = None) -> str:
         limit = tools_module._MAX_OUTPUT_CHARS
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n... [truncated, {len(text) - limit} more characters]"
+    return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"
+
+
+# What the label of a hosted call is allowed to cost. Small next to the result
+# cap: this is the query or the code, not the output.
+_HOSTED_ARGUMENT_MAX_CHARS = 2000
 
 
 # Keys the providers hang off a hosted tool's ``arguments`` for the frontend and
@@ -359,11 +364,27 @@ class _Turn:
             merged = dict(entry.get("arguments_obj") or {})
             merged.update(arguments)
             entry["arguments_obj"] = merged
-            entry["arguments"] = json.dumps(merged, separators = (",", ":"))[:2000]
+            # Truncated with the same notice a result gets. Anthropic hands the
+            # model's whole tool input through, so a file the code wrote lives
+            # here and nowhere else, and cutting it silently leaves the model
+            # reading a line that stops mid-token as if that were all of it.
+            entry["arguments"] = _truncate_for_model(
+                json.dumps(merged, separators = (",", ":")),
+                _HOSTED_ARGUMENT_MAX_CHARS,
+                joiner = " ",
+            )
 
         if kind == "tool_start":
             return
         result = event.get("result")
+        if isinstance(result, str):
+            # The call finished and the provider said what it produced, even if
+            # that was nothing: Gemini reports code that printed nothing as an
+            # empty string. Recorded separately from the result itself, which
+            # otherwise cannot tell that apart from a stream that died after the
+            # start event. A non-string here is a malformed frame, not an empty
+            # outcome, so it stays unrecorded.
+            entry["ended"] = True
         if isinstance(result, str) and result.strip():
             if "__IMAGES__:" in result:
                 # A Gemini plot with no stdout is nothing BUT the sentinel, so
@@ -391,7 +412,7 @@ class _Turn:
         for entry in self.hosted_results.values():
             result = entry.get("result", "")
             produced_image = entry.get("produced_image")
-            if not result and not produced_image:
+            if not result and not produced_image and not entry.get("ended"):
                 # A start with no outcome says only that something began.
                 continue
             name = entry.get("name") or "tool"
@@ -399,7 +420,11 @@ class _Turn:
             arguments = entry.get("arguments")
             if arguments:
                 header = f"[{name} {arguments}]"
-            body = result if result else "(produced an image)"
+            # A call that ended with nothing to show still has to appear: the
+            # same "(no output)" the local tools and the other hosted paths
+            # report, so the model can tell the code ran from it having no
+            # record of it at all.
+            body = result or ("(produced an image)" if produced_image else "(no output)")
             if result and produced_image:
                 body = f"{result}\n(produced an image)"
             blocks.append(f"{header}\n{body}")
