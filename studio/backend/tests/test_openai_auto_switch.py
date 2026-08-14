@@ -7586,11 +7586,11 @@ def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
     assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q4_K_M") is True
 
 
-def test_clearing_the_box_for_a_quant_clears_the_legacy_fallback(override_store):
+def test_clearing_the_box_for_a_quant_survives_the_next_load(override_store):
     # The carry-over copies a legacy bare entry's flags onto the first per-quant save,
     # and leaves the bare entry standing. Clearing the box then writes an empty list,
-    # which stores nothing at all, so the load falls back to the bare key and hands the
-    # same flags back: the box comes up empty and the server still runs them.
+    # an entry with nothing usable left is not stored, and the next load falls through
+    # to the bare key: the box comes up empty and the server still runs them.
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
     carried = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
     assert carried.overrides["unsloth/B-GGUF:Q4_K_M"]["llama_extra_args"] == [
@@ -7599,15 +7599,17 @@ def test_clearing_the_box_for_a_quant_clears_the_legacy_fallback(override_store)
     ]
 
     cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
-    assert "llama_extra_args" not in cleared.overrides.get("unsloth/B-GGUF:Q4_K_M", {})
-    assert "llama_extra_args" not in cleared.overrides.get("unsloth/B-GGUF", {})
+    # The row survives the all-default save, saying explicitly that this quant has
+    # none, which is what stops the lookup before it reaches the bare key.
+    assert cleared.overrides["unsloth/B-GGUF:Q4_K_M"] == {"llama_extra_args": []}
     _key, resolved = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q4_K_M")
-    assert resolved.get("llama_extra_args") is None
+    assert not resolved.get("llama_extra_args")
 
 
-def test_the_clear_leaves_the_fallbacks_other_settings_alone(override_store):
-    # Only the flags were cleared. A context length stored on the bare entry is what
-    # every quant without one of its own loads with, and this save said nothing about it.
+def test_the_clear_leaves_the_legacy_row_for_the_quants_still_reading_it(override_store):
+    # The bare row is the fallback for every quant that has none of its own, so
+    # clearing Q4's box must not take Q6's flags with it. Only the row the user
+    # edited changes.
     settings.set_model_override(
         "unsloth/B-GGUF",
         llama_extra_args = ["--numa", "distribute"],
@@ -7615,20 +7617,44 @@ def test_the_clear_leaves_the_fallbacks_other_settings_alone(override_store):
     )
     _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
     bare = settings.get_model_override("unsloth/B-GGUF")
-    assert bare.get("max_seq_length") == 4096
-    assert not bare.get("llama_extra_args")
+    assert bare["llama_extra_args"] == ["--numa", "distribute"]
+    assert bare["max_seq_length"] == 4096
+    _key, sibling = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q6_K")
+    assert sibling["llama_extra_args"] == ["--numa", "distribute"]
 
 
-def test_the_clear_leaves_a_fallback_another_quant_is_reading(override_store):
-    # Q8 has an entry of its own only because it saved something else; the flags it
-    # loads with still come from the bare key, so clearing Q4's box must not strip them.
+def test_the_clear_holds_when_another_quant_has_a_row_of_its_own(override_store):
+    # The first fix stripped the bare row and was gated on no sibling row existing,
+    # which is the wrong question: a sibling with a row of its own never reads the
+    # bare one, so the gate only stopped the clear from working at all.
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
     settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 4096)
     _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    _key, resolved = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q4_K_M")
+    assert not resolved.get("llama_extra_args")
     assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
         "--numa",
         "distribute",
     ]
+
+
+def test_a_clear_with_no_fallback_behind_it_stores_nothing(override_store):
+    # Nothing would answer for this model anyway, so the row goes as it always has:
+    # the tombstone exists to stop a fallback, not to leave a row per cleared box.
+    settings.set_model_override(
+        "unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--numa", "distribute"]
+    )
+    cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    assert "unsloth/B-GGUF:Q4_K_M" not in cleared.overrides
+
+
+def test_an_explicit_forget_still_removes_the_row(override_store):
+    # remove = True is the other operation, and it must not leave a tombstone behind
+    # for the picker to read as a saved setting.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--top-k", "20"])
+    forgotten = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = True)
+    assert "unsloth/B-GGUF:Q4_K_M" not in forgotten.overrides
 
 
 def test_a_save_that_did_not_touch_the_box_leaves_the_fallback(override_store):

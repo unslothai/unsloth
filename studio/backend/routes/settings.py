@@ -1088,34 +1088,31 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     return split[0] if split is not None else None
 
 
-def _clear_fallback_extra_args(fallback_id: str) -> bool:
-    """Drop only the launch flags from a fallback entry, keeping its other settings.
+def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick flags off another entry.
 
-    Clearing the box for one quant writes an empty list, and an entry with nothing
-    usable left is removed rather than stored, so the key the load resolves first
-    disappears and the lookup falls through to the entry the flags were carried off
-    in the first place. The user then sees the flags they just cleared come back on
-    the next load, from a key no page can show.
+    The carry-over copies a legacy bare ``repo`` row's flags onto the first
+    ``repo:QUANT`` save and leaves the bare row in place, and a load reads the
+    qualified key first and the bare one after it. So clearing the box for the quant
+    is only a clear while the quant keeps a row of its own: an all-default save
+    stores nothing, and the next load falls through to a row no page can show.
 
-    Not ``set_model_override(fallback_id, llama_extra_args = [])``, which is how the
-    explicit forget clears it: that replaces the whole entry, and this save said
-    nothing about the context length or the slot count stored there.
+    Answered rather than repaired. Stripping the flags off the bare row was the first
+    fix and it is too broad: that row is the fallback for every quant that has no row,
+    so forgetting Q4's flags took Q6's with them, and it did nothing at all when a
+    sibling quant had a row of its own.
     """
-    from utils.openai_auto_switch_settings import (
-        get_model_override,
-        resolve_model_override_key,
-        set_model_override,
-    )
+    from utils.openai_auto_switch_settings import get_model_override
 
-    stored = get_model_override(fallback_id)
-    if not stored.get("llama_extra_args"):
-        return False
-    key = resolve_model_override_key(fallback_id) or fallback_id
-    remaining = {name: value for name, value in stored.items() if name != "llama_extra_args"}
-    # An entry that held nothing else is removed by the setter, which is right: it
-    # existed only to carry these.
-    set_model_override(key, llama_extra_args = [], **remaining)
-    return True
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if candidate and candidate != target_id and get_model_override(candidate).get(
+            "llama_extra_args"
+        ):
+            return True
+    return False
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
@@ -1339,9 +1336,19 @@ def update_openai_auto_switch_override(
                 # A fill retires nothing below, so it must not create the higher-priority
                 # spelling of a row the server already holds.
                 target_id = _fill_target_id(target_id)
+            # An explicit clear keeps a row even when nothing else is set, so long as a
+            # fallback would otherwise answer for this model: "no launch flags" and
+            # "nothing stored" are the same thing everywhere else, and different here.
+            # Written on the quant's own key, so no other quant is touched.
+            keep_empty = (
+                payload.llama_extra_args == []
+                and not payload.fill_absent_fields
+                and _fallback_supplies_extra_args(payload.model_id, target_id)
+            )
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
+                keep_empty_extra_args = keep_empty,
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
@@ -1368,22 +1375,6 @@ def update_openai_auto_switch_override(
             if not payload.fill_absent_fields:
                 for alias_id in cached_repo_alias_keys(target_id):
                     set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
-            # A clear has to reach the fallbacks the carry-over above reads, or it does
-            # not clear anything: an all-default save stores no entry for this quant, so
-            # the next load resolves the legacy bare key and applies the flags again.
-            # Only the flags, and only when this quant is the last one that could be
-            # reading them, which is the same rule the explicit forget follows.
-            if payload.llama_extra_args == [] and not payload.fill_absent_fields:
-                bare_id = _bare_model_id(payload.model_id)
-                if (
-                    bare_id
-                    and bare_id != target_id
-                    and not _other_quants_remain(bare_id, [target_id])
-                ):
-                    _clear_fallback_extra_args(bare_id)
-                legacy_id = _legacy_standalone_gguf_key(payload.model_id)
-                if legacy_id and legacy_id != target_id:
-                    _clear_fallback_extra_args(legacy_id)
     except ValueError as exc:
         raise log_and_http_error(
             exc,

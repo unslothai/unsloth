@@ -1288,3 +1288,37 @@ test("the managed answer is invalidated with the catalogue", () => {
   // The dynamic limits are what make it stale, so they have to be in that answer.
   assert.match(flagsApi, /defaultParallelSlots: number;/);
 });
+
+test("a flag quoted with stray spaces is refused, not silently sent", () => {
+  // parseExtraArgs keeps what was quoted, so "'--top-k ' 20" is the token
+  // "--top-k " with the space still on it. Every check here trims before it looks
+  // the name up, so it read as the supported --top-k and Load stayed enabled, while
+  // llama.cpp looks the WHOLE token up and answers "error: invalid argument:
+  // --top-k" (measured on b10342), naming a flag that looks correct in the log.
+  assert.ok(
+    diagnoseExtraArgs("'--top-k ' 20", CATALOG).some(
+      (d) => d.level === "error" && d.message.includes("Remove the spaces"),
+    ),
+  );
+  // A VALUE may legitimately end in whitespace: a grammar or a chat template does.
+  assert.ok(
+    diagnoseExtraArgs("--grammar 'root ::= [0-9] '", CATALOG).every(
+      (d) => d.level !== "error",
+    ),
+  );
+  // And the stored sanitizer sheds it with its value, rather than hydrating a list
+  // that would 400 or start a launch that fails.
+  const managed = new Set<string>();
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--top-k ", "20", "--numa", "distribute"], managed),
+    ["--numa", "distribute"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--verbose ", "--numa", "distribute"], managed),
+    ["--numa", "distribute"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--grammar", "root ::= x "], managed),
+    ["--grammar", "root ::= x "],
+  );
+});

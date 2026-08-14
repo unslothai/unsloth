@@ -289,6 +289,18 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             pending_values -= 1
             if pending_two_value > 0:
                 pending_two_value -= 1
+        elif token != token.strip():
+            # _flag_name strips before it looks anything up, so a quoted "--top-k "
+            # passed the denylist and the arity walk as --top-k and then went to the
+            # child with the space still on it. llama.cpp looks the whole token up,
+            # so it answers "error: invalid argument: --top-k" (measured on b10342),
+            # naming a flag that looks correct in the log. Only flag-shaped tokens:
+            # a VALUE may legitimately end in whitespace, a chat template or a
+            # grammar being the obvious ones.
+            raise ValueError(
+                f"llama-server does not accept the spaces around '{token[:64]}': "
+                f"write it as '{flag}'"
+            )
         elif "=" in token:
             # llama.cpp looks the WHOLE token up in its option map, folding only the
             # underscore spelling, so "--top-k=20" is not "--top-k" with a value: it
@@ -424,6 +436,13 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
             # token. After the control-character check, so a poisoned name is still
             # logged as a placeholder rather than echoed.
             dropped.append(flag)
+            continue
+        if flag is not None and token != token.strip():
+            # Refused for the same reason, and its value goes with it: the padding is
+            # part of the token llama.cpp looks up, so the flag never arrives and the
+            # value it was written for would be left as a bare positional.
+            dropped.append(flag)
+            skip_next = _takes_next(index, token, flag)
             continue
         if (
             flag is not None

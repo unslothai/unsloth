@@ -365,7 +365,11 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
     return parsed
 
 
-def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_model_override(
+    payload: dict[str, Any],
+    *,
+    keep_empty_extra_args: bool = False,
+) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable.
 
     Silently drops rather than raising: an override is a convenience mirror of the
@@ -373,12 +377,21 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     from another host) must not block persisting the rest or fail the API load that
     reads it. ``validate_extra_args`` is the caller's job -- it lives in the
     llama_server_args allow-list module, which this one must not import.
+
+    ``keep_empty_extra_args`` keeps an explicit empty list, which is the difference
+    between "this model has no launch flags" and "nothing is stored for this model".
+    They are the same thing everywhere except under a fallback: a quant whose row is
+    gone reads the bare repository row instead, so a cleared box would come back
+    holding whatever that legacy row carries. Off by default, since a row saying only
+    that is worth storing in exactly one case.
     """
     entry: dict[str, Any] = {}
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
         entry["llama_extra_args"] = [str(arg) for arg in extra_args]
+    elif keep_empty_extra_args and isinstance(extra_args, (list, tuple)):
+        entry["llama_extra_args"] = []
 
     # 0 / negative means "unset"; the loader reads absence as the app default.
     for key in ("max_seq_length", "custom_context_length"):
@@ -861,6 +874,7 @@ def set_model_override(
     max_seq_length: Optional[int] = None,
     *,
     fill_absent_fields: bool = False,
+    keep_empty_extra_args: bool = False,
     **config: Any,
 ) -> dict:
     """Upsert one model's launch config; a config with no usable fields removes it.
@@ -879,7 +893,8 @@ def set_model_override(
             **config,
             "llama_extra_args": llama_extra_args,
             "max_seq_length": max_seq_length,
-        }
+        },
+        keep_empty_extra_args = keep_empty_extra_args,
     )
 
     from storage.studio_db import upsert_app_setting_map_entry

@@ -336,10 +336,18 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
   const out: string[] = [];
   let pending = 0;
   let twoValuePending = 0;
+  // Values still owed to a flag that was itself dropped, so they go rather than
+  // being kept as tokens belonging to nothing.
+  let droppedOwes = 0;
   // Where the incomplete two-value option starts, so the whole of it can go.
   let ownerAt = -1;
   for (const token of tokens) {
     const flag = extraArgFlagName(token);
+    if (droppedOwes > 0 && flag === null) {
+      droppedOwes -= 1;
+      continue;
+    }
+    droppedOwes = 0;
     if (flag === null) {
       if (pending <= 0) {
         // Ownerless. Dropped rather than kept, which is what drop_managed_flags
@@ -366,6 +374,16 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
       // argument it has never heard of and validate_extra_args refuses it. A stored
       // list holding one would 400 the load this hydration exists to enable; the
       // value is inside the token, so nothing follows it out.
+      pending = 0;
+      twoValuePending = 0;
+      ownerAt = -1;
+      continue;
+    }
+    if (token !== token.trim()) {
+      // Refused for the same reason: the padding is part of the token llama.cpp
+      // looks up, so a quoted "--top-k " never arrives as a flag. Its value goes
+      // with it, or the orphan is left behind as a bare positional.
+      droppedOwes = valueIsAttached(token, flag) ? 0 : 1;
       pending = 0;
       twoValuePending = 0;
       ownerAt = -1;
@@ -962,7 +980,16 @@ export function diagnoseExtraArgs(
     }
     seen.add(flag);
 
-    if (token.includes("=") && !catalog?.managed.has(flag)) {
+    if (token !== token.trim()) {
+      // The padding is part of the token llama.cpp looks up, so a quoted "--top-k "
+      // never arrives as a flag: it answers "error: invalid argument: --top-k",
+      // naming a flag that looks perfectly correct in the log. Reported whether or
+      // not a control owns the flag, since the name is not the problem.
+      out.push({
+        level: "error",
+        message: `Remove the spaces around "${token}". llama-server reads them as part of the flag.`,
+      });
+    } else if (token.includes("=") && !catalog?.managed.has(flag)) {
       // Measured on b10342 and b10360: "--top-k=20", "--ctx-size=4096" and
       // "--flash-attn=on" each exit with "error: invalid argument". A managed flag
       // is left to the message below, which names the control that owns it.

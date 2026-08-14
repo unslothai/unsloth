@@ -500,3 +500,30 @@ def test_the_candidate_order_is_the_loaders_own():
     candidates = override_lookup_candidates("/models/gemma-3-270m-it-Q4_K_M.gguf")
     assert candidates[0] == "/models/gemma-3-270m-it-Q4_K_M.gguf"
     assert any(key.endswith(":Q4_K_M") for key in candidates), candidates
+
+
+def test_a_flag_padded_with_spaces_is_refused():
+    # _flag_name strips before it looks anything up, so a quoted "--top-k " passed the
+    # denylist and the arity walk as --top-k and then went to the child with the space
+    # still on it. llama.cpp looks the WHOLE token up: measured on b10342, it answers
+    # "error: invalid argument: --top-k", naming a flag that reads as correct.
+    for bad in (["--top-k ", "20"], [" --top-k", "20"], ["--verbose "]):
+        with pytest.raises(ValueError, match = "spaces around"):
+            _lsa.validate_extra_args(bad)
+    # A VALUE may legitimately carry whitespace: a grammar or a chat template does,
+    # and quoting one into a single token is what the box is for.
+    assert _lsa.validate_extra_args(["--grammar", "root ::= [0-9] "]) == [
+        "--grammar",
+        "root ::= [0-9] ",
+    ]
+
+
+def test_a_padded_flag_is_carried_over_by_dropping_it_with_its_value():
+    # Dropped in the walk, like the denied names and the attached spelling: left to
+    # the trimming loop it would shed the whole tail after it. Its value goes too,
+    # since the flag never arrives and an orphan is a bare positional.
+    kept, dropped = _lsa.drop_managed_flags(["--top-k ", "20", "--numa", "distribute"])
+    assert kept == ["--numa", "distribute"]
+    assert dropped == ["--top-k"]
+    kept, _dropped = _lsa.drop_managed_flags(["--verbose ", "--numa", "distribute"])
+    assert kept == ["--numa", "distribute"]
