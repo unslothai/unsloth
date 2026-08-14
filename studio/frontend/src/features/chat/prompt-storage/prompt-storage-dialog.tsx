@@ -1890,8 +1890,16 @@ export function PromptStorageDialog({
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
-  const [promptDrafts, setPromptDrafts] = useState<Record<string, PromptDraft>>({});
-  const [listDrafts, setListDrafts] = useState<Record<string, ListDraft>>({});
+  // Maps, not plain objects: ids come from storage and can be any string up to
+  // 128 chars, so an entry called "constructor" or "toString" would otherwise
+  // resolve to an inherited Object.prototype member, mark the row permanently
+  // dirty, and feed a function's own `name` into the editor as the entry name.
+  const [promptDrafts, setPromptDrafts] = useState<Map<string, PromptDraft>>(
+    () => new Map(),
+  );
+  const [listDrafts, setListDrafts] = useState<Map<string, ListDraft>>(
+    () => new Map(),
+  );
 
   // In-progress new entries, held here rather than inside the forms so that
   // hiding a form (by selecting a row in the rail) does not destroy the work.
@@ -1905,24 +1913,24 @@ export function PromptStorageDialog({
   const setPromptDraft = useCallback((id: string, draft: PromptDraft | undefined) => {
     setPromptDrafts((prev) => {
       if (!draft) {
-        if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
         return next;
       }
-      return { ...prev, [id]: draft };
+      return new Map(prev).set(id, draft);
     });
   }, []);
 
   const setListDraft = useCallback((id: string, draft: ListDraft | undefined) => {
     setListDrafts((prev) => {
       if (!draft) {
-        if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
         return next;
       }
-      return { ...prev, [id]: draft };
+      return new Map(prev).set(id, draft);
     });
   }, []);
 
@@ -2255,7 +2263,7 @@ export function PromptStorageDialog({
                       title={entry.name}
                       preview={entry.text.replace(/\s+/g, " ").trim()}
                       selected={!showNewPrompt && entry.id === selectedPromptId}
-                      dirty={entry.id in promptDrafts}
+                      dirty={promptDrafts.has(entry.id)}
                       leading={
                         pinnedPromptIds.includes(entry.id) ? (
                           <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
@@ -2276,7 +2284,7 @@ export function PromptStorageDialog({
                       preview={(entry.items[0] ?? "").replace(/\s+/g, " ").trim()}
                       badge={String(entry.items.length)}
                       selected={!showNewList && entry.id === selectedListId}
-                      dirty={entry.id in listDrafts}
+                      dirty={listDrafts.has(entry.id)}
                       leading={
                         pinnedListIds.includes(entry.id) ? (
                           <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
@@ -2326,7 +2334,7 @@ export function PromptStorageDialog({
                   <PromptDetail
                     key={selectedPrompt.id}
                     entry={selectedPrompt}
-                    draft={promptDrafts[selectedPrompt.id]}
+                    draft={promptDrafts.get(selectedPrompt.id)}
                     onDraftChange={(d) => setPromptDraft(selectedPrompt.id, d)}
                     onUse={handleUsePrompt}
                     onExport={(e) => setExportCtx({ kind: "prompt", entry: e })}
@@ -2360,7 +2368,7 @@ export function PromptStorageDialog({
                   <PromptListDetail
                     key={selectedList.id}
                     entry={selectedList}
-                    draft={listDrafts[selectedList.id]}
+                    draft={listDrafts.get(selectedList.id)}
                     onDraftChange={(d) => setListDraft(selectedList.id, d)}
                     onRunList={onRunList}
                     onExport={(e) => setExportCtx({ kind: "list", entry: e })}

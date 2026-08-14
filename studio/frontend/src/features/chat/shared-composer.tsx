@@ -1766,12 +1766,27 @@ export function SharedComposer({
       // still stepping. Dictation is its own hazard -- the composer text is set
       // here, then a transcription lands on top of it before the timeout fires,
       // so the queue sends the dictated words instead of the saved prompt.
-      if (busy || isQueueRunningRef.current) {
+      // `running` only refreshes on the 200ms poll, so right after a send `busy`
+      // is still false; ask the handles directly the way that poll does, or a
+      // list started inside that window queues over the live generation.
+      const liveRunning =
+        busy || Object.values(handlesRef.current).some((h) => h.isRunning());
+      if (liveRunning || isQueueRunningRef.current) {
         toast.error("Wait for the current response to finish");
         return;
       }
       if (isDictating) {
         toast.error("Finish dictating before running a list");
+        return;
+      }
+      // send() picks up whatever is staged, so the first prompt would go out
+      // with the image or audio attached and every later one without it,
+      // quietly changing what the list measures. Refusing beats clearing: the
+      // attachment is the user's, not ours to discard.
+      if (pendingImagesRef.current.length > 0 || pendingAudioRef.current) {
+        toast.error("Remove the staged attachment before running a list", {
+          description: "Only the first prompt in the list would carry it.",
+        });
         return;
       }
       const hasCompareHandles = Boolean(
