@@ -1119,9 +1119,40 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
         assert env_var in _lsa.DENIED_ENV_VARS, env_var
     env = {name: "1" for name in _lsa.DENIED_ENV_VARS}
     env["PATH"] = "/usr/bin"
+    # The projector twins are an INPUT here, not a back door: _launch_has_mmproj reads
+    # both to know the launch has a projector at all, which is what keeps the vision
+    # and audio state of a model loaded through an inherited one. Scrubbing them
+    # globally cleared that state (test_gpu_init_crash_message caught it), and only
+    # the paravirtual CPU recovery drops them, where an unpinned projector is the
+    # corrupt path it is undoing.
+    for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+        assert kept not in _lsa.DENIED_ENV_VARS, kept
     # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
     # Studio's own downloads use, not a llama-server behaviour switch, and the child
     # is always given a local -m path rather than a repo to fetch.
     assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
     _lsa.scrub_denied_env(env)
     assert env == {"PATH": "/usr/bin"}
+
+
+def test_the_projector_env_twins_survive_the_scrub():
+    # --mmproj is refused in the box because Unsloth resolves the projector itself,
+    # but the environment twin is an INPUT: _launch_has_mmproj reads both names to
+    # know the launch has a projector at all, which is what keeps the vision and
+    # audio state of a model loaded through an inherited one. Scrubbing them made
+    # every such load report itself as text-only.
+    env = {
+        "LLAMA_ARG_MMPROJ": "/models/mmproj-F16.gguf",
+        "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj-F16.gguf",
+        "LLAMA_ARG_AGENT": "1",
+    }
+    removed = _lsa.scrub_denied_env(env)
+    assert removed == ["LLAMA_ARG_AGENT"]
+    assert env == {
+        "LLAMA_ARG_MMPROJ": "/models/mmproj-F16.gguf",
+        "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj-F16.gguf",
+    }
+    # Only the paravirtual CPU recovery drops them, where an unpinned projector is
+    # the corrupt path it is undoing, and it does that itself.
+    assert "LLAMA_ARG_MMPROJ" not in _lsa.DENIED_ENV_VARS
+    assert "LLAMA_ARG_MMPROJ_URL" not in _lsa.DENIED_ENV_VARS

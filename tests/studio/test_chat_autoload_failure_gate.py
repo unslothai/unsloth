@@ -70,6 +70,30 @@ export type Scenario = {
   download: (request: any) => string;
 };
 
+// The stored-arguments hydration the auto-load runs before it calls /load. Neutral
+// here on purpose: these scenarios are about the failure gate, not about which flags
+// a model launches with, and a stub that invented some would change the /load payload
+// every scenario asserts on. fetchLoadExtraArgs answers "nothing stored", which is
+// what a fresh install has, and the sanitizer is identity so a scenario that does set
+// llamaExtraArgs still sends exactly what it set.
+export async function loadManagedLlamaFlags(): Promise<any> {
+  return null;
+}
+export async function fetchLoadExtraArgs(
+  _loadId: string,
+  _aliasId?: string | null,
+  _variant?: string | null,
+): Promise<string[]> {
+  return [];
+}
+export function sanitizeStoredExtraArgs(
+  tokens: readonly string[],
+  _managed: ReadonlySet<string>,
+  _limits?: any,
+): string[] {
+  return [...tokens];
+}
+
 export const EVENTS: any[] = [];
 let SCENARIO: Scenario;
 export function setScenario(scenario: Scenario) {

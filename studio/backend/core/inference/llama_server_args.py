@@ -1224,8 +1224,6 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_DOCKER_REPO",
     "LLAMA_ARG_HF_REPO",
     "LLAMA_ARG_HF_FILE",
-    "LLAMA_ARG_MMPROJ",
-    "LLAMA_ARG_MMPROJ_URL",
     "LLAMA_ARG_ALIAS",
     "LLAMA_ARG_HOST",
     "LLAMA_ARG_PORT",
@@ -1241,6 +1239,15 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_UI_CONFIG_FILE",
     "LLAMA_ARG_UI_MCP_PROXY",
     "LLAMA_ARG_STATIC_PATH",
+    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is
+    # refused in the box because Unsloth resolves the projector itself, but the
+    # environment twin is an INPUT here: _launch_has_mmproj reads both to know the
+    # launch has a projector at all, which is what keeps the vision and audio state
+    # of a model loaded through an inherited one. Only the paravirtual CPU recovery
+    # drops them, where an unpinned projector is the corrupt path it is undoing.
+    # The pooling twins are absent for the opposite reason: load_model already pops
+    # LLAMA_ARG_POOLING / _RERANKING / _EMBEDDINGS itself, next to where it decides
+    # what the GGUF header says.
     # The multi-model server mode: a child holding its own model directory, preset
     # and autoload policy is not the single model Studio launched and accounts for.
     "LLAMA_ARG_MODELS_DIR",
