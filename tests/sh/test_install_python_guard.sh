@@ -298,15 +298,16 @@ assert_eq "3.9 is rejected before uv is asked for a venv" \
 # successful with the launcher left unwritten.
 assert_eq "--shortcuts-only does not judge the python request" \
     "accepted" "$(if sh "$_GATE" 3.9 true >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
-# An existing venv is never rebuilt, so the request is never read. Judging it would
-# fail a run that used to succeed: a stale UNSLOTH_PYTHON=3.9 on a box already
-# installed on 3.12 was a silent no-op before this gate and has to stay one.
+# An existing venv is no reason to let the request through. Every re-run moves the
+# old venv aside and recreates it from the request, so a stale UNSLOTH_PYTHON=3.9 on
+# a box already installed on 3.13 replaces a working environment with one that cannot
+# resolve -- observed on CI, where a full install is followed by a 3.9 run.
 _VENV_FIXTURE=$(mktemp -d)
 mkdir -p "$_VENV_FIXTURE/bin"
-printf '#!/bin/sh\necho 3.12\n' > "$_VENV_FIXTURE/bin/python"
+printf '#!/bin/sh\necho 3.13\n' > "$_VENV_FIXTURE/bin/python"
 chmod +x "$_VENV_FIXTURE/bin/python"
-assert_eq "an existing venv makes the request inert, as before the gate" \
-    "accepted" "$(if sh "$_GATE" 3.9 false "$_VENV_FIXTURE" >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
+assert_eq "an existing venv does not excuse an unsupported request" \
+    "rejected" "$(if sh "$_GATE" 3.9 false "$_VENV_FIXTURE" >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
 rm -rf "$_VENV_FIXTURE"
 # ...but the deferral must not orphan the function: it has to be called for real.
 assert_eq "install.sh calls the gate at top level" "yes" \

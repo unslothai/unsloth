@@ -483,10 +483,10 @@ _check_python_request() {
 # Deferred to just after VENV_DIR is known; see the call below.
 _gate_python_request() {
     [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ] || return 0
-    # An existing venv is never rebuilt, so the request is not read and judging it
-    # would fail a run that used to succeed: UNSLOTH_PYTHON=3.9 exported years ago
-    # is inert on a box already installed on 3.12, and must stay inert.
-    [ ! -x "$VENV_DIR/bin/python" ] || return 0
+    # An existing venv is no reason to skip this. Every re-run moves the old venv
+    # aside and recreates it from the request (_start_studio_venv_replacement), so
+    # a stale UNSLOTH_PYTHON=3.9 on a box already installed on 3.13 does not sit
+    # unread: it replaces a working environment with one that cannot resolve.
     _req_major=""; _req_minor=""
     case "$_USER_PYTHON" in
         */*|*\\*)
@@ -689,8 +689,8 @@ _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
 
-# Now that VENV_DIR is known: reject an unsupported --python/UNSLOTH_PYTHON, but
-# only when this run would actually use it. Still ahead of every install step.
+# Reject an unsupported --python/UNSLOTH_PYTHON, ahead of every install step and of
+# the venv replacement that would otherwise act on it.
 _gate_python_request
 
 _start_studio_venv_replacement() {
