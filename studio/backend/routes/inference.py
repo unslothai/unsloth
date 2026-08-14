@@ -22463,6 +22463,107 @@ async def _openai_passthrough_non_streaming_upstream(
     return JSONResponse(content = data)
 
 
+async def _build_chat_prefill_body(payload, llama_backend) -> dict:
+    """Build the no-output llama-server request used to warm its prompt cache."""
+    body = await _build_openai_passthrough_body_async(
+        payload,
+        backend_ctx = llama_backend.context_length,
+        llama_backend = llama_backend,
+    )
+    body["stream"] = False
+    body.pop("stream_options", None)
+    # llama.cpp's web UI uses n_predict=0: evaluate the complete chat template
+    # into a slot's KV cache without sampling even one response token.
+    body.pop("max_tokens", None)
+    body["n_predict"] = 0
+    return body
+
+
+@studio_router.post("/chat/prefill")
+async def prefill_chat_cache(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Best-effort prompt-cache warmup for the currently loaded GGUF model.
+
+    This is intentionally a Studio-only endpoint rather than an OpenAI-compatible
+    generation mode: it never auto-switches models, reaches an external provider,
+    queues behind user work, or creates a completion that could enter chat history.
+    """
+    if payload.provider_id or payload.provider_type:
+        return {"prefilled": False, "reason": "unsupported"}
+
+    llama_backend = get_llama_cpp_backend()
+    if (
+        not llama_backend.is_loaded
+        or llama_backend.is_diffusion
+        or getattr(llama_backend, "_is_audio", False)
+    ):
+        return {"prefilled": False, "reason": "unsupported"}
+
+    try:
+        reservation, _ = _openai_llama_admission_reserve(
+            request = request,
+            llama_backend = llama_backend,
+        )
+    except LlamaAdmissionQueueFull:
+        return {"prefilled": False, "reason": "busy"}
+
+    lease = reservation.lease_nowait()
+    if lease is None:
+        # Warming is opportunistic. Never leave a waiter behind that could run a
+        # stale conversation after the user request that occupied the slot.
+        reservation.cancel()
+        return {"prefilled": False, "reason": "busy"}
+
+    cancel_event = threading.Event()
+    client = _cancelable_nonstreaming_client()
+    watcher = asyncio.create_task(
+        _await_cancel_or_disconnect_then_close_client(
+            cancel_event = cancel_event,
+            request = request,
+            client = client,
+        )
+    )
+    try:
+        body = await _build_chat_prefill_body(payload, llama_backend)
+        response = await client.post(
+            f"{llama_backend.base_url}/v1/chat/completions",
+            json = body,
+            headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
+        if cancel_event.is_set():
+            return {"prefilled": False, "reason": "cancelled"}
+        if response.status_code != 200:
+            logger.warning(
+                "llama-server chat prefill failed: status=%s body=%s",
+                response.status_code,
+                response.text[:500],
+            )
+            return {"prefilled": False, "reason": "upstream_error"}
+        return {"prefilled": True}
+    except asyncio.CancelledError:
+        cancel_event.set()
+        raise
+    except httpx.RequestError as exc:
+        if not cancel_event.is_set():
+            logger.warning("llama-server chat prefill failed: %s", exc)
+        return {
+            "prefilled": False,
+            "reason": "cancelled" if cancel_event.is_set() else "upstream_error",
+        }
+    finally:
+        try:
+            await _stop_local_disconnect_cancel_watcher(watcher)
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                lease.release()
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Diffusion (local text-to-image). Studio-only routes (studio_router is not mounted under /v1); the backend is in-process and
 # synchronous, so blocking calls are offloaded with asyncio.to_thread. Single error boundary: the backend raises, we map to HTTP.

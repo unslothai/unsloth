@@ -175,6 +175,12 @@ import {
   rejectsAssistantPrefill,
   resumesExactly,
 } from "../utils/continuation";
+
+import {
+  buildChatKvPrefillPayload,
+  createChatKvPrefillCoordinator,
+  isChatKvPrefillAvailable,
+} from "../utils/chat-kv-prefill";
 import {
   generateAudio,
   GenerationLengthError,
@@ -184,6 +190,7 @@ import {
   listCachedModels,
   listGgufVariants,
   loadModel,
+  prefillChatConversation,
   streamChatCompletions,
   StreamInterruptedError,
   validateModel,
@@ -3433,6 +3440,8 @@ async function resolveQueuedEmptyLocalModel(
   }
 }
 
+const chatKvPrefill = createChatKvPrefillCoordinator(prefillChatConversation);
+
 export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
@@ -3444,6 +3453,9 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // A real generation always outranks speculative cache work. Aborting here closes
+      // llama-server's zero-token prefill request before this run enters admission.
+      chatKvPrefill.cancel();
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
@@ -5309,6 +5321,8 @@ export function createOpenAIStreamAdapter(
           };
         };
 
+        let completedRequestPayload: OpenAIChatCompletionsRequest | null = null;
+
         let retriedWithRefreshedKey = false;
         while (true) {
           try {
@@ -5322,6 +5336,7 @@ export function createOpenAIStreamAdapter(
               throw error;
             }
             clearSelectedImageEditReference();
+            completedRequestPayload = requestPayload;
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
@@ -6256,6 +6271,42 @@ export function createOpenAIStreamAdapter(
 
         // Finalize reasoning-only streams.
         reasoningDurationTracker.finishGroup();
+        const finalConversationText = mergeContinuation(cumulativeText);
+        if (
+          runtime.preEncodeConversation &&
+          isChatKvPrefillAvailable({
+            isExternalModel: isExternalRequest,
+            residentCheckpoint: runtime.residentCheckpoint,
+            ggufContextLength: runtime.ggufContextLength,
+            loadedIsDiffusion: runtime.loadedIsDiffusion,
+          }) &&
+          incompleteReason === null &&
+          completedRequestPayload !== null &&
+          finalConversationText.trim().length > 0
+        ) {
+          const finalAssistantMessage = {
+            id: unstable_assistantMessageId ?? crypto.randomUUID(),
+            createdAt: new Date(finishedAt),
+            role: "assistant",
+            content: buildAssistantContent(finalConversationText),
+            status: { type: "complete", reason: "stop" },
+            metadata: {
+              unstable_state: null,
+              unstable_annotations: [],
+              unstable_data: [],
+              steps: [],
+              custom: { openaiCodexReasoning: codexReasoningLedger },
+            },
+          } satisfies RunMessage;
+          const prefillPayload = buildChatKvPrefillPayload(
+            completedRequestPayload,
+            toOpenAIMessages(finalAssistantMessage, true),
+          );
+          if (prefillPayload) {
+            chatKvPrefill.start(prefillPayload);
+          }
+        }
+
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText)),

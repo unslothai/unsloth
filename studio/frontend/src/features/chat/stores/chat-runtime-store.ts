@@ -61,6 +61,8 @@ export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
 export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_PRE_ENCODE_CONVERSATION_KEY =
+  "unsloth_chat_pre_encode_conversation";
 export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
   "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
@@ -523,6 +525,10 @@ const MIRRORED_SETTINGS = {
         ? loadShowCanvasMenuItem()
         : undefined,
   },
+  preEncodeConversation: {
+    storageKey: CHAT_PRE_ENCODE_CONVERSATION_KEY,
+    ...BOOLEAN_SETTING,
+  },
   collapseHtmlArtifacts: {
     storageKey: CHAT_COLLAPSE_HTML_ARTIFACTS_KEY,
     ...BOOLEAN_SETTING,
@@ -574,9 +580,7 @@ const MIRRORED_SETTINGS = {
     storageKey: MODELS_FIT_ON_DEVICE_ONLY_KEY,
     ...BOOLEAN_SETTING,
   },
-} satisfies Partial<
-  Record<ScalarSettingKey, { storageKey: string } & MirroredSettingCodec>
->;
+} satisfies Record<string, { storageKey: string } & MirroredSettingCodec>;
 
 type MirroredSettingKey = keyof typeof MIRRORED_SETTINGS;
 
@@ -1245,6 +1249,7 @@ type ChatRuntimeStore = {
   artifactsEnabled: boolean;
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
   showCanvasMenuItem: boolean;
+  preEncodeConversation: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
@@ -1536,6 +1541,7 @@ type ChatRuntimeStore = {
     options?: { persist?: boolean },
   ) => void;
   setShowCanvasMenuItem: (enabled: boolean) => void;
+  setPreEncodeConversation: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
@@ -1620,40 +1626,19 @@ type PersistedInferenceParams = NonNullable<
   PersistedChatSettings["inferenceParams"]
 >;
 type PersistedInferenceParamKey = keyof PersistedInferenceParams;
+const NON_MIRRORED_SCALAR_SETTING_KEYS = [
+  "autoTitle",
+  "reasoningEffort",
+  "preserveThinking",
+  "autoHealToolCalls",
+  "nudgeToolCalls",
+  "maxToolCallsPerMessage",
+  "toolCallTimeout",
+] as const;
+
 type ScalarSettingKey =
-  | "autoTitle"
-  | "reasoningEffort"
-  | "preserveThinking"
-  | "collapseHtmlArtifacts"
-  | "allowArtifactNetworkAccess"
-  | "autoHealToolCalls"
-  | "nudgeToolCalls"
-  | "maxToolCallsPerMessage"
-  | "toolCallTimeout"
-  | "reasoningEnabled"
-  | "toolsEnabled"
-  | "codeToolsEnabled"
-  | "imageToolsEnabled"
-  | "webFetchToolsEnabled"
-  | "deepResearchEnabled"
-  | "researchWebsitePolicy"
-  | "artifactsEnabled"
-  | "showCanvasMenuItem"
-  | "mcpEnabledForChat"
-  | "confirmToolCalls"
-  | "permissionMode"
-  | "ragSource"
-  | "ragMode"
-  | "ragTopK"
-  | "ragAutoInject"
-  | "ragAutoInjectMinScore"
-  | "ragOcrScanned"
-  | "ragCaptionFigures"
-  | "expandQuantizations"
-  | "showAllQuantizations"
-  | "fitOnDeviceOnly"
-  | "speculativeType"
-  | "gpuMemoryMode";
+  | (typeof NON_MIRRORED_SCALAR_SETTING_KEYS)[number]
+  | MirroredSettingKey;
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -1682,41 +1667,10 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
-const SCALAR_SETTING_KEYS = [
-  "autoTitle",
-  "reasoningEffort",
-  "preserveThinking",
-  "collapseHtmlArtifacts",
-  "allowArtifactNetworkAccess",
-  "autoHealToolCalls",
-  "nudgeToolCalls",
-  "maxToolCallsPerMessage",
-  "toolCallTimeout",
-  "reasoningEnabled",
-  "toolsEnabled",
-  "codeToolsEnabled",
-  "imageToolsEnabled",
-  "webFetchToolsEnabled",
-  "deepResearchEnabled",
-  "researchWebsitePolicy",
-  "artifactsEnabled",
-  "showCanvasMenuItem",
-  "mcpEnabledForChat",
-  "confirmToolCalls",
-  "permissionMode",
-  "ragSource",
-  "ragMode",
-  "ragTopK",
-  "ragAutoInject",
-  "ragAutoInjectMinScore",
-  "ragOcrScanned",
-  "ragCaptionFigures",
-  "expandQuantizations",
-  "showAllQuantizations",
-  "fitOnDeviceOnly",
-  "speculativeType",
-  "gpuMemoryMode",
-] as const satisfies readonly ScalarSettingKey[];
+const SCALAR_SETTING_KEYS: readonly ScalarSettingKey[] = [
+  ...NON_MIRRORED_SCALAR_SETTING_KEYS,
+  ...(Object.keys(MIRRORED_SETTINGS) as MirroredSettingKey[]),
+];
 
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
@@ -2007,6 +1961,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   researchWebsitePolicy: loadResearchWebsitePolicy(),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
   showCanvasMenuItem: loadShowCanvasMenuItem(),
+  preEncodeConversation: loadBool(CHAT_PRE_ENCODE_CONVERSATION_KEY, false),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -2720,6 +2675,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
       return { showCanvasMenuItem };
+    }),
+  setPreEncodeConversation: (preEncodeConversation) =>
+    set(() => {
+      saveBool(CHAT_PRE_ENCODE_CONVERSATION_KEY, preEncodeConversation);
+      return { preEncodeConversation };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set(() => {

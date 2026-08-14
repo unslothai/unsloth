@@ -35,6 +35,7 @@ export interface PersistedChatSettings {
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;
   preserveThinking?: boolean;
+  preEncodeConversation?: boolean;
   collapseHtmlArtifacts?: boolean;
   allowArtifactNetworkAccess?: boolean;
   autoHealToolCalls?: boolean;

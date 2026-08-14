@@ -105,6 +105,7 @@ import {
   isLocalModelPath,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { isChatKvPrefillAvailable } from "./utils/chat-kv-prefill";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -493,6 +494,15 @@ export function ChatSettingsPanel({
     (s) => s.activeModelIsLocal,
   );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
+  const showChatKvPrefill = isChatKvPrefillAvailable({
+    isExternalModel,
+    residentCheckpoint,
+    ggufContextLength,
+    loadedIsDiffusion,
+  });
   // Direct-file / custom-folder GGUFs load without a variant label but still
   // report a GGUF context, so detect them via the context and the checkpoint
   // suffix too (mirrors the chat page's activeModelIsGguf). Otherwise Max Tokens
@@ -594,6 +604,12 @@ export function ChatSettingsPanel({
   const activePreset = useChatRuntimeStore((s) => s.activePreset);
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
+  const preEncodeConversation = useChatRuntimeStore(
+    (s) => s.preEncodeConversation,
+  );
+  const setPreEncodeConversation = useChatRuntimeStore(
+    (s) => s.setPreEncodeConversation,
+  );
 
   const baseContext = ggufContextLength;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
@@ -1462,6 +1478,29 @@ export function ChatSettingsPanel({
             />
           </div>
         </CollapsibleSection>
+
+        {showChatKvPrefill ? (
+          <CollapsibleSection label="Performance">
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  Pre-fill KV cache after response
+                </span>
+                <InfoHint>
+                  Re-submit each completed conversation without generating tokens,
+                  so llama.cpp can encode the prompt while you read and make the
+                  next turn start faster.
+                </InfoHint>
+              </div>
+              <Switch
+                className="panel-switch shrink-0"
+                checked={preEncodeConversation}
+                onCheckedChange={setPreEncodeConversation}
+                aria-label="Pre-fill KV cache after response"
+              />
+            </div>
+          </CollapsibleSection>
+        ) : null}
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Tools">

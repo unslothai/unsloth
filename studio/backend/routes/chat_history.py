@@ -273,6 +273,7 @@ class ChatSettingsPayload(BaseModel):
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = None
     preserveThinking: Optional[bool] = None
+    preEncodeConversation: Optional[bool] = None
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None

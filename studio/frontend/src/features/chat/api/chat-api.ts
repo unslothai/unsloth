@@ -1291,6 +1291,23 @@ function classifyStructuredDeltaContent(content: unknown): {
   return { hasAssistantContent, hasReasoningContent };
 }
 
+export async function prefillChatConversation(
+  payload: OpenAIChatCompletionsRequest,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await authFetch("/api/inference/chat/prefill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
