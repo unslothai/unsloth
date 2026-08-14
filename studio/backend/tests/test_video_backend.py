@@ -531,6 +531,44 @@ def _load_gguf(backend, tmp_path):
     )
 
 
+def _stub_apply_memory_plan(
+    monkeypatch,
+    video_mod,
+    *,
+    policy = "model",
+    vae_tiling = True,
+) -> list:
+    """Stand in for ``apply_memory_plan``, recording the placement kwargs of every call.
+
+    The keywords are spelled out rather than ``**kwargs`` on purpose: a double that swallows the
+    signature keeps passing once the load hands over an argument it never reads, which is how
+    ``placement_device`` (#8645) became a TypeError on CI.
+    """
+    calls = []
+
+    def _fake(
+        pipe,
+        plan,
+        *,
+        device = None,
+        placement_device = None,
+        logger = None,
+    ):
+        calls.append({"device": device, "placement_device": placement_device})
+        return (policy, vae_tiling)
+
+    monkeypatch.setattr(video_mod, "apply_memory_plan", _fake)
+    return calls
+
+
+def _assert_placement_follows_the_target(calls, video_mod):
+    """Placement gets the INDEXED device off the resolved target, the policy string stays bare."""
+    target = video_mod.resolve_diffusion_device_target()
+    assert calls, "apply_memory_plan was never called"
+    assert calls[0]["placement_device"] == target.torch_device
+    assert calls[0]["device"] == target.device
+
+
 def test_resolve_kind():
     assert resolve_video_model_kind("x.gguf", None) == "gguf"
     assert resolve_video_model_kind("x.safetensors", None) == "single_file"
@@ -1790,11 +1828,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
         "plan_diffusion_memory",
         lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
     )
-    monkeypatch.setattr(
-        video_mod,
-        "apply_memory_plan",
-        lambda pipe, plan, device = None, placement_device = None, logger = None: ("model", True),
-    )
+    placements = _stub_apply_memory_plan(monkeypatch, video_mod)
 
     backend = VideoBackend()
     status = backend.load_pipeline(
@@ -1802,6 +1836,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
         model_kind = "pipeline",
         transformer_quant = "int8",
     )
+    _assert_placement_follows_the_target(placements, video_mod)
     assert status["offload_policy"] == "model"
     assert quantised == []
     assert status["transformer_quant"] is None
@@ -1811,6 +1846,36 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     assert resolved["requested"] == "int8"
     assert resolved["value"] == "off"
     assert resolved["status"] == "fell_back"
+
+
+def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runtime, monkeypatch):
+    # #8645 at the video seam: ``enable_model_cpu_offload`` reads the ordinal off the device and
+    # falls back to ``_offload_gpu_id = 0`` without one, so the load passes the INDEXED string as
+    # ``placement_device``; ``device`` stays bare because the memory/speed/attention policies
+    # compare it against "cuda". The two must not be swapped.
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    real_target = VideoBackend._device_target
+
+    def _selected(self, ordinal = None):
+        return dataclasses.replace(real_target(self, ordinal), ordinal = 1)
+
+    monkeypatch.setattr(VideoBackend, "_device_target", _selected)
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    placements = _stub_apply_memory_plan(monkeypatch, video_mod)
+
+    VideoBackend().load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+
+    assert placements, "apply_memory_plan was never called"
+    assert placements[0]["placement_device"] == "cpu:1"
+    assert placements[0]["device"] == "cpu"
 
 
 def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
@@ -6680,11 +6745,7 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         return dataclasses.replace(real(**kwargs), offload_policy = "model")
 
     monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
-    monkeypatch.setattr(
-        video_mod,
-        "apply_memory_plan",
-        lambda pipe, plan, device = None, placement_device = None, logger = None: ("model", True),
-    )
+    placements = _stub_apply_memory_plan(monkeypatch, video_mod)
 
     VideoBackend().load_pipeline(
         "Lightricks/LTX-2",
@@ -6692,6 +6753,7 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         transformer_quant = "int8",
         text_encoder_quant = "fp8",
     )
+    _assert_placement_follows_the_target(placements, video_mod)
     assert len(calls) == 2, "the dense-quant re-plan did not run"
     assert calls[1]["model_dense_mib"] == int(
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
