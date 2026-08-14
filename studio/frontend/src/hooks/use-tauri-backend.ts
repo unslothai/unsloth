@@ -48,7 +48,7 @@ function announcePortToPill(port: number): void {
     // storage unavailable; the event below still covers a live pill window
   }
   void import("@tauri-apps/api/event")
-    .then(({ emitTo }) => emitTo("pill", "server-port", port))
+    .then(({ emitTo }) => emitTo("ask", "server-port", port))
     .catch(() => undefined);
 }
 
