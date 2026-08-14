@@ -6915,9 +6915,7 @@ async def _preflight_native_audio_placement(
         # pipeline is resident on one 24 GB CUDA device. Using repository bytes
         # here makes auto-placement select several GPUs and the single-device
         # native backend then rejects a model that fits one supported card.
-        required_gb = (
-            _MINIMAX_MUSIC3_RESIDENT_GB if audio_type == "minimax_music3" else None
-        )
+        required_gb = _MINIMAX_MUSIC3_RESIDENT_GB if audio_type == "minimax_music3" else None
         if len(targets) > 1:
             required_gb = 0.0
             for target in targets:
