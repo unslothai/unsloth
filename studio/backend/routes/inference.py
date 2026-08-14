@@ -17682,6 +17682,24 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     return _with_system(messages)
 
 
+def _responses_text_format(text: Any) -> Optional[dict]:
+    """Responses ``text.format`` -> Chat Completions ``response_format``.
+
+    ``{"type": "text"}`` and a verbosity-only ``text`` carry no constraint -> None.
+    """
+    fmt = text.get("format") if isinstance(text, dict) else None
+    if not isinstance(fmt, dict):
+        return None
+    if fmt.get("type") == "json_object":
+        return {"type": "json_object"}
+    if fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
+        return None
+    json_schema = {"name": str(fmt.get("name") or "response"), "schema": fmt["schema"]}
+    if fmt.get("strict") is not None:
+        json_schema["strict"] = bool(fmt["strict"])
+    return {"type": "json_schema", "json_schema": json_schema}
+
+
 def _build_chat_request(
     payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
 ) -> ChatCompletionRequest:
@@ -17753,6 +17771,11 @@ def _build_chat_request(
                 chat_kwargs["reasoning_effort"] = "none"
             elif effort != "none":
                 chat_kwargs["reasoning_effort"] = effort
+
+    response_format = _responses_text_format(payload.text)
+    if response_format is not None:
+        # Lands in model_extra, where _extract_response_format reads it.
+        chat_kwargs["response_format"] = response_format
 
     return ChatCompletionRequest(**chat_kwargs)
 
