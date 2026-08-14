@@ -27,6 +27,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { FieldHint } from "./field-hint";
+import { CheckpointBackupSection } from "./checkpoint-backup-section";
 import { LoraParamsSection } from "./lora-params-section";
 import { TrainingHyperparametersSection } from "./training-hyperparameters-section";
 import { useMlxTrainingConfigPolicy } from "./use-mlx-training-config-policy";
@@ -483,6 +484,7 @@ export function ParamsSection({
             epochsSliderMax={epochsSliderMax}
           />
         )}
+        {showAdvanced && <CheckpointBackupSection />}
       </div>
     </div>
   );
