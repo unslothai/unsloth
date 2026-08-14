@@ -170,9 +170,7 @@ def _snippet_suppresses(snippet: str) -> bool:
 def _snippet_crashes(snippet: str) -> bool:
     if any(marker in snippet for marker in _CRASH_MARKERS):
         return True
-    return any(m in snippet for m in _SIGNAL_DIRECTED) and any(
-        s in snippet for s in _FATAL_SIGNALS
-    )
+    return any(m in snippet for m in _SIGNAL_DIRECTED) and any(s in snippet for s in _FATAL_SIGNALS)
 
 
 def _fold(node, env):
@@ -264,9 +262,9 @@ def _enclosing_scopes(tree):
 
     def walk(scope, node):
         for child in ast.iter_child_nodes(node):
-            next_scope = child if isinstance(
-                child, (ast.FunctionDef, ast.AsyncFunctionDef)
-            ) else scope
+            next_scope = (
+                child if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope
+            )
             owner[id(child)] = next_scope
             walk(next_scope, child)
 
@@ -344,9 +342,7 @@ SIGKILL instead. SIGKILL never produces a core."""
 # stays fixed. `want_violations` is whether the file should be reported.
 _FIXTURES = {
     "crash_written_as_real_code": (
-        "import ctypes\n"
-        "def child():\n"
-        "    ctypes.string_at(0)\n",
+        "import ctypes\ndef child():\n    ctypes.string_at(0)\n",
         True,  # not inside a script string, and still dumps a core
     ),
     "suppression_in_the_same_function": (
@@ -384,9 +380,7 @@ _FIXTURES = {
         True,  # prctl(4, 1) re-enables dumps, so this still dumps
     ),
     "signal_named_in_a_comment_only": (
-        "# this used to raise SIGSEGV, now it returns\n"
-        "def child():\n"
-        "    return -11\n",
+        "# this used to raise SIGSEGV, now it returns\ndef child():\n    return -11\n",
         False,
     ),
     "reraise_of_a_variable_signal": (
@@ -397,9 +391,7 @@ _FIXTURES = {
         False,  # the terminal-prompt idiom, no fatal signal named
     ),
     "unrelated_abort_methods": (
-        "def go(route, task):\n"
-        "    route.abort('failed')\n"
-        "    task.abort()\n",
+        "def go(route, task):\n    route.abort('failed')\n    task.abort()\n",
         False,  # Playwright and friends share the name and crash nothing
     ),
 }
@@ -411,9 +403,9 @@ def test_the_detector_is_not_fooled(tmp_path, name):
     path = tmp_path / f"{name}.py"
     path.write_text(source, encoding = "utf-8")
     crashes, violations = _analyze(path)
-    assert bool(violations) is want_violations, (
-        f"{name}: expected violations={want_violations}, got {violations or '()'}"
-    )
+    assert (
+        bool(violations) is want_violations
+    ), f"{name}: expected violations={want_violations}, got {violations or '()'}"
     if want_violations:
         assert crashes, f"{name}: a reported file must also count as crashing"
 
@@ -432,9 +424,7 @@ def test_the_scan_finds_the_files_it_is_meant_to_guard():
 
 def test_every_deliberate_crash_suppresses_its_core():
     offenders = {
-        p.relative_to(REPO_ROOT): _violations(p)
-        for p in _iter_test_files()
-        if _violations(p)
+        p.relative_to(REPO_ROOT): _violations(p) for p in _iter_test_files() if _violations(p)
     }
     report = "".join(
         f"    {path}\n" + "".join(f"        {why}\n" for why in whys)
@@ -445,6 +435,5 @@ def test_every_deliberate_crash_suppresses_its_core():
         + report
         + "\nA fatal signal is piped to the host core_pattern handler (apport on "
         "Ubuntu), which reads the WHOLE core before the child is reaped: about 4x the "
-        "wall time and a multi-MB write per fault, every run.\n\n"
-        + _FIX
+        "wall time and a multi-MB write per fault, every run.\n\n" + _FIX
     )
