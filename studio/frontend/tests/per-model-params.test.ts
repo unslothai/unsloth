@@ -60,7 +60,12 @@ function record(
 }
 
 test("an edit is filed against the model it was made for", () => {
-  const next = record({}, QWEN, { temperature: 0.2 }, params({ temperature: 0.2 }));
+  const next = record(
+    {},
+    QWEN,
+    { temperature: 0.2 },
+    params({ temperature: 0.2 }),
+  );
   assert.equal(next?.[QWEN].temperature, 0.2);
 });
 
@@ -79,7 +84,12 @@ test("an entry records every param, not only the one that moved", () => {
 
 test("editing one model leaves every other model's memory alone", () => {
   const before = { [LLAMA]: { temperature: 0.9 } };
-  const after = record(before, QWEN, { temperature: 0.2 }, params({ temperature: 0.2 }));
+  const after = record(
+    before,
+    QWEN,
+    { temperature: 0.2 },
+    params({ temperature: 0.2 }),
+  );
   assert.deepEqual(after?.[LLAMA], { temperature: 0.9 });
   assert.equal(after?.[QWEN].temperature, 0.2);
   // The input map is not mutated: the store compares by identity to decide
@@ -90,7 +100,11 @@ test("editing one model leaves every other model's memory alone", () => {
 // The reported failure: A remembered only its temperature, so switching back
 // overlaid it onto B's prompt and A ran under settings it was never given.
 test("a model returns to the prompt it was last used with", () => {
-  const aParams = params({ checkpoint: QWEN, temperature: 0.2, systemPrompt: "A" });
+  const aParams = params({
+    checkpoint: QWEN,
+    temperature: 0.2,
+    systemPrompt: "A",
+  });
   const memory = record({}, QWEN, { temperature: 0.2 }, aParams);
   assert.ok(memory);
 
@@ -128,10 +142,18 @@ test("a local model load replays memory over the backend's recommendation", () =
   loadModel(QWEN, { temperature: 0.7 });
   edit({ temperature: 0.2 });
   loadModel(LLAMA, { temperature: 0.6 });
-  assert.equal(live.temperature, 0.6, "a model with no memory takes its recommendation");
+  assert.equal(
+    live.temperature,
+    0.6,
+    "a model with no memory takes its recommendation",
+  );
 
   loadModel(QWEN, { temperature: 0.7 });
-  assert.equal(live.temperature, 0.2, "the tuned value beats the recommendation");
+  assert.equal(
+    live.temperature,
+    0.2,
+    "the tuned value beats the recommendation",
+  );
 });
 
 // A model is only recorded once something is edited, so without snapshotting the
@@ -145,7 +167,8 @@ test("the model being switched away from is remembered", () => {
 
   const onB = getReplayedParams(true, memory, onA, LLAMA, true);
   const editedB = { ...onB, checkpoint: LLAMA, systemPrompt: "B" };
-  const afterB = record(memory, LLAMA, { systemPrompt: "B" }, editedB) ?? memory;
+  const afterB =
+    record(memory, LLAMA, { systemPrompt: "B" }, editedB) ?? memory;
 
   const backOnA = getReplayedParams(true, afterB, editedB, QWEN, true);
   assert.equal(backOnA.systemPrompt, "A");
@@ -156,17 +179,35 @@ test("the model being switched away from is remembered", () => {
 // which carries the model's context length as maxTokens. Replay has to run on
 // that second call too or the remembered output limit is lost every load.
 test("a load response does not overwrite a remembered token budget", () => {
-  const memory = { [QWEN]: { ...pickRememberedParams(params()), maxTokens: 4096 } };
+  const memory = {
+    [QWEN]: { ...pickRememberedParams(params()), maxTokens: 4096 },
+  };
   const afterCheckpoint = getReplayedParams(true, memory, params(), QWEN, true);
   assert.equal(afterCheckpoint.maxTokens, 4096);
 
   // setParams(fromModelLoad) with the load response: checkpoint unchanged, so
   // only the forced replay keeps the remembered budget.
   const loadResponse = { ...afterCheckpoint, maxTokens: 131072 };
-  const withoutForcedReplay = getReplayedParams(true, memory, loadResponse, QWEN, false);
-  assert.equal(withoutForcedReplay.maxTokens, 131072, "this is the reported bug");
+  const withoutForcedReplay = getReplayedParams(
+    true,
+    memory,
+    loadResponse,
+    QWEN,
+    false,
+  );
+  assert.equal(
+    withoutForcedReplay.maxTokens,
+    131072,
+    "this is the reported bug",
+  );
 
-  const withForcedReplay = getReplayedParams(true, memory, loadResponse, QWEN, true);
+  const withForcedReplay = getReplayedParams(
+    true,
+    memory,
+    loadResponse,
+    QWEN,
+    true,
+  );
   assert.equal(withForcedReplay.maxTokens, 4096);
 });
 
@@ -192,7 +233,10 @@ test("a model's defaults do not outrank what it is remembered with", async () =>
     });
   const memory = { [QWEN]: { temperature: 0.2, maxTokens: 4096 } };
 
-  const tuned = applyDefaults(params({ temperature: 0.2, maxTokens: 4096 }), QWEN);
+  const tuned = applyDefaults(
+    params({ temperature: 0.2, maxTokens: 4096 }),
+    QWEN,
+  );
   assert.equal(tuned.temperature, 0.9, "this is the reported clobber");
   // setParams(fromModelDefaults) forces the replay even though the checkpoint
   // did not change.
@@ -200,8 +244,18 @@ test("a model's defaults do not outrank what it is remembered with", async () =>
   assert.equal(replayed.temperature, 0.2);
   assert.equal(replayed.maxTokens, 4096);
 
-  const fresh = getReplayedParams(true, memory, applyDefaults(params(), LLAMA), LLAMA, true);
-  assert.equal(fresh.temperature, 0.9, "a model with no memory keeps its own defaults");
+  const fresh = getReplayedParams(
+    true,
+    memory,
+    applyDefaults(params(), LLAMA),
+    LLAMA,
+    true,
+  );
+  assert.equal(
+    fresh.temperature,
+    0.9,
+    "a model with no memory keeps its own defaults",
+  );
 });
 
 // Null is how the store leaves the map and its hydration version untouched.
@@ -213,7 +267,13 @@ test("nothing is recorded when there is nothing to record", () => {
     "the feature being off records nothing",
   );
   assert.equal(
-    getRememberedParamsPatch(true, {}, undefined, { temperature: 0.2 }, snapshot),
+    getRememberedParamsPatch(
+      true,
+      {},
+      undefined,
+      { temperature: 0.2 },
+      snapshot,
+    ),
     null,
     "no model selected records nothing",
   );
