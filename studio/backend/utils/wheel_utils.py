@@ -453,8 +453,18 @@ def install_wheel(
     use_uv: bool,
     uv_needs_system: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    env_for_cmd: Callable[[list[str], dict], dict] | None = None,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
+    """Install a wheel by URL, uv first and pip second.
+
+    `env_for_cmd` lets the caller decide each attempt's environment from the command.
+    The pip attempt is a FALLBACK for a uv attempt that may have failed on the operator's
+    policy, and pip reads none of uv's, so without that hook it installs what uv refused.
+    """
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
+
+    def _env(cmd: list[str], base: dict) -> dict:
+        return env_for_cmd(cmd, base) if env_for_cmd is not None else base
 
     # Try uv first if available, then fall back to pip
     if use_uv and shutil.which("uv"):
@@ -469,7 +479,7 @@ def install_wheel(
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            env = child_env_without_native_path_secret(),
+            env = _env(uv_cmd, child_env_without_native_path_secret()),
         )
         attempts.append(("uv", result))
         if result.returncode == 0:
@@ -484,7 +494,7 @@ def install_wheel(
         encoding = "utf-8",
         errors = "replace",
         # Make the Python child emit the UTF-8 we decode above.
-        env = utf8_child_env(child_env_without_native_path_secret()),
+        env = _env(pip_cmd, utf8_child_env(child_env_without_native_path_secret())),
     )
     attempts.append(("pip", result))
     return attempts

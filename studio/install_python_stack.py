@@ -3794,6 +3794,9 @@ def _ensure_flash_attn() -> None:
             python_executable = sys.executable,
             use_uv = USE_UV,
             uv_needs_system = UV_NEEDS_SYSTEM,
+            # That helper falls back to pip on its own, and this wheel URL carries no
+            # hash, so without the policy the pip attempt installs what uv refused.
+            env_for_cmd = _install_env_over,
         ):
             if wheel_result.returncode == 0:
                 # Verify rather than trust the exit code, so setup reports what happened.
@@ -3960,7 +3963,7 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     # Colab and similar).
     cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
-    cmd.extend(_uv_policy_cli_args())
+    cmd.extend(_uv_policy_cli_args(cmd))
     # Torch is pre-installed, so don't add --torch-backend by default (solver dead-ends on
     # CPU-only machines); callers can set UV_TORCH_BACKEND. Never add it to a pinned-index
     # command: uv's torch backend redirects torch to its own per-backend index, defeating the pin.
@@ -4217,7 +4220,11 @@ def _pyproject_speaks_for_uv(path: "Path") -> bool:
         # the sdist with an unparseable child pyproject in between. Stopping here would
         # drop that policy.
         return False
-    return isinstance(document.get("tool"), dict) and "uv" in document["tool"]
+    # A scalar `uv = false` is not an options table: uv warns and keeps walking (on 0.12.1
+    # an ancestor no-build still refuses the sdist), so neither does this stop there.
+    return isinstance(document.get("tool"), dict) and isinstance(
+        document["tool"].get("uv"), dict
+    )
 
 
 def _toml_line_value(raw: str) -> str:
@@ -4377,26 +4384,31 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
         for key in _PM_POLICY_CONFIG_KEYS:
             if key in decided:
                 continue
-            # [pip] first: `uv pip install` reads the pip table, so a root
-            # `no-build = false` under a `[pip] no-build = true` is not the answer
-            # (measured on uv 0.12.1: source builds stay disabled).
+            # The root and the [pip] table COMPOSE, they do not override each other:
+            # measured on uv 0.12.1, an sdist is refused both with root
+            # `no-build = false` under `[pip] no-build = true` and with the two the other
+            # way round. So either one being on settles the key ON, and only a file that
+            # sets it in neither place leaves it to the next file down.
+            #
+            # A file that does set it settles it for the lower-precedence ones whichever
+            # way it set it: uv reads the higher-precedence value and ignores the rest, so
+            # a project `no-build = false` above a user `no-build = true` is no policy.
+            _set_here = False
             for table in (_pip_table, document):
                 if not isinstance(table, dict) or key not in table:
                     continue
+                _set_here = True
                 _value = table.get(key)
                 _live = (
                     any(_pm_policy_scope(_pm_policy_config_names(_value)))
                     if key in _PM_POLICY_SCOPED_CONFIG_KEYS and not isinstance(_value, dict)
                     else _pm_policy_value_is_on(_value)
                 )
-                # The FIRST file to set a key settles it, however it set it: uv reads the
-                # higher-precedence value and ignores the rest, so a project
-                # `no-build = false` above a user `no-build = true` means no policy, not a
-                # policy to enforce.
-                decided.add(key)
                 if _live:
                     found.append((path.name, key, _value))
-                break
+                    break
+            if _set_here:
+                decided.add(key)
     return found
 
 
@@ -4647,6 +4659,28 @@ def _report_pm_policy_relaxation_once_pip_exists() -> None:
     )
 
 
+def _uv_policy_env_settings() -> "dict[str, object]":
+    """The build policy the ENVIRONMENT sets, without reading uv's config files.
+
+    What a pinned command carries outside the switch. Its own config is out of reach
+    there (--no-config keeps a uv.toml index from outranking the pin), so the file half
+    would be inventing policy, while the environment half is inherited either way and is
+    the half #6898's scrub used to drop.
+    """
+    everything, packages = _pm_policy_scope(
+        _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
+    )
+    everything = everything or _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
+    return {
+        "no_build_all": everything,
+        "no_build_packages": [] if everything else sorted(dict.fromkeys(packages)),
+        "require_hashes": False,
+        "exclude_newer": "",
+        "scoped_cutoff": False,
+        "cutoff_packages": [],
+    }
+
+
 def _uv_policy_settings() -> "dict[str, object]":
     """The build and integrity policy uv is under, from its environment and its files.
 
@@ -4830,21 +4864,27 @@ def _toml_inline_table(value: "object") -> str:
     return "{ " + ", ".join(pairs) + " }" if pairs else ""
 
 
-def _uv_policy_cli_args() -> "list[str]":
-    """Strict mode's build policy as flags on the `uv pip install` commands we build.
+def _uv_policy_cli_args(cmd: "list[str] | None" = None) -> "list[str]":
+    """The build policy as flags on the `uv pip install` commands we build.
 
     uv's own UV_NO_BUILD / UV_NO_BUILD_PACKAGE do not reach this interface (measured on
-    uv 0.10.7: UV_NO_BUILD=1 still builds an sdist), so without this the primary uv
-    attempt builds what strict mode has already told the pip fallback to refuse.
+    uv 0.10.7 and 0.12.1: UV_NO_BUILD=1 still builds an sdist), so without this the
+    primary uv attempt builds what the pip half has already been told to refuse.
 
     The flag rather than the generated policy file for the same reason a NON-pinned
     command keeps reading the operator's own configuration: --config-file replaces
-    discovery, and replacing it there would take their mirror with it. Only added under
-    the switch, so the default install is byte-identical.
+    discovery, and replacing it there would take their mirror with it.
+
+    Outside the switch this is only for a PINNED command, and only from the environment.
+    That is the promise the pinned half of this change makes -- the binary-only policy
+    stays in force on a torch repair, and an sdist-only custom mirror fails loudly rather
+    than compiling torch. An ordinary install must NOT get it: the four wheel-less
+    requirements have no wheel to prefer, and refusing to build them is #8530.
     """
-    if not _strict_pm_policy():
+    strict = _strict_pm_policy()
+    if not strict and not (cmd is not None and _is_pinned_index_cmd(cmd)):
         return []
-    settings = _uv_policy_settings()
+    settings = _uv_policy_settings() if strict else _uv_policy_env_settings()
     args: "list[str]" = []
     for spec in settings["cutoff_packages"]:
         args += ["--exclude-newer-package", spec]
@@ -4957,6 +4997,25 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     # PIP_CONFIG_FILE above just took away, and the operator wrote it for pip.
     env.update(_pip_config_as_pip_env(cmd))
     return env
+
+
+def _install_env_over(cmd: "list[str]", base: "dict[str, str]") -> "dict[str, str]":
+    """The policy this module would apply to `cmd`, on top of a caller's own child env.
+
+    For the installs built elsewhere (the flash-attn wheel), which need their own base
+    environment kept: the policy travels as the DIFFERENCE from os.environ, so the
+    caller's own additions and redactions survive.
+    """
+    env = _install_env_for_cmd(cmd)
+    if env is None:
+        return base
+    merged = dict(base)
+    for name in set(os.environ) - set(env):
+        merged.pop(name, None)
+    for name, value in env.items():
+        if os.environ.get(name) != value:
+            merged[name] = value
+    return merged
 
 
 def pip_install_try(
@@ -5248,17 +5307,17 @@ def install_python_stack() -> int:
     # 2. Ensure pip is available (uv venvs from install.sh omit pip).
     _progress("pip bootstrap")
     if USE_UV:
-        run(
-            "Bootstrapping pip via uv",
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "pip",
-            ],
-        )
+        # Hand-built rather than via _build_uv_cmd (no constraints, no translation), so
+        # the policy flags have to be added here too: this is a uv install like any other.
+        _bootstrap_cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "pip",
+        ]
+        run("Bootstrapping pip via uv", _bootstrap_cmd + _uv_policy_cli_args(_bootstrap_cmd))
     else:
         # pip may not exist yet (uv-created venvs omit it). Try ensurepip,
         # then upgrade. Direct upgrade only when pip is already present.

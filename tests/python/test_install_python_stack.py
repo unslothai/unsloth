@@ -876,6 +876,45 @@ class TestStrictPmPolicyOptOut:
         ):
             assert ips._untranslatable_strict_policy() == ["exclude-newer-package"]
 
+    def test_a_pinned_command_keeps_the_build_policy_without_the_switch(self):
+        """The pinned half of this change promises the binary-only policy stays in force
+        on a torch repair, and uv's pip interface ignores UV_NO_BUILD, so the flag is how
+        that promise is kept. An sdist-only custom mirror then fails loudly."""
+        with mock.patch.dict(os.environ, {"UV_NO_BUILD": "1"}, clear = True):
+            cmd = ips._build_uv_cmd(("torch", "--index-url", "https://download.pytorch.org/whl/cu128"))
+        assert "--no-build" in cmd
+
+    def test_an_ordinary_install_does_not_get_it_without_the_switch(self):
+        """#8530: the four wheel-less requirements have no wheel to prefer, so refusing to
+        build them is the failure this whole change exists to avoid."""
+        with mock.patch.dict(os.environ, {"UV_NO_BUILD": "1"}, clear = True):
+            cmd = ips._build_uv_cmd(("openai-whisper",))
+        assert "--no-build" not in cmd
+
+    def test_the_default_pinned_command_carries_no_file_policy(self, tmp_path, monkeypatch):
+        """Only the environment half. A pinned command reads no config file, so treating
+        one as live outside the switch would be inventing policy."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {}, clear = True):
+            cmd = ips._build_uv_cmd(("torch", "--index-url", "https://x/cu128"))
+        assert "--no-build" not in cmd
+
+    def test_the_pip_bootstrap_carries_the_policy_too(self, monkeypatch):
+        """It is hand-built rather than routed through _build_uv_cmd, so the flags have to
+        be added there as well or the bootstrap installs past the operator's cutoff."""
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UNSLOTH_STRICT_PM_POLICY": "1",
+                "UV_EXCLUDE_NEWER_PACKAGE": "pip=2015-01-01T00:00:00Z",
+            },
+            clear = True,
+        ):
+            args = ips._uv_policy_cli_args(["uv", "pip", "install", "--python", "x", "pip"])
+        assert args == ["--exclude-newer-package", "pip=2015-01-01T00:00:00Z"]
+
     def test_the_default_uv_command_is_unchanged(self):
         """Everything here is opt-in: without the switch the command is byte-identical."""
         with mock.patch.dict(os.environ, {"UV_NO_BUILD": "1"}, clear = True):
@@ -1021,6 +1060,38 @@ class TestPipConfigPolicySurvivesThePin:
             {"UNSLOTH_STRICT_PM_POLICY": "1", "PIP_ONLY_BINARY": "numpy"},
         )
         assert env["PIP_ONLY_BINARY"] == "numpy"
+
+
+class TestTheWheelHelperGetsThePolicyToo:
+    """_ensure_flash_attn installs a wheel URL through wheel_utils.install_wheel, which
+    falls back to pip on its own.
+
+    That fallback is the same hole as pip_install's: uv refuses the unhashed wheel under
+    the operator's policy and pip, which reads none of it, installs it anyway.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        monkeypatch.setattr(ips, "_UV_POLICY_PROJECTION", None)
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", {})
+
+    def test_the_policy_reaches_a_command_built_elsewhere(self, tmp_path, monkeypatch):
+        (tmp_path / "uv.toml").write_text("require-hashes = true\n", encoding = "utf-8")
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        base = {"PATH": "/usr/bin", "SOME_CALLER_SETTING": "kept"}
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            env = ips._install_env_over(
+                ["python", "-m", "pip", "install", "--no-deps", "https://x/w.whl"], base
+            )
+        assert env["PIP_REQUIRE_HASHES"] == "1"
+        assert env["SOME_CALLER_SETTING"] == "kept", "the caller's own environment survives"
+
+    def test_the_caller_environment_is_untouched_without_a_policy(self):
+        base = {"PATH": "/usr/bin"}
+        with mock.patch.dict(os.environ, {}, clear = True):
+            assert ips._install_env_over(["uv", "pip", "install", "x"], base) == base
 
 
 class TestTheStrictFallbackRefusesWhatPipCannotHonour:
@@ -1382,6 +1453,40 @@ class TestUvConfigDiscoveryMatchesUv:
         (project / "uv.toml").write_text("[pip]\nno-build = true\n", encoding = "utf-8")
         monkeypatch.setenv("UV_PROJECT", str(project))
         assert self._keys() == ["uv.toml: no-build"]
+
+    def test_a_scalar_tool_uv_does_not_end_the_walk(self, tmp_path, monkeypatch):
+        """`[tool] uv = false` is not an options table: uv warns and keeps walking, and on
+        0.12.1 an ancestor no-build still refuses the sdist."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        nested = tmp_path / "project"
+        nested.mkdir()
+        (nested / "pyproject.toml").write_text("[tool]\nuv = false\n", encoding = "utf-8")
+        monkeypatch.chdir(nested)
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_the_root_and_pip_tables_compose(self, tmp_path):
+        """Measured on uv 0.12.1 both ways round: an sdist is refused with root
+        `no-build = false` under `[pip] no-build = true`, and with root true under pip
+        false. Either one being on is the answer, so neither overrides the other."""
+        (tmp_path / "uv.toml").write_text(
+            "no-build = true\n\n[pip]\nno-build = false\n", encoding = "utf-8"
+        )
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_a_file_that_sets_it_off_everywhere_still_settles_it(self, tmp_path, monkeypatch):
+        """A project file that says false in both places is the operator's answer, and the
+        user file below it does not get to overrule it."""
+        user = tmp_path / "home" / ".config" / "uv"
+        user.mkdir(parents = True)
+        (user / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "uv.toml").write_text(
+            "no-build = false\n\n[pip]\nno-build = false\n", encoding = "utf-8"
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home" / ".config"))
+        monkeypatch.chdir(project)
+        assert self._keys() == []
 
     def test_a_malformed_pyproject_does_not_end_the_walk(self, tmp_path, monkeypatch):
         """uv warns and keeps walking: measured on 0.12.1, a parent no-build still refuses
