@@ -4077,6 +4077,11 @@ export function HubModelPicker({
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
         .filter(owned)
+        // Search reaches the live Hub, so without this a query re-lands the exact curated row the
+        // seed and Recommended filters just dropped: the Mac format check below admits
+        // safetensors, so MiniMaxAI/MiniMax-H3 would come back clickable and still be refused at
+        // load. Same predicate as the other two lists, downloaded exception included.
+        .filter(curatedOfferable)
         .filter((id) => !recommendedSet.has(id))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
         // on Mac (matches the empty Recommended view so search stays consistent).
@@ -4099,6 +4104,7 @@ export function HubModelPicker({
       downloadedSet,
       searchRowFits,
       isMac,
+      curatedOfferable,
     ],
   );
 
