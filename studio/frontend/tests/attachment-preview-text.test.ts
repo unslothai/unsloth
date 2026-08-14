@@ -360,6 +360,79 @@ test("readAttachmentText refuses an oversized docx part outside word/*.xml", asy
   }
 });
 
+function relationships(entries: Array<[string, string]>): Uint8Array {
+  return strToU8(
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries
+      .map(
+        ([type, target], index) =>
+          `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="${target}"/>`,
+      )
+      .join("")}</Relationships>`,
+  );
+}
+
+// mammoth resolves the body and its styles/numbering/note parts through the
+// relationships and parses whatever they point at as XML, so a target named
+// "payload.bin" is inflated on the main thread even though no suffix says XML.
+test("readAttachmentText refuses an oversized docx part reached through a relationship", async () => {
+  const huge = strToU8("a".repeat(11 * 1024 * 1024));
+
+  const bodyBomb = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "payload.bin"]]),
+    "payload.bin": huge,
+  });
+  const bodyFile = fakeDocumentFile("bomb.docx", bodyBomb.length, bodyBomb, []);
+  assert.equal(bodyFile.size < 1024 * 1024, true);
+  await assert.rejects(
+    readAttachmentText(bodyFile, bodyFile.name, undefined),
+    /DOCX XML file is too large: bomb\.docx:payload\.bin/,
+  );
+
+  const stylesBomb = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "word/_rels/document.xml.rels": relationships([["styles", "styles.dat"]]),
+    "word/styles.dat": huge,
+  });
+  const stylesFile = fakeDocumentFile(
+    "styles.docx",
+    stylesBomb.length,
+    stylesBomb,
+    [],
+  );
+  assert.equal(stylesFile.size < 1024 * 1024, true);
+  await assert.rejects(
+    readAttachmentText(stylesFile, stylesFile.name, undefined),
+    /DOCX XML file is too large: styles\.docx:word\/styles\.dat/,
+  );
+});
+
+// extractRawText never reads an image part, so a document that merely embeds a
+// large picture still previews: the bound follows what mammoth parses.
+test("readAttachmentText lets a docx with a large embedded image through", async () => {
+  const reads: string[] = [];
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "word/_rels/document.xml.rels": relationships([
+      ["image", "media/photo.png"],
+    ]),
+    "word/media/photo.png": new Uint8Array(12 * 1024 * 1024),
+  });
+  const file = fakeDocumentFile("photo.docx", bytes.length, bytes, reads);
+  const error = await readAttachmentText(file, file.name, undefined).then(
+    () => null,
+    (thrown: Error) => thrown,
+  );
+  assert.deepEqual(reads, ["photo.docx"]);
+  if (error) {
+    assert.doesNotMatch(error.message, /too large/);
+  }
+});
+
 test("parseAttachmentText keeps an unterminated tag as plain text", () => {
   const parsed = parseAttachmentText("<attachment name=notes.txt>\nbody");
   assert.deepEqual(parsed, {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { unzipSync } from "fflate";
+import { strFromU8, unzipSync } from "fflate";
 
 import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
@@ -36,6 +36,27 @@ const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 // Every part mammoth parses as XML, wherever it sits in the archive.
 const DOCX_XML_PART_RE = /\.(xml|rels)$/i;
+// mammoth picks the parts it parses out of the relationships, not out of the
+// filenames, so a target may be called anything ("payload.bin") and still be
+// inflated and parsed as XML. Only these types are read that way; an image
+// target stays lazy and is never read by extractRawText.
+const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
+const DOCX_RELATIONSHIP_NAMESPACE =
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
+const DOCX_XML_RELATIONSHIP_TYPES = new Set(
+  [
+    "officeDocument",
+    "styles",
+    "numbering",
+    "footnotes",
+    "endnotes",
+    "comments",
+  ].map((name) => `${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
+);
+const DOCX_RELATIONSHIP_TAG_RE = /<Relationship\b[^>]*>/gi;
+const DOCX_RELATIONSHIP_TYPE_RE = /\bType\s*=\s*"([^"]*)"/i;
+const DOCX_RELATIONSHIP_TARGET_RE = /\bTarget\s*=\s*"([^"]*)"/i;
+const DOCX_MAIN_DOCUMENT_FALLBACK = "word/document.xml";
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -120,24 +141,90 @@ export function isOpenDocumentAttachment(
 // it before the read rather than after. The adapters call this from add() as
 // well: the composer clears its text and attachments before it awaits send(),
 // so a throw there loses the typed message along with the file.
+export function getDocumentAttachmentSizeError(
+  file: File,
+  label: "PDF" | "DOCX",
+): string | null {
+  return file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES
+    ? `${label} file is too large: ${file.name}`
+    : null;
+}
+
 export function assertDocumentAttachmentSize(
   file: File,
   label: "PDF" | "DOCX",
 ): void {
-  if (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES) {
-    throw new Error(`${label} file is too large: ${file.name}`);
+  const error = getDocumentAttachmentSizeError(file, label);
+  if (error) {
+    throw new Error(error);
   }
 }
 
+// mammoth's joinPath: an absolute target drops the base path.
+function joinDocxPath(basePath: string, target: string): string {
+  const joined = target.startsWith("/")
+    ? target
+    : [basePath, target].filter(Boolean).join("/");
+  return joined.startsWith("/") ? joined.slice(1) : joined;
+}
+
+// The relationship parts are XML, but only their targets are needed, so they are
+// scanned rather than parsed: DOMParser is not available where this also runs
+// under test, and a malformed rels file is mammoth's to report.
+function readDocxXmlTargets(
+  rels: Uint8Array | undefined,
+  basePath: string,
+): string[] {
+  if (!rels) {
+    return [];
+  }
+  const targets: string[] = [];
+  for (const tag of strFromU8(rels).match(DOCX_RELATIONSHIP_TAG_RE) ?? []) {
+    const type = tag.match(DOCX_RELATIONSHIP_TYPE_RE)?.[1];
+    const target = tag.match(DOCX_RELATIONSHIP_TARGET_RE)?.[1];
+    if (type && target && DOCX_XML_RELATIONSHIP_TYPES.has(type)) {
+      targets.push(joinDocxPath(basePath, target));
+    }
+  }
+  return targets;
+}
+
+// The .rels part that names the XML parts of the part at `path`.
+function docxRelationshipsPath(path: string): string {
+  const cut = path.lastIndexOf("/");
+  const dirname = cut === -1 ? "" : path.slice(0, cut);
+  const basename = path.slice(cut + 1);
+  return joinDocxPath(dirname, `_rels/${basename}.rels`);
+}
+
 // mammoth takes no entry filter, so the sizes the archive declares are checked
-// first. This pass decompresses nothing. Every .xml and .rels part is covered,
-// not just word/: mammoth opens "_rels/.rels" and "[Content_Types].xml" before
-// it ever reaches the document body.
+// first. Every .xml and .rels part is covered, not just word/: mammoth opens
+// "_rels/.rels" and "[Content_Types].xml" before it ever reaches the document
+// body. Suffixes alone are not enough, because mammoth resolves the body,
+// styles, numbering and note parts through the relationships, so those targets
+// are bounded by name as well. Only the relationship parts are decompressed
+// here, and only after their own declared size has passed.
 function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
+  const sizes = new Map<string, number>();
   const oversized: string[] = [];
+  const bound = (path: string) => {
+    const size = sizes.get(path);
+    if (size !== undefined && size > MAX_OPEN_DOCUMENT_XML_BYTES) {
+      oversized.push(path);
+    }
+  };
+  const read = (path: string): Uint8Array | undefined => {
+    const size = sizes.get(path);
+    if (size === undefined || size > MAX_OPEN_DOCUMENT_XML_BYTES) {
+      return undefined;
+    }
+    return unzipSync(bytes, { filter: (entry) => entry.name === path })[path];
+  };
+
   try {
     unzipSync(bytes, {
       filter: (entry) => {
+        sizes.set(entry.name, entry.originalSize);
         if (
           DOCX_XML_PART_RE.test(entry.name) &&
           entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES
@@ -147,9 +234,29 @@ function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
         return false;
       },
     });
+
+    if (oversized.length === 0) {
+      const mainDocuments = readDocxXmlTargets(
+        read(DOCX_PACKAGE_RELATIONSHIPS),
+        "",
+      ).filter((path) => sizes.has(path));
+      const mainDocument = mainDocuments[0] ?? DOCX_MAIN_DOCUMENT_FALLBACK;
+      for (const path of mainDocuments) {
+        bound(path);
+      }
+      const cut = mainDocument.lastIndexOf("/");
+      for (const path of readDocxXmlTargets(
+        read(docxRelationshipsPath(mainDocument)),
+        cut === -1 ? "" : mainDocument.slice(0, cut),
+      )) {
+        bound(path);
+      }
+    }
   } catch {
     // A malformed archive is mammoth's to report, not the size guard's.
-    return;
+    if (oversized.length === 0) {
+      return;
+    }
   }
   if (oversized.length > 0) {
     throw new Error(`DOCX XML file is too large: ${filename}:${oversized[0]}`);

@@ -60,10 +60,10 @@ import {
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 import {
-  assertDocumentAttachmentSize,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
+  getDocumentAttachmentSizeError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
@@ -271,8 +271,15 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 
   // Refused here, not at send: the composer empties itself before it awaits
   // send(), so a ceiling that only fires there discards the typed message too.
+  // The throw itself is invisible, as with audio: nothing subscribes to
+  // attachmentAddError and the picker never awaits addAttachment, so the toast
+  // is the only thing that tells the user why no file appeared.
   add({ file }: { file: File }): Promise<PendingAttachment> {
-    assertDocumentAttachmentSize(file, "PDF");
+    const sizeError = getDocumentAttachmentSizeError(file, "PDF");
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
+    }
     return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
@@ -392,7 +399,11 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   add({ file }: { file: File }): Promise<PendingAttachment> {
-    assertDocumentAttachmentSize(file, "DOCX");
+    const sizeError = getDocumentAttachmentSizeError(file, "DOCX");
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
+    }
     return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",

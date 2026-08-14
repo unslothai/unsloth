@@ -87,7 +87,11 @@ test("the attachment selector still resolves text and image attachments", () => 
 
 // The composer runs _emptyTextAndAttachments() before it awaits adapter.send(),
 // so a ceiling that only fires at send drops the typed message with the file.
-test("the pdf and docx adapters apply the size ceiling when the file is added", () => {
+// The refusal also has to be visible: the file picker calls addAttachment
+// without awaiting it and nothing subscribes to attachmentAddError, so a bare
+// throw leaves the user with no file and no reason, as the audio adapter's
+// toast avoids.
+test("the pdf and docx adapters refuse an oversized file at add, with a toast", () => {
   const provider = source("features/chat/runtime-provider.tsx");
 
   for (const [adapter, label] of [
@@ -98,7 +102,7 @@ test("the pdf and docx adapters apply the size ceiling when the file is added", 
     assert.notEqual(start, -1, `${adapter} not found`);
     const body = provider.slice(start, provider.indexOf("\n}", start));
     const guard = body.indexOf(
-      `assertDocumentAttachmentSize(file, "${label}")`,
+      `getDocumentAttachmentSizeError(file, "${label}")`,
     );
     assert.notEqual(
       guard,
@@ -110,6 +114,12 @@ test("the pdf and docx adapters apply the size ceiling when the file is added", 
         guard < body.indexOf("async send("),
       true,
       `${adapter} accepts a file past the ceiling and only fails at send`,
+    );
+    const toasted = body.indexOf("toast.error(sizeError)");
+    assert.equal(
+      toasted > guard && toasted < body.indexOf("async send("),
+      true,
+      `${adapter} refuses an oversized file without telling the user`,
     );
   }
 });
