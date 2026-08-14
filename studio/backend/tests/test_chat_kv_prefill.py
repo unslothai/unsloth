@@ -33,6 +33,13 @@ class _Backend:
     context_length = 4096
     markup_profile = None
 
+    supports_tools = True
+    is_vision = False
+
+    @staticmethod
+    def _prompt_cache_off():
+        return False
+
     @staticmethod
     def _request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking):
         return {
@@ -118,6 +125,41 @@ def test_prefill_forwards_zero_token_nonstreaming_request(monkeypatch):
     assert upstream.closed is True
 
 
+def test_prefill_reproduces_studio_tool_prompt(monkeypatch):
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "python",
+            "description": "Run Python",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+    async def select_tools(_payload, *, tools_on, mcp_allowed):
+        assert tools_on is True
+        assert mcp_allowed is False
+        return [tool]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", select_tools)
+    monkeypatch.setattr(
+        inference_route,
+        "_build_tool_action_nudge",
+        lambda **_kwargs: "USE THE PYTHON TOOL",
+    )
+    upstream = _Client()
+    response = _client(monkeypatch, _Backend(), upstream).post(
+        "/api/inference/chat/prefill",
+        json = _payload(enable_tools = True),
+    )
+
+    assert response.json() == {"prefilled": True}
+    [call] = upstream.calls
+    sent = call["json"]
+    assert sent["tools"] == [tool]
+    assert sent["tool_choice"] == "auto"
+    assert sent["messages"][0]["content"].endswith("USE THE PYTHON TOOL")
+
+
 def test_prefill_does_not_route_external_or_unloaded_models(monkeypatch):
     upstream = _Client()
     client = _client(monkeypatch, _Backend(), upstream)
@@ -150,6 +192,19 @@ def test_prefill_rejects_audio_and_diffusion_runtimes(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: diffusion)
     diffusion_response = client.post("/api/inference/chat/prefill", json = _payload())
     assert diffusion_response.json() == {"prefilled": False, "reason": "unsupported"}
+    assert upstream.calls == []
+
+
+def test_prefill_skips_when_prompt_cache_is_disabled(monkeypatch):
+    backend = _Backend()
+    backend._prompt_cache_off = lambda: True
+    upstream = _Client()
+    response = _client(monkeypatch, backend, upstream).post(
+        "/api/inference/chat/prefill",
+        json = _payload(),
+    )
+
+    assert response.json() == {"prefilled": False, "reason": "unsupported"}
     assert upstream.calls == []
 
 
@@ -284,3 +339,9 @@ def test_prefill_task_cancellation_releases_lease_and_client(monkeypatch):
     asyncio.run(run())
     assert upstream.closed is True
     assert lease.released is True
+
+
+def test_prefill_route_is_tracked_by_inference_lifecycle():
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/api/inference/chat/prefill") is True

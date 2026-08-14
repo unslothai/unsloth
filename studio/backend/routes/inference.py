@@ -22470,6 +22470,80 @@ async def _build_chat_prefill_body(payload, llama_backend) -> dict:
         backend_ctx = llama_backend.context_length,
         llama_backend = llama_backend,
     )
+
+    # Studio's managed tool loop renders a different first prompt than the plain
+    # passthrough: it selects server tools, adds the tool/RAG system nudge, and
+    # sanitizes tool markup. Reproduce that prompt so the warmed prefix is reusable.
+    client_disabled_tools = getattr(payload, "tool_choice", None) == "none" and not (
+        _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
+    )
+    tools_on = False if client_disabled_tools else _effective_enable_tools(payload)
+    from state.tool_policy import get_tool_policy
+
+    mcp_allowed = (
+        not client_disabled_tools
+        and bool(getattr(payload, "mcp_enabled", False))
+        and get_tool_policy() is not False
+    )
+    if (tools_on or mcp_allowed) and llama_backend.supports_tools:
+        tools = await _select_request_tools(
+            payload,
+            tools_on = tools_on,
+            mcp_allowed = mcp_allowed,
+        )
+        if tools:
+            messages, _ = await _openai_messages_for_gguf_chat_async(
+                payload,
+                llama_backend.is_vision,
+            )
+            system_prompt, _, _ = _extract_content_parts(payload.messages)
+            messages = _set_or_prepend_system_message(messages, system_prompt)
+            messages = _append_to_system_message(
+                messages,
+                _apply_rag_nudge(
+                    _build_tool_action_nudge(
+                        tools = tools,
+                        model_name = _llama_public_model_id(llama_backend, payload.model),
+                        full_access = bool(payload.bypass_permissions),
+                    ),
+                    tools,
+                    rag_scope = payload.rag_scope,
+                ),
+            )
+            auto_heal = (
+                payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True
+            )
+            enabled_tool_names = _display_tool_name_gate(tools)
+            for message in messages:
+                if message.get("role") == "assistant" and isinstance(message.get("content"), str):
+                    message["content"] = _strip_tool_xml_for_display(
+                        message["content"],
+                        auto_heal_tool_calls = auto_heal,
+                        enabled_tool_names = enabled_tool_names,
+                    ).strip()
+
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                sweep_cache,
+            )
+
+            markup_cache = sweep_cache()
+            tools = neutralize_tool_descriptions(tools, markup_cache, llama_backend.markup_profile)
+            body["messages"] = neutralize_control_markup_in_messages(
+                messages,
+                markup_cache,
+                llama_backend.markup_profile,
+            )
+            if tools:
+                body["tools"] = tools
+                body["tool_choice"] = "auto"
+            else:
+                body.pop("tools", None)
+                body.pop("tool_choice", None)
+
     body["stream"] = False
     body.pop("stream_options", None)
     # llama.cpp's web UI uses n_predict=0: evaluate the complete chat template
@@ -22499,6 +22573,7 @@ async def prefill_chat_cache(
         not llama_backend.is_loaded
         or llama_backend.is_diffusion
         or getattr(llama_backend, "_is_audio", False)
+        or llama_backend._prompt_cache_off()
     ):
         return {"prefilled": False, "reason": "unsupported"}
 

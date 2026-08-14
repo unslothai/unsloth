@@ -497,11 +497,17 @@ export function ChatSettingsPanel({
 
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
+  const loadedIsAudio = useChatRuntimeStore(
+    (s) =>
+      s.models.find((model) => model.id === s.residentCheckpoint)?.isAudio ??
+      false,
+  );
   const showChatKvPrefill = isChatKvPrefillAvailable({
     isExternalModel,
     residentCheckpoint,
     ggufContextLength,
     loadedIsDiffusion,
+    loadedIsAudio,
   });
   // Direct-file / custom-folder GGUFs load without a variant label but still
   // report a GGUF context, so detect them via the context and the checkpoint

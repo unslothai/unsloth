@@ -30,6 +30,7 @@ test("prefill is available only for a resident llama.cpp chat model", () => {
     residentCheckpoint: "local-model",
     ggufContextLength: 4096,
     loadedIsDiffusion: false,
+    loadedIsAudio: false,
   };
 
   assert.equal(isChatKvPrefillAvailable(loadedGguf), true);
@@ -51,6 +52,11 @@ test("prefill is available only for a resident llama.cpp chat model", () => {
   );
   assert.equal(
     isChatKvPrefillAvailable({ ...loadedGguf, loadedIsDiffusion: true }),
+    false,
+  );
+
+  assert.equal(
+    isChatKvPrefillAvailable({ ...loadedGguf, loadedIsAudio: true }),
     false,
   );
 });
@@ -125,8 +131,30 @@ test("continued responses replace the partial trailing assistant", () => {
   ]);
 });
 
-test("an empty assistant replay suppresses prefill", () => {
-  assert.equal(buildChatKvPrefillPayload(request(), []), null);
+test("empty text is skipped while tool-only responses are prefilled", () => {
+  assert.equal(
+    buildChatKvPrefillPayload(request(), [
+      { role: "assistant", content: "" },
+    ]),
+    null,
+  );
+
+  const payload = buildChatKvPrefillPayload(request(), [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id: "call-1",
+          type: "function",
+          function: { name: "python", arguments: "{}" },
+        },
+      ],
+    },
+    { role: "tool", tool_call_id: "call-1", content: "2" },
+  ]);
+  assert.ok(payload);
+  assert.equal(payload.messages.at(-1)?.role, "tool");
 });
 
 test("new work aborts the previous prefill and failures stay best effort", async () => {

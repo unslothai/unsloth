@@ -3442,6 +3442,12 @@ async function resolveQueuedEmptyLocalModel(
 
 const chatKvPrefill = createChatKvPrefillCoordinator(prefillChatConversation);
 
+useChatRuntimeStore.subscribe((state, previousState) => {
+  if (previousState.preEncodeConversation && !state.preEncodeConversation) {
+    chatKvPrefill.cancel();
+  }
+});
+
 export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
@@ -6272,17 +6278,22 @@ export function createOpenAIStreamAdapter(
         // Finalize reasoning-only streams.
         reasoningDurationTracker.finishGroup();
         const finalConversationText = mergeContinuation(cumulativeText);
+        const livePrefillRuntime = useChatRuntimeStore.getState();
+        const loadedIsAudio =
+          livePrefillRuntime.models.find(
+            (model) => model.id === livePrefillRuntime.residentCheckpoint,
+          )?.isAudio ?? false;
         if (
-          runtime.preEncodeConversation &&
+          livePrefillRuntime.preEncodeConversation &&
           isChatKvPrefillAvailable({
             isExternalModel: isExternalRequest,
-            residentCheckpoint: runtime.residentCheckpoint,
-            ggufContextLength: runtime.ggufContextLength,
-            loadedIsDiffusion: runtime.loadedIsDiffusion,
+            residentCheckpoint: livePrefillRuntime.residentCheckpoint,
+            ggufContextLength: livePrefillRuntime.ggufContextLength,
+            loadedIsDiffusion: livePrefillRuntime.loadedIsDiffusion,
+            loadedIsAudio,
           }) &&
           incompleteReason === null &&
-          completedRequestPayload !== null &&
-          finalConversationText.trim().length > 0
+          completedRequestPayload !== null
         ) {
           const finalAssistantMessage = {
             id: unstable_assistantMessageId ?? crypto.randomUUID(),

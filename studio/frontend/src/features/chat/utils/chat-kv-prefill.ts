@@ -11,6 +11,7 @@ export interface ChatKvPrefillAvailability {
   residentCheckpoint: string | null | undefined;
   ggufContextLength: number | null;
   loadedIsDiffusion: boolean;
+  loadedIsAudio: boolean;
 }
 
 /** Keep the visible control and the post-response dispatch on the same runtime gate. */
@@ -19,12 +20,14 @@ export function isChatKvPrefillAvailable({
   residentCheckpoint,
   ggufContextLength,
   loadedIsDiffusion,
+  loadedIsAudio,
 }: ChatKvPrefillAvailability): boolean {
   return (
     !isExternalModel &&
     residentCheckpoint != null &&
     ggufContextLength != null &&
-    !loadedIsDiffusion
+    !loadedIsDiffusion &&
+    !loadedIsAudio
   );
 }
 
@@ -32,7 +35,16 @@ export function buildChatKvPrefillPayload(
   request: OpenAIChatCompletionsRequest,
   finalizedAssistantMessages: OpenAIChatMessage[],
 ): OpenAIChatCompletionsRequest | null {
-  if (finalizedAssistantMessages.length === 0) {
+  const hasMeaningfulReplay = finalizedAssistantMessages.some((message) => {
+    if (message.role === "tool" || (message.tool_calls?.length ?? 0) > 0) {
+      return true;
+    }
+    if (typeof message.content === "string") {
+      return message.content.trim().length > 0;
+    }
+    return Array.isArray(message.content) && message.content.length > 0;
+  });
+  if (!hasMeaningfulReplay) {
     return null;
   }
 
