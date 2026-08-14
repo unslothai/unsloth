@@ -38,6 +38,11 @@ export interface SystemGpuInfo {
 export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
+  /** Client-side, not sent by the backend: false on the placeholder below until
+   * /api/system answers. Readers that render a verdict about the host -- "no
+   * GPU", "CPU only" -- must check it, or they state it as fact before anything
+   * has been read. */
+  loaded: boolean;
   platform: string;
   python_version: string;
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
@@ -75,6 +80,7 @@ let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
 
 const DEFAULT_SYSTEM: SystemInfoResponse = {
+  loaded: false,
   platform: "Unknown",
   python_version: "Unknown",
   device_backend: "cpu",
@@ -149,7 +155,7 @@ export async function fetchSystemInfo({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      cachedSystem = data as SystemInfoResponse;
+      cachedSystem = { ...(data as SystemInfoResponse), loaded: true };
       systemSubscribers.forEach((subscriber) => subscriber(cachedSystem!));
       return cachedSystem;
     } catch {

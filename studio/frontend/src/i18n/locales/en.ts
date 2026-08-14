@@ -833,6 +833,7 @@ export const en = {
         title: "GPU devices",
         ggufInference: "GGUF inference",
         unavailable: "unavailable",
+        detecting: "Checking for GPUs...",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
