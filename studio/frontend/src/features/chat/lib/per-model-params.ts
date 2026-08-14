@@ -31,6 +31,15 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
+/** What the per-model memory records. `maxSeqLength` is left out: the context a
+ * model loads with is already kept per model by its load config, and that is the
+ * value the load uses. A second copy replayed over it would leave the runtime
+ * advertising a context the backend never loaded. */
+export const REMEMBERED_INFERENCE_PARAM_KEYS =
+  PERSISTED_INFERENCE_PARAM_KEYS.filter(
+    (key): key is PersistedInferenceParamKey => key !== "maxSeqLength",
+  );
+
 export function setInferenceParam(
   params: InferenceParams,
   key: PersistedInferenceParamKey,
@@ -39,13 +48,13 @@ export function setInferenceParam(
   (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
 }
 
-/** The persisted subset of a params object. No version-bumping side effect,
+/** The remembered subset of a params object. No version-bumping side effect,
  * unlike getChangedInferenceParams. */
-export function pickPersistedInferenceParams(
+export function pickRememberedParams(
   params: InferenceParams,
 ): PersistedInferenceParams {
   const picked: PersistedInferenceParams = {};
-  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+  for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
     const value = params[key];
     if (value !== undefined) {
       setInferenceParam(picked as InferenceParams, key, value);
@@ -54,8 +63,11 @@ export function pickPersistedInferenceParams(
   return picked;
 }
 
-function hasKeys(value: object): boolean {
-  return Object.keys(value).length > 0;
+/** Whether an edit moved anything the memory keeps. */
+function movedRememberedParam(changed: PersistedInferenceParams): boolean {
+  return REMEMBERED_INFERENCE_PARAM_KEYS.some(
+    (key) => changed[key] !== undefined,
+  );
 }
 
 /** The map after an edit, or null when there is nothing to record (off, no model,
@@ -68,7 +80,7 @@ export function getRememberedParamsPatch(
   changedParams: PersistedInferenceParams,
   snapshot: PersistedInferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
-  if (!(enabled && modelId && hasKeys(changedParams))) {
+  if (!(enabled && modelId && movedRememberedParam(changedParams))) {
     return null;
   }
   // The whole snapshot, not just what moved: replay overlays the entry onto the

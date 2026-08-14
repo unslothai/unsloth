@@ -16,10 +16,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 import {
-  PERSISTED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_INFERENCE_PARAM_KEYS,
   getRememberedParamsPatch,
   getReplayedParams,
-  pickPersistedInferenceParams,
+  pickRememberedParams,
 } from "../src/features/chat/lib/per-model-params.ts";
 import type { InferenceParams } from "../src/features/chat/types/runtime.ts";
 
@@ -55,7 +55,7 @@ function record(
     paramsByModel as never,
     modelId,
     changed as never,
-    pickPersistedInferenceParams(full),
+    pickRememberedParams(full),
   );
 }
 
@@ -110,7 +110,7 @@ test("a model returns to the prompt it was last used with", () => {
 // params. Replay has to happen on that call or the common switch restores
 // nothing. This walks that exact sequence through the two helpers setParams uses.
 test("a local model load replays memory over the backend's recommendation", () => {
-  let memory: Record<string, ReturnType<typeof pickPersistedInferenceParams>> = {};
+  let memory: Record<string, ReturnType<typeof pickRememberedParams>> = {};
   let live = params({ checkpoint: QWEN });
 
   function loadModel(modelId: string, recommended: Partial<InferenceParams>) {
@@ -140,7 +140,7 @@ test("a local model load replays memory over the backend's recommendation", () =
 test("the model being switched away from is remembered", () => {
   // Startup after an upgrade: global params hydrated, nothing remembered yet.
   const onA = params({ checkpoint: QWEN, temperature: 0.2, systemPrompt: "A" });
-  const memory = record({}, QWEN, pickPersistedInferenceParams(onA), onA);
+  const memory = record({}, QWEN, pickRememberedParams(onA), onA);
   assert.ok(memory, "leaving A records what A was running with");
 
   const onB = getReplayedParams(true, memory, onA, LLAMA, true);
@@ -156,7 +156,7 @@ test("the model being switched away from is remembered", () => {
 // which carries the model's context length as maxTokens. Replay has to run on
 // that second call too or the remembered output limit is lost every load.
 test("a load response does not overwrite a remembered token budget", () => {
-  const memory = { [QWEN]: { ...pickPersistedInferenceParams(params()), maxTokens: 4096 } };
+  const memory = { [QWEN]: { ...pickRememberedParams(params()), maxTokens: 4096 } };
   const afterCheckpoint = getReplayedParams(true, memory, params(), QWEN, true);
   assert.equal(afterCheckpoint.maxTokens, 4096);
 
@@ -206,7 +206,7 @@ test("a model's defaults do not outrank what it is remembered with", async () =>
 
 // Null is how the store leaves the map and its hydration version untouched.
 test("nothing is recorded when there is nothing to record", () => {
-  const snapshot = pickPersistedInferenceParams(params());
+  const snapshot = pickRememberedParams(params());
   assert.equal(
     getRememberedParamsPatch(false, {}, QWEN, { temperature: 0.2 }, snapshot),
     null,
@@ -278,14 +278,17 @@ test("the feature being off leaves a model switch alone", () => {
 
 // Turning the setting on adopts what is on screen for the active model, so the
 // first switch away and back returns to it rather than to nothing.
-test("the persisted snapshot covers every persisted key and excludes the checkpoint", () => {
-  const picked = pickPersistedInferenceParams(params());
+test("the snapshot covers every remembered key and excludes the checkpoint", () => {
+  const picked = pickRememberedParams(params());
   assert.equal(
     "checkpoint" in picked,
     false,
     "the checkpoint names the model, it is not one of the values",
   );
-  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+  // The context a model loads with is already kept per model by its load
+  // config, and that is the copy the load uses.
+  assert.equal("maxSeqLength" in picked, false);
+  for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
     if (params()[key] !== undefined) {
       assert.ok(key in picked, `${key} should be captured`);
     }
@@ -293,7 +296,7 @@ test("the persisted snapshot covers every persisted key and excludes the checkpo
 });
 
 test("the snapshot drops params the current model never set", () => {
-  const picked = pickPersistedInferenceParams(
+  const picked = pickRememberedParams(
     params({ topK: undefined as unknown as number }),
   );
   assert.equal("topK" in picked, false);

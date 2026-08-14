@@ -37,8 +37,7 @@ export function applyPerModelConfigToRuntime(
     defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
   if (maxSeqLength !== store.params.maxSeqLength) {
-    // The value belongs to the model about to load, not the one still current.
-    store.setParams({ ...store.params, maxSeqLength }, { stagedForLoad: true });
+    store.setParams({ ...store.params, maxSeqLength });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined

@@ -203,10 +203,11 @@ test("a partial stored entry does not borrow from the previous model", async () 
   );
 });
 
-// Staging writes the next model's context length into the params of the one
-// still on screen, and the switch that follows snapshots those params. Marking
-// the staging call alone left the value to reach the outgoing model anyway.
-test("the model being left is remembered without the staged value", () => {
+// The context a model loads with is already kept per model by its load config,
+// and that is the copy the load uses. Recording a second one here is what let a
+// load stage the next model's context into the model being left, and what let a
+// replay leave the runtime advertising a context the backend never loaded.
+test("the context length is not part of what a model remembers", () => {
   useChatRuntimeStore.setState({
     params: {
       ...useChatRuntimeStore.getState().params,
@@ -217,12 +218,16 @@ test("the model being left is remembered without the staged value", () => {
     paramsByModel: {},
   });
 
-  // applyPerModelConfigToRuntime, staging the model about to load.
+  // applyPerModelConfigToRuntime, staging the context of the model about to
+  // load while the previous one is still current.
   const staging = useChatRuntimeStore.getState();
-  staging.setParams(
-    { ...staging.params, maxSeqLength: 32768 },
-    { stagedForLoad: true },
+  staging.setParams({ ...staging.params, maxSeqLength: 32768 });
+  assert.deepEqual(
+    useChatRuntimeStore.getState().paramsByModel,
+    {},
+    "a context on its own is not an edit this remembers",
   );
+
   // The load lands and the checkpoint moves.
   const switching = useChatRuntimeStore.getState();
   switching.setParams(
@@ -231,36 +236,42 @@ test("the model being left is remembered without the staged value", () => {
   );
 
   const remembered = useChatRuntimeStore.getState().paramsByModel[LLAMA];
-  assert.equal(remembered?.maxSeqLength, 4096, "its own context, not Qwen's");
-  assert.equal(remembered?.temperature, 0.33, "everything else still recorded");
+  assert.equal(remembered?.temperature, 0.33, "its sampling is remembered");
+  assert.equal(
+    "maxSeqLength" in (remembered ?? {}),
+    false,
+    "its context is not, so nothing replays over the loaded one",
+  );
 });
 
-// Only what staging wrote, and only while nothing has changed it since.
-test("an edit after staging outranks the staged value", () => {
+// A model loaded while the settings request is in flight has no entry to
+// restore its defaults from, so the hydrated global set would hand it the
+// sampling of whichever model was used last.
+test("a model loaded before hydration keeps its own defaults", async () => {
+  settingsHttp.settings = {
+    inferenceParams: { temperature: 0.42, systemPrompt: "the last model's" },
+    inferenceParamsByModel: {},
+  };
+  settingsHttp.hold();
   useChatRuntimeStore.setState({
-    params: {
-      ...useChatRuntimeStore.getState().params,
-      checkpoint: LLAMA,
-      maxSeqLength: 4096,
-    },
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
     paramsByModel: {},
+    settingsHydrated: false,
   });
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
 
-  const staging = useChatRuntimeStore.getState();
-  staging.setParams(
-    { ...staging.params, maxSeqLength: 32768 },
-    { stagedForLoad: true },
-  );
-  // The user sets a context of their own before the load happens.
-  const editing = useChatRuntimeStore.getState();
-  editing.setParams({ ...editing.params, maxSeqLength: 16384 });
-  const switching = useChatRuntimeStore.getState();
-  switching.setParams({ ...switching.params, checkpoint: QWEN });
+  applyStatus(QWEN);
 
+  settingsHttp.release?.();
+  await hydrating;
+
+  const params = useChatRuntimeStore.getState().params;
   assert.equal(
-    useChatRuntimeStore.getState().paramsByModel[LLAMA]?.maxSeqLength,
-    16384,
+    params.temperature,
+    0.9,
+    "the recommendation it loaded with, not the saved global set",
   );
+  assert.equal(params.topP, 0.5);
 });
 
 // A model's defaults are not settings it was used with. Recording them makes
@@ -291,34 +302,6 @@ test("model defaults are replayed over, not recorded", () => {
   assert.equal(params.minP, 0);
   assert.equal(params.presencePenalty, 1.5);
 });
-
-// Params staged for the model about to load are applied while the previous one
-// is still current, so they must not be filed against it.
-test("staged load params are not filed against the model on screen", () => {
-  useChatRuntimeStore.setState({
-    params: {
-      ...useChatRuntimeStore.getState().params,
-      checkpoint: LLAMA,
-      maxSeqLength: 4096,
-    },
-    paramsByModel: {},
-  });
-
-  const store = useChatRuntimeStore.getState();
-  store.setParams(
-    { ...store.params, maxSeqLength: 32768 },
-    { stagedForLoad: true },
-  );
-
-  const after = useChatRuntimeStore.getState();
-  assert.equal(
-    after.params.maxSeqLength,
-    32768,
-    "still applied to the runtime",
-  );
-  assert.deepEqual(after.paramsByModel, {}, "but not remembered for Llama");
-});
-
 // Unloading or evicting leaves a model the same way switching does.
 test("clearing the checkpoint remembers the model being dropped", () => {
   useChatRuntimeStore.setState({
@@ -401,20 +384,4 @@ test("the sites that know the loaded context pass it as the cap", () => {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
     assert.match(source, pattern, path);
   }
-});
-
-// Staged load params describe the model about to load, so they must not be
-// filed against the one still on screen.
-test("a staged per-model config is marked as such", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/model-picker/model-config/apply-per-model-config.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(
-    source,
-    /setParams\(\s*\{ \.\.\.store\.params, maxSeqLength \},\s*\{ stagedForLoad: true \}/,
-  );
 });
