@@ -637,3 +637,115 @@ test("turning the memory off is persisted and hydrated back", async () => {
   await useChatRuntimeStore.getState().hydratePersistedSettings();
   assert.equal(useChatRuntimeStore.getState().rememberParamsPerModel, false);
 });
+
+// A safetensors load publishes its context through the cap, not through
+// ggufContextLength, which is null for everything that is not a GGUF. Without
+// keeping it, the hydration replay has nothing to clamp against and restores a
+// budget the load cannot hold.
+test("a safetensors context also caps the hydration replay", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    ggufContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { maxTokens: 32768 },
+    inferenceParamsByModel: { [LLAMA]: { maxTokens: 32768 } },
+  };
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  // The status beats the settings response and reports the smaller context.
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, maxSeqLength: 8192, maxTokens: 8192 },
+    { fromModelDefaults: true, maxTokensCap: 8192 },
+  );
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+
+  settingsHttp.release?.();
+  await hydrating;
+  assert.equal(
+    useChatRuntimeStore.getState().params.maxTokens,
+    8192,
+    "the replay fits the context the load actually has",
+  );
+});
+
+// The cap belongs to the model it was reported for: a switch away from it must
+// not carry it onto the next one.
+test("a kept context does not follow the next model", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    ggufContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { maxTokens: 32768 },
+    inferenceParamsByModel: { [QWEN]: { maxTokens: 32768 } },
+  };
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, maxTokens: 8192 },
+    { fromModelDefaults: true, maxTokensCap: 8192 },
+  );
+  // A different model takes over, with no context reported for it.
+  const switched = useChatRuntimeStore.getState();
+  switched.setParams({ ...switched.params, checkpoint: QWEN });
+
+  settingsHttp.release?.();
+  await hydrating;
+  assert.equal(
+    useChatRuntimeStore.getState().params.maxTokens,
+    32768,
+    "the other model's smaller context does not clamp this one",
+  );
+});
+
+// The settings on screen got there by replay, and a hidden load replays
+// without persisting, so the global set can still be the previous model's.
+// Turning the memory off has to promote what is on screen, or the next launch
+// restores that other model's set instead.
+test("turning the memory off keeps the settings on screen", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: { [LLAMA]: { temperature: 0.11, systemPrompt: "B" } },
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      temperature: 0.9,
+      systemPrompt: "A",
+    },
+  });
+  await settled();
+  settingsHttp.puts.length = 0;
+
+  // A hidden restore: B's settings reach the screen, nothing is written.
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint: LLAMA },
+    { fromModelDefaults: true, persist: false },
+  );
+  assert.equal(useChatRuntimeStore.getState().params.temperature, 0.11);
+  assert.equal(
+    settingsHttp.puts.length,
+    0,
+    "the hidden restore wrote nothing, which is the point",
+  );
+
+  useChatRuntimeStore.getState().setRememberParamsPerModel(false);
+  await settled();
+  const written: Record<string, unknown> = {};
+  for (const put of settingsHttp.puts) Object.assign(written, put);
+  const globals = written.inferenceParams as Record<string, unknown>;
+  assert.equal(globals?.temperature, 0.11);
+  assert.equal(globals?.systemPrompt, "B");
+});

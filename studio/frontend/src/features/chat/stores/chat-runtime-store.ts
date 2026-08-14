@@ -2032,6 +2032,23 @@ function pickLocallyEditedParams(
   return edited;
 }
 
+/** The context published for the model on screen by the last load or status
+ * that carried one. ggufContextLength answers this for a GGUF and is null for
+ * every other kind, so without it a safetensors model has nothing to clamp the
+ * hydration replay against. Keyed by checkpoint: a cap belongs to the model it
+ * was reported for. */
+let loadedContext: { checkpoint: string; cap: number } | null = null;
+
+function noteLoadedContext(checkpoint: string, cap: number | undefined): void {
+  if (cap !== undefined) {
+    loadedContext = { checkpoint, cap };
+  }
+}
+
+function loadedContextFor(checkpoint: string): number | null {
+  return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
+}
+
 /** A model that took over from another one while the settings request was in
  * flight. Its defaults lose to its own remembered entry, but they outrank the
  * global set, which belongs to whichever model was used last. Not narrowed to
@@ -2193,11 +2210,9 @@ function getHydratedSettingsState(
     // The same cap the load and status replays apply: a status that beat this
     // response has already published the context the model actually loaded
     // with, and a budget remembered from a larger one does not fit it.
-    if (
-      state.ggufContextLength !== null &&
-      replayed.maxTokens > state.ggufContextLength
-    ) {
-      replayed.maxTokens = state.ggufContextLength;
+    const cap = loadedContextFor(checkpoint) ?? state.ggufContextLength;
+    if (cap !== null && replayed.maxTokens > cap) {
+      replayed.maxTokens = cap;
     }
     nextState.params = replayed;
   }
@@ -2475,6 +2490,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // common one, never restores the model's own settings. fromModelDefaults
       // marks the updates that re-apply model defaults after a load or a status
       // poll: they overwrite remembered values, so memory goes back over them.
+      noteLoadedContext(params.checkpoint, options?.maxTokensCap);
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
@@ -3211,6 +3227,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             [state.params.checkpoint]: paramsByModel[state.params.checkpoint],
           },
         });
+      }
+      // Turning it off makes the settings on screen the one shared set. They
+      // reached the screen by replay, and a hidden load replays without
+      // persisting, so the global set can still be the last model's: without
+      // this the next launch restores that one instead of what is on screen.
+      if (!rememberParamsPerModel && state.settingsHydrated) {
+        saveSettingsPatch({ inferenceParams: snapshot });
       }
       return {
         rememberParamsPerModel,
