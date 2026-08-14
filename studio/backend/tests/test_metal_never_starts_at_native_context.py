@@ -84,6 +84,8 @@ def _launch(
     metal = True,
     ctx_metadata = None,
     extra_args = None,
+    gpu_memory_mode = "auto",
+    gpu_layers = -1,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition)."""
     monkeypatch.setattr(
@@ -133,12 +135,12 @@ def _launch(
                 gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
                 model_identifier = "test",
                 n_ctx = 0,
-                gpu_memory_mode = "auto",
-                gpu_layers = -1,
+                gpu_memory_mode = gpu_memory_mode,
+                gpu_layers = gpu_layers,
                 extra_args = extra_args,
             )
         )
-    return captured["cmd"]
+    return captured["cmd"], backend
 
 
 @pytest.fixture
@@ -214,8 +216,9 @@ class TestAPassThroughZeroContext:
     def test_a_positive_or_absent_override_is_left_alone(self, on_metal, override):
         assert _drops(override, False, "auto") is False
 
-    def test_auto_layers_is_left_alone(self, on_metal):
-        assert _drops(0, True, "manual") is False
+    def test_auto_layers_drops_it_too(self, on_metal):
+        """Auto-layers omits -c so --fit sizes it; a trailing zero disables that."""
+        assert _drops(0, True, "manual") is True
 
     def test_manual_offload_is_left_alone(self, on_metal):
         assert _drops(0, False, "manual") is False
@@ -233,18 +236,18 @@ class TestTheEmittedCommand:
     """
 
     def test_a_zero_override_does_not_outlive_the_floor(self, tmp_path, monkeypatch):
-        cmd = _launch(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
+        cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
         assert _ctx_values(cmd) == ["4096"]
         # Only the context is dropped; the rest of the user's extras survive.
         assert "--top-k" in cmd and "5" in cmd
 
     def test_the_long_spelling_is_dropped_too(self, tmp_path, monkeypatch):
-        cmd = _launch(tmp_path, monkeypatch, extra_args = ["--ctx-size=0"])
+        cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--ctx-size=0"])
         assert _ctx_values(cmd) == ["4096"]
 
     def test_a_capped_context_also_drops_the_zero_override(self, tmp_path, monkeypatch):
         """The Apple cap ran, so the floor stays inert -- the drop still has to fire."""
-        cmd = _launch(tmp_path, monkeypatch, ctx_metadata = 262144, extra_args = ["-c", "0"])
+        cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144, extra_args = ["-c", "0"])
         assert _ctx_values(cmd) == ["4096"]
 
     def test_the_context_studio_computed_is_what_survives(self, tmp_path, monkeypatch):
@@ -254,21 +257,67 @@ class TestTheEmittedCommand:
         requested_ctx > 0), so the cap overrides it either way. Dropping it from
         the extras only stops the trailing copy from undoing that.
         """
-        cmd = _launch(tmp_path, monkeypatch, ctx_metadata = 2048, extra_args = ["-c", "0"])
+        cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 2048, extra_args = ["-c", "0"])
         assert _ctx_values(cmd) == ["2048"]
 
     def test_a_positive_override_is_still_honored(self, tmp_path, monkeypatch):
-        cmd = _launch(tmp_path, monkeypatch, extra_args = ["-c", "8192"])
+        cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["-c", "8192"])
         assert _ctx_values(cmd)[-1] == "8192"
 
     def test_without_an_override_the_floor_stands(self, tmp_path, monkeypatch):
-        cmd = _launch(tmp_path, monkeypatch)
+        cmd, _ = _launch(tmp_path, monkeypatch)
         assert _ctx_values(cmd) == ["4096"]
 
     def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
         """Linux and Windows keep today's behaviour, zero override included."""
-        cmd = _launch(tmp_path, monkeypatch, metal = False, extra_args = ["-c", "0"])
+        cmd, _ = _launch(tmp_path, monkeypatch, metal = False, extra_args = ["-c", "0"])
         assert _ctx_values(cmd) == ["0", "0"]
+
+
+class TestAutoLayers:
+    """gpu_memory_mode "manual" with gpu_layers < 0: no -c, --fit sizes it.
+
+    That is the one mode where the context is decided entirely by --fit, so a
+    pass-through "-c 0" is worse here than anywhere else: it sets
+    fit_params_min_ctx = UINT32_MAX and the fit this mode relies on never runs.
+    """
+
+    def _launch_auto_layers(self, tmp_path, monkeypatch, **kwargs):
+        return _launch(tmp_path, monkeypatch, gpu_memory_mode = "manual", gpu_layers = -1, **kwargs)
+
+    def test_no_context_is_passed_without_an_override(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_auto_layers(tmp_path, monkeypatch)
+        assert _ctx_values(cmd) == []
+        assert "--fit" in cmd
+
+    def test_a_zero_override_does_not_reach_the_server(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_auto_layers(
+            tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"]
+        )
+        assert _ctx_values(cmd) == []
+        assert "--fit" in cmd
+        assert "--top-k" in cmd and "5" in cmd
+
+    def test_a_positive_override_is_still_honored(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_auto_layers(tmp_path, monkeypatch, extra_args = ["-c", "8192"])
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
+        cmd, _ = self._launch_auto_layers(
+            tmp_path, monkeypatch, metal = False, extra_args = ["-c", "0"]
+        )
+        assert _ctx_values(cmd) == ["0"]
+
+    def test_a_fixed_manual_layer_count_keeps_the_override(self, tmp_path, monkeypatch):
+        """Not Auto-layers: the user owns the budget, so nothing is dropped."""
+        cmd, _ = _launch(
+            tmp_path,
+            monkeypatch,
+            gpu_memory_mode = "manual",
+            gpu_layers = 20,
+            extra_args = ["-c", "0"],
+        )
+        assert _ctx_values(cmd)[-1] == "0"
 
 
 def test_the_emission_guard_is_still_in_place():
@@ -325,13 +374,18 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         user = ["--threads", "8", "-c", "0", "--mlock"]
         assert strip_context_only(list(user)) == ["--threads", "8", "--mlock"]
 
-    def test_load_model_keeps_a_pre_strip_copy(self):
-        import inspect
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        assert "_extra_args_as_requested" in src
-        # The copy is taken before the strip, not after.
-        copy_at = src.find("_extra_args_as_requested = (")
-        strip_at = src.find("extra_args = strip_context_only(extra_args)")
-        assert copy_at != -1 and strip_at != -1 and copy_at < strip_at
+    @pytest.mark.parametrize("mode,layers", [("auto", -1), ("manual", -1)])
+    def test_the_comparator_still_holds_what_was_asked_for(
+        self, tmp_path, monkeypatch, mode, layers
+    ):
+        """A launch that stripped -c 0 must still compare equal to its own request."""
+        requested = ["-c", "0", "--top-k", "5"]
+        cmd, backend = _launch(
+            tmp_path,
+            monkeypatch,
+            extra_args = list(requested),
+            gpu_memory_mode = mode,
+            gpu_layers = layers,
+        )
+        assert "0" not in _ctx_values(cmd)
+        assert backend._requested_extra_args == requested

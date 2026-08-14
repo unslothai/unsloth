@@ -5919,11 +5919,14 @@ class LlamaCppBackend:
         reduction --fit would otherwise perform, so the one flag that looks like
         "let llama.cpp decide" is the one that stops it from deciding.
 
-        Only a zero override; a positive -c stays honored as it is today. Same
-        scope as the floor, so inert off Apple Silicon and silent on manual
-        memory management, where the user owns the budget.
+        Only a zero override; a positive -c stays honored as it is today. Inert
+        off Apple Silicon, like the floor, but unlike the floor it does fire in
+        Auto-layers: there the managed command omits -c precisely so --fit sizes
+        the context, so the trailing zero is the one argument that disables the
+        fit the mode depends on. A fixed manual layer count is still left alone,
+        since there the user owns the budget.
         """
-        if ctx_override != 0 or auto_fit or gpu_memory_mode == "manual":
+        if ctx_override != 0 or (gpu_memory_mode == "manual" and not auto_fit):
             return False
         return bool(LlamaCppBackend._apple_metal_memory_budget_bytes())
 
