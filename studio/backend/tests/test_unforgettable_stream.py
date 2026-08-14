@@ -21,6 +21,7 @@ from core.unforgettable_host import (
     VIRTUAL_MODEL_ID,
     _forward_inner_stream,
     _rewrite_inner_frame,
+    union_unforgettable_enabled_tools,
 )
 
 
@@ -31,10 +32,7 @@ def _data_json(frame: bytes) -> dict:
 
 
 def test_rewrite_tool_start_unchanged():
-    frame = (
-        b'data: {"type":"tool_start","tool_name":"memory_write",'
-        b'"tool_call_id":"c1"}\n\n'
-    )
+    frame = b'data: {"type":"tool_start","tool_name":"memory_write","tool_call_id":"c1"}\n\n'
     assert _rewrite_inner_frame(frame) == frame
 
 
@@ -104,9 +102,7 @@ def test_forward_inner_stream_rewrites_and_acloses():
     async def on_chunk(data: bytes) -> None:
         forwarded.append(data)
 
-    text = asyncio.run(
-        _forward_inner_stream(SimpleNamespace(body_iterator = iterator), on_chunk)
-    )
+    text = asyncio.run(_forward_inner_stream(SimpleNamespace(body_iterator = iterator), on_chunk))
     assert iterator.closed
     assert text == "hello"
     assert len(forwarded) == 3
@@ -120,19 +116,15 @@ def test_forward_inner_stream_rewrites_and_acloses():
 def test_forward_inner_stream_acloses_when_on_chunk_breaks():
     iterator = _ClosingIter(
         [
-            b'data: {"object":"chat.completion.chunk","choices":'
-            b'[{"delta":{"content":"a"}}]}\n\n',
-            b'data: {"object":"chat.completion.chunk","choices":'
-            b'[{"delta":{"content":"b"}}]}\n\n',
+            b'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"a"}}]}\n\n',
+            b'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"b"}}]}\n\n',
         ]
     )
 
     async def on_chunk(data: bytes) -> None:
         raise BrokenPipeError("client gone")
 
-    text = asyncio.run(
-        _forward_inner_stream(SimpleNamespace(body_iterator = iterator), on_chunk)
-    )
+    text = asyncio.run(_forward_inner_stream(SimpleNamespace(body_iterator = iterator), on_chunk))
     assert iterator.closed
     assert text == "a"
 
@@ -140,8 +132,7 @@ def test_forward_inner_stream_acloses_when_on_chunk_breaks():
 def test_forward_inner_stream_acloses_on_cancel():
     iterator = _ClosingIter(
         [
-            b'data: {"object":"chat.completion.chunk","choices":'
-            b'[{"delta":{"content":"x"}}]}\n\n',
+            b'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"x"}}]}\n\n',
         ]
     )
 
@@ -149,7 +140,14 @@ def test_forward_inner_stream_acloses_on_cancel():
         raise asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(
-            _forward_inner_stream(SimpleNamespace(body_iterator = iterator), on_chunk)
-        )
+        asyncio.run(_forward_inner_stream(SimpleNamespace(body_iterator = iterator), on_chunk))
     assert iterator.closed
+
+
+def test_enabled_tools_union_keeps_pills_and_adds_apache_tools():
+    unioned = union_unforgettable_enabled_tools(["python", "terminal"])
+    assert unioned is not None
+    assert unioned[:2] == ["python", "terminal"]
+    assert "rims_enter_sim" in unioned
+    assert "memory_write" in unioned
+    assert union_unforgettable_enabled_tools(None) is None

@@ -13,6 +13,12 @@
 # limitations under the License.
 
 from .handlers import dispatch
-from .specs import MEMORY_TOOL_NAMES, MEMORY_TOOLS
+from .specs import CONTACT_TOOL_NAMES, CONTACT_TOOLS, MEMORY_TOOL_NAMES, MEMORY_TOOLS
 
-__all__ = ["MEMORY_TOOLS", "MEMORY_TOOL_NAMES", "dispatch"]
+__all__ = [
+    "CONTACT_TOOLS",
+    "CONTACT_TOOL_NAMES",
+    "MEMORY_TOOLS",
+    "MEMORY_TOOL_NAMES",
+    "dispatch",
+]

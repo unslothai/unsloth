@@ -22,14 +22,67 @@ from .protocols import RecognizedFailure
 _TRACEBACK = "Traceback (most recent call last)"
 _EXIT = re.compile(r"(?:exit(?:ed)?(?: with)? code|returncode|exit_code)\s*[:=]?\s*(-?\d+)", re.I)
 
+ENTER_SIM_TOOL_NAMES = frozenset({"rims_enter_sim", "rims.enter_sim"})
 
-def inspect_tool_result(name: str, result: str, *, contact: str = "world") -> Optional[RecognizedFailure]:
+USER_FAIL_PHRASES = (
+    "that failed",
+    "that didn't work",
+    "that did not work",
+    "still broken",
+    "still failing",
+    "try in sim",
+)
+
+# Runner fingerprints
+_PYTEST_FAILURES = re.compile(r"={3,}\s*FAILURES\b")
+_PYTEST_FAILED_EQ = re.compile(r"(?i)\bfailed\s*=\s*[1-9]")
+_PYTEST_N_FAILED = re.compile(r"(?i)\b[1-9]\d*\s+failed\b")
+_FAILED_SPACE = re.compile(r"FAILED ")
+_UNITTEST_FAILED_PAREN = re.compile(r"FAILED\s*\(")
+_JEST_FAIL = re.compile(r"(?m)^FAIL ")
+_JEST_TESTS_FAILED = re.compile(r"(?i)Tests:\s+(?:.*\b)?[1-9]\d*\s+failed")
+_GO_FAIL_TAB = re.compile(r"FAIL\t")
+
+_RUNNER_TOOL_NAMES = frozenset({"python", "terminal"})
+
+
+def user_declares_failure(text: str) -> bool:
+    folded = (text or "").casefold().replace("\u2019", "'")
+    return any(phrase in folded for phrase in USER_FAIL_PHRASES)
+
+
+def _last_nonempty_line(text: str) -> str:
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def inspect_tool_result(
+    name: str, result: str, *, contact: str = "world"
+) -> Optional[RecognizedFailure]:
+    if name in ENTER_SIM_TOOL_NAMES:
+        return RecognizedFailure(summary="enter_sim requested", source="tool")
     text = result or ""
     if _TRACEBACK in text:
         return RecognizedFailure(summary=f"{name} raised", source=contact)
     if text.startswith("Error:") or "\nError:" in text:
         first = text.strip().splitlines()[0][:200]
         return RecognizedFailure(summary=first, source=contact)
+    if name in _RUNNER_TOOL_NAMES:
+        last = _last_nonempty_line(text)
+        if last and (
+            _PYTEST_FAILED_EQ.search(last)
+            or _PYTEST_N_FAILED.search(last)
+            or _PYTEST_FAILURES.search(text)
+            or _FAILED_SPACE.search(text)
+            or _UNITTEST_FAILED_PAREN.search(text)
+            or _JEST_FAIL.search(text)
+            or _JEST_TESTS_FAILED.search(text)
+            or _GO_FAIL_TAB.search(text)
+        ):
+            return RecognizedFailure(summary=f"{name} failed", source=contact)
     match = _EXIT.search(text)
     if match and match.group(1) not in {"0"}:
         return RecognizedFailure(

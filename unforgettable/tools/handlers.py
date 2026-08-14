@@ -48,6 +48,8 @@ def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> st
         return _deprecate(args, db_path=path)
     if name == "memory_compact":
         return _compact(args, db_path=path)
+    if name == "rims_enter_sim":
+        return "enter_sim requested"
     return f"Error: unknown memory tool '{name}'"
 
 

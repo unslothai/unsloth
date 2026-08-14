@@ -26,13 +26,17 @@ from unforgettable.agents.extractor import (
     llm_extract,
 )
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
-from unforgettable.eyes.basic import inspect_tool_result
+from unforgettable.eyes.basic import (
+    ENTER_SIM_TOOL_NAMES,
+    inspect_tool_result,
+    user_declares_failure,
+)
 from unforgettable.eyes.gate import review_write
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.store.records import insert_record, insert_rollout
 from unforgettable.throne.policy import Action, decide, default_policy
-from unforgettable.tools.specs import MEMORY_TOOLS
+from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
 
 from .context import EpisodeRequest, EpisodeState, last_user_text
 from .runtime import bind_episode, reset_episode, set_contact
@@ -40,7 +44,8 @@ from .runtime import bind_episode, reset_episode, set_contact
 _MEMORY_PREAMBLE = (
     "You have durable memory tools: memory_write, memory_search, memory_get, "
     "memory_supersede, memory_deprecate. Facts, corrections, and lessons that "
-    "should survive this episode must go through those tools."
+    "should survive this episode must go through those tools. After a recognized "
+    "failure, call rims_enter_sim to request a sim clone of the world tree."
 )
 
 
@@ -68,6 +73,8 @@ def _pass_failure(result: GenerateResult) -> Optional[str]:
     for trace in result.tool_traces:
         if trace.name.startswith("memory.") or trace.name.startswith("memory_"):
             continue
+        if trace.name.replace(".", "_") in ENTER_SIM_TOOL_NAMES:
+            return "enter_sim requested"
         fail = inspect_tool_result(trace.name, trace.result, contact=trace.contact)
         if fail:
             last = fail.summary
@@ -80,9 +87,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     world = request.world_session_id or host.world_session_id(request)
     state = EpisodeState(episode_id=episode_id, world_session=world)
     policy = default_policy()
-    tokens, _ = bind_episode(
-        db_path=db_path, episode_id=episode_id, namespace=request.namespace
-    )
+    tokens, _ = bind_episode(db_path=db_path, episode_id=episode_id, namespace=request.namespace)
     actions: list[str] = []
     text = ""
     try:
@@ -99,30 +104,42 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             if part
         )
         messages = _with_system(request.messages, inject)
+        generated = False
         while True:
             set_contact(state.contact)
-            gen = await host.generate(
-                GenerateRequest(
-                    messages=messages,
-                    session_id=state.active_session,
-                    thread_id=request.thread_id,
-                    stream=request.stream,
-                    extra_tools=list(MEMORY_TOOLS),
-                    inner_model=request.inner_model,
-                    on_chunk=request.on_chunk,
-                )
-            )
-            text = gen.text or text
-            state.traces.extend(gen.tool_traces)
-            fail_summary = _pass_failure(gen)
-            if fail_summary:
-                state.note_failure(fail_summary, state.contact)
+            if (
+                not generated
+                and state.contact == "world"
+                and state.clone_count == 0
+                and user_declares_failure(last_user_text(request.messages))
+            ):
+                fail_summary = "user declared failure"
+                state.note_failure(fail_summary, "world")
                 event = "failure"
-            elif gen.finished:
-                state.note_success(gen.text or "completed", state.contact)
-                event = "success"
             else:
-                event = "finished"
+                gen = await host.generate(
+                    GenerateRequest(
+                        messages=messages,
+                        session_id=state.active_session,
+                        thread_id=request.thread_id,
+                        stream=request.stream,
+                        extra_tools=list(MEMORY_TOOLS) + list(CONTACT_TOOLS),
+                        inner_model=request.inner_model,
+                        on_chunk=request.on_chunk,
+                    )
+                )
+                generated = True
+                text = gen.text or text
+                state.traces.extend(gen.tool_traces)
+                fail_summary = _pass_failure(gen)
+                if fail_summary:
+                    state.note_failure(fail_summary, state.contact)
+                    event = "failure"
+                elif gen.finished:
+                    state.note_success(gen.text or "completed", state.contact)
+                    event = "success"
+                else:
+                    event = "finished"
             action = decide(event, state, policy)
             actions.append(action)
             if action == Action.ENTER_SIM:
@@ -154,9 +171,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             actions=actions,
             host=host,
         )
-        return EpisodeOutcome(
-            text=text, state=state, error_fix_id=error_fix_id, actions=actions
-        )
+        return EpisodeOutcome(text=text, state=state, error_fix_id=error_fix_id, actions=actions)
     finally:
         try:
             if state.sim_session and not state.keep_sim:

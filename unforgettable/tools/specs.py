@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OpenAI-shaped function specs for durable memory tools."""
+"""OpenAI-shaped function specs for durable memory and contact tools."""
 
 from __future__ import annotations
 
@@ -110,8 +110,7 @@ MEMORY_DEPRECATE = {
     "function": {
         "name": "memory_deprecate",
         "description": (
-            "Archive a memory so it is excluded from default retrieval. "
-            "Does not hard-delete."
+            "Archive a memory so it is excluded from default retrieval. Does not hard-delete."
         ),
         "parameters": {
             "type": "object",
@@ -158,6 +157,24 @@ MEMORY_TOOLS = [
     MEMORY_COMPACT,
 ]
 
-MEMORY_TOOL_NAMES = frozenset(
-    spec["function"]["name"] for spec in MEMORY_TOOLS
-)
+MEMORY_TOOL_NAMES = frozenset(spec["function"]["name"] for spec in MEMORY_TOOLS)
+
+RIMS_ENTER_SIM = {
+    "type": "function",
+    "function": {
+        "name": "rims_enter_sim",
+        "description": (
+            "Request a sim clone of the world tree after a recognized failure. "
+            "Calling this tool is itself a recognized failure and enters sim."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string"},
+            },
+        },
+    },
+}
+
+CONTACT_TOOLS = [RIMS_ENTER_SIM]
+CONTACT_TOOL_NAMES = frozenset(spec["function"]["name"] for spec in CONTACT_TOOLS)

@@ -9217,7 +9217,7 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     },
 }
 
-from unforgettable.tools.specs import MEMORY_TOOLS
+from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
 
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
@@ -9226,6 +9226,7 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     *MEMORY_TOOLS,
+    *CONTACT_TOOLS,
 ]
 
 
@@ -9425,7 +9426,12 @@ def execute_tool(
             pass
         return result
 
-    if name.startswith("memory_") or name.startswith("memory."):
+    if (
+        name.startswith("memory_")
+        or name.startswith("memory.")
+        or name.startswith("rims_")
+        or name.startswith("rims.")
+    ):
         from unforgettable.tools.handlers import dispatch
 
         return _finish(dispatch(name, arguments or {}))

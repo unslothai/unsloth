@@ -18,7 +18,7 @@ import json
 
 from unforgettable.store.records import get_record, insert_record
 from unforgettable.tools.handlers import dispatch
-from unforgettable.tools.specs import MEMORY_TOOL_NAMES
+from unforgettable.tools.specs import CONTACT_TOOL_NAMES, MEMORY_TOOL_NAMES
 
 
 def test_tool_names_are_stable():
@@ -46,9 +46,7 @@ def test_write_search_get_supersede_deprecate(db_path):
         )
     )
     assert written["status"] == "active"
-    search = json.loads(
-        dispatch("memory_search", {"query": "cite ids"}, db_path=db_path)
-    )
+    search = json.loads(dispatch("memory_search", {"query": "cite ids"}, db_path=db_path))
     assert search[0]["id"] == written["id"]
     got = json.loads(dispatch("memory_get", {"id": written["id"]}, db_path=db_path))
     assert got["title"] == "Always cite ids"
@@ -68,9 +66,7 @@ def test_write_search_get_supersede_deprecate(db_path):
         )
     )
     assert deprecated["status"] == "deprecated"
-    assert "No matching" in dispatch(
-        "memory_search", {"query": "cite ids"}, db_path=db_path
-    )
+    assert "No matching" in dispatch("memory_search", {"query": "cite ids"}, db_path=db_path)
 
 
 def test_memory_compact_default_is_dry_run(db_path):
@@ -109,12 +105,18 @@ def test_memory_compact_wet_mutates(db_path):
         provenance="infer",
         db_path=db_path,
     )
-    payload = json.loads(
-        dispatch("memory_compact", {"dry_run": False}, db_path=db_path)
-    )
+    payload = json.loads(dispatch("memory_compact", {"dry_run": False}, db_path=db_path))
     assert payload["dry_run"] is False
     statuses = {
         get_record(first["id"], db_path=db_path)["status"],
         get_record(second["id"], db_path=db_path)["status"],
     }
     assert statuses == {"active", "deprecated"}
+
+
+def test_rims_enter_sim_is_contact_tool():
+    assert "rims_enter_sim" in CONTACT_TOOL_NAMES
+    assert "rims_enter_sim" not in MEMORY_TOOL_NAMES
+    assert dispatch("rims_enter_sim", {"reason": "rehearse"}) == "enter_sim requested"
+    assert dispatch("rims.enter_sim", None) == "enter_sim requested"
+    assert dispatch("rims_nope", {}).startswith("Error:")

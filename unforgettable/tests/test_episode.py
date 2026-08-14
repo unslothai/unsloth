@@ -78,9 +78,7 @@ class FakeHost:
 def _fail_world() -> GenerateResult:
     return GenerateResult(
         text="that command failed",
-        tool_traces=[
-            ToolTrace("terminal", {"command": "false"}, "exit code 1", "world")
-        ],
+        tool_traces=[ToolTrace("terminal", {"command": "false"}, "exit code 1", "world")],
     )
 
 
@@ -189,3 +187,55 @@ def test_retrieve_injects_before_generate(tmp_path: Path):
     system = host.last_messages[0]["content"]
     assert "Build uses pytest" in system
     assert search_records("pytest", db_path=host.db)
+
+
+def test_episode_enter_sim_tool_enters_sim(tmp_path: Path):
+    host = FakeHost(
+        tmp_path,
+        [
+            GenerateResult(
+                text="trying sim",
+                tool_traces=[
+                    ToolTrace(
+                        "rims_enter_sim",
+                        {"reason": "rehearse"},
+                        "enter_sim requested",
+                        "world",
+                    ),
+                    ToolTrace("terminal", {"command": "true"}, "ok\n", "world"),
+                ],
+            ),
+            _ok("fixed in sim", "sim"),
+            _ok("works in world", "world"),
+        ],
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(messages=[{"role": "user", "content": "run the tests"}]),
+        )
+    )
+    assert host.calls[0] == "world"
+    assert host.calls[1].startswith("sim-")
+    assert Action.ENTER_SIM in outcome.actions
+
+
+def test_episode_user_phrase_enters_sim_before_generate(tmp_path: Path):
+    host = FakeHost(
+        tmp_path,
+        [GenerateResult(text="in sim", finished=False)],
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(messages=[{"role": "user", "content": "that failed"}]),
+        )
+    )
+    assert host.calls
+    assert host.calls[0].startswith("sim-")
+    assert "world" not in host.calls
+    system = " ".join(
+        str(m.get("content")) for m in (host.last_messages or []) if m.get("role") == "system"
+    )
+    assert "user declared failure" in system
+    assert Action.ENTER_SIM in outcome.actions

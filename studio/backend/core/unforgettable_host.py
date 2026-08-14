@@ -58,7 +58,6 @@ def _messages_as_dicts(messages) -> list[dict]:
 
 def _as_chat_messages(messages: list[dict]):
     from models.inference import ChatMessage
-
     return [ChatMessage(role = m["role"], content = m.get("content")) for m in messages]
 
 
@@ -88,6 +87,14 @@ def _sse_data_payload(text: str) -> str:
         if line.startswith("data:"):
             parts.append(line[5:].lstrip())
     return "\n".join(parts).strip()
+
+
+def union_unforgettable_enabled_tools(enabled_tools):
+    # A list is a filter; None would re-enable omitted pills (web_search / render_html).
+    if enabled_tools is None:
+        return None
+    from unforgettable.tools.specs import CONTACT_TOOL_NAMES, MEMORY_TOOL_NAMES
+    return list(dict.fromkeys(list(enabled_tools) + list(MEMORY_TOOL_NAMES | CONTACT_TOOL_NAMES)))
 
 
 def _as_sse_bytes(frame: bytes | str) -> bytes:
@@ -136,8 +143,7 @@ def _is_openai_delta_chunk(obj: dict) -> bool:
     if not isinstance(choices, list):
         return False
     return any(
-        isinstance(choice, dict) and isinstance(choice.get("delta"), dict)
-        for choice in choices
+        isinstance(choice, dict) and isinstance(choice.get("delta"), dict) for choice in choices
     )
 
 
@@ -309,12 +315,7 @@ class StudioHost:
     """Studio implementation of ``unforgettable.host.Host``."""
 
     def __init__(
-        self,
-        payload,
-        request,
-        current_subject: str,
-        inner: Callable,
-        inner_model: str,
+        self, payload, request, current_subject: str, inner: Callable, inner_model: str
     ) -> None:
         self.payload = payload
         self.request = request
@@ -325,7 +326,6 @@ class StudioHost:
 
     def memory_db_path(self) -> Path:
         from utils.paths import studio_root
-
         return studio_root() / "memory" / "memory.db"
 
     def world_session_id(self, request) -> str:
@@ -349,12 +349,10 @@ class StudioHost:
 
     def sandbox_path(self, session_id: str) -> Path:
         from core.inference.tools import get_sandbox_workdir
-
         return Path(get_sandbox_workdir(session_id))
 
     def remove_sim_session(self, session_id: str) -> None:
         from core.inference.tools import remove_session_sandbox
-
         remove_session_sandbox(session_id, delete_files = True)
 
     async def generate(self, req: GenerateRequest) -> GenerateResult:
@@ -364,6 +362,7 @@ class StudioHost:
         if req.thread_id:
             payload.thread_id = req.thread_id
         payload.enable_tools = True
+        payload.enabled_tools = union_unforgettable_enabled_tools(payload.enabled_tools)
         payload.messages = _as_chat_messages(req.messages)
         want_stream = req.on_chunk is not None
         payload.stream = want_stream
@@ -484,4 +483,5 @@ __all__ = [
     "in_inner_generate",
     "inner_model_id",
     "is_virtual_model",
+    "union_unforgettable_enabled_tools",
 ]
