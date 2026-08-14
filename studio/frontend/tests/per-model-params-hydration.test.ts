@@ -609,3 +609,31 @@ test("the cap wins over the remembered budget", () => {
   );
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 32768);
 });
+
+// The toggle is a mirrored scalar setting, so the write goes through
+// setScalarSettingVersion rather than an explicit saveSettingsPatch beside it.
+// Turning it off has to survive a reload, or the memory comes back on.
+test("turning the memory off is persisted and hydrated back", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+  });
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.getState().setRememberParamsPerModel(false);
+  await settled();
+  // The writer debounces and coalesces, so this is the patch the toggle joined.
+  assert.equal(
+    settingsHttp.puts.at(-1)?.rememberParamsPerModel,
+    false,
+    "the choice is written, not just held in the store",
+  );
+
+  // The next launch reads it back rather than falling to the default.
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+  });
+  settingsHttp.settings = { rememberParamsPerModel: false };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  assert.equal(useChatRuntimeStore.getState().rememberParamsPerModel, false);
+});
