@@ -632,6 +632,13 @@ _DNS_CACHE_MAX_ENTRIES = 512
 # answer, which the two callers below read in opposite directions.
 _dns_cache: dict[str, tuple[float, tuple[str, ...] | None]] = {}
 _dns_cache_lock = threading.Lock()
+# A lookup that times out is abandoned, not cancelled, so its thread lives until
+# the platform resolver gives up. Rotating hostnames defeat the cache and would
+# otherwise pile those up one per request. Past this many in flight the check
+# reports no answer instead of starting another, which is what this file did
+# before it resolved anything.
+_DNS_MAX_IN_FLIGHT = 8
+_dns_in_flight = threading.BoundedSemaphore(_DNS_MAX_IN_FLIGHT)
 
 # Hostnames of the providers this build ships. They are hard-coded destinations,
 # not caller-controlled names, so learning their addresses buys nothing.
@@ -704,6 +711,9 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
         if cached is not None and cached[0] > now:
             return cached[1]
 
+    if not _dns_in_flight.acquire(blocking = False):
+        return None
+
     resolved: list[str] = []
     answered = False
 
@@ -717,6 +727,10 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
             )
         except (OSError, UnicodeError, ValueError):
             return
+        finally:
+            # Released by the worker, not the caller, so an abandoned lookup
+            # frees its slot only once the resolver actually lets it go.
+            _dns_in_flight.release()
         resolved.extend(str(info[4][0]) for info in infos)
         answered = True
 

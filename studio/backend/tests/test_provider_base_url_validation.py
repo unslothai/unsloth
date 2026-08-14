@@ -13,6 +13,7 @@ embedded credentials, cloud metadata services -- are refused.
 
 import importlib.util
 import socket
+import threading
 from pathlib import Path
 
 import pytest
@@ -61,11 +62,16 @@ _SUPPORTED = [
 def _default_policy(monkeypatch):
     """Default deployment: the private-address opt-in is off."""
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
-    # The metadata lookup caches its verdict per hostname; a stale entry would
+    # The lookup caches its answer per hostname and caps how many can be in
+    # flight; a stale entry or a slot still held by an abandoned stub would
     # carry one test's stubbed resolver into the next.
-    _providers._dns_cache.clear()
+    def _reset():
+        _providers._dns_cache.clear()
+        _providers._dns_in_flight = threading.BoundedSemaphore(_providers._DNS_MAX_IN_FLIGHT)
+
+    _reset()
     yield
-    _providers._dns_cache.clear()
+    _reset()
 
 
 @pytest.mark.parametrize("url", _SUPPORTED)
@@ -230,6 +236,25 @@ def test_a_timed_out_lookup_is_not_remembered(monkeypatch):
     for _ in range(2):
         assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
     assert len(calls) == 2
+
+
+def test_stalled_lookups_do_not_pile_up(monkeypatch):
+    """Past the in-flight cap the check reports no answer instead of a thread."""
+    import time as _time
+
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)
+    started = []
+
+    def _slow(host, port, *args, **kwargs):
+        started.append(host)
+        _time.sleep(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    for n in range(_providers._DNS_MAX_IN_FLIGHT + 5):
+        url = f"http://slow{n}.example/v1"
+        assert validate_provider_base_url(url) == url
+    assert len(started) == _providers._DNS_MAX_IN_FLIGHT
 
 
 def test_a_slow_resolver_does_not_stall_validation(monkeypatch):
