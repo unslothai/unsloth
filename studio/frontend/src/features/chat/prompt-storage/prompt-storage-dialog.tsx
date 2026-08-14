@@ -1817,6 +1817,20 @@ export function PromptStorageDialog({
     setShowNewList(false);
   }, [activeTab]);
 
+  // Clear the search alongside the selection. Awaiting the refresh is not
+  // enough on its own: an active search that the new entry does not match keeps
+  // it out of the filtered rail, and the keep-a-row-selected effect below would
+  // bounce the selection straight off it to the first row that does match.
+  const selectCreatedPrompt = useCallback((id: string) => {
+    setSearchQuery("");
+    setSelectedPromptId(id);
+  }, []);
+
+  const selectCreatedList = useCallback((id: string) => {
+    setSearchQuery("");
+    setSelectedListId(id);
+  }, []);
+
   const filteredPrompts = useMemo(() => {
     const all = promptEntries ?? [];
     if (!searchQuery.trim()) return all;
@@ -2155,7 +2169,7 @@ export function PromptStorageDialog({
                   <NewPromptForm
                     onClose={() => setShowNewPrompt(false)}
                     onRefresh={refreshEntries}
-                    onCreated={setSelectedPromptId}
+                    onCreated={selectCreatedPrompt}
                   />
                 ) : selectedPrompt ? (
                   <PromptDetail
@@ -2182,7 +2196,7 @@ export function PromptStorageDialog({
                   <NewPromptListForm
                     onClose={() => setShowNewList(false)}
                     onRefresh={refreshLists}
-                    onCreated={setSelectedListId}
+                    onCreated={selectCreatedList}
                   />
                 ) : selectedList ? (
                   <PromptListDetail
