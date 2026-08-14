@@ -1615,6 +1615,11 @@ $Rule = [string]::new([char]0x2500, 52)
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
+    # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle, so the
+    # block below could only return $false anyway. Answer without Add-Type, which runs csc.exe and
+    # drops source in %TEMP%. The CLI and the desktop app both pipe us, so this is the path the
+    # compile was on.
+    if ($script:StudioStdoutRedirected) { return $false }
     try {
         Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
@@ -5753,11 +5758,11 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_530Dir tiktoken
+    Fast-Install --target $VenvT5_530Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_530Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_530Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
@@ -5788,11 +5793,11 @@ foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_550Dir tiktoken
+    Fast-Install --target $VenvT5_550Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_550Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_550Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
@@ -5823,11 +5828,11 @@ foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_510Dir tiktoken
+    Fast-Install --target $VenvT5_510Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_510Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_510Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {

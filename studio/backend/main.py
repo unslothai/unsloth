@@ -314,6 +314,7 @@ from routes import (
     training_history_router,
     training_router,
     video_router,
+    youtube_router,
 )
 from routes.llama import router as llama_router
 from routes.whisper import router as whisper_router
@@ -1399,6 +1400,7 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)

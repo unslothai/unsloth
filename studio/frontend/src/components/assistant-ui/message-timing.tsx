@@ -26,8 +26,9 @@ const formatRate = (r: number | undefined): string => {
 
 /**
  * Shows streaming stats as a badge with hover tooltip.
- * When server timings are available (GGUF), shows prompt eval, generation,
- * speed, tokens, and cache hits. Falls back to client-side metrics otherwise.
+ * When server timings are available (GGUF, MLX, safetensors), shows prompt eval,
+ * prompt speed, generation, speed, tokens, and cache hits. Falls back to
+ * client-side metrics otherwise.
  */
 export const MessageTiming: FC<{
   className?: string;
@@ -196,7 +197,7 @@ export const MessageTiming: FC<{
             </>
             ) : (
             <>
-              {/* Server-side metrics (GGUF) */}
+              {/* Server-side metrics (GGUF, MLX, safetensors) */}
               {st?.prompt_ms != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Prompt eval</span>
@@ -205,7 +206,9 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {(st?.prompt_n ?? 0) > 1 && st?.prompt_per_second != null && (
+              {(st?.prompt_n ?? 0) > 1 &&
+                st?.prompt_per_second != null &&
+                st.prompt_per_second > 0 && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Prompt speed</span>
                   <span className="font-mono tabular-nums">
@@ -294,7 +297,7 @@ export const MessageTiming: FC<{
             )
           ) : (
             <>
-              {/* Client-side metrics (safetensors + external provider fallback) */}
+              {/* Client-side metrics (external provider fallback) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>

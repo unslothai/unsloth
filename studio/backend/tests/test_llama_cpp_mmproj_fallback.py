@@ -252,14 +252,16 @@ class TestFlashAttnOff:
 
     def test_neutralizes_trailing_bare_flag(self):
         # A bare --flash-attn reads as on under last-wins; it must be neutralized
-        # too, else the retry re-enables FA and re-crashes.
+        # too, else the retry re-enables FA and re-crashes. It is dropped rather
+        # than valued: llama.cpp matches argv tokens verbatim, so --flash-attn=off
+        # is "invalid argument", and a build accepting the bare form takes no value.
         out = _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn"])
-        assert out == ["llama-server", "--flash-attn", "off", "--flash-attn=off"]
+        assert out == ["llama-server", "--flash-attn", "off"]
         assert "on" not in out
 
     def test_bare_flag_only(self):
-        assert _flash_off(["llama-server", "--flash-attn"]) == ["llama-server", "--flash-attn=off"]
-        assert _flash_off(["llama-server", "-fa"]) == ["llama-server", "-fa=off"]
+        assert _flash_off(["llama-server", "--flash-attn"]) == ["llama-server"]
+        assert _flash_off(["llama-server", "-fa"]) == ["llama-server"]
 
 
 _drop_env_v = LlamaCppBackend._drop_env_quantized_v_cache

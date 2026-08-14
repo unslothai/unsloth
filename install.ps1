@@ -200,6 +200,30 @@ function Install-UnslothStudio {
         }
     }
 
+    # Mirrors _uv_download_markers in install.sh; only what was opened is closed.
+    $script:UvDownloadMarkerMinBytes = 52428800
+    if ($env:UNSLOTH_DL_MARKER_MIN_BYTES -match '^\d+$') {
+        $script:UvDownloadMarkerMinBytes = [long]$env:UNSLOTH_DL_MARKER_MIN_BYTES
+    }
+    $script:UvAnnouncedDownloads = @{}
+    function Write-UvDownloadMarker {
+        param([string]$Line)
+        if (-not $TauriMode) { return }
+        if ($Line -match '(?:^|\s)Downloading (\S+) \(([0-9.]+)(KiB|MiB|GiB)\)\s*$') {
+            $unit = @{ KiB = 1024L; MiB = 1048576L; GiB = 1073741824L }[$Matches[3]]
+            if ([double]$Matches[2] * $unit -ge $script:UvDownloadMarkerMinBytes) {
+                $script:UvAnnouncedDownloads[$Matches[1]] = $true
+                Write-TauriLog "DL" "$($Matches[1]) $($Matches[2])$($Matches[3])"
+            }
+        } elseif ($Line -match '(?:^|\s)Downloaded (\S+)\s*$') {
+            # ContainsKey, not Remove's return: Hashtable.Remove is void.
+            if ($script:UvAnnouncedDownloads.ContainsKey($Matches[1])) {
+                $script:UvAnnouncedDownloads.Remove($Matches[1])
+                Write-TauriLog "DL_DONE" $Matches[1]
+            }
+        }
+    }
+
     function Clear-TauriInstallError {
         param([string]$Message)
         if ($TauriMode) {
@@ -651,6 +675,11 @@ public static class UnslothStudioFinalPathV2
 
     function Enable-StudioVirtualTerminal {
         if ($env:NO_COLOR) { return $false }
+        # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle,
+        # so the block below could only return $false anyway. Answer without Add-Type, which runs
+        # csc.exe and drops source in %TEMP%. install.rs spawns us with a pipe, so this is the path
+        # the compile was on.
+        if ($script:StudioStdoutRedirected) { return $false }
         try {
             if (-not ("StudioVT.Native" -as [type])) {
                 Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
@@ -1083,9 +1112,19 @@ public static class UnslothStudioFinalPathV2
                 # Redact per record: uv echoes index URLs (credentials and all) in
                 # its errors, and verbose mode must not bypass the quiet path's
                 # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
-                & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                & $Command 2>&1 | ForEach-Object {
+                    Write-UvDownloadMarker "$_"
+                    Redact-InstallOutput "$_"
+                } | Out-Host
             } else {
-                $output = & $Command 2>&1 | Out-String
+                # Streamed, not collected, so a marker reaches the app mid-download.
+                $collected = [System.Text.StringBuilder]::new()
+                & $Command 2>&1 | ForEach-Object {
+                    $line = "$_"
+                    [void]$collected.AppendLine($line)
+                    Write-UvDownloadMarker $line
+                }
+                $output = $collected.ToString()
                 if ($LASTEXITCODE -ne 0) {
                     Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
                 }
@@ -5103,7 +5142,7 @@ exit 0
         if ($SkipTorch -or $script:ArmInferenceOnly) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -5118,7 +5157,7 @@ exit 0
                 Remove-ArmFilteredRequirements
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5245,7 +5284,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -5290,7 +5329,7 @@ exit 0
                 Remove-ArmFilteredRequirements
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -5318,7 +5357,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.11" "unsloth>=2026.8.16" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.12" "unsloth>=2026.8.18" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

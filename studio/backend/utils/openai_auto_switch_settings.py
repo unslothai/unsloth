@@ -445,7 +445,9 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
     return parsed
 
 
-def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_model_override(
+    payload: dict[str, Any], *, keep_empty_extra_args: bool = False
+) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable.
 
     Silently drops rather than raising: an override is a convenience mirror of the
@@ -453,12 +455,21 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     from another host) must not block persisting the rest or fail the API load that
     reads it. ``validate_extra_args`` is the caller's job -- it lives in the
     llama_server_args allow-list module, which this one must not import.
+
+    ``keep_empty_extra_args`` keeps an explicit empty list, which is the difference
+    between "this model has no launch flags" and "nothing is stored for this model".
+    They are the same thing everywhere except under a fallback: a quant whose row is
+    gone reads the bare repository row instead, so a cleared box would come back
+    holding whatever that legacy row carries. Off by default, since a row saying only
+    that is worth storing in exactly one case.
     """
     entry: dict[str, Any] = {}
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
         entry["llama_extra_args"] = [str(arg) for arg in extra_args]
+    elif keep_empty_extra_args and isinstance(extra_args, (list, tuple)):
+        entry["llama_extra_args"] = []
 
     # 0 / negative means "unset"; the loader reads absence as the app default.
     for key in ("max_seq_length", "custom_context_length"):
@@ -577,6 +588,23 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
         kwargs["max_seq_length"] = max_seq_length
+    stored_extra_args = override.get("llama_extra_args")
+    if stored_extra_args:
+        # Sanitized here because this is where stored data becomes a request: the
+        # load treats an explicit list as the caller's own and refuses a managed
+        # flag with a 400, so an override written before a name was denylisted would
+        # break every auto-switch and idle reload of that model until someone
+        # rewrote it by hand. The inheritance and settings-save paths do the same.
+        from core.inference.llama_server_args import drop_managed_flags
+
+        kept, dropped = drop_managed_flags(stored_extra_args)
+        if dropped:
+            from loggers import get_logger
+            get_logger(__name__).warning(
+                "model_override.dropped_managed_flags flags=%s", ", ".join(dropped)
+            )
+        override = {**override, "llama_extra_args": kept}
+
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
@@ -785,6 +813,57 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
     ]
 
 
+def override_lookup_candidates(
+    load_id: str,
+    alias_id: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> list[str]:
+    """The keys a load tries, in order, when looking for its stored override.
+
+    Variant-qualified before bare, and the LOAD PATH before the advertised alias: the
+    settings UI keys a local row by the path it loads from, while the alias is a
+    derived id, so reading the alias first lets an older entry shadow a fresh save.
+    An early build keyed a loose ``.gguf`` by its filename label, which is why the
+    ``<path>:LABEL`` spelling is tried too.
+
+    Shared so the auto-switch loader and anything showing the user what a load will
+    apply cannot drift apart.
+    """
+    file_variant = None
+    if not variant and load_id.lower().endswith(".gguf"):
+        from hub.utils.gguf import extract_quant_label
+        file_variant = extract_quant_label(os.path.basename(load_id))
+    ordered = [
+        f"{load_id}:{variant}" if variant else None,
+        f"{alias_id}:{variant}" if alias_id and variant else None,
+        load_id,
+        f"{load_id}:{file_variant}" if file_variant else None,
+        alias_id,
+    ]
+    seen: list[str] = []
+    for key in ordered:
+        if key and key not in seen:
+            seen.append(key)
+    return seen
+
+
+def resolve_override_for_load(
+    load_id: str,
+    alias_id: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> tuple[Optional[str], dict]:
+    """``(key, override)`` the load would apply, or ``(None, {})``.
+
+    Resolution belongs here rather than in a client: the folding rules are Python's
+    (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing.
+    """
+    for key in override_lookup_candidates(load_id, alias_id, variant):
+        override = get_model_override(key)
+        if override:
+            return resolve_model_override_key(key) or key, override
+    return None, {}
+
+
 def resolve_model_override_key(model_id: str) -> Optional[str]:
     """The stored key an override lookup for ``model_id`` would actually hit.
 
@@ -873,6 +952,7 @@ def set_model_override(
     max_seq_length: Optional[int] = None,
     *,
     fill_absent_fields: bool = False,
+    keep_empty_extra_args: bool = False,
     **config: Any,
 ) -> dict:
     """Upsert one model's launch config; a config with no usable fields removes it.
@@ -891,7 +971,8 @@ def set_model_override(
             **config,
             "llama_extra_args": llama_extra_args,
             "max_seq_length": max_seq_length,
-        }
+        },
+        keep_empty_extra_args = keep_empty_extra_args,
     )
 
     from storage.studio_db import upsert_app_setting_map_entry

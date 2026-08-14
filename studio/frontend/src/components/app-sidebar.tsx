@@ -65,6 +65,7 @@ import {
   Archive03Icon,
   ArrowRight02Icon,
   BadgeInfoIcon,
+  BookOpen01Icon,
   BubbleChatIcon,
   ChefHatIcon,
   CloudIcon,
@@ -290,6 +291,16 @@ async function exportConversationByFormat(
       throw new Error(`Unhandled export format: ${String(unhandled)}`);
     }
   }
+}
+
+async function saveChatToProjectSources(
+  item: SidebarItem,
+  projectId: string,
+): Promise<void> {
+  const { saveChatItemAsProjectSource } = await import(
+    "@/features/chat/prompt-storage/prompt-storage-dialog"
+  );
+  await saveChatItemAsProjectSource(item, projectId);
 }
 
 
@@ -2035,6 +2046,32 @@ export function AppSidebar() {
                 >
                   Export all chats…
                 </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Save to project sources</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                {projects.length === 0 && (
+                  <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
+                )}
+                {projects.map((project) => (
+                  <DropdownMenuItem
+                    key={project.id}
+                    onSelect={async () => {
+                      try {
+                        await saveChatToProjectSources(item, project.id);
+                      } catch {
+                        toast.error("Failed to save to project sources.");
+                      }
+                    }}
+                  >
+                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span className="truncate">{project.name}</span>
+                  </DropdownMenuItem>
+                ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuSeparator />
