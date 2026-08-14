@@ -1284,10 +1284,16 @@ def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monk
 # the opposite one, and it lands on chat as well as training: a budget that also rejects
 # ORDINARY responses would silently stop /validate ever finding an upgrade.
 
+
 class _BodyServer:
     """Serves one body, either in full or split across chunks."""
 
-    def __init__(self, body: bytes, chunked = False, status = 200):
+    def __init__(
+        self,
+        body: bytes,
+        chunked = False,
+        status = 200,
+    ):
         import http.server
         import threading
 
@@ -1304,7 +1310,7 @@ class _BodyServer:
                     self.end_headers()
                     step = max(1, len(outer.body) // 7)
                     for i in range(0, len(outer.body), step):
-                        piece = outer.body[i:i + step]
+                        piece = outer.body[i : i + step]
                         self.wfile.write(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
                     self.wfile.write(b"0\r\n\r\n")
                 else:

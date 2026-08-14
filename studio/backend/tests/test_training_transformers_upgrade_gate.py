@@ -356,11 +356,13 @@ def test_route_is_off_the_openai_compatible_mount():
 # does it still behave exactly as it did? The tests above prove the gate fires; these
 # pin the far more common case where it must not.
 
+
 def test_an_old_client_sends_the_identifier_alone():
     # Every added request field has to be optional, or a frontend built before them
     # (an in-place upgrade mid-restart, a desktop build whose bundle leads its backend)
     # fails validation on a route that used to accept its payload.
     from models.inference import TransformersUpgradeCheckRequest
+
     request = TransformersUpgradeCheckRequest(model_name = MODEL)
     assert request.prefer_local_cache is False
     assert (request.model_local_path, request.model_snapshot_path) == (None, None)
@@ -371,6 +373,7 @@ def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
     # The defaults are what an older client sees, and what a newer one falls back to:
     # no upgrade, no precision claim, no refusal.
     from models.inference import TransformersUpgradeCheckResponse
+
     response = TransformersUpgradeCheckResponse(model_name = MODEL)
     assert response.requires_transformers_upgrade is False
     assert response.requires_trust_remote_code is False
@@ -379,18 +382,22 @@ def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
     assert response.install_breaks_exact_resume is False
 
 
-@pytest.mark.parametrize("latest_tier,installable,custom_code,expected", [
-    (False, False, False, False),   # nothing to do at all
-    (False, False, True,  False),   # custom code only: loads today, in 4-bit
-    (False, True,  False, True),    # install-only upgrade: the install forces 16-bit
-    (False, True,  True,  False),   # the fallback keeps 4-bit, so 16-bit is not claimed
-    (True,  False, False, True),    # already on the sidecar
-    (True,  False, True,  True),
-    (True,  True,  False, True),
-    (True,  True,  True,  True),
-])
-def test_forces_16bit_over_every_combination(monkeypatch, latest_tier, installable,
-                                             custom_code, expected):
+@pytest.mark.parametrize(
+    "latest_tier,installable,custom_code,expected",
+    [
+        (False, False, False, False),  # nothing to do at all
+        (False, False, True, False),  # custom code only: loads today, in 4-bit
+        (False, True, False, True),  # install-only upgrade: the install forces 16-bit
+        (False, True, True, False),  # the fallback keeps 4-bit, so 16-bit is not claimed
+        (True, False, False, True),  # already on the sidecar
+        (True, False, True, True),
+        (True, True, False, True),
+        (True, True, True, True),
+    ],
+)
+def test_forces_16bit_over_every_combination(
+    monkeypatch, latest_tier, installable, custom_code, expected
+):
     # The preview draws its VRAM claim from this one field, so a wrong cell is a wrong
     # number in front of the user. Exhaustive rather than sampled.
     upgrade = None
@@ -400,17 +407,21 @@ def test_forces_16bit_over_every_combination(monkeypatch, latest_tier, installab
             "supported_in_pypi": installable,
             "pypi_version": "5.15.0" if installable else None,
         }
-    inf_mod = _stub(monkeypatch, upgrade = upgrade, latest_tier = latest_tier,
-                    trust_remote_code = custom_code)
+    inf_mod = _stub(
+        monkeypatch, upgrade = upgrade, latest_tier = latest_tier, trust_remote_code = custom_code
+    )
     assert _call(inf_mod).forces_16bit is expected
 
 
-@pytest.mark.parametrize("failure", [
-    OSError("network is unreachable"),
-    TimeoutError("timed out"),
-    ValueError("malformed config.json"),
-    KeyError("architectures"),
-])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("network is unreachable"),
+        TimeoutError("timed out"),
+        ValueError("malformed config.json"),
+        KeyError("architectures"),
+    ],
+)
 def test_a_failing_preflight_never_escapes_the_route(monkeypatch, failure):
     # The additive promise, and the only thing standing behind it. This route runs in
     # front of every training start, so a raise here is a failed start for a model that
@@ -441,6 +452,7 @@ def test_the_route_is_behind_authentication():
     # An unauthenticated model probe would be a new way to make the server fetch an
     # arbitrary repo id.
     import inspect
+
     inf_mod = _route()
     subject = inspect.signature(inf_mod.check_transformers_upgrade_route).parameters[
         "current_subject"
