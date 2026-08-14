@@ -54,6 +54,93 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     }
 }
 
+// A host launcher hands the target to a host browser or file manager, so it
+// must not inherit the bundle's GUI runtime: the host's own GLib/GTK binaries
+// fail to load against Ubuntu 22.04 copies. Bundled tools stay reachable as a
+// fallback because the AppDir PATH entries are demoted rather than dropped.
+#[cfg(target_os = "linux")]
+const APPIMAGE_GUI_ONLY_VARS: [&str; 12] = [
+    "GIO_MODULE_DIR",
+    "GIO_EXTRA_MODULES",
+    "GTK_PATH",
+    "GTK_EXE_PREFIX",
+    "GTK_DATA_PREFIX",
+    "GTK_IM_MODULE_FILE",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GSETTINGS_SCHEMA_DIR",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "QT_PLUGIN_PATH",
+    "PERLLIB",
+];
+
+#[cfg(target_os = "linux")]
+fn appdir_entries_demoted(name: &str) -> Option<std::ffi::OsString> {
+    let appdir = std::env::var_os("APPDIR")?;
+    let value = std::env::var_os(name)?;
+    let (bundled, host): (Vec<_>, Vec<_>) =
+        std::env::split_paths(&value).partition(|path| path.starts_with(&appdir));
+    if bundled.is_empty() {
+        return None;
+    }
+    std::env::join_paths(host.into_iter().chain(bundled)).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn scrub_appimage_launcher_env(cmd: &mut Command) {
+    if std::env::var_os("APPIMAGE").is_none() {
+        return;
+    }
+    apply_scrubbed_appimage_library_path(cmd);
+    if let Some(path) = appdir_entries_demoted("PATH") {
+        cmd.env("PATH", path);
+    }
+    for name in APPIMAGE_GUI_ONLY_VARS {
+        cmd.env_remove(name);
+    }
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+}
+
+/// `open::that_detached`, with the launcher handed a host environment.
+#[cfg(target_os = "linux")]
+pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    let mut last_error = None;
+    for mut cmd in open::commands(target.as_ref()) {
+        scrub_appimage_launcher_env(&mut cmd);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // The same double fork plus setsid the `open` crate uses, so the
+        // launcher outlives us; waiting reaps the intermediate child.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                match libc::fork() {
+                    -1 => return Err(std::io::Error::last_os_error()),
+                    0 => (),
+                    _ => libc::_exit(0),
+                }
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = child.wait();
+                return Ok(());
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("no launcher is available")))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    open::that_detached(target)
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
@@ -149,6 +236,39 @@ mod appimage_environment_tests {
         assert!(env.contains("GIO_EXTRA_MODULES=/native/gio/extra-modules"));
         if let Some(value) = old_appimage {
             std::env::set_var("APPIMAGE", value);
+        }
+    }
+
+    #[test]
+    fn host_launcher_child_keeps_the_bundle_off_the_host_runtime() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", "PATH"]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_Unsloth/usr/lib:/opt/cuda/lib64",
+        );
+        std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("GTK_PATH", "/tmp/.mount_Unsloth/usr/lib/gtk-3.0")
+            .env("QT_PLUGIN_PATH", "/tmp/.mount_Unsloth/usr/lib/qt5/plugins")
+            .env("PYTHONPATH", "/tmp/.mount_Unsloth/usr/share/pyshared");
+        scrub_appimage_launcher_env(&mut cmd);
+        let output = cmd.output().expect("run host launcher");
+        let env = String::from_utf8(output.stdout).unwrap();
+        // The host's own GLib binaries must win, and the bundled tools stay last.
+        assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64"));
+        assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
+        assert!(!env.contains("GTK_PATH="));
+        assert!(!env.contains("QT_PLUGIN_PATH="));
+        assert!(!env.contains("PYTHONPATH="));
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
         }
     }
 }
