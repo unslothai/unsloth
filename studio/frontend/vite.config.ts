@@ -68,7 +68,10 @@ export default defineConfig({
     },
     rollupOptions: {
       input: {
-        main: path.resolve(__dirname, "index.html"),
+        // Keyed "index" so the entry chunk stays dist/assets/index-*.js: the
+        // wheel content check locates the main bundle by that name and greps
+        // it for the unstable_Provider regression.
+        index: path.resolve(__dirname, "index.html"),
         ask: path.resolve(__dirname, "ask.html"),
       },
     },
