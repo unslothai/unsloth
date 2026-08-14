@@ -875,9 +875,7 @@ def test_a_silent_hosted_execution_still_reaches_the_next_turn(executed):
                         "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
                     }
                 ),
-                _hosted_event(
-                    {"type": "tool_end", "tool_call_id": "code_a", "result": ""}
-                ),
+                _hosted_event({"type": "tool_end", "tool_call_id": "code_a", "result": ""}),
                 _call_line(),
                 _finish(),
             ],
@@ -946,9 +944,7 @@ def test_a_long_hosted_argument_says_it_was_cut(executed):
                         },
                     }
                 ),
-                _hosted_event(
-                    {"type": "tool_end", "tool_call_id": "code_a", "result": "Created"}
-                ),
+                _hosted_event({"type": "tool_end", "tool_call_id": "code_a", "result": "Created"}),
                 _call_line(),
                 _finish(),
             ],

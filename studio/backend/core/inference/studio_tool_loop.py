@@ -118,7 +118,12 @@ _USAGE_DETAIL_FIELDS = (
 _STEP_DONE = object()
 
 
-def _truncate_for_model(text: str, limit: int | None = None, *, joiner: str = "\n") -> str:
+def _truncate_for_model(
+    text: str,
+    limit: int | None = None,
+    *,
+    joiner: str = "\n",
+) -> str:
     """Hold a hosted result to the same cap a local result gets.
 
     Read off ``tools`` rather than copied, so an install that lowers
