@@ -104,6 +104,11 @@ def _origin_key(target: Optional[str], variant: Optional[str]) -> tuple[str, str
 
     The path alone is not the build: a user-loaded Q4 and an API load of Q8 from the same repo
     share it, so a failed API load would mark the resident Q4 as API-loaded and free it.
+
+    The variant is the token ``status()`` publishes, not a fuller filename label. Two builds the
+    token cannot separate therefore share a key, which errs toward reporting a model as
+    user-loaded and sparing it. Keying on more would never match what the resident model
+    publishes, and would spare everything.
     """
     return (str(target or "").strip().lower(), str(variant or "").strip().lower())
 

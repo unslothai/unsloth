@@ -212,9 +212,11 @@ class _FakeMediaBackend:
         self,
         repo_id = None,
         gguf_variant = None,
+        model_kind = None,
     ):
         self.repo_id = repo_id
         self.gguf_variant = gguf_variant
+        self.model_kind = model_kind
         self.loading: tuple[str, ...] = ()
         self.active = False
         self.phase = "ready" if repo_id else None
@@ -227,6 +229,7 @@ class _FakeMediaBackend:
             "repo_id": self.repo_id,
             "base_repo": None,
             "gguf_variant": self.gguf_variant,
+            "model_kind": self.model_kind,
         }
 
     def loading_repo_ids(self):
@@ -259,7 +262,9 @@ def loads(monkeypatch, backend):
     async def _start(owner, pick, current_subject):
         started.append((owner, pick))
         backend.repo_id = pick.model_path
-        backend.gguf_variant = pick.quant
+        # The real backends publish extract_quant_token, not the lister label.
+        backend.gguf_variant = mas._published_token(pick) or None
+        backend.model_kind = pick.model_kind
         backend.phase = "ready"
         mk.note_load_origin(owner, pick.model_path, user_action = False)
 
@@ -483,6 +488,7 @@ def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
         )
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "Q4_K_M"
+    backend.model_kind = "gguf"
 
     _switch("z-image-Q8_0")
 
@@ -643,9 +649,14 @@ def test_two_bpw_builds_of_one_quant_are_not_confused(catalog, enabled, tmp_path
         )
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "IQ4_XS"
+    backend.model_kind = "gguf"
 
     _switch("z-IQ4_XS-3.97bpw")
 
+    # The published token cannot separate them, so the resident one is never assumed to be ours.
+    assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.97bpw.gguf"]
+    loads.clear()
+    _switch("z-IQ4_XS-3.97bpw")
     assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.97bpw.gguf"]
 
 
@@ -695,6 +706,105 @@ def test_a_slow_resolve_refuses_inside_the_budget(catalog, enabled, monkeypatch)
 
     assert excinfo.value.status_code == 503
     assert excinfo.value.detail["error"]["code"] == "model_loading"
+
+
+def test_an_alias_two_models_share_resolves_to_neither(catalog, tmp_path):
+    # Cached repos advertise their final component, so org-a/model and org-b/model both offer
+    # "model". Binding whichever the scan reached first would load arbitrary weights.
+    for org in ("org-a", "org-b"):
+        pipeline = tmp_path / org
+        pipeline.mkdir()
+        row = _info(f"{org}/model", pipeline, task = mas.IMAGE_TASK, display_name = "model")
+        catalog.append(row)
+
+    assert mas.resolve_local_media_model("model", task = mas.IMAGE_TASK) is None
+    # The unambiguous full ids still resolve.
+    assert mas.resolve_local_media_model("org-a/model", task = mas.IMAGE_TASK) is not None
+    assert mas.resolve_local_media_model("org-b/model", task = mas.IMAGE_TASK) is not None
+    assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["org-a/model", "org-b/model"]
+
+
+def test_a_load_that_lands_is_accepted_even_when_the_token_is_ambiguous(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The skip check must stay conservative for builds sharing a token, but the load this
+    # request started is its own: rejecting it there would 503 the model that just loaded.
+    for bpw in ("3.53", "3.97"):
+        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
+        catalog.append(
+            _info(
+                f"z-IQ4_XS-{bpw}bpw",
+                tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
+                task = mas.IMAGE_TASK,
+                model_format = "gguf",
+            )
+        )
+
+    _switch("z-IQ4_XS-3.53bpw")
+
+    assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.53bpw.gguf"]
+
+
+def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A bare repo id means the preferred quant, which the shortcut cannot check, so a resident
+    # non-preferred quant would have served the request.
+    repo = tmp_path / "flux-gguf"
+    repo.mkdir()
+    for quant in ("Q4_K_M", "Q8_0"):
+        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+    catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
+    backend.repo_id = "city96/FLUX.1-dev-gguf"
+    backend.gguf_variant = "Q8_0"
+    backend.model_kind = "gguf"
+
+    _switch("city96/FLUX.1-dev-gguf")
+
+    preferred = preferred_quant(["Q4_K_M", "Q8_0"])
+    if preferred != "Q8_0":
+        assert [p.gguf_filename for _o, p in loads] == [f"flux1-dev-{preferred}.gguf"]
+
+
+def test_a_plan_with_unsized_entries_is_refused(catalog, enabled, tmp_path, backend, loads):
+    # Both planners coerce an unknown sibling size to zero while keeping the entry, so bytes
+    # alone would read a pending multi-GB fetch as nothing to do.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch_plan = {"total_bytes": 0, "entries": [{"repo_id": "x", "files": ["a"], "bytes": 0}]}
+    backend.download_plan = lambda model_path, **kw: monkeypatch_plan
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
+    assert loads == []
+
+
+def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
+    catalog, tmp_path, monkeypatch
+):
+    # The load routes reinterpret such a directory as single_file and then resolve that family's
+    # companions; planning it as a local pipeline reports nothing to fetch.
+    checkpoint = tmp_path / "solo"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"")
+    catalog.append(_info("some/solo", checkpoint, task = mas.IMAGE_TASK))
+    pick = mas.resolve_local_media_model("some/solo", task = mas.IMAGE_TASK)
+    seen: list = []
+
+    class _Planner:
+        def download_plan(self, model_path, **kwargs):
+            seen.append((kwargs.get("gguf_filename"), kwargs.get("model_kind")))
+            return {"total_bytes": 0, "entries": []}
+
+    monkeypatch.setattr(mas, "_planner_for", lambda owner, p: _Planner())
+    monkeypatch.setattr(mas, "_plan_gpu_ordinal", lambda: None)
+
+    assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 0
+    assert seen == [("model.safetensors", "single_file")]
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

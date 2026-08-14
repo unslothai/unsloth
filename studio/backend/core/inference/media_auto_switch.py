@@ -28,7 +28,7 @@ import contextlib
 import threading
 import time
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -70,10 +70,16 @@ _UNVERIFIED_MSG = (
     "Could not verify that '{model}' is fully downloaded, so it was not switched in. "
     "Auto-switch never downloads; load it once from the {kind} page and retry."
 )
+_UNSIZED_MSG = (
+    "'{model}' is missing some of its weights. Auto-switch never downloads, so load it once "
+    "from the {kind} page and retry."
+)
 _INCOMPLETE_MSG = (
     "'{model}' is not fully downloaded: about {gb:.1f} GB of its companion weights are missing. "
     "Auto-switch never downloads, so load it once from the {kind} page and retry."
 )
+# Stands for "entries are missing but their size is unknown", so the refusal reports no figure.
+_UNSIZED_MISSING = -1
 # Cap on ids a "not found" error lists, so it stays readable in a terminal.
 _MAX_LISTED_MODELS = 8
 
@@ -89,6 +95,13 @@ class MediaModelPick:
     # The variant lister's full label, which distinguishes builds the backend's own quant token
     # collapses (IQ4_XS-3.53bpw vs -3.97bpw, and unlabelled files that have no token at all).
     quant: Optional[str] = None
+    # True when another indexed build under the same model_path publishes the same quant token,
+    # so a resident model cannot be proven to be this one and the switch must reload.
+    ambiguous: bool = False
+
+
+# Sentinel for a name two different models answer to; resolution treats it as no match.
+_AMBIGUOUS = MediaModelPick("", "")
 
 
 # ── resolving a name to a downloaded model ──────────────────────────
@@ -105,9 +118,25 @@ def _resolve_load_dir(p: Path) -> Path:
 
 
 def _register(index: dict[str, MediaModelPick], keys, pick: MediaModelPick) -> None:
+    """Bind every name *pick* answers to, dropping any that two different models share.
+
+    Display labels collide readily: a cached repo advertises its final component, so
+    ``org-a/model`` and ``org-b/model`` both offer ``model``. Taking whichever the scan
+    reached first would load arbitrary weights for a name the docs say is usable, and the
+    full ids stay available either way.
+    """
     for key in keys:
-        if isinstance(key, str) and key.strip():
-            index.setdefault(key.strip().lower(), pick)
+        if not isinstance(key, str) or not key.strip():
+            continue
+        normalized = key.strip().lower()
+        existing = index.get(normalized)
+        if existing is None:
+            index[normalized] = pick
+        elif existing is not _AMBIGUOUS and (existing.model_path, existing.gguf_filename) != (
+            pick.model_path,
+            pick.gguf_filename,
+        ):
+            index[normalized] = _AMBIGUOUS
 
 
 def _name_keys(info) -> tuple[str, ...]:
@@ -140,6 +169,16 @@ def _gguf_load_path(info, load_dir: Path) -> str:
     if getattr(info, "source", None) == "hf_cache" and isinstance(repo_id, str) and repo_id:
         return repo_id
     return str(load_dir)
+
+
+def _published_token(pick: MediaModelPick) -> str:
+    """The ``gguf_variant`` the backend will publish once *pick* is loaded, lowercased."""
+    from hub.utils.gguf import extract_quant_token
+
+    if not pick.gguf_filename:
+        return ""
+    token = extract_quant_token(pick.gguf_filename)
+    return (token or "").strip().lower()
 
 
 def _variant_label(filename: str) -> Optional[str]:
@@ -228,13 +267,36 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     return index
 
 
+def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaModelPick]:
+    """Flag every GGUF pick whose published token another build under its path also publishes."""
+    seen: dict[tuple[str, str], set] = {}
+    for pick in index.values():
+        if pick is _AMBIGUOUS or pick.model_kind != "gguf":
+            continue
+        key = (pick.model_path.strip().lower(), _published_token(pick))
+        seen.setdefault(key, set()).add(pick.gguf_filename)
+    collides = {key for key, files in seen.items() if len(files) > 1 or key[1] == ""}
+    if not collides:
+        return index
+    return {
+        name: (
+            pick
+            if pick is _AMBIGUOUS
+            or pick.model_kind != "gguf"
+            or (pick.model_path.strip().lower(), _published_token(pick)) not in collides
+            else replace(pick, ambiguous = True)
+        )
+        for name, pick in index.items()
+    }
+
+
 def _cached_index(task: str) -> dict[str, MediaModelPick]:
     now = time.monotonic()
     with _index_lock:
         hit = _index.get(task)
         if hit is not None and now - hit[0] < _INDEX_TTL_S:
             return hit[1]
-    built = _build_index(task)
+    built = _mark_ambiguous_builds(_build_index(task))
     with _index_lock:
         # Stamped after the scan, so one slower than the TTL is not already expired.
         _index[task] = (time.monotonic(), built)
@@ -251,15 +313,25 @@ def resolve_local_media_model(name: str, *, task: str) -> Optional[MediaModelPic
     """The downloaded *task* model *name* refers to, or None."""
     if not isinstance(name, str) or not name.strip():
         return None
-    return _cached_index(task).get(name.strip().lower())
+    pick = _cached_index(task).get(name.strip().lower())
+    return None if pick is _AMBIGUOUS else pick
 
 
 def available_media_model_ids(task: str) -> list[str]:
     """Sorted ids a request may name for *task*, for a "not found" error to list."""
-    return sorted({pick.model_id for pick in _cached_index(task).values()})
+    return sorted(
+        {pick.model_id for pick in _cached_index(task).values() if pick is not _AMBIGUOUS}
+    )
 
 
 # ── the switch ──────────────────────────────────────────────────────
+
+
+def _incomplete_message(pick: MediaModelPick, missing: int, kind: str) -> str:
+    """The refusal text, which only quotes a size when the plan could size what it is missing."""
+    if missing == _UNSIZED_MISSING:
+        return _UNSIZED_MSG.format(model = pick.model_id, kind = kind)
+    return _INCOMPLETE_MSG.format(model = pick.model_id, gb = missing / 1e9, kind = kind)
 
 
 def _format_available(ids: list[str]) -> str:
@@ -291,11 +363,19 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
     folder as their ``model_path``, so the path alone would report a sibling as already
     serving and generate on the wrong weights.
 
-    Matched against the pick's full variant label, which the lister keeps distinct where the
-    backend's published token does not: two ``IQ4_XS`` builds differing only by bpw, and
-    unlabelled files with no token, both fail this comparison and reload rather than risk
-    serving one under the other's name.
+    The comparison uses the token the backend actually publishes. Where that token cannot tell
+    two indexed builds apart (``IQ4_XS-3.53bpw`` and ``-3.97bpw`` both publish ``IQ4_XS``, and
+    an unlabelled file publishes nothing), the pick is marked ambiguous at index time and this
+    answers False: reloading costs a load, serving the sibling returns the wrong image.
     """
+    if not _resident_is_pick(status, name, pick):
+        return False
+    # Ambiguity only blocks the skip, never the "did my load land" check: the reload settles it.
+    return not pick.ambiguous
+
+
+def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -> bool:
+    """Whether the resident build is the one *pick* names, on the identity status publishes."""
     if not status.get("loaded"):
         return False
     resident = str(status.get("repo_id") or "").strip().lower()
@@ -307,7 +387,7 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
     if pick.model_kind != "gguf":
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
-    return bool(loaded_quant) and loaded_quant == (pick.quant or "").strip().lower()
+    return loaded_quant == _published_token(pick)
 
 
 def _backend_busy(backend: Any) -> bool:
@@ -351,7 +431,8 @@ async def _await_loaded(backend: Any, name: str, pick: MediaModelPick, deadline:
             raise RuntimeError(progress.get("error") or "The model failed to load.")
         if phase in (None, "ready"):
             status = await asyncio.to_thread(backend.status)
-            if _satisfied_by(status, name, pick):
+            # The landed check, not the skip check: this load is ours, so ambiguity is settled.
+            if _resident_is_pick(status, name, pick):
                 return True
             # Loaded, but not this pick: a load that landed after ours replaced it.
             raise RuntimeError(f"'{pick.model_id}' was replaced by another load before it served.")
@@ -410,6 +491,23 @@ def _refuse(
     )
 
 
+def _normalized_pick(pick: MediaModelPick) -> MediaModelPick:
+    """The pick as the LOAD route will read it, with a bare single-file directory reinterpreted.
+
+    Both load routes turn a kindless directory holding exactly one checkpoint into a
+    ``single_file`` load and then resolve that family's companions. Planning the un-normalized
+    pick describes a local pipeline with nothing to fetch, and misses those companions.
+    """
+    from core.inference.diffusion import resolve_local_single_file
+
+    if pick.model_kind or pick.gguf_filename:
+        return pick
+    sole = resolve_local_single_file(pick.model_path)
+    if sole is None:
+        return pick
+    return replace(pick, gguf_filename = sole, model_kind = "single_file")
+
+
 def _planner_for(owner: str, pick: MediaModelPick) -> Any:
     """The engine whose download plan describes the load this pick will actually run."""
     if owner != DIFFUSION:
@@ -423,6 +521,22 @@ def _planner_for(owner: str, pick: MediaModelPick) -> Any:
         return _backend_for(owner)
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
     return engine_for(predict_engine(fam, model_kind = kind))
+
+
+def _plan_gpu_ordinal() -> Optional[int]:
+    """The card the load route will rank for itself, so the plan sizes the same file set.
+
+    Automatic precision is chosen per card, and a different card can select a different hosted
+    pre-quantized artifact, which a plan plotted against the default device would omit.
+    """
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
+
+    if resolve_diffusion_device_target().device != "cuda":
+        return None
+    return resolve_selected_cuda_ordinal(None)
 
 
 def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
@@ -444,11 +558,13 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
     would allow exactly the download this exists to prevent, so the switch refuses instead.
     """
     try:
-        planner = _planner_for(owner, pick)
+        target = _normalized_pick(pick)
+        planner = _planner_for(owner, target)
         plan = planner.download_plan(
-            pick.model_path,
-            gguf_filename = pick.gguf_filename,
-            model_kind = pick.model_kind,
+            target.model_path,
+            gguf_filename = target.gguf_filename,
+            model_kind = target.model_kind,
+            gpu_ordinal = _plan_gpu_ordinal(),
         )
     except Exception as exc:  # noqa: BLE001 -- see the docstring
         logger.debug("media auto-switch: download plan for %s failed: %s", pick.model_id, exc)
@@ -456,7 +572,12 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
     plan = plan or {}
     if plan.get("plan_failed"):
         return None
-    return max(0, int(plan.get("total_bytes") or 0))
+    missing = max(0, int(plan.get("total_bytes") or 0))
+    # An entry whose sibling sizes could not be read still names a file the load will fetch, and
+    # both planners coerce an unknown size to zero, so entries decide and bytes only describe.
+    if not missing and (plan.get("entries") or []):
+        return _UNSIZED_MISSING
+    return missing
 
 
 async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) -> None:
@@ -512,11 +633,16 @@ async def maybe_auto_switch_media_model(
     task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
     kind = "image" if owner == DIFFUSION else "video"
 
-    # An exact match on the resident model needs no discovery: it cannot be confused with
-    # another model, and a scan that failed or skipped an entry would otherwise 404 the very
-    # model that is loaded for as long as the empty index is cached.
+    # An exact match on the resident model needs no discovery: a scan that failed or skipped an
+    # entry would otherwise 404 the very model that is loaded for as long as the empty index is
+    # cached. Never for a resident GGUF: a bare repo id means the preferred quant, which this
+    # comparison cannot see, so it would serve whichever quant happens to be up.
     resident = await asyncio.to_thread(_backend_for(owner).status)
-    if resident.get("loaded") and name.lower() == str(resident.get("repo_id") or "").lower():
+    if (
+        resident.get("loaded")
+        and resident.get("model_kind") != "gguf"
+        and name.lower() == str(resident.get("repo_id") or "").lower()
+    ):
         return
 
     # Off the loop: a cold index walks the model roots and reads GGUF headers.
@@ -562,7 +688,7 @@ async def maybe_auto_switch_media_model(
                 )
             if missing:
                 raise _refuse(
-                    _INCOMPLETE_MSG.format(model = pick.model_id, gb = missing / 1e9, kind = kind),
+                    _incomplete_message(pick, missing, kind),
                     status_code = 409,
                     openai_errors = openai_errors,
                     code = "model_not_downloaded",
@@ -593,6 +719,19 @@ async def maybe_auto_switch_media_model(
                         openai_errors = openai_errors,
                         code = "model_busy",
                         retry_after = _RETRY_AFTER_S,
+                    )
+                # Re-planned here because the drain can last 30 seconds, and a cache deletion
+                # during it sees a target that is neither loaded nor loading yet, so its guard
+                # allows the removal of files this already verified.
+                missing = await asyncio.to_thread(_missing_download_bytes, owner, pick)
+                if missing is None or missing:
+                    raise _refuse(
+                        _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind)
+                        if missing is None
+                        else _incomplete_message(pick, missing, kind),
+                        status_code = 409,
+                        openai_errors = openai_errors,
+                        code = "model_not_downloaded",
                     )
                 await _start_load(owner, pick, current_subject)
             try:

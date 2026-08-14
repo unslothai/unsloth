@@ -2174,6 +2174,7 @@ class DiffusionBackend:
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
         revisions_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
+        failures_out: Optional[list] = None,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
@@ -2308,6 +2309,11 @@ class DiffusionBackend:
             _record_revision(revisions_out, base_repo, base_info)
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
+            # Recorded so a caller that must not guess (media auto-switch refuses rather than
+            # download) can tell a partial file list from a complete one; the estimate itself
+            # stays best-effort for the UI, whose fallback is the inline pull.
+            if failures_out is not None:
+                failures_out.append(exc)
         return total, base_files
 
     def download_plan(
@@ -2359,6 +2365,7 @@ class DiffusionBackend:
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
         revisions: dict[str, str] = {}
+        plan_failures: list = []
         required_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
@@ -2387,6 +2394,7 @@ class DiffusionBackend:
             file_sizes_out = file_sizes,
             revisions_out = revisions,
             skip_te_components = tuple(te_files),
+            failures_out = plan_failures,
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
         # answers model_info anonymously, so the plan would otherwise be confident and the 401 land
@@ -2557,6 +2565,10 @@ class DiffusionBackend:
             "required_bytes": int(required_total),
             "checkpoint_bytes": checkpoint_bytes,
             "incompatible_reason": incompatible,
+            # Companion discovery failed, so the file list above is partial. The UI stages what
+            # it can and the loader pulls the rest inline; a caller that must not download at
+            # all has to treat this plan as unverified rather than as nothing missing.
+            "plan_failed": bool(plan_failures),
         }
 
     @staticmethod
