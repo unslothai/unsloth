@@ -458,10 +458,10 @@ function useCoalescedStreamingText(
 
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  // Parts are keyed by index, so switching conversations hands this instance a different
-  // message, and Streamdown only extends its parsed blocks: key it per message instead.
-  // The cache generation joins the key for the one case the Markdown string cannot
-  // express, an edit that drops retained blocks without changing the live tail.
+  // Parts are keyed by index, so switching conversations hands this instance a
+  // different message, and Streamdown only extends its parsed blocks: key it per
+  // message. The cache generation joins the key for the case the Markdown string
+  // cannot express, an edit that drops retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);

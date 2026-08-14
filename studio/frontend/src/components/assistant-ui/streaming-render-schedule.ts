@@ -9,16 +9,14 @@ import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 // paragraphs of slack for a construct that a later line can still reinterpret.
 const ROLLBACK_BLOCKS = 8;
 // A marker the reply never closes leaves the tail growing with nothing to
-// retain, and the scan for a boundary is then paid on top of the full repair it
-// was meant to replace. Give up at a character budget, because characters are
-// what that scan costs, and a transient imbalance closes far below this.
-//
-// The budget is what gets spent before giving up, and that spending grows with
-// the square of the tail, so the value matters. Measured on an emphasis marker
-// that only closes 40,000 characters later, 420 updates, five repetitions: the
-// median cost against the full-document path is +73% at 32,768 and +1.6% at
-// 8,192. 8,192 characters is still around 1,300 words of slack, well beyond a
-// marker a later line genuinely closes.
+// retain, and the boundary scan is then paid on top of the full repair it was
+// meant to replace. Give up at a character budget, since characters are what
+// that scan costs, and a transient imbalance closes far below this. The budget
+// is spent before giving up and that spending grows with the square of the tail,
+// so the value matters. Measured on an emphasis marker that only closes 40,000
+// characters later, 420 updates, five repetitions: the median cost against the
+// full-document path is +73% at 32,768 and +1.6% at 8,192. 8,192 characters is
+// still around 1,300 words of slack, well beyond a marker a later line closes.
 const STALLED_TAIL_CHARACTERS = 8_192;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
@@ -272,10 +270,9 @@ function isSingleUnderscoreCandidate(
   );
 }
 
-// Remend decides these closers from marker parity over the whole document.
-// A retained prefix must therefore end with neutral parity, otherwise repairing
-// the remaining tail alone could add or omit a closer that a full repair would
-// handle differently.
+// Remend decides these closers from marker parity over the whole document, so a
+// retained prefix must end with neutral parity: repairing the tail alone could
+// otherwise add or omit a closer that a full repair would place differently.
 function updateAsteriskParity(
   parity: RepairParity,
   text: string,
@@ -321,10 +318,9 @@ function updateUnderscoreParity(
   return index;
 }
 
-// Remend finds the bold marker that orders its closers with a raw
-// indexOf("**") while counting pairs only outside fenced code, so a `**` in a
-// fence still has to seed the bold context without reaching the fence-aware
-// counter in updateAsteriskParity.
+// Remend finds the marker that orders its closers with a raw indexOf("**") but
+// counts pairs only outside fenced code, so a `**` in a fence has to seed the
+// bold context without reaching the fence-aware counter in updateAsteriskParity.
 function recordBoldMarker(
   parity: RepairParity,
   text: string,
@@ -436,10 +432,9 @@ function updateStrikethroughParity(parity: RepairParity, text: string): void {
   }
 }
 
-// Remend's own display-math scan stops one character early because it only ever
-// reads a whole document, where the last character cannot open a pair. Here the
-// scan runs per retained block, and every block boundary is interior to the
-// document, so the last character has to be counted.
+// Remend's display-math scan stops one character early: it only reads whole
+// documents, where the last character cannot open a pair. This one runs per
+// retained block, whose boundaries are interior, so it counts to text.length.
 function updateDisplayMathParity(parity: RepairParity, text: string): void {
   for (let index = 0; index < text.length; index += 1) {
     if (text[index] === "`" && !isTripleBacktick(text, index)) {
@@ -732,10 +727,9 @@ export class IncrementalMarkdownCache {
     const commit = findCommitBoundary(this.tail, blocks, candidateCount);
 
     // A mid-string repair can never become a raw prefix on a later append, so
-    // make that fallback sticky, and do the same once the tail has grown past
-    // the budget with nothing to show for it. A temporarily unbalanced marker
-    // can close in a later block, so below that keep the repaired tail live and
-    // retry on the next update.
+    // make that fallback sticky, and do the same once the tail grows past the
+    // budget with nothing to show for it. A temporarily unbalanced marker can
+    // close in a later block, so below the budget keep the tail live and retry.
     if (!commit.parity) {
       if (commit.repairBroke || this.tail.length > STALLED_TAIL_CHARACTERS) {
         return this.renderFullDocument(markdown);

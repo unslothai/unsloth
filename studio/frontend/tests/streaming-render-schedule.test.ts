@@ -202,8 +202,7 @@ test("single-dollar parity affects the retained tail repair", () => {
 });
 
 test("a code character class matches Streamdown's own footnote short-circuit", () => {
-  // `\s` is outside `[\w-]`, so this one never looked like a footnote and keeps
-  // retaining.
+  // `\s` is outside `[\w-]`, so this never looks like a footnote and retains.
   const escaped = `\`\`\`js\nconst token = /[^\\s]+/;\n\`\`\`\n\n${paragraphs(100)}`;
   const render = new IncrementalMarkdownCache().update(escaped);
   assert.ok(render.markdown.length < escaped.length / 4);
@@ -366,9 +365,8 @@ test("a repeating reply keeps displaying every retained block", () => {
 // The stalled-tail budget is only reachable once the live tail holds more than
 // ROLLBACK_BLOCKS blocks, so a single long fenced block never reaches it: while
 // the fence is open the tail lexes to a handful of blocks and stays retainable.
-// What does reach it is an inline marker with many paragraphs between it and its
-// closer, and since the budget is spent before giving up, the cost of that shape
-// is what the budget has to be sized against.
+// What reaches it is an inline marker with many paragraphs before its closer,
+// and since the budget is spent before giving up, that shape sizes the budget.
 test("an emphasis marker that closes far later stays near the full-repair cost", () => {
   const source = `An *opening\n\n${paragraphs(3_600)}closing* marker.\n\n${paragraphs(200)}`;
   const cache = new IncrementalMarkdownCache();
