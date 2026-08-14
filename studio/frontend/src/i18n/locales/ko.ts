@@ -16,7 +16,6 @@ export const ko = {
     searchAriaLabel: "{noun} 검색",
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
-    pickModelFile: "디스크에서 모델 파일 선택",
     modelDropped: "더 이상 제공되지 않음",
     modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
     modelDisabled: "사용 안 함",
@@ -367,6 +366,13 @@ export const ko = {
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        mediaIdleUnload: "이미지와 동영상의 유휴 시 자동 해제",
+        mediaIdleUnloadDescription:
+          "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 별도의 설정입니다. 위 설정은 채팅 모델에만 적용됩니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
+        mediaIdleSecondsAriaLabel:
+          "이미지와 동영상의 유휴 시 자동 해제까지의 시간(초)",
+        mediaIdlePaused:
+          "‘모델을 GPU 메모리에 유지’ 또는 ‘API가 불러온 모델만 해제’가 켜져 있는 동안 일시 중지됩니다.",
         idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
