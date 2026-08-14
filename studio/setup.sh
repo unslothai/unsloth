@@ -3330,10 +3330,10 @@ except ModuleNotFoundError:
     print("absent")
 except Exception:
     import traceback
-    # torchcodec folds every native load failure into one "Could not load
-    # libtorchcodec" message that lists FFmpeg, an ABI mismatch and "another
-    # runtime dependency" together. This only separates that loader from an
-    # unrelated import error; it does not pick between the causes it lists.
+    # torchcodec folds every native load failure into one message naming
+    # libtorchcodec, which lists FFmpeg, an ABI mismatch and another runtime
+    # dependency together. This only separates that loader from an unrelated
+    # import error; it does not pick between the causes it lists.
     print("ffmpeg" if "libtorchcodec" in traceback.format_exc() else "broken")
 else:
     print("ok")

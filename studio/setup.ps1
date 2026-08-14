@@ -6116,8 +6116,10 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
 # user is still looking at the installer.
 if (-not $SkipPythonDeps) {
     # Importing torchcodec imports torch, so this goes through the bounded probe:
-    # a wedged GPU runtime must not hang setup. No double quotes in the code --
-    # Invoke-BoundedPythonProbe wraps it in them.
+    # a wedged GPU runtime must not hang setup. No double quotes anywhere in the
+    # body, comments included: the helper wraps it in them to build -c <body>, and
+    # one more closes that argument early, leaving python a truncated program that
+    # still parses, exits 0 and prints nothing.
     $_torchcodecProbe = @'
 try:
     import torchcodec  # noqa: F401
@@ -6125,10 +6127,10 @@ except ModuleNotFoundError:
     print('absent')
 except Exception:
     import traceback
-    # torchcodec folds every native load failure into one "Could not load
-    # libtorchcodec" message that lists FFmpeg, an ABI mismatch and "another
-    # runtime dependency" together. This only separates that loader from an
-    # unrelated import error; it does not pick between the causes it lists.
+    # torchcodec folds every native load failure into one message naming
+    # libtorchcodec, which lists FFmpeg, an ABI mismatch and another runtime
+    # dependency together. This only separates that loader from an unrelated
+    # import error; it does not pick between the causes it lists.
     print('ffmpeg' if 'libtorchcodec' in traceback.format_exc() else 'broken')
 else:
     print('ok')

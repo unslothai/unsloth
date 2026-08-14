@@ -12,6 +12,7 @@ torch/torchcodec matrix notebook_validator enforces, then fails at import.
 
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -164,6 +165,53 @@ def test_the_powershell_probe_is_bounded():
     after = text[probe : text.index('step "torchcodec"', probe)]
     assert "Invoke-BoundedPythonProbe" in after
     assert "-TimeoutSec" in after
+
+
+def test_the_powershell_probe_carries_no_double_quote():
+    # Invoke-BoundedPythonProbe wraps the body in double quotes to build -c <body>,
+    # so one more anywhere in it (a comment included) closes that argument early.
+    # Windows then splits the rest into stray argv entries and python runs the
+    # truncated head, which still parses -- it exits 0 with no output and the whole
+    # report goes quiet.
+    assert '"' not in _shipped_ps1_probe()
+
+
+# Runs the shipped helper against the shipped body, so neither can drift from what the
+# test exercises. $args are setup.ps1, the interpreter, and a PYTHONPATH to import from.
+_PWSH_HARNESS = """
+$ps1 = (Get-Content -Raw $args[0]) -replace "`r`n", "`n"
+$opener = "`$_torchcodecProbe = @'`n"
+$start = $ps1.IndexOf($opener) + $opener.Length
+$code = $ps1.Substring($start, $ps1.IndexOf("`n'@", $start) - $start)
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($ps1, [ref]$null, [ref]$null)
+$fn = $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Invoke-BoundedPythonProbe'
+}, $true)[0]
+Invoke-Expression $fn.Extent.Text
+$env:PYTHONPATH = $args[2]
+Write-Output (Invoke-BoundedPythonProbe -PythonExe $args[1] -Code $code -TimeoutSec 60).Output.Trim()
+"""
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh unavailable")
+def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
+    # Against the unloadable case on purpose. A body cut short at a double quote keeps
+    # the ModuleNotFoundError branch, so a python that simply lacks torchcodec answers
+    # `absent` either way and proves nothing; only this branch goes silent.
+    (tmp_path / "torchcodec.py").write_text(
+        "raise RuntimeError('Could not load libtorchcodec')", encoding = "utf-8"
+    )
+    harness = tmp_path / "probe_harness.ps1"
+    harness.write_text(_PWSH_HARNESS, encoding = "utf-8")
+    out = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(harness), str(_SETUP_PS1), sys.executable, str(tmp_path)],
+        capture_output = True,
+        text = True,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "ffmpeg", "the probe reached python but its body was cut short"
 
 
 def test_the_powershell_probe_runs_the_studio_interpreter():
