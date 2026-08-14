@@ -837,6 +837,15 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
         cfg = SimpleNamespace(is_lora = False, path = None, base_model = None)
         self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
 
+    def test_native_audio_forces_full_precision_for_admission_sizing(self):
+        cfg = SimpleNamespace(
+            is_lora = False,
+            path = None,
+            base_model = None,
+            audio_type = "moss_tts_local",
+        )
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+
     def test_lora_method_flips_to_16bit(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

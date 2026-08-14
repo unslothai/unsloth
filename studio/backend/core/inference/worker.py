@@ -369,7 +369,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
         # the SSM install so a blocked model never triggers a native kernel build.
-        targets = [config["model_name"]]
+        from core.inference.native_audio import native_audio_security_targets
+
+        targets = native_audio_security_targets(
+            config["model_name"], getattr(mc, "audio_type", None)
+        )
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
         if not _run_security_gates(
@@ -970,7 +974,10 @@ def run_inference_process(
     # These architectures use their publishers' native Transformers/Diffusers
     # interfaces. Select that backend before the Apple MLX fast-path and before
     # importing Unsloth; native_audio itself has no eager ML imports.
-    from core.inference.native_audio import is_native_audio_model
+    from core.inference.native_audio import (
+        is_native_audio_model,
+        native_audio_security_targets,
+    )
 
     _native_audio_worker = is_native_audio_model(model_name)
 
@@ -1211,7 +1218,7 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = [model_name]
+    _gate_targets = native_audio_security_targets(model_name)
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(

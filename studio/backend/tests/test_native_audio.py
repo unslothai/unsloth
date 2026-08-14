@@ -10,7 +10,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from core.inference.native_audio import NativeAudioBackend, is_native_audio_model
+from core.inference.native_audio import (
+    HIGGS_TTS3_CODEC_REPO,
+    MOSS_LOCAL_CODEC_REPO,
+    MOSS_NANO_CODEC_REPO,
+    NativeAudioBackend,
+    is_native_audio_model,
+    native_audio_security_targets,
+)
 
 
 @pytest.mark.parametrize(
@@ -25,6 +32,18 @@ from core.inference.native_audio import NativeAudioBackend, is_native_audio_mode
 )
 def test_curated_repo_uses_native_audio_worker(repo):
     assert is_native_audio_model(repo)
+
+
+@pytest.mark.parametrize(
+    ("repo", "companion"),
+    (
+        ("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", MOSS_LOCAL_CODEC_REPO),
+        ("OpenMOSS-Team/MOSS-TTS-Nano-100M", MOSS_NANO_CODEC_REPO),
+        ("multimodalart/higgs-audio-v3-tts-4b-transformers", HIGGS_TTS3_CODEC_REPO),
+    ),
+)
+def test_native_audio_security_targets_include_companion_repositories(repo, companion):
+    assert native_audio_security_targets(repo) == [repo, companion]
 
 
 def _backend(audio_type: str, **entry):
@@ -70,6 +89,7 @@ def test_higgs_tts2_follows_chat_template_and_decode_contract():
     wav, sample_rate = backend.generate_audio_response(
         "Hello",
         instructions = "Close-mic studio speech.",
+        top_k = -1,
         max_new_tokens = 321,
     )
 
@@ -78,6 +98,30 @@ def test_higgs_tts2_follows_chat_template_and_decode_contract():
     assert seen["conversation"][1]["content"][0]["text"] == "Close-mic studio speech."
     assert seen["template_kwargs"]["sampling_rate"] == 24000
     assert seen["generate"]["max_new_tokens"] == 321
+    assert seen["generate"]["top_k"] == 0
+
+
+def test_remote_code_audio_requires_explicit_consent_before_loading():
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cpu"
+    backend.models = {}
+    backend.active_model_name = None
+    backend.loading_models = set()
+    config = SimpleNamespace(
+        identifier = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+        path = None,
+        audio_type = "moss_tts_local",
+    )
+
+    with pytest.raises(RuntimeError, match = "trust_remote_code=True"):
+        backend.load_model(config, trust_remote_code = False)
+
+    seen = {}
+    backend._load_moss_local = lambda entry, source, token, trust: seen.update(
+        source = source, trust = trust
+    )
+    assert backend.load_model(config, trust_remote_code = True)
+    assert seen == {"source": config.identifier, "trust": True}
 
 
 def test_moss_local_uses_generation_messages_and_stereo_decode():
@@ -117,6 +161,11 @@ def test_moss_local_uses_generation_messages_and_stereo_decode():
     assert seen["message"] == {"text": "Bonjour"}
     assert seen["mode"] == "generation"
     assert seen["generate"]["audio_top_k"] == 50
+    assert seen["generate"]["do_sample"] is True
+
+    backend.generate_audio_response("Bonjour", temperature = 0)
+    assert seen["generate"]["do_sample"] is False
+    assert seen["generate"]["audio_temperature"] == 0
 
 
 def test_moss_nano_passes_companion_codec_and_returns_written_wav():
@@ -145,6 +194,11 @@ def test_moss_nano_passes_companion_codec_and_returns_written_wav():
     assert seen["audio_tokenizer"] is codec
     assert seen["max_new_frames"] == 375
 
+    backend.generate_audio_response("Portable speech", temperature = 0, max_new_tokens = 375)
+    assert seen["do_sample"] is False
+    assert seen["text_temperature"] == 0
+    assert seen["audio_temperature"] == 0
+
 
 def test_higgs_tts3_uses_generate_speech_contract():
     seen = {}
@@ -156,12 +210,18 @@ def test_higgs_tts3_uses_generate_speech_contract():
 
     tokenizer = object()
     backend = _backend("higgs_tts3", model = Model(), processor = tokenizer)
-    wav, sample_rate = backend.generate_audio_response("Hello from v3", max_new_tokens = 777)
+    wav, sample_rate = backend.generate_audio_response(
+        "Hello from v3", temperature = 0, max_new_tokens = 777
+    )
 
     assert wav[:4] == b"RIFF" and sample_rate == 24000
     assert seen["text"] == "Hello from v3"
     assert seen["tokenizer"] is tokenizer
     assert seen["max_new_tokens"] == 777
+    assert seen["temperature"] == 0
+
+    backend.generate_audio_response("Hello from v3", temperature = 0.7, max_new_tokens = 777)
+    assert seen["temperature"] == 0.7
 
 
 def test_minimax_music3_passes_lyrics_description_duration_and_seed():
@@ -186,6 +246,25 @@ def test_minimax_music3_passes_lyrics_description_duration_and_seed():
     assert seen["audio_duration"] == 60.0
     assert seen["output"] == "audios"
     assert seen["generator"].initial_seed() == 7
+
+
+def test_minimax_music3_omits_generator_without_a_seed():
+    seen = {}
+
+    class Pipeline:
+        def __call__(self, **kwargs):
+            seen.update(kwargs)
+            return [torch.zeros((2, 441))]
+
+    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
+    backend.generate_audio_response(
+        "[verse]\nMorning light",
+        instructions = "Acoustic pop, 96 BPM.",
+        max_new_tokens = 750,
+    )
+
+    assert seen["audio_duration"] == 30.0
+    assert "generator" not in seen
 
 
 def test_minimax_music3_requires_a_separate_music_description():

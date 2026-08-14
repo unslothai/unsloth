@@ -3317,6 +3317,13 @@ class AudioSpeechRequest(BaseModel):
         description = "Scene or music-description instructions for compatible audio models.",
     )
     seed: Optional[int] = Field(None, description = "Best-effort deterministic generation seed.")
+    max_new_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = (
+            "Maximum generated audio tokens/frames; MiniMax Music 3 uses 25 frames per second."
+        ),
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod

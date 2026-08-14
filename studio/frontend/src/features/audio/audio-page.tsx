@@ -1411,7 +1411,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const generated = await generateAudio(text, {
         ...(temperatureEdited ? { temperature } : {}),
         max_tokens: maxTokens,
-        ...(instructions ? { audio_instructions: instructions } : {}),
+        ...(musicGeneration && instructions
+          ? { audio_instructions: instructions }
+          : {}),
         signal: controller.signal,
       });
       const refreshed = await refreshGallery();

@@ -26,8 +26,8 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject):
-        calls.append({"text": text, "payload": payload})
+    async def _fake_generate(text, payload, request, current_subject, **kwargs):
+        calls.append({"text": text, "payload": payload, **kwargs})
         if generate is not None:
             return await generate(text)
         return _WAV, 24000, "unsloth/orpheus-3b-0.1-ft", "snac"
@@ -110,6 +110,18 @@ def test_native_audio_instructions_and_seed_reach_the_shared_core(monkeypatch):
     assert payload.seed == 7
 
 
+def test_native_music_frame_limit_reaches_the_shared_core(monkeypatch):
+    cli, calls, _saved = _make_client(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {"input": "[verse] Morning light", "max_new_tokens": 500},
+    )
+
+    assert resp.status_code == 200
+    assert calls[0]["payload"].max_tokens == 500
+    assert calls[0]["speech_api_default_max_tokens"] is False
+
+
 def test_non_wav_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
@@ -161,8 +173,7 @@ def test_wav_duration_seconds_reads_header():
 
 
 def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
-    """CreateSpeech has no field for it, so the chat default of 2048 silently truncated
-    any input past roughly half a minute and still returned HTTP 200 with a short WAV."""
+    """Speech models retain the full safety ceiling when no frame limit is supplied."""
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
 
     cli, calls, _saved = _make_client(monkeypatch)
@@ -170,6 +181,29 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
     assert cli.post("/v1/audio/speech", json = {"input": "a long script"}).status_code == 200
     payload = calls[0]["payload"]
     assert payload.max_tokens == AUDIO_GENERATION_MAX_TOKENS
+    assert calls[0]["speech_api_default_max_tokens"] is True
+
+
+def test_minimax_speech_api_default_is_thirty_seconds(monkeypatch):
+    from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
+    from models.inference import ChatCompletionRequest
+
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "[verse] Morning light"}],
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+    )
+
+    assert routes_module._tts_max_new_tokens(
+        payload,
+        audio_type = "minimax_music3",
+        speech_api_default_max_tokens = True,
+    ) == 750
+    assert routes_module._tts_max_new_tokens(
+        payload,
+        audio_type = "higgs_tts2",
+        speech_api_default_max_tokens = True,
+    ) == AUDIO_GENERATION_MAX_TOKENS
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):

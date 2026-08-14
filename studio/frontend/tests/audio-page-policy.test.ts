@@ -147,6 +147,13 @@ test("Speak requires a supported TTS runtime, not any audio model", () => {
     assert.equal(isTtsAudioType(codec), false);
 });
 
+test("hidden MiniMax instructions are not sent to speech models", () => {
+  assert.match(
+    audioPageSource,
+    /musicGeneration && instructions[\s\S]*audio_instructions: instructions/,
+  );
+});
+
 test("STT controls require the selected sidecar to be resident", () => {
   const keyFor = (repo: string) => (repo === "org/asr" ? "asr" : repo);
   assert.equal(sttSelectionReady("org/asr", "asr", keyFor), true);

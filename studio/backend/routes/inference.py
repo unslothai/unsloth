@@ -389,9 +389,16 @@ _MIN_SPEECH_OUTPUT_TOKENS = 64
 # back over the context. Generous rather than exact, since the wrapper is chosen deeper
 # than this and 32 tokens off a 2048 context is not worth threading it up here.
 _TTS_PROMPT_FORMAT_RESERVE = 32
+_MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
 
 
-def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
+def _tts_max_new_tokens(
+    payload,
+    prompt: Optional[str] = None,
+    *,
+    audio_type: Optional[str] = None,
+    speech_api_default_max_tokens: bool = False,
+) -> int:
     """Bound TTS work consistently across llama.cpp and subprocess backends.
 
     ``prompt`` shares the loaded context with the output, so a Max tokens slider near the
@@ -402,6 +409,8 @@ def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
         AUDIO_GENERATION_MAX_TOKENS,
         max(1, int(_effective_max_tokens(payload) or 2048)),
     )
+    if speech_api_default_max_tokens and audio_type == "minimax_music3":
+        budget = min(budget, _MINIMAX_MUSIC3_DEFAULT_FRAMES)
     if prompt:
         context_length = _monitor_context_length()
         if context_length:
@@ -5757,6 +5766,10 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
     16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    if getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES:
+        return False
     load_in_4bit = requested
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
@@ -8837,7 +8850,11 @@ async def validate_model(
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
-        security_targets = [config.identifier]
+        from core.inference.native_audio import native_audio_security_targets
+
+        security_targets = native_audio_security_targets(
+            config.identifier, getattr(config, "audio_type", None)
+        )
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -10014,7 +10031,12 @@ _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 
 
 async def _generate_tts_wav(
-    text: str, payload: ChatCompletionRequest, request: Request, current_subject: str
+    text: str,
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str,
+    *,
+    speech_api_default_max_tokens: bool = False,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
@@ -10060,7 +10082,12 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(payload, text),
+            max_new_tokens = _tts_max_new_tokens(
+                payload,
+                text,
+                audio_type = audio_type,
+                speech_api_default_max_tokens = speech_api_default_max_tokens,
+            ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
         )
@@ -10081,7 +10108,12 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(payload, text),
+            max_new_tokens = _tts_max_new_tokens(
+                payload,
+                text,
+                audio_type = audio_type,
+                speech_api_default_max_tokens = speech_api_default_max_tokens,
+            ),
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
@@ -10240,9 +10272,9 @@ async def openai_audio_speech(
             detail = f"Unsupported response_format '{body.response_format}'. Only 'wav' is supported.",
         )
     # The tts core reads its sampling knobs from a chat request shape; defaults apply here.
-    # max_tokens is set explicitly because the OpenAI CreateSpeech shape has no field for it,
-    # so the chat default of 2048 would silently truncate any input past ~30s of speech and
-    # still return HTTP 200 with a short WAV.
+    # Keep the full speech ceiling unless a client supplies the native max_new_tokens
+    # extension. MiniMax gets its documented 750-frame default deeper in the shared core;
+    # its adapter converts that frame budget into a 30-second duration upper bound.
     # Unlike the Audio page, which loads with headroom for both, this route is reachable
     # after any /api/inference/load, including the default max_seq_length=0 that becomes
     # 2048. Asking for the full ceiling against that context overflows or truncates, so
@@ -10250,12 +10282,16 @@ async def openai_audio_speech(
     # The over-context check lives in _generate_tts_wav, so both routes share it.
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": body.input}],
-        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+        max_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS,
         audio_instructions = body.instructions,
         seed = body.seed,
     )
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
-        body.input, payload, request, current_subject
+        body.input,
+        payload,
+        request,
+        current_subject,
+        speech_api_default_max_tokens = body.max_new_tokens is None,
     )
     await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
