@@ -17,7 +17,6 @@ export const fr = {
     searchAriaLabel: "Rechercher des {noun}",
     modelSourceAriaLabel: "Source du modèle",
     hubSectionAriaLabel: "Section du Hub",
-    pickModelFile: "Choisir un fichier de modèle sur le disque",
     modelDropped: "N'est plus proposé",
     modelDroppedByProvider: "{provider} · n'est plus proposé",
     modelDisabled: "Non activé",
@@ -159,7 +158,32 @@ export const fr = {
       about: "À propos",
       data: "Données",
       agents: "Agents",
+      debugging: "Journaux",
       voice: "Voix",
+    },
+    debugging: {
+      logSection: "Fichier journal",
+      source: "Fichier journal",
+      sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
+      path: "Emplacement",
+      pathCopy: "Copier le chemin",
+      refreshSection: "Actualisation",
+      mode: "Mode",
+      modeLive: "En direct",
+      modeInterval: "Toutes les 3 secondes",
+      modeManual: "Manuel",
+      refreshNow: "Actualiser maintenant",
+      privacyNote: "Les identifiants sont masqués dans cette vue. Dans le fichier sur le disque, ils ne le sont pas.",
+      copyVisible: "Copier le journal visible",
+      empty: "Rien n'a encore été consigné.",
+      disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Aucun fichier journal n'a été trouvé.",
+      unreadable: "Le fichier journal n'a pas pu être lu.",
+      timeout: "La demande du journal a expire. Le serveur est peut-etre injoignable.",
+      droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
+      morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
+      staleSession: "La journalisation dans un fichier est desactivee : il s'agit d'une session anterieure, qui ne sera pas mise a jour.",
+      keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
       title: "Voix",
@@ -381,6 +405,14 @@ export const fr = {
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
         idleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique, en secondes",
+        mediaIdleUnload:
+          "Déchargement automatique en cas d’inactivité pour l’image et la vidéo",
+        mediaIdleUnloadDescription:
+          "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. Réglage distinct : celui du dessus ne concerne que le modèle de discussion. 0 les maintient chargés ; le minimum est 60.",
+        mediaIdleSecondsAriaLabel:
+          "Délai d’inactivité avant le déchargement automatique de l’image et de la vidéo, en secondes",
+        mediaIdlePaused:
+          "En pause tant que « Conserver le modèle dans la mémoire du GPU » ou « Décharger uniquement les modèles chargés par l'API » est activé.",
         idleNeedsEnable:
           "Activez d’abord « Changer de modèle par requête ».",
         idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",

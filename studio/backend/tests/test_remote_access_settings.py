@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import sqlite3
@@ -831,6 +832,30 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
         client.request(method, path, json = payload).status_code == 403
         for method, path, payload in requests
     )
+
+
+def test_management_rejects_api_keys():
+    with pytest.raises(HTTPException) as exc:
+        routes._require_ui_session(True)
+    assert exc.value.status_code == 403
+    assert remote_access.remote_access_status(_state())["streaming_supported"] is True
+    # Every /remote-access handler must carry the gate. Scoped to those routes
+    # because a file-wide count breaks whenever an unrelated endpoint adopts
+    # _require_ui_session, as the Settings > Logs log endpoints did.
+    tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
+    gated = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        routed = [ast.unparse(d) for d in node.decorator_list if "router." in ast.unparse(d)]
+        if not any("'/remote-access" in d for d in routed):
+            continue
+        args = node.args.args + node.args.kwonlyargs
+        gated[node.name] = any(a.arg == "_ui_session" for a in args)
+    assert len(gated) == 8, f"expected 8 remote-access handlers, found {sorted(gated)}"
+    assert all(
+        gated.values()
+    ), f"ungated remote-access handlers: {sorted(k for k, v in gated.items() if not v)}"
 
 
 def test_remote_stop_returns_terminal_state(monkeypatch):

@@ -296,7 +296,7 @@ export function useRagDocuments(
     ) => {
       const name = itemName(item);
       try {
-        const { ocr, caption } = resolveVisionOverrides();
+        const { ocr, caption } = await resolveVisionOverrides();
         // Leases are short-lived, so mint one per upload rather than at drop time.
         const file =
           item.kind === "file"
