@@ -4102,7 +4102,10 @@ def test_a_target_list_still_binds_the_module_alias():
     # Read positionally, so the module reaches the name that really receives it.
     # `b, spare = None, builtins` leaves `b` None and `b.eval(...)` clean.
     assert (
-        _high(f"import builtins\n{_OBFUSCATION}b, spare = None, builtins\nb.eval(BLOB)\n", "pkg/_infer.py")
+        _high(
+            f"import builtins\n{_OBFUSCATION}b, spare = None, builtins\nb.eval(BLOB)\n",
+            "pkg/_infer.py",
+        )
         == []
     ), "the module goes to the target in its own position, not to every target"
     assert (
