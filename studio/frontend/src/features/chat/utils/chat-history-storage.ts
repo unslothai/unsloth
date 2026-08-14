@@ -880,7 +880,8 @@ export async function saveStoredChatMessage(
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
   await ensureStoredChatThread(message.threadId);
-  return saveChatMessage(message);
+  // The per-chunk autosave behind a streaming response.
+  return saveChatMessage(message, { coalesce: true });
 }
 
 export async function syncStoredChatMessages(
@@ -914,11 +915,12 @@ export async function saveStoredChatThread(
 export async function updateStoredChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: { notify?: boolean } = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
   const thread = await ensureStoredChatThread(threadId);
   if (!thread) return undefined;
-  return updateChatThread(threadId, patch);
+  return updateChatThread(threadId, patch, options);
 }
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */

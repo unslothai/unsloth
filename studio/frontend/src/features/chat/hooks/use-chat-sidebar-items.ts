@@ -247,7 +247,10 @@ export async function archiveAllChatItems(
   for (const t of toArchive) cancelIfRunning(t.id);
 
   await Promise.all(
-    toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
+    // Silent: the notifyChatHistoryUpdated() below covers the whole batch as one change.
+    toArchive.map((t) =>
+      updateStoredChatThread(t.id, { archived: true }, { notify: false }),
+    ),
   );
 
   // Reset only when this action archived the active single thread or compare

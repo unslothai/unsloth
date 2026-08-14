@@ -391,6 +391,10 @@ export function useChatSearchIndex(enabled: boolean): {
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
+          // A rebuild that failed leaves nothing fresher, and what is cached is the snapshot
+          // it was called to replace: keeping it would offer a deleted chat as a live result
+          // for as long as the dialog stays open.
+          if (rebuildPending) writeCachedIndex(null);
           setItems(readCachedIndex() ?? []);
         })
         .finally(() => {

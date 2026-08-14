@@ -811,6 +811,12 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
+  /**
+   * Off for one update inside a bulk action, which announces itself once at the end. Every
+   * notification is a synchronous localStorage write that wakes the other tabs, so Archive
+   * All would otherwise send one per thread.
+   */
+  notify?: boolean;
 }
 
 export async function updateChatThread(
@@ -834,7 +840,7 @@ export async function updateChatThread(
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  if (options.notify !== false) notifyChatHistoryUpdated();
   return thread;
 }
 
@@ -1020,6 +1026,7 @@ export async function getChatMessage(
 
 export async function saveChatMessage(
   message: MessageRecord,
+  options: { coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
@@ -1030,8 +1037,9 @@ export async function saveChatMessage(
     },
   );
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
-  // The autosave behind a streaming response lands here per chunk.
-  notifyChatHistoryUpdated({ coalesce: true });
+  // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
+  // edit is one deliberate change and publishes at once.
+  notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
   return savedMessage;
 }
 

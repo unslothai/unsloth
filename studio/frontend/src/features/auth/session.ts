@@ -73,6 +73,15 @@ export function storeAuthTokens(
       `${Date.now()}.${Math.random()}`,
     );
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
+  } else if (!localStorage.getItem(AUTH_SESSION_MARK_KEY)) {
+    // A session signed in before this key existed. Written on its next refresh so a later
+    // sign-out has a key to remove, since removing an absent one raises no storage event and
+    // would leave the other tabs on a signed-out account's titles. Not a new session, so no
+    // epoch bump: the tokens here are a rotation.
+    localStorage.setItem(
+      AUTH_SESSION_MARK_KEY,
+      `${Date.now()}.${Math.random()}`,
+    );
   }
 }
 
