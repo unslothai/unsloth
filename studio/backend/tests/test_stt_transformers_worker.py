@@ -11,6 +11,7 @@ dies, or is cancelled.
 """
 
 import queue
+import signal
 import threading
 import time
 from types import SimpleNamespace
@@ -25,6 +26,13 @@ from core.inference.stt_sidecar import (
     SttTranscriptionCancelledError,
 )
 from core.inference.stt_transformers_worker import SttWorkerError, WhisperWorker
+
+# The crash message names the signal through signal.Signals, which each platform
+# populates with its own set, so Windows reads a -9 exitcode back as its number.
+# Windows cannot produce one either -- multiprocessing maps its TerminateProcess
+# exit to -SIGTERM, and kill() is terminate() there -- so this only shapes what
+# the assertion below asks for, never what a user on either platform is told.
+_SIGKILL_TEXT = "SIGKILL" if hasattr(signal, "SIGKILL") else "SIG9"
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +473,7 @@ def test_handle_reports_a_dead_child_instead_of_waiting_out_its_timeout():
     process.exitcode = -9
     handle = _wired_worker(process)
 
-    with pytest.raises(SttWorkerError, match = "SIGKILL"):
+    with pytest.raises(SttWorkerError, match = _SIGKILL_TEXT):
         handle.transcribe_window(b"", {})
 
 
@@ -842,7 +850,7 @@ def test_a_child_killed_by_a_signal_keeps_its_crash_instead_of_falling_back(monk
     )
 
     handle = WhisperWorker()
-    with pytest.raises(SttWorkerError, match = "SIGKILL") as caught:
+    with pytest.raises(SttWorkerError, match = _SIGKILL_TEXT) as caught:
         handle.start("/cached/model", "cpu", "float32")
 
     assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
