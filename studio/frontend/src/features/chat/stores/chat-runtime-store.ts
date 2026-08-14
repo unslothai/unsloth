@@ -335,19 +335,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // stored `kb` one keeps `kbId`, which the backend's thread variant forbids.
 const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 
+// Maps of per-model objects, merged a level further in. Two edits to different
+// fields of one model inside a debounce window each send a one-field object,
+// and a single level of merging would let the second replace the first.
+const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
+
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
   for (const [key, value] of Object.entries(more)) {
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
-    if (
-      !ATOMIC_SETTING_KEYS.has(key) &&
-      isPlainObject(prev) &&
-      isPlainObject(value)
-    ) {
-      intoAny[key] = { ...prev, ...value };
-    } else {
+    if (ATOMIC_SETTING_KEYS.has(key)) {
       intoAny[key] = value;
+      continue;
     }
+    if (!isPlainObject(prev) || !isPlainObject(value)) {
+      intoAny[key] = value;
+      continue;
+    }
+    if (!NESTED_MAP_SETTING_KEYS.has(key)) {
+      intoAny[key] = { ...prev, ...value };
+      continue;
+    }
+    const merged: Record<string, unknown> = { ...prev };
+    for (const [id, entry] of Object.entries(value)) {
+      const existing = merged[id];
+      merged[id] =
+        isPlainObject(existing) && isPlainObject(entry)
+          ? { ...existing, ...entry }
+          : entry;
+    }
+    intoAny[key] = merged;
   }
 }
 
@@ -2216,7 +2233,12 @@ function getHydratedSettingsState(
   // Outside the replay: an installation with only a global set has no entry to
   // replay, and the budget restored from it does not fit the load either.
   const capped = nextState.params ?? params;
-  const cap = loadedContextFor(checkpoint) ?? state.ggufContextLength;
+  // ggufContextLength describes whatever is resident, which an external pick
+  // leaves loaded, so it is not this checkpoint's context to clamp against.
+  const residentGgufCap = isExternalModelId(checkpoint)
+    ? null
+    : state.ggufContextLength;
+  const cap = loadedContextFor(checkpoint) ?? residentGgufCap;
   if (cap !== null && capped.maxTokens > cap) {
     nextState.params = { ...capped, maxTokens: cap };
   }

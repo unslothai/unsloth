@@ -31,6 +31,7 @@ const { DEFAULT_INFERENCE_PARAMS } = await import(
 
 const QWEN = "unsloth/Qwen3.5-9B-GGUF";
 const LLAMA = "unsloth/Llama-4-8B";
+const EXTERNAL = "external::anthropic::claude-opus-5";
 const TUNED = { temperature: 0.2, maxTokens: 4096, systemPrompt: "Be terse." };
 
 /** A status response for a resident GGUF, recommending its own sampling. */
@@ -906,4 +907,72 @@ test("a model with no entry is still seeded when it is left", async () => {
     );
   }
   assert.equal(written[QWEN]?.temperature, 0.31);
+});
+
+// Two fields of one model changed inside the settings debounce window each send
+// a one-field object now that edits are patched key by key. Merged one level
+// only, the second would replace the first and the earlier edit would be gone
+// on the next launch.
+test("two edits to one model inside a debounce window both survive", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  settingsHttp.settings = {
+    inferenceParamsByModel: { [QWEN]: { temperature: 0.6, topP: 0.9 } },
+  };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      temperature: 0.6,
+      topP: 0.9,
+    },
+  });
+  await settled();
+  settingsHttp.puts.length = 0;
+
+  const first = useChatRuntimeStore.getState();
+  first.setParams({ ...first.params, temperature: 0.42 });
+  const second = useChatRuntimeStore.getState();
+  second.setParams({ ...second.params, topP: 0.11 });
+  await settled();
+
+  assert.deepEqual(
+    settingsHttp.puts.map((put) => put.inferenceParamsByModel),
+    [{ [QWEN]: { temperature: 0.42, topP: 0.11 } }],
+    "one PUT carrying both edits, not the last one alone",
+  );
+});
+
+// Picking an external model leaves whatever was loaded resident, so
+// ggufContextLength goes on describing a local model that has nothing to do
+// with the provider's budget.
+test("a resident GGUF context does not cap an external model", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    ggufContextLength: 8192,
+    paramsByModel: {},
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: EXTERNAL,
+    },
+  });
+  settingsHttp.settings = { inferenceParams: { maxTokens: 32768 } };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 32768);
+
+  // A local checkpoint with the same resident context is still capped.
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    ggufContextLength: 8192,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  settingsHttp.settings = { inferenceParams: { maxTokens: 32768 } };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
 });
