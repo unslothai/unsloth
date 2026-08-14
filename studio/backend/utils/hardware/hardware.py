@@ -3277,9 +3277,7 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 continue
             readable += 1
             if arch not in supported:
-                unsupported.add(
-                    physical_ids[ordinal] if ordinal < len(physical_ids) else ordinal
-                )
+                unsupported.add(physical_ids[ordinal] if ordinal < len(physical_ids) else ordinal)
 
         # Every readable device outside the list means the wheel does not cover
         # this host at all. Dropping them would leave the caller no GPU and send

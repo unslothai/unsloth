@@ -34,7 +34,12 @@ from utils.hardware.hardware import (
 GFX110X = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
 
 
-def _props(arch = "", *, attr = "gcnArchName", name = "AMD Radeon RX 7700 XT"):
+def _props(
+    arch = "",
+    *,
+    attr = "gcnArchName",
+    name = "AMD Radeon RX 7700 XT",
+):
     """A hipDeviceProp_t stand-in exposing exactly one arch spelling, so the
     AMD SDK / Radeon wheels that populate none of the canonical ones can be
     reproduced."""
@@ -44,7 +49,13 @@ def _props(arch = "", *, attr = "gcnArchName", name = "AMD Radeon RX 7700 XT"):
     return p
 
 
-def _fake_torch(devices, *, arch_list = GFX110X, vendor = "amd", available = True):
+def _fake_torch(
+    devices,
+    *,
+    arch_list = GFX110X,
+    vendor = "amd",
+    available = True,
+):
     """A fake torch. ``devices`` is a list of props objects (or exceptions to
     raise for that ordinal); ``arch_list`` is what the wheel was built for."""
     torch = types.ModuleType("torch")
@@ -82,8 +93,12 @@ def _fake_torch(devices, *, arch_list = GFX110X, vendor = "amd", available = Tru
 @pytest.fixture
 def no_mask(monkeypatch):
     """No visibility mask set, so physical id == torch ordinal."""
-    for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-                "ZE_AFFINITY_MASK"):
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "ZE_AFFINITY_MASK",
+    ):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 2)
 
@@ -130,9 +145,7 @@ class TestArchSpellings:
     reading only gcnArchName would leave every device unreadable and the gate a
     no-op on exactly the Windows hosts this targets."""
 
-    @pytest.mark.parametrize(
-        "attr", ["gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"]
-    )
+    @pytest.mark.parametrize("attr", ["gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"])
     def test_every_spelling_is_read(self, monkeypatch, no_mask, attr):
         _install(
             monkeypatch,
@@ -232,7 +245,13 @@ class TestSelectorWiring:
         ]
     }
 
-    def _run(self, *, uncovered, devices = None, required = (14.0, {"required_gb": 14.0})):
+    def _run(
+        self,
+        *,
+        uncovered,
+        devices = None,
+        required = (14.0, {"required_gb": 14.0}),
+    ):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
