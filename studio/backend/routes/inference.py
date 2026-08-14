@@ -2367,6 +2367,7 @@ from core.inference.providers import (
     get_base_url,
     get_provider_info,
     hosted_only_tools,
+    LOCAL_STANDINS_FOR_HOSTED_TOOLS,
     provider_hosted_tools,
     provider_model_runs_local_tools,
     provider_runs_local_tools,
@@ -2817,7 +2818,21 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # local implementation of those names either, so reading such a request as
     # "local" would drop them just the same, only after also replacing the
     # provider's search with ours.
-    return all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled)
+    if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
+        return False
+    # run_tools_locally only decides the ambiguous names, the ones Studio can
+    # also run itself. A selection with no SELECTED local stand-in stays hosted
+    # whatever the flag says: honouring it would enter the loop, find an empty
+    # catalog, fall back to the same passthrough, and skip the confirmation
+    # rejection on the way.
+    if getattr(payload, "run_tools_locally", None) is True:
+        # Intersected with the selection, as hosted_only_tools does: code_execution
+        # maps to python/terminal, but naming it alone selects neither.
+        selected = {name for name in enabled if isinstance(name, str)}
+        return not any(
+            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & selected for name in selected
+        )
+    return True
 
 
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
@@ -15689,6 +15704,58 @@ async def list_sandbox_files(
     # filesystem either one would hold the event loop for every other request.
     sandbox_dir, files = await run_in_threadpool(_resolve_and_list)
     return {"path": sandbox_dir, "files": files}
+
+
+@router.post("/sandbox/{session_id}/reveal")
+async def reveal_sandbox_dir(
+    session_id: str,
+    request: Request,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open this chat's sandbox directory in the OS file manager.
+
+    The file manager is the backend host's, so this only means anything when the
+    backend runs on the user's own machine, which is the desktop app.
+    """
+    await _authenticate_header_or_query(request, token)
+
+    from starlette.concurrency import run_in_threadpool
+
+    def _resolve_existing() -> "str | None":
+        sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        if not os.path.isdir(sandbox_dir):
+            # One more resolve, as the listing does: the legacy move can rename
+            # the tree into place between resolving it and looking.
+            sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        return sandbox_dir if os.path.isdir(sandbox_dir) else None
+
+    # Resolving scans the sandbox root, so it stays off the event loop.
+    sandbox_dir = await run_in_threadpool(_resolve_existing)
+    if sandbox_dir is None:
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
+
+    from pathlib import Path
+
+    from utils.paths.path_utils import reveal_in_file_manager
+
+    try:
+        # expect_dir: a sandbox is always a directory, and a running tool can
+        # replace its own with a file, which would take the file branch and show
+        # the parent, here the root holding every other chat's sandbox.
+        await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir), expect_dir = True)
+    except FileNotFoundError:
+        # Two things raise this: the sandbox going between resolve and open, and
+        # Popen not finding the file manager at all. Only the first is "no
+        # folder"; the second reported that way hides a missing xdg-open.
+        if os.path.isdir(sandbox_dir):
+            logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
+    except Exception:
+        logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+    return {"status": "ok", "path": sandbox_dir}
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])

@@ -564,14 +564,30 @@ def test_display_probe_does_not_duplicate_the_fast_path_decision():
 
 
 def test_fast_path_checks_the_active_torch_import_with_a_timeout():
+    """The fast path still classifies a live torch under a bounded timeout.
+
+    It no longer spawns that interpreter itself: it reads the shared classification
+    (#8779), so the `import torch`, the bound on it and the CUDA runtime field all
+    live there now. The property is unchanged, so it is asserted where it moved to
+    rather than dropped.
+    """
     source = STACK_PATH.read_text(encoding = "utf-8")
     start = source.index("def _probe_rocm_torch()")
     end = source.index("\ndef _rocm_packages_for_index", start)
     block = source[start:end]
-    assert "import torch" in block
-    assert "timeout = 90" in block
+    assert "_probe_torch_runtime()" in block
+    assert "subprocess.run" not in block, (
+        "the fast path spawned its own interpreter again; that is the second "
+        "`import torch` and the second independent 90s timeout #8779 removed"
+    )
+
+    shared_start = source.index("def _probe_torch_runtime()")
+    shared_end = source.index("\ndef _probe_installed_torch_version", shared_start)
+    shared = source[shared_start:shared_end]
+    assert "import torch" in shared
+    assert "timeout = 90" in shared
     # The untagged-PyPI-wheel evidence has to come from the same single probe.
-    assert "torch.version,'cuda'" in block
+    assert "'cuda'" in shared
 
 
 def test_fast_path_and_repair_use_the_same_plan():
@@ -694,21 +710,33 @@ def _probe_with(
     monkeypatch,
     *,
     returncode = 0,
-    stdout = b"",
+    version = "",
+    hip = "",
+    cuda = "",
     raises = None,
 ):
+    """Drive _probe_rocm_torch through the shared classification it now reads.
+
+    The fields are the shared probe's own (version, hip, cuda) on its marked line,
+    rather than the "marker|version|cuda" the private probe used to print. The memo
+    is dropped first, because the shared probe answers once per install run and would
+    otherwise hand every case after the first the previous case's torch.
+    """
+
     def fake_run(*_args, **_kwargs):
         if raises is not None:
             raise raises
+        marked = f"{stack._TORCH_PROBE_MARKER}{version}|{hip}|{cuda}\n"
         result = dataclasses.make_dataclass("R", ["returncode", "stdout"])
-        return result(returncode, stdout)
+        return result(returncode, marked)
 
     monkeypatch.setattr(stack.subprocess, "run", fake_run)
+    stack._invalidate_torch_runtime_probe()
     return stack._probe_rocm_torch()
 
 
 def test_probe_reports_a_healthy_rocm_torch_as_importable(monkeypatch):
-    assert _probe_with(monkeypatch, stdout = b"6.3.42131|2.7.0+rocm6.3|\n") == (
+    assert _probe_with(monkeypatch, version = "2.7.0+rocm6.3", hip = "6.3.42131") == (
         True,
         "2.7.0+rocm6.3",
         True,
@@ -717,18 +745,18 @@ def test_probe_reports_a_healthy_rocm_torch_as_importable(monkeypatch):
 
 
 def test_probe_reports_a_cpu_wheel_as_importable_but_not_rocm(monkeypatch):
-    assert _probe_with(monkeypatch, stdout = b"|2.9.0+cpu|\n") == (False, "2.9.0+cpu", True, "")
+    assert _probe_with(monkeypatch, version = "2.9.0+cpu") == (False, "2.9.0+cpu", True, "")
 
 
 def test_probe_reports_the_cuda_runtime_of_an_untagged_pypi_wheel(monkeypatch):
     """`pip install torch` yields "2.9.1" with no local tag but a full CUDA stack.
     torch.version.cuda is the only evidence that the wheel is a CUDA build."""
-    assert _probe_with(monkeypatch, stdout = b"|2.9.1|12.8\n") == (False, "2.9.1", True, "12.8")
+    assert _probe_with(monkeypatch, version = "2.9.1", cuda = "12.8") == (False, "2.9.1", True, "12.8")
 
 
 def test_probe_reports_no_cuda_runtime_for_an_unrunnable_torch(monkeypatch):
     """A runtime read from a torch that never imported would be fabricated evidence."""
-    assert _probe_with(monkeypatch, returncode = 1, stdout = b"|2.9.1|12.8\n")[3] == ""
+    assert _probe_with(monkeypatch, returncode = 1, version = "2.9.1", cuda = "12.8")[3] == ""
 
 
 @pytest.mark.parametrize(
