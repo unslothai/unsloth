@@ -84,7 +84,7 @@ test("both chat-creating paths adopt the pending choice", () => {
   // Attaching a file first: ensureThreadId materializes the thread.
   assert.match(
     source,
-    /initialize\(\)[\s\S]{0,300}?adoptPendingProjectAttachmentTarget\(remoteId\)/,
+    /initialize\(\)[\s\S]{0,300}?adoptPendingProjectAttachmentTarget\(remoteId, claim\)/,
   );
   // Sending a message first: the id arrives as a prop.
   assert.match(
@@ -147,4 +147,88 @@ test("the run keeps the project it started in", () => {
     source,
     /rememberComposerProjectForRun\(resolvedThreadId, composerProjectIdAtSend\)/,
   );
+});
+
+// A composer abandoned while its chat is materializing has its own pending
+// entry dropped by its cleanup. The next composer's choice lands under the same
+// key, and the abandoned promise resolving would hand that to the dead chat and
+// delete it, leaving the live composer on the default.
+test("an abandoned composer cannot consume the next composer's choice", () => {
+  let claim = 0;
+  let byThread: Record<string, Target> = {};
+  const setPending = (target: Target) => {
+    claim += 1;
+    byThread = { ...byThread, [PENDING]: target };
+  };
+  const clearPending = () => {
+    if (!(PENDING in byThread)) return;
+    claim += 1;
+    const next = { ...byThread };
+    delete next[PENDING];
+    byThread = next;
+  };
+  const adoptWithClaim = (threadId: string, seen: number) => {
+    if (seen !== claim) return;
+    byThread = adopt(byThread, threadId);
+  };
+
+  // A picks "This chat" and starts materializing.
+  setPending("chat");
+  const seenByA = claim;
+  // A is abandoned, B mounts and picks for itself.
+  clearPending();
+  setPending("chat");
+
+  // Unguarded, this is the reported failure: the dead chat takes B's entry.
+  const stolen = adopt(byThread, "thread-A");
+  assert.equal(PENDING in stolen, false, "B's choice would be consumed");
+  assert.equal(stolen["thread-A"], "chat");
+
+  adoptWithClaim("thread-A", seenByA);
+  assert.equal(byThread[PENDING], "chat", "B still has its choice");
+  assert.equal(
+    byThread["thread-A"],
+    undefined,
+    "and the dead chat took nothing",
+  );
+
+  // The ordinary case is untouched: nothing intervened, so B's own resolve adopts.
+  adoptWithClaim("thread-B", claim);
+  assert.equal(byThread["thread-B"], "chat");
+  assert.equal(PENDING in byThread, false);
+});
+
+// The counter has to move on both ways the entry changes hands, or a claim
+// taken before one of them still looks current afterwards.
+test("both writers of the pending entry move the claim", () => {
+  const store = readFileSync(
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    store.match(/pendingAttachmentTargetClaim \+= 1;/g)?.length,
+    2,
+    "set-pending and clear-pending both bump it",
+  );
+  assert.match(
+    store,
+    /if \(claim !== undefined && claim !== pendingAttachmentTargetClaim\) \{\s*return state;/,
+  );
+
+  const bar = readFileSync(
+    new URL(
+      "../src/features/rag/components/thread-documents-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Read before initialize(), not after it resolves.
+  assert.match(
+    bar,
+    /const claim = readPendingAttachmentTargetClaim\(\);[\s\S]{0,200}?\.initialize\(\)/,
+  );
+  assert.match(bar, /adoptPendingProjectAttachmentTarget\(remoteId, claim\)/);
 });

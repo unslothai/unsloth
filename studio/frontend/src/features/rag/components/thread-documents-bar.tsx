@@ -13,6 +13,7 @@ import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import {
   PENDING_CHAT_ATTACHMENT_KEY,
+  readPendingAttachmentTargetClaim,
   type ProjectAttachmentTarget,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -460,6 +461,9 @@ export function ThreadDocumentsBar({
     }
     const clearGeneration = chatHistoryClearBoundary.capture();
     const generation = ++initGenerationRef.current;
+    // Taken before the await: this composer can be abandoned while it runs, and
+    // the choice under the shared key would then be the next composer's.
+    const claim = readPendingAttachmentTargetClaim();
     const pending = aui
       .threadListItem()
       .initialize()
@@ -467,7 +471,7 @@ export function ThreadDocumentsBar({
         await requireStoredThread(remoteId);
         useChatRuntimeStore
           .getState()
-          .adoptPendingProjectAttachmentTarget(remoteId);
+          .adoptPendingProjectAttachmentTarget(remoteId, claim);
         // a clear that landed while the row write was in flight is deleting this thread
         if (chatHistoryClearBoundary.capture() !== clearGeneration) {
           throw new Error("Chat history was cleared");

@@ -416,3 +416,106 @@ test("the newest request owns the loading flag", () => {
     /if \(refreshSeq\.current === requestId\) \{\s*refreshInFlight\.current = false;\s*setLoading\(false\);/,
   );
 });
+
+// The mutation releases its own work lease when its POST returns, and the
+// invalidation it fires afterwards triggers a quiet refresh, which takes no
+// loading gate. Between the two the composer would report nothing indexing
+// while the rows it is about to receive are still being indexed.
+test("the refresh an invalidation triggers is counted as work", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /noteProjectWork\(projectScopeId, 1\);\s*void refresh\(\{ quiet: true \}\)\.finally\(\(\) => \{\s*noteProjectWork\(projectScopeId, -1\);/,
+  );
+});
+
+// One failed read is not a finished job. A backend restart answers a tick or
+// two while the durable sync runs on, and releasing there lets the composer
+// send through sources that are still indexing.
+test("a folder job watcher rides out a failed read", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  // The catch is inside the loop, so a failure does not reach the finally.
+  assert.match(
+    api,
+    /catch \{\s*consecutiveFailures \+= 1;\s*if \(consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES\) \{\s*break;/,
+  );
+  // A read that comes back clears the streak, so only a run of them gives up.
+  assert.match(api, /consecutiveFailures = 0;/);
+
+  // The same loop, run against reads that fail and then recover.
+  const reads = ["fail", "fail", "fail", "running", "fail", "completed"];
+  let failures = 0;
+  let released = -1;
+  for (let i = 0; i < reads.length; i += 1) {
+    if (reads[i] === "fail") {
+      failures += 1;
+      if (failures >= 20) {
+        released = i;
+        break;
+      }
+      continue;
+    }
+    failures = 0;
+    if (reads[i] === "completed") {
+      released = i;
+      break;
+    }
+  }
+  assert.equal(
+    released,
+    5,
+    "released by the terminal status, not by a failure",
+  );
+});
+
+// An upload larger than the deadline sends no delta in between, so without a
+// renewal the other tab stops counting it and becomes sendable mid-upload.
+test("work in flight renews the deadline other tabs put on it", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /const WORK_HEARTBEAT_MS = 45_000;/);
+  assert.match(
+    api,
+    /channel\.postMessage\(\{ kind: "work", projectId, delta: 0 \}\)/,
+  );
+  // Started and stopped by the count itself, so an idle tab posts nothing.
+  assert.match(
+    api,
+    /if \(projectWorkInFlight\.size === 0\) \{\s*if \(workHeartbeat !== null\) \{\s*clearInterval\(workHeartbeat\)/,
+  );
+
+  // A zero delta moves the deadline and leaves the count alone.
+  const remote = new Map<string, { count: number; until: number }>();
+  let now = 1_000;
+  const note = (projectId: string, delta: number) => {
+    const entry = remote.get(projectId) ?? { count: 0, until: 0 };
+    const count = Math.max(0, entry.count + delta);
+    if (count === 0) remote.delete(projectId);
+    else remote.set(projectId, { count, until: now + 120_000 });
+  };
+  const counted = (projectId: string) => {
+    const entry = remote.get(projectId);
+    return entry && entry.until > now ? entry.count : 0;
+  };
+
+  note("proj-1", 1);
+  now += 90_000;
+  note("proj-1", 0); // heartbeat at 45s and 90s
+  now += 90_000;
+  assert.equal(counted("proj-1"), 1, "still gated three minutes in");
+
+  // The tab goes away, the heartbeats stop, and the gate lapses as before.
+  now += 120_001;
+  assert.equal(counted("proj-1"), 0);
+});

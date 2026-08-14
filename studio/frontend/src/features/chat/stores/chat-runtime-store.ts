@@ -120,6 +120,14 @@ export type ProjectAttachmentTarget = "project" | "thread";
 /** Key a choice made in a chat that has no id yet lives under until it gets one. */
 export const PENDING_CHAT_ATTACHMENT_KEY = "__pending__";
 
+/** Bumped whenever the pending entry changes hands, so a composer that read it
+ * can tell whether the one sitting there afterwards is still its own. */
+let pendingAttachmentTargetClaim = 0;
+
+export function readPendingAttachmentTargetClaim(): number {
+  return pendingAttachmentTargetClaim;
+}
+
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
@@ -1586,8 +1594,11 @@ type ChatRuntimeStore = {
     threadId: string | null,
     target: ProjectAttachmentTarget,
   ) => void;
-  /** Carry a choice made before the chat existed onto its new id. */
-  adoptPendingProjectAttachmentTarget: (threadId: string) => void;
+  /** Carry a choice made before the chat existed onto its new id. `claim` is
+   * the value readPendingAttachmentTargetClaim gave when the choice was made;
+   * a newer one means the entry now belongs to a different composer. */
+  adoptPendingProjectAttachmentTarget: (threadId: string, claim?: number) =>
+    void;
   /** Drop a choice made in a composer that never became a chat. */
   clearPendingProjectAttachmentTarget: () => void;
   setRagMode: (mode: RagMode) => void;
@@ -2906,14 +2917,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { projectAttachmentTarget };
     }),
   setThreadProjectAttachmentTarget: (threadId, target) =>
-    set((state) => ({
-      projectAttachmentTargetByThread: {
-        ...state.projectAttachmentTargetByThread,
-        [threadId ?? PENDING_CHAT_ATTACHMENT_KEY]: target,
-      },
-    })),
-  adoptPendingProjectAttachmentTarget: (threadId) =>
     set((state) => {
+      if (threadId === null) {
+        pendingAttachmentTargetClaim += 1;
+      }
+      return {
+        projectAttachmentTargetByThread: {
+          ...state.projectAttachmentTargetByThread,
+          [threadId ?? PENDING_CHAT_ATTACHMENT_KEY]: target,
+        },
+      };
+    }),
+  adoptPendingProjectAttachmentTarget: (threadId, claim) =>
+    set((state) => {
+      // The entry under the shared key need not be the one the caller set: a
+      // composer abandoned mid-materialization has had its own dropped, and the
+      // next composer's choice is sitting there instead. Handing that to the
+      // abandoned chat consumes it, and the new one falls back to the default.
+      if (claim !== undefined && claim !== pendingAttachmentTargetClaim) {
+        return state;
+      }
       const pending =
         state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
       // A chat that already made its own choice keeps it: the pending entry
@@ -2935,6 +2958,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (!(PENDING_CHAT_ATTACHMENT_KEY in byThread)) {
         return state;
       }
+      pendingAttachmentTargetClaim += 1;
       const next = { ...byThread };
       delete next[PENDING_CHAT_ATTACHMENT_KEY];
       return { projectAttachmentTargetByThread: next };

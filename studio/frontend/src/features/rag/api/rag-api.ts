@@ -298,7 +298,37 @@ export function noteProjectWork(projectId: string, delta: number): void {
     projectWorkInFlight.delete(projectId);
   }
   getProjectChannel()?.postMessage({ kind: "work", projectId, delta });
+  syncWorkHeartbeat();
   publishProjectWorkChanged(projectId);
+}
+
+/**
+ * Renew the deadline the other tabs put on this tab's work. An upload of a
+ * large file outlives the deadline with no delta to send in between, and
+ * without a renewal the other tab would stop counting it and let a send go out
+ * mid-upload. A zero delta leaves the count alone and moves the deadline only.
+ */
+const WORK_HEARTBEAT_MS = 45_000;
+let workHeartbeat: ReturnType<typeof setInterval> | null = null;
+
+function syncWorkHeartbeat(): void {
+  if (projectWorkInFlight.size === 0) {
+    if (workHeartbeat !== null) {
+      clearInterval(workHeartbeat);
+      workHeartbeat = null;
+    }
+    return;
+  }
+  if (workHeartbeat !== null) {
+    return;
+  }
+  workHeartbeat = setInterval(() => {
+    const channel = getProjectChannel();
+    if (!channel) return;
+    for (const projectId of projectWorkInFlight.keys()) {
+      channel.postMessage({ kind: "work", projectId, delta: 0 });
+    }
+  }, WORK_HEARTBEAT_MS);
 }
 
 function publishProjectWorkChanged(projectId: string): void {
@@ -356,6 +386,9 @@ export function projectWorkCount(projectId: string): number {
   return (projectWorkInFlight.get(projectId) ?? 0) + remoteCount;
 }
 
+/** Reads in a row that fail before the watcher stops waiting on the job. */
+const MAX_FOLDER_JOB_READ_FAILURES = 20;
+
 const watchedFolderJobs = new Set<string>();
 
 /** Count a folder sync as work on its project until the backend job ends.
@@ -370,16 +403,27 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
   watchedFolderJobs.add(jobId);
   noteProjectWork(projectId, 1);
   void (async () => {
+    // A read that fails is not a job that ended: a backend restart answers a
+    // tick or two while the sync runs on. Give up only once the reads stop
+    // coming back at all, or the project is released with sources still
+    // indexing and the composer becomes sendable through them.
+    let consecutiveFailures = 0;
     try {
       for (let attempt = 0; attempt < 600; attempt += 1) {
-        const job = await getFolderSyncJob(jobId);
-        if (job.status === "completed" || job.status === "failed") {
-          break;
+        try {
+          const job = await getFolderSyncJob(jobId);
+          consecutiveFailures = 0;
+          if (job.status === "completed" || job.status === "failed") {
+            break;
+          }
+        } catch {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES) {
+            break;
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, 3000));
       }
-    } catch {
-      // A job that cannot be read cannot be waited on.
     } finally {
       watchedFolderJobs.delete(jobId);
       noteProjectWork(projectId, -1);

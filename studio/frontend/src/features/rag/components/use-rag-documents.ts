@@ -352,7 +352,16 @@ export function useRagDocuments(
     const onChanged = (event: Event) => {
       const changed = (event as CustomEvent<{ projectId?: string }>).detail
         ?.projectId;
-      if (changed === projectScopeId) void refresh({ quiet: true });
+      if (changed !== projectScopeId) return;
+      // The refresh an invalidation triggers is quiet, so it does not take the
+      // loading gate, and the mutation that fired it has already released its
+      // own. Count it as work for as long as it runs, or between the two this
+      // instance reports nothing indexing and lets a send go out ahead of the
+      // rows it is about to receive.
+      noteProjectWork(projectScopeId, 1);
+      void refresh({ quiet: true }).finally(() => {
+        noteProjectWork(projectScopeId, -1);
+      });
     };
     subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);
