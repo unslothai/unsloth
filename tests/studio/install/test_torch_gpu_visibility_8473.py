@@ -582,6 +582,44 @@ def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
 @pytest.mark.parametrize(
     "env",
     [
+        # ROCr decides which agents exist at all, so it hides even when clr's own mask selects.
+        {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""},
+        {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "-1"},
+        {"HIP_VISIBLE_DEVICES": "0,1", "ROCR_VISIBLE_DEVICES": "-1,0"},
+        # ROCR selects, but clr falls through to CUDA because HIP is absent, and that hides.
+        {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "-1"},
+        {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": ""},
+    ],
+)
+def test_the_two_amd_mask_layers_compose(block, tmp_path, env):
+    """ROCr filters agents, then clr masks the survivors, so either layer alone can hide the lot.
+
+    Judging only the first mask that happened to be set read "hidden at one layer, selected at the
+    other" as a plain selection and accused a torch that was correctly seeing nothing.
+    """
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", env = env)
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+def test_both_amd_layers_selecting_is_still_reconciled(block, tmp_path):
+    """Neither layer hides, so a blind torch is a real fault and must still be reported."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "0"},
+    )
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
         # _setup_cvd_hides_nvidia already refuses these two before the block is reached; kept so
         # the property is pinned here even if that helper is ever narrowed.
         {"CUDA_VISIBLE_DEVICES": ""},

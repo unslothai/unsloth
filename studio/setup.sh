@@ -2309,33 +2309,47 @@ esac
 # sent to CPU arrives as "cpu" with _setup_amd_detected still true. Only the exact "cpu": unset is
 # the normal standalone `studio update` state and must still be checked.
 #
-# Returns 0 when the AMD visibility mask hides every device (empty, or a leading negative entry).
-# AMD needs its own rather
-# than _setup_cvd_hides_nvidia because the KFD sysfs fallback reads the kernel topology and ignores
-# the mask, so only this can tell a hidden GPU from a broken one. First-set-wins in hardware.py's
-# _pick_visible_index order, since ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to
-# it: an empty HIP mask shadows ROCR, and HIP=0 with CUDA=-1 is a selection, not a hide.
-_setup_amd_mask_hides_all() {
-    if [ "${HIP_VISIBLE_DEVICES+set}" = "set" ]; then
-        _setup_amd_mask="$HIP_VISIBLE_DEVICES"
-    elif [ "${ROCR_VISIBLE_DEVICES+set}" = "set" ]; then
-        _setup_amd_mask="$ROCR_VISIBLE_DEVICES"
-    elif [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ]; then
-        _setup_amd_mask="$CUDA_VISIBLE_DEVICES"
-    else
-        return 1
-    fi
-    _setup_amd_mask="${_setup_amd_mask//[[:space:]]/}"
-    # Any leading negative entry hides everything, not just an exact "-1": clr stops at the first
-    # invalid entry and discards the rest (rocdevice.cpp, "anything to the right of invalid
-    # deviceId has to be discarded"), and a negative index is invalid, so "-1,0" leaves zero
-    # agents exactly as "-1" does. Matched on the leading "-" because whitespace is already
-    # stripped and nothing legal can start with one: ordinals are non-negative and the UUID form
-    # clr also accepts is GPU-prefixed.
+# Returns 0 when the AMD visibility masks hide every device (empty, or a leading negative entry).
+# AMD needs its own rather than _setup_cvd_hides_nvidia because the KFD sysfs fallback reads the
+# kernel topology and ignores the mask, so only this can tell a hidden GPU from a broken one.
+#
+# The two masks COMPOSE, they do not alternate, so both are judged. ROCr filters which agents exist
+# at all (ROCR_VISIBLE_DEVICES, read by ROCr itself in core/util/flag.h), and clr then masks
+# whatever survived. Taking only the first one set read a host hidden at one layer and selected at
+# the other as a plain selection, and accused it: HIP=0 with ROCR= empty is a torch that correctly
+# sees nothing, as is ROCR=0 with HIP unset and CUDA=-1.
+# Any leading negative entry hides everything, not just an exact "-1", at BOTH layers: each stops
+# at the first invalid entry and discards the rest (rocdevice.cpp, "anything to the right of
+# invalid deviceId has to be discarded"; amd_filter_device.cpp returns early once devIdx < 0), and
+# a negative index is invalid, so "-1,0" leaves zero devices exactly as "-1" does. Matched on the
+# leading "-" because whitespace is already stripped and nothing legal can start with one:
+# ordinals are non-negative and the UUID form both layers also accept is GPU-prefixed.
+_setup_amd_mask_hides_all_value() {
+    _setup_amd_mask="${1//[[:space:]]/}"
     case "$_setup_amd_mask" in
         "" | -*) return 0 ;;
     esac
     return 1
+}
+_setup_amd_mask_hides_all() {
+    # Layer 1, ROCr. Independent of clr's chain: nothing it removes can be selected back.
+    if [ "${ROCR_VISIBLE_DEVICES+set}" = "set" ] \
+        && _setup_amd_mask_hides_all_value "$ROCR_VISIBLE_DEVICES"; then
+        return 0
+    fi
+    # Layer 2, clr. HIP when it is set at all, CUDA only when HIP is absent: clr reads
+    # `(HIP_VISIBLE_DEVICES[0] != '\0') ? HIP_VISIBLE_DEVICES : CUDA_VISIBLE_DEVICES`
+    # (rocdevice.cpp), and a present-but-empty variable is stored as a single space, whose first
+    # byte is not NUL, so an empty HIP still wins and still hides everything. ROCR is deliberately
+    # absent from this arm: it is not in clr's chain.
+    if [ "${HIP_VISIBLE_DEVICES+set}" = "set" ]; then
+        _setup_amd_clr_mask="$HIP_VISIBLE_DEVICES"
+    elif [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ]; then
+        _setup_amd_clr_mask="$CUDA_VISIBLE_DEVICES"
+    else
+        return 1
+    fi
+    _setup_amd_mask_hides_all_value "$_setup_amd_clr_mask"
 }
 _setup_gpucheck_masked=false
 if [ "$_setup_amd_detected" = true ] && _setup_amd_mask_hides_all; then
