@@ -101,7 +101,7 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
           test -f dist/index.html
-          test -f dist/pill.html
+          test -f dist/ask.html
 
       # The crate carries ~100 unit tests (native_file_dialogs, preflight,
       # install, desktop_auth, ...) that nothing ran until now: this workflow
