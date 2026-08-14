@@ -7745,3 +7745,72 @@ def test_a_fill_pass_never_clears_a_fallback(override_store):
         "--numa",
         "distribute",
     ]
+
+
+def test_clearing_one_quant_stops_the_legacy_repo_row_from_answering(monkeypatch):
+    # The carry-over copies a legacy bare `repo` row's flags onto the first
+    # `repo:QUANT` save and leaves the bare row in place, and a load reads the
+    # qualified key first and the bare one after it. So an all-default save for the
+    # quant, which stores nothing, falls straight back through to a row no page can
+    # show, and the flags the user just cleared come back on the next load. The
+    # cleared box is kept as an explicit empty list instead: a row that resolves, and
+    # supplies no arguments.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--top-k", "40"])
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [])
+
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {"llama_extra_args": []}
+    key, override = settings.resolve_override_for_load(
+        "unsloth/B-GGUF", None, "Q4_K_M"
+    )
+    assert key == "unsloth/B-GGUF:Q4_K_M"
+    assert override.get("llama_extra_args") == []
+    # And the bare row is untouched, because it is still the fallback for every other
+    # quant of this repo that has no row of its own.
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--top-k",
+        "40",
+    ]
+    other_key, other = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q8_0")
+    assert other_key == "unsloth/B-GGUF"
+    assert other["llama_extra_args"] == ["--top-k", "40"]
+
+
+def test_an_empty_save_with_nothing_to_suppress_still_stores_nothing(monkeypatch):
+    # The tombstone exists only to stop a fallback. With no row behind this one,
+    # "no launch flags" and "nothing stored" are the same thing, and writing an empty
+    # row would leave an entry the settings page then lists as configured.
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [])
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_a_fill_never_writes_the_tombstone(monkeypatch):
+    # fill_absent_fields only adds what is missing, so an empty list in a fill is the
+    # absence of a request, not a clear: writing a row for it would suppress the
+    # fallback the user never asked to be rid of.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--top-k", "40"])
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], fill_absent_fields = True)
+    assert "llama_extra_args" not in settings.get_model_override("unsloth/B-GGUF:Q4_K_M")
+    key, override = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q4_K_M")
+    assert override.get("llama_extra_args") == ["--top-k", "40"]
+
+
+def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
+    # The two spellings of the same payload, kept apart by one flag: everywhere else
+    # an empty list is a field nobody set, and only the save that means "cleared"
+    # asks for it to be stored.
+    assert settings.normalize_model_override({"llama_extra_args": []}) == {}
+    assert settings.normalize_model_override(
+        {"llama_extra_args": []}, keep_empty_extra_args = True
+    ) == {"llama_extra_args": []}
+    # And the flag only decides what an EMPTY list means. A list with tokens in it is
+    # stored either way: this module deliberately does not judge them (the route runs
+    # validate_extra_args before it gets here), so the flag must not become a second,
+    # quieter filter.
+    for keep in (False, True):
+        assert settings.normalize_model_override(
+            {"llama_extra_args": ["--top-k", "40"]}, keep_empty_extra_args = keep
+        ) == {"llama_extra_args": ["--top-k", "40"]}

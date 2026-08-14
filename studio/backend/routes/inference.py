@@ -6738,7 +6738,7 @@ def _embedding_clamped_slots(
     return max(1, effective_ubatch)  # allow-slot-clamp: mirrors the load_model clamp
 
 
-def _batch_floor_survives_embedding_clamp(
+async def _batch_floor_survives_embedding_clamp(
     config: ModelConfig,
     extra_args: Optional[list[str]],
     requested_slots: int,
@@ -6755,7 +6755,10 @@ def _batch_floor_survives_embedding_clamp(
     so the header read is paid on the way to a 400 rather than on every load.
     """
     from core.inference.llama_server_args import check_batch_floor
-    slots = _embedding_clamped_slots(
+    # Off the event loop: the classification reads the GGUF header from disk, and
+    # both routes reach this from an async handler serving download progress polls.
+    slots = await asyncio.to_thread(
+        _embedding_clamped_slots,
         config,
         _effective_parallel_slots(requested_slots, diffusion_kind = diffusion_kind),
         extra_args = extra_args,
@@ -8318,7 +8321,7 @@ async def _load_model_impl(
                 # batch at the micro-batch, so load_model reduces the slots to it
                 # before launching. Read only now, because it costs a header read
                 # and it can only ever turn a refusal into an acceptance.
-                if not _batch_floor_survives_embedding_clamp(
+                if not await _batch_floor_survives_embedding_clamp(
                     config,
                     extra_llama_args,
                     _n_parallel,
@@ -9134,7 +9137,7 @@ async def validate_model(
             except ValueError as exc:
                 # The same embedding clamp /load allows for, or this preflight
                 # refuses a command the load it gates would have launched.
-                if not _batch_floor_survives_embedding_clamp(
+                if not await _batch_floor_survives_embedding_clamp(
                     config,
                     effective_extra_args,
                     _requested_slots,
