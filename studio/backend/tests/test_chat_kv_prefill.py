@@ -343,5 +343,4 @@ def test_prefill_task_cancellation_releases_lease_and_client(monkeypatch):
 
 def test_prefill_route_is_tracked_by_inference_lifecycle():
     from core.inference.llama_keepwarm import _is_inference_path
-
     assert _is_inference_path("/api/inference/chat/prefill") is True

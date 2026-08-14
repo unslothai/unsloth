@@ -22511,9 +22511,7 @@ async def _build_chat_prefill_body(payload, llama_backend) -> dict:
                 ),
             )
             auto_heal = (
-                payload.auto_heal_tool_calls
-                if payload.auto_heal_tool_calls is not None
-                else True
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
             enabled_tool_names = _display_tool_name_gate(tools)
             for message in messages:
