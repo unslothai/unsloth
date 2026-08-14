@@ -4067,6 +4067,21 @@ def _restore_from_staged(name: str, staged: str, removed_any: bool) -> None:
         )
 
 
+def _requirement_args(requirement: str, staging: str) -> "list[str]":
+    """How to hand pip the requirement, as a file when it carries hashes.
+
+    pip only accepts --hash entries from a requirements file, and the hashes are what
+    stop it accepting a different artifact of the same version from a source uv never
+    considered. The file lives in the staging directory, so it is removed with it.
+    """
+    if "--hash=" not in requirement:
+        return [requirement]
+    path = os.path.join(staging, "requirement.txt")
+    with open(path, "w", encoding = "utf-8") as handle:
+        handle.write(requirement + "\n")
+    return ["-r", path]
+
+
 def _stage_replacement(name: str):
     """Build the wheel that will replace a package, before it is removed.
 
@@ -4140,7 +4155,7 @@ def _stage_replacement(name: str):
         *build_options,
         "--wheel-dir",
         staging,
-        requirement,
+        *_requirement_args(requirement, staging),
     ]
     env = _install_env_for_cmd(cmd)
     if overrides:
@@ -4504,6 +4519,7 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         "--emit-find-links",
         "--emit-index-annotation",
         "--emit-build-options",
+        "--generate-hashes",
         "-",
     ]
     try:
@@ -4521,6 +4537,7 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
             _safe_print(_redact_install_output(result.stderr))
         return None
     requirement, origin = "", ""
+    hashes: list[str] = []
     emitted: list[str] = []
     find_links: list[str] = []
     build_options: list[str] = []
@@ -4531,6 +4548,8 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
             emitted.append(line.split(" ", 1)[1].strip())
         elif line.startswith("--find-links "):
             find_links.append(line.split(" ", 1)[1].strip())
+        elif line.startswith("--hash="):
+            hashes.append(line.rstrip("\\").strip())
         elif line.startswith(("--no-binary ", "--only-binary ")):
             # uv's artifact policy, which pip reads none of. Without it the repair can
             # download a wheel under a no-binary rule or build an sdist under an
@@ -4545,7 +4564,8 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
             # credentials. A private index would answer 401 otherwise.
             origin = line[len("# from ") :].strip() or origin
         elif line and not line.startswith(("#", "-")):
-            pinned = line.split(";", 1)[0].strip()
+            # uv continues a hashed pin onto the following lines with a backslash.
+            pinned = line.split(";", 1)[0].rstrip("\\").strip()
             if _canonical_package_name(pinned.split("==", 1)[0]) == canonical:
                 requirement = pinned
     if not requirement:
@@ -4563,6 +4583,13 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
     index_url = _credentialed_index(origin, emitted)
     if index_url:
         overrides["PIP_INDEX_URL"] = index_url
+    elif find_links:
+        # uv resolved this from a flat source with no index in play, which is what a
+        # configured no-index looks like on the way out: it emits the find-links entry
+        # and no index line at all. Leaving PIP_NO_INDEX cleared would hand pip back
+        # the default PyPI and let it stage the same name and version from a source uv
+        # was told to exclude.
+        overrides["PIP_NO_INDEX"] = "1"
     # Measured on uv 0.10.7: --emit-build-options surfaces the policy from uv.toml but
     # NOT the environment-variable spelling of it, so that half is translated by hand.
     # Only where pip has no setting of its own, which it reads natively.
@@ -4573,6 +4600,12 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         value = os.environ.get(uv_name, "").strip()
         if value and not os.environ.get(pip_name):
             overrides[pip_name] = value
+    if hashes:
+        # The hashes are what make this safe rather than merely careful. Measured: pip
+        # verifies them even with PIP_REQUIRE_HASHES=0, and neither PIP_CONFIG_FILE nor
+        # --isolated suppresses a site pip.conf, so pip may still consult a source uv
+        # never considered. It can no longer accept a different artifact from one.
+        requirement = " \\\n    ".join([requirement, *hashes])
     return requirement, overrides, build_options
 
 

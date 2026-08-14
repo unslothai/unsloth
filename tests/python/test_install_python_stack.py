@@ -1461,6 +1461,67 @@ class TestDuplicateCoreMetadataRepair:
         # The record is left where it was, not quarantined into a temporary directory.
         assert record.is_dir()
 
+    HASHED_OUT = (
+        b"--index-url https://mirror.corp/simple\n"
+        b"unsloth-zoo==2026.8.15 \\\n"
+        b"    --hash=sha256:aaaa \\\n"
+        b"    --hash=sha256:bbbb\n"
+        b"    # from https://mirror.corp/simple\n"
+    )
+
+    def test_the_resolved_artifact_is_pinned_by_hash(self, monkeypatch):
+        """Neither PIP_CONFIG_FILE nor --isolated suppresses a site pip.conf --
+        measured: with both, a venv pip.conf's extra-index-url was still contacted.
+        So pip may consult a source uv never considered, and the hashes are what stop
+        it accepting a different artifact of the same version from one. pip verifies
+        them even with PIP_REQUIRE_HASHES=0, which is also measured."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(monkeypatch, stdout = self.HASHED_OUT)
+        requirement, _overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        # The pin line is continued with a backslash, which is not part of the pin.
+        assert requirement.startswith("unsloth-zoo==2026.8.15 \\\n")
+        assert "--hash=sha256:aaaa" in requirement
+        assert "--hash=sha256:bbbb" in requirement
+
+    def test_a_hashed_requirement_reaches_pip_as_a_file(self, tmp_path):
+        """pip only accepts --hash entries from a requirements file."""
+        requirement = "unsloth-zoo==1.0 \\\n    --hash=sha256:aaaa"
+        args = ips._requirement_args(requirement, str(tmp_path))
+        assert args[0] == "-r"
+        assert Path(args[1]).read_text().strip() == requirement
+        # It lives in the staging directory, so it is removed with it.
+        assert Path(args[1]).parent == tmp_path
+
+    def test_an_unhashed_requirement_is_passed_directly(self, tmp_path):
+        assert ips._requirement_args("unsloth-zoo", str(tmp_path)) == ["unsloth-zoo"]
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_flat_source_with_no_index_forbids_the_index(self, monkeypatch):
+        """A configured no-index looks like this on the way out: uv emits the
+        find-links entry and no index line at all. Leaving PIP_NO_INDEX cleared would
+        hand pip back the default PyPI and let it stage the same name and version
+        from a source uv was told to exclude."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = (
+                b"--find-links /opt/wheels\n"
+                b"unsloth-zoo==1.0\n"
+                b"    # from file:///opt/wheels\n"
+            ),
+        )
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_NO_INDEX"] == "1"
+        assert overrides["PIP_FIND_LINKS"] == "/opt/wheels"
+        assert "PIP_INDEX_URL" not in overrides
+
+    def test_an_emitted_index_still_clears_no_index(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("PIP_NO_INDEX", "1")
+        self._uv_plan(monkeypatch)
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_NO_INDEX"] == ""
+
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
