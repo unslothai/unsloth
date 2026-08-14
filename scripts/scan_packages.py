@@ -1886,7 +1886,13 @@ def _cancel_rearm(opened: dict, name: str, at: int) -> None:
             entry[2] = at
 
 
-def _cancel_close(opened: dict, levels: list, at: int, col: int, blocks: "list | None" = None) -> None:
+def _cancel_close(
+    opened: dict,
+    levels: list,
+    at: int,
+    col: int,
+    blocks: "list | None" = None,
+) -> None:
     """End the spans whose block a statement at `at`, indent `col`, has left.
 
     Only the groups deeper than `col` are touched and each one ends once, so a
