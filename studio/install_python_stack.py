@@ -4117,6 +4117,28 @@ def _stage_replacement(name: str):
     variables and upload cutoff have to be handed across explicitly to keep the
     provenance and the reproducibility policy the other installs run under.
     """
+    requirement, overrides = name, {}
+    if USE_UV:
+        if _uv_is_offline():
+            _safe_print(
+                _red(
+                    "   UV_OFFLINE is set and pip has no offline mode, so repairing "
+                    f"{name} would have to reach the network; leaving the install alone."
+                ),
+                file = sys.stderr,
+            )
+            return None
+        plan = _uv_staging_plan(name)
+        if plan is None:
+            _safe_print(
+                _red(
+                    f"   uv could not resolve a replacement for {name}, so its source "
+                    "cannot be preserved; leaving the install alone."
+                ),
+                file = sys.stderr,
+            )
+            return None
+        requirement, overrides = plan
     cutoff_args = _uv_upload_cutoff_args()
     if cutoff_args is None:
         _safe_print(
@@ -4137,32 +4159,23 @@ def _stage_replacement(name: str):
         *cutoff_args,
         "--wheel-dir",
         staging,
-        name,
+        requirement,
     ]
-    base_env = _install_env_for_cmd(cmd)
-    for overrides in _staging_index_envs():
-        if overrides:
-            env = dict(base_env if base_env is not None else os.environ)
-            env.update(overrides)
-        else:
-            env = base_env
-        result = subprocess.run(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            env = env,
-            **_windows_hidden_subprocess_kwargs(),
-        )
-        if result.returncode == 0 and glob.glob(os.path.join(staging, "*.whl")):
-            return staging
-        if VERBOSE and result.stdout:
-            _safe_print(_redact_install_output(result.stdout))
-        if not _pip_reported_no_match(result.stdout):
-            # first-index exists to stop a public release standing in for a private
-            # one, so only a confirmed absence may advance. An index that is
-            # unreachable, refuses the credentials, or fails the build says nothing
-            # about what it holds, and moving on would be the substitution itself.
-            break
+    env = _install_env_for_cmd(cmd)
+    if overrides:
+        env = dict(env if env is not None else os.environ)
+        env.update(overrides)
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        env = env,
+        **_windows_hidden_subprocess_kwargs(),
+    )
+    if result.returncode == 0 and glob.glob(os.path.join(staging, "*.whl")):
+        return staging
+    if VERBOSE and result.stdout:
+        _safe_print(_redact_install_output(result.stdout))
     shutil.rmtree(staging, ignore_errors = True)
     return None
 
@@ -4454,118 +4467,83 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     return {"PIP_REQUIRE_HASHES": "0"}
 
 
-def _uv_index_values(name: str) -> "list[str]":
-    """Split one uv index variable into bare URLs.
+def _uv_is_offline() -> bool:
+    """True when uv has been told not to touch the network."""
+    return os.environ.get("UV_OFFLINE", "").strip().lower() not in ("", "0", "false")
 
-    uv accepts several whitespace separated entries, each optionally named as
-    `label=url`; pip takes the URL alone. A URL is only treated as named when the
-    text before the first `=` is not itself a scheme, so a query string is left alone.
+
+def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
+    """Ask uv which release and which index it would use, and reproduce that with pip.
+
+    Returns (requirement, pip env overrides), or None when uv could not resolve it.
+
+    Staging has to run pip, because uv has no `wheel` subcommand. Reading uv's index
+    configuration out of the environment and translating it cannot be made correct: uv
+    also discovers uv.toml, pyproject.toml [tool.uv] and a user config, honours
+    UV_CONFIG_FILE, applies an implicit PyPI default, and resolves under an index-strategy
+    that pip has no equivalent for. Any of those missed means the repair can uninstall a
+    private build and reinstall the public package of the same name.
+
+    So uv is asked instead. `uv pip compile --emit-index-annotation` reports the exact
+    index each package resolved from, under uv's own discovery, priority, strategy and
+    upload cutoff, and pip is then pointed at that one index with that one version. An
+    unreachable higher-priority index fails the compile rather than silently falling
+    through to a public fallback, which is the behaviour first-index exists to give.
     """
-    values: list[str] = []
-    for part in os.environ.get(name, "").split():
-        label, separator, url = part.partition("=")
-        values.append(url if separator and "://" not in label else part)
-    return [value for value in values if value]
+    cmd = [
+        "uv",
+        "pip",
+        "compile",
+        "--no-deps",
+        "--python",
+        sys.executable,
+        "--emit-index-url",
+        "--emit-find-links",
+        "--emit-index-annotation",
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            input = name.encode(),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        if VERBOSE and result.stderr:
+            _safe_print(_redact_install_output(result.stderr))
+        return None
+    requirement, index_url, find_links = "", "", []
+    canonical = _canonical_package_name(name)
+    for raw in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+        line = raw.strip()
+        if line.startswith("--index-url "):
+            index_url = index_url or line.split(" ", 1)[1].strip()
+        elif line.startswith("--find-links "):
+            find_links.append(line.split(" ", 1)[1].strip())
+        elif line.startswith("# from "):
+            # The annotation names the index this package actually came from, which is
+            # the one to reproduce; --index-url is only the fallback when uv omits it.
+            index_url = line[len("# from ") :].strip() or index_url
+        elif line and not line.startswith(("#", "-")):
+            pinned = line.split(";", 1)[0].strip()
+            if _canonical_package_name(pinned.split("==", 1)[0]) == canonical:
+                requirement = pinned
+    if not requirement:
+        return None
+    overrides = {"PIP_EXTRA_INDEX_URL": ""}
+    if index_url:
+        overrides["PIP_INDEX_URL"] = index_url
+    if find_links:
+        overrides["PIP_FIND_LINKS"] = " ".join(find_links)
+    return requirement, overrides
 
 
-# pip says the same two things whether the index is empty or the version is filtered out;
-# either way that index does not hold an installable candidate, which is the question.
-_PIP_NO_MATCH_MARKERS = (
-    b"No matching distribution found",
-    b"Could not find a version that satisfies the requirement",
-)
-# pip degrades an unreachable or refusing index to a warning and then reports exactly the
-# same no-match ERRORs, so these have to be looked for even when a no-match marker is
-# present. Measured on pip 26.2 rather than guessed: a refused connection and an
-# unresolvable host both print only `WARNING: Retrying ... connection broken by ...`
-# above the two ERROR lines, with no "Could not fetch URL" anywhere. A genuine absence
-# from a reachable index prints the ERROR lines and no warning at all.
-_PIP_INDEX_TROUBLE_MARKERS = (
-    b"WARNING: Retrying",
-    b"connection broken by",
-    b"Could not fetch URL",
-    b"Skipping page",
-    b"Read timed out",
-    b"Client Error",
-    b"Server Error",
-    b"SSLError",
-    b"confirming the ssl certificate",
-)
-
-
-def _pip_reported_no_match(output: "bytes | None") -> bool:
-    """True only when pip actually said the index carries no such package."""
-    if not output:
-        return False
-    if any(marker in output for marker in _PIP_INDEX_TROUBLE_MARKERS):
-        return False
-    return any(marker in output for marker in _PIP_NO_MATCH_MARKERS)
-
-
-def _uv_index_sources() -> "list[str]":
-    """uv's indexes in uv's own priority order, highest first.
-
-    `--index` outranks the deprecated `--extra-index-url`, which outranks the default
-    index; `--index-url` is the deprecated spelling of `--default-index`.
-    """
-    default = _uv_index_values("UV_DEFAULT_INDEX") or _uv_index_values("UV_INDEX_URL")
-    ordered = _uv_index_values("UV_INDEX") + _uv_index_values("UV_EXTRA_INDEX_URL") + default
-    seen, sources = set(), []
-    for url in ordered:
-        if url in seen:
-            continue
-        seen.add(url)
-        sources.append(url)
-    return sources
-
-
-def _staging_index_envs() -> "list[dict[str, str]]":
-    """Pip environments to try when staging, one per uv index, in uv's order.
-
-    uv reads UV_DEFAULT_INDEX / UV_INDEX / UV_FIND_LINKS and pip reads none of them, so a
-    machine configured only through uv would stage a repair replacement from public PyPI
-    while every other install came from its private mirror. The repair then uninstalls the
-    private build and reinstalls the public wheel, silently changing provenance.
-
-    Translating them into PIP_INDEX_URL plus PIP_EXTRA_INDEX_URL would restore the reach
-    but not the semantics: uv's default index-strategy is first-index, meaning it stops at
-    the first index that carries the package, which is what stops a public release
-    shadowing a private one. pip has no equivalent -- index-url and extra-index-url form
-    one candidate pool and the highest version wins. So each index is offered alone, in
-    order, and the first that can build the wheel is the one used.
-
-    A single pass with no overrides when uv is not in use, when pip already names its own
-    index (the more specific instruction), or when uv names none either.
-    """
-    find_links = _uv_index_values("UV_FIND_LINKS")
-    shared: dict[str, str] = {}
-    if find_links and not os.environ.get("PIP_FIND_LINKS"):
-        # Additive in both tools, so it applies to every attempt rather than ordering them.
-        shared["PIP_FIND_LINKS"] = " ".join(find_links)
-    if not USE_UV or os.environ.get("PIP_INDEX_URL"):
-        return [shared]
-    sources = _uv_index_sources()
-    if not sources:
-        return [shared]
-    if os.environ.get("UV_INDEX_STRATEGY", "").strip() == "unsafe-best-match":
-        # The one strategy that really does pool every index and take the best version,
-        # which is pip's own default. Separating them would pick a different build than
-        # the ordinary update, and nothing later corrects it under SKIP_STUDIO_BASE.
-        # unsafe-first-match still exhausts one index before the next, so for a single
-        # unpinned name it lands where first-index does and needs no special case.
-        pooled = dict(shared)
-        pooled["PIP_INDEX_URL"] = sources[0]
-        if sources[1:]:
-            pooled["PIP_EXTRA_INDEX_URL"] = " ".join(sources[1:])
-        return [pooled]
-    envs = []
-    for url in sources:
-        env = dict(shared)
-        env["PIP_INDEX_URL"] = url
-        # An inherited extra index would re-pool the candidates this ordering separates.
-        env["PIP_EXTRA_INDEX_URL"] = ""
-        envs.append(env)
-    return envs
+def _canonical_package_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
 
 
 def _uv_upload_cutoff_args() -> "list[str] | None":

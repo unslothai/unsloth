@@ -1031,182 +1031,115 @@ class TestDuplicateCoreMetadataRepair:
         ):
             monkeypatch.delenv(var, raising = False)
 
-    def test_staging_carries_the_uv_index_across_to_pip(self, monkeypatch):
-        """uv has no wheel subcommand, so staging runs pip, which reads none of
-        uv's index variables and would otherwise stage from public PyPI while
-        every other install came from the private mirror."""
-        self._uv_only(monkeypatch)
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple")
-        monkeypatch.setenv("UV_INDEX", "internal=https://mirror.corp/internal")
-        monkeypatch.setenv("UV_FIND_LINKS", "/opt/wheels")
-        envs = ips._staging_index_envs()
-        # A named uv index is `label=url`; pip takes the URL alone. --index outranks
-        # the default index, so the private source is tried first.
-        assert [env["PIP_INDEX_URL"] for env in envs] == [
-            "https://mirror.corp/internal",
-            "https://mirror.corp/simple",
-        ]
-        assert all(env["PIP_FIND_LINKS"] == "/opt/wheels" for env in envs)
-
-    def test_each_uv_index_is_offered_alone(self, monkeypatch):
-        """uv's default index-strategy is first-index: it stops at the first index
-        carrying the package, which is what stops a public release shadowing a
-        private one. pip pools index-url with extra-index-url and takes the highest
-        version, so pooling them here would reintroduce dependency confusion."""
-        self._uv_only(monkeypatch)
-        monkeypatch.setenv("UV_INDEX", "https://private.corp/simple")
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple")
-        envs = ips._staging_index_envs()
-        assert len(envs) == 2
-        assert all(env["PIP_EXTRA_INDEX_URL"] == "" for env in envs)
-
-    def test_an_explicit_pip_index_outranks_the_uv_translation(self, monkeypatch):
-        self._uv_only(monkeypatch)
-        monkeypatch.setenv("PIP_INDEX_URL", "https://pip.corp/simple")
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv.corp/simple")
-        assert ips._staging_index_envs() == [{}]
-
-    def test_a_query_string_is_not_mistaken_for_a_named_index(self, monkeypatch):
-        self._uv_only(monkeypatch)
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple?token=abc")
-        assert ips._staging_index_envs()[0]["PIP_INDEX_URL"] == (
-            "https://mirror.corp/simple?token=abc"
-        )
-
-    def test_no_uv_translation_when_pip_is_the_package_manager(self, monkeypatch):
-        self._uv_only(monkeypatch)
-        monkeypatch.setattr(ips, "USE_UV", False)
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.corp/simple")
-        assert ips._staging_index_envs() == [{}]
-
-    def test_staging_falls_through_to_the_next_uv_index(self, monkeypatch):
-        """One index per attempt means the package simply not being on the private
-        mirror must not fail the repair."""
-        self._uv_only(monkeypatch)
-        monkeypatch.setattr(
-            ips,
-            "_staging_index_envs",
-            lambda: [{"PIP_INDEX_URL": "https://a/s"}, {"PIP_INDEX_URL": "https://b/s"}],
-        )
-        seen = []
-
-        def fake_run(cmd, **kwargs):
-            seen.append(kwargs["env"]["PIP_INDEX_URL"])
-            wheel_dir = cmd[cmd.index("--wheel-dir") + 1]
-            if len(seen) == 2:
-                Path(wheel_dir, "unsloth-1.0-py3-none-any.whl").write_text("")
-                return types.SimpleNamespace(returncode = 0, stdout = b"")
-            return types.SimpleNamespace(returncode = 1, stdout = self.PIP_ABSENT)
-
-        monkeypatch.setattr(ips.subprocess, "run", fake_run)
-        staged = ips._stage_replacement("unsloth")
-        assert staged is not None
-        assert seen == ["https://a/s", "https://b/s"]
-        shutil.rmtree(staged, ignore_errors = True)
-
-    # Captured verbatim from pip 26.2 rather than written by hand: the two failures
-    # are indistinguishable by exit code and by their ERROR lines.
-    PIP_ABSENT = (
-        b"ERROR: Could not find a version that satisfies the requirement zzz "
-        b"(from versions: none)\n"
-        b"ERROR: No matching distribution found for zzz\n"
-    )
-    PIP_UNREACHABLE = (
-        b"WARNING: Retrying (Retry(total=1, connect=None, read=None, redirect=None, "
-        b"status=None)) after connection broken by 'NewConnectionError(\"HTTPConnection("
-        b"host='127.0.0.1', port=9): Failed to establish a new connection: [Errno 111] "
-        b"Connection refused\")': /simple/six/\n"
-        b"ERROR: Could not find a version that satisfies the requirement six "
-        b"(from versions: none)\n"
-        b"ERROR: No matching distribution found for six\n"
-    )
-    PIP_UNRESOLVABLE = (
-        b"WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, "
-        b"status=None)) after connection broken by 'NameResolutionError(\"HTTPSConnection("
-        b"host='no-such-host.invalid', port=443): Failed to resolve 'no-such-host.invalid' "
-        b"([Errno -2] Name or service not known)\")': /simple/six/\n"
-        b"ERROR: Could not find a version that satisfies the requirement six "
-        b"(from versions: none)\n"
-        b"ERROR: No matching distribution found for six\n"
+    UV_COMPILE_OUT = (
+        b"# This file was autogenerated by uv via the following command:\n"
+        b"#    uv pip compile --no-deps --emit-index-url -\n"
+        b"--index-url https://pypi.org/simple\n"
+        b"--extra-index-url https://mirror.corp/simple\n"
+        b"--find-links /opt/wheels\n"
+        b"\n"
+        b"unsloth-zoo==2026.8.15\n"
+        b"    # from https://mirror.corp/simple\n"
     )
 
-    def test_only_a_confirmed_absence_counts_as_no_match(self):
-        assert ips._pip_reported_no_match(self.PIP_ABSENT) is True
-        assert ips._pip_reported_no_match(self.PIP_UNREACHABLE) is False
-        assert ips._pip_reported_no_match(self.PIP_UNRESOLVABLE) is False
-        assert ips._pip_reported_no_match(b"error: subprocess-exited-with-error") is False
-        assert ips._pip_reported_no_match(b"") is False
-        assert ips._pip_reported_no_match(None) is False
-
-    @pytest.mark.parametrize(
-        "output, attempts",
-        [
-            (PIP_ABSENT, 2),
-            (PIP_UNREACHABLE, 1),
-            (PIP_UNRESOLVABLE, 1),
-            (b"error: subprocess-exited-with-error", 1),
-        ],
-    )
-    def test_staging_only_advances_past_an_index_that_confirmed_the_absence(
-        self, monkeypatch, output, attempts
+    def _uv_plan(
+        self,
+        monkeypatch,
+        stdout = None,
+        returncode = 0,
     ):
-        """first-index exists to stop a public release standing in for a private
-        one. An index that is unreachable, refuses the credentials or fails the
-        build says nothing about what it holds, so advancing past it would be the
-        substitution itself. The install is left alone instead."""
-        monkeypatch.setattr(
-            ips,
-            "_staging_index_envs",
-            lambda: [{"PIP_INDEX_URL": "https://private/s"}, {"PIP_INDEX_URL": "https://pypi/s"}],
-        )
-        seen = []
+        calls = []
 
         def fake_run(cmd, **kwargs):
-            seen.append(kwargs["env"]["PIP_INDEX_URL"])
-            return types.SimpleNamespace(returncode = 1, stdout = output)
-
-        monkeypatch.setattr(ips.subprocess, "run", fake_run)
-        assert ips._stage_replacement("six") is None
-        assert len(seen) == attempts
-
-    def test_unsafe_best_match_pools_the_indexes_as_pip_does(self, monkeypatch):
-        """The one uv strategy that really does pool every index and take the best
-        version, which is pip's own default. Separating them would pick a different
-        build than the ordinary update, and under SKIP_STUDIO_BASE nothing later
-        corrects it."""
-        self._uv_only(monkeypatch)
-        monkeypatch.setenv("UV_INDEX", "https://private/s")
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi/s")
-        monkeypatch.setenv("UV_INDEX_STRATEGY", "unsafe-best-match")
-        envs = ips._staging_index_envs()
-        assert len(envs) == 1
-        assert envs[0]["PIP_INDEX_URL"] == "https://private/s"
-        assert envs[0]["PIP_EXTRA_INDEX_URL"] == "https://pypi/s"
-
-    @pytest.mark.parametrize("strategy", ("", "first-index", "unsafe-first-match"))
-    def test_the_other_strategies_keep_one_index_per_attempt(self, monkeypatch, strategy):
-        """unsafe-first-match still exhausts one index before moving to the next, so
-        for a single unpinned name it lands where first-index does."""
-        self._uv_only(monkeypatch)
-        monkeypatch.setenv("UV_INDEX", "https://private/s")
-        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi/s")
-        monkeypatch.setenv("UV_INDEX_STRATEGY", strategy)
-        assert len(ips._staging_index_envs()) == 2
-
-    def test_the_staging_command_runs_with_the_translated_index(self, monkeypatch):
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            captured["env"] = kwargs.get("env")
+            calls.append((cmd, kwargs))
+            if cmd[:3] == ["uv", "pip", "compile"]:
+                return types.SimpleNamespace(
+                    returncode = returncode,
+                    stdout = self.UV_COMPILE_OUT if stdout is None else stdout,
+                    stderr = b"",
+                )
             return types.SimpleNamespace(returncode = 1, stdout = b"")
 
         monkeypatch.setattr(ips.subprocess, "run", fake_run)
-        monkeypatch.setattr(ips, "_staging_index_envs", lambda: [{"PIP_INDEX_URL": "https://m/s"}])
-        assert ips._stage_replacement("unsloth") is None
-        assert captured["env"]["PIP_INDEX_URL"] == "https://m/s"
-        # The hash relaxation for `pip wheel` survives the index merge.
-        assert captured["env"]["PIP_REQUIRE_HASHES"] == "0"
+        return calls
+
+    def test_the_replacement_is_the_release_and_index_uv_resolved(self, monkeypatch):
+        """Staging must run pip, because uv has no wheel subcommand, and uv's index
+        configuration cannot be reconstructed from the environment: uv also reads
+        uv.toml, pyproject [tool.uv], a user config and UV_CONFIG_FILE, applies an
+        implicit PyPI default, and resolves under an index-strategy pip has no
+        equivalent for. So uv is asked, and its answer is reproduced verbatim."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        self._uv_plan(monkeypatch)
+        requirement, overrides = ips._uv_staging_plan("unsloth_zoo")
+        assert requirement == "unsloth-zoo==2026.8.15"
+        # The annotation names the index the package actually came from, which is the
+        # one to reproduce -- not --index-url, which is only uv's default.
+        assert overrides["PIP_INDEX_URL"] == "https://mirror.corp/simple"
+        assert overrides["PIP_EXTRA_INDEX_URL"] == ""
+        assert overrides["PIP_FIND_LINKS"] == "/opt/wheels"
+
+    def test_the_plan_asks_uv_about_this_interpreter(self, monkeypatch):
+        """Markers and ABI tags come from the interpreter being repaired, not from
+        whichever one uv would discover on its own."""
+        self._uv_only(monkeypatch)
+        calls = self._uv_plan(monkeypatch)
+        ips._uv_staging_plan("unsloth-zoo")
+        cmd = calls[0][0]
+        assert cmd[cmd.index("--python") + 1] == sys.executable
+        assert calls[0][1]["input"] == b"unsloth-zoo"
+
+    def test_a_falling_index_aborts_the_repair_rather_than_substituting(self, monkeypatch, capsys):
+        """uv fails the compile outright when a higher-priority index is unreachable,
+        which is the behaviour first-index exists to give: a public release must not
+        stand in for a private one just because the private mirror was down."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        self._uv_plan(monkeypatch, returncode = 1)
+        assert ips._stage_replacement("unsloth-zoo") is None
+        assert "cannot be preserved" in capsys.readouterr().err
+
+    def test_offline_uv_leaves_the_install_alone(self, monkeypatch, capsys):
+        """UV_OFFLINE forbids network access and pip has no offline mode, so the
+        repair would have to break the policy to proceed."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.setenv("UV_OFFLINE", "1")
+
+        def fake_run(*args, **kwargs):
+            raise AssertionError("nothing may run while uv is offline")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        assert ips._stage_replacement("unsloth-zoo") is None
+        assert "UV_OFFLINE" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("value", ("", "0", "false"))
+    def test_an_unset_or_disabled_offline_flag_is_not_offline(self, monkeypatch, value):
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_OFFLINE", value)
+        assert ips._uv_is_offline() is False
+
+    def test_the_plan_is_skipped_when_uv_is_not_the_package_manager(self, monkeypatch):
+        """Plain pip already reads its own configuration, so there is nothing to
+        translate and no uv to ask."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", False)
+        calls = self._uv_plan(monkeypatch)
+        assert ips._stage_replacement("unsloth-zoo") is None
+        assert all(cmd[:1] != ["uv"] for cmd, _ in calls)
+        assert calls[0][0][-1] == "unsloth-zoo"
+
+    def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        self._uv_plan(monkeypatch, stdout = b"--index-url https://pypi.org/simple\n")
+        assert ips._uv_staging_plan("unsloth-zoo") is None
+
+    def test_a_pin_for_another_package_is_not_mistaken_for_this_one(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        self._uv_plan(monkeypatch, stdout = b"unsloth==2026.8.15\n")
+        assert ips._uv_staging_plan("unsloth-zoo") is None
 
     def test_the_uv_upload_cutoff_reaches_pip(self, monkeypatch):
         """UV_EXCLUDE_NEWER limits candidates by upload time and pip ignores it, so
@@ -1215,6 +1148,7 @@ class TestDuplicateCoreMetadataRepair:
         (checked on pip 26.2: a bare 2020-01-01 staged six 1.13.0, not 1.17.0)."""
         self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_EXCLUDE_NEWER", "2026-01-01")
+        monkeypatch.setattr(ips, "USE_UV", False)
         monkeypatch.setattr(ips, "_pip_supports_upload_cutoff", lambda: True)
         captured = {}
 
@@ -1233,6 +1167,7 @@ class TestDuplicateCoreMetadataRepair:
         the duplicate still in place and the package still installed."""
         self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_EXCLUDE_NEWER", "2026-01-01")
+        monkeypatch.setattr(ips, "USE_UV", False)
         monkeypatch.setattr(ips, "_pip_supports_upload_cutoff", lambda: False)
 
         def fake_run(*args, **kwargs):
