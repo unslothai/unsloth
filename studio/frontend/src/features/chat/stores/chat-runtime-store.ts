@@ -87,6 +87,8 @@ export type PermissionMode = "ask" | "auto" | "off" | "full";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_PROJECT_ATTACHMENT_TARGET_KEY =
+  "unsloth_chat_project_attachment_target";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
@@ -105,9 +107,17 @@ const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
+/** Where the composer files an attachment in a project chat. `project` indexes
+ * into the project's shared sources; `thread` keeps the file to the one chat.
+ * Ignored outside a project. */
+export type ProjectAttachmentTarget = "project" | "thread";
+
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+// A project exists to share context, so its chats default to the whole project.
+export const DEFAULT_PROJECT_ATTACHMENT_TARGET: ProjectAttachmentTarget =
+  "project";
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
 // `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
@@ -183,6 +193,14 @@ function saveRagSource(value: RagSource): void {
   } catch {
     // Ignore storage failures; the default RAG source still works for this session.
   }
+}
+
+function loadProjectAttachmentTarget(): ProjectAttachmentTarget {
+  const raw = loadString(
+    CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+    DEFAULT_PROJECT_ATTACHMENT_TARGET,
+  );
+  return raw === "thread" ? "thread" : DEFAULT_PROJECT_ATTACHMENT_TARGET;
 }
 
 function loadRagMode(): RagMode {
@@ -985,6 +1003,8 @@ type ChatRuntimeStore = {
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
+  /** Composer attachment scope for chats inside a project. */
+  projectAttachmentTarget: ProjectAttachmentTarget;
   ragMode: RagMode;
   ragTopK: number;
   // autoInject = forced first-pass retrieval before answering.
@@ -1289,6 +1309,7 @@ type ChatRuntimeStore = {
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
+  setProjectAttachmentTarget: (target: ProjectAttachmentTarget) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
@@ -1620,6 +1641,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
   ragSource: loadRagSource(),
+  projectAttachmentTarget: loadProjectAttachmentTarget(),
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
   ragAutoInject: loadRagAutoInject(),
@@ -2448,6 +2470,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ragEnabled,
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
     })),
+  setProjectAttachmentTarget: (projectAttachmentTarget) =>
+    set(() => {
+      saveString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, projectAttachmentTarget);
+      return { projectAttachmentTarget };
+    }),
   setRagSource: (ragSource) =>
     set((state) => {
       saveRagSource(ragSource);

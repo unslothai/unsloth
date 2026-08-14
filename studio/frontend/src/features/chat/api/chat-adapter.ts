@@ -141,6 +141,7 @@ import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
   getStoredChatProject,
+  isThreadIncognito,
   listStoredChatThreads,
   listStoredChatMessages,
   saveStoredChatMessage,
@@ -1770,10 +1771,24 @@ async function resolveProjectId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | null> {
   if (threadId) {
-    const thread = await (
-      readThreadRecord?.() ?? getStoredChatThread(threadId)
-    ).catch(() => null);
-    return thread?.projectId ?? null;
+    let thread: ThreadRecord | undefined;
+    try {
+      thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    } catch {
+      // A failed lookup is not proof the row is missing, so it must not adopt
+      // whichever project the composer last had open.
+      return null;
+    }
+    if (thread) {
+      return thread.projectId ?? null;
+    }
+    // No row yet: initialize() does not await the write, so a fresh chat's first
+    // send can read ahead of its own row and drop the project's sources,
+    // instructions and sandbox. Fall back to the composer's project. An incognito
+    // thread is never persisted, so its missing row is the real answer.
+    if (isThreadIncognito(threadId)) {
+      return null;
+    }
   }
   const projectId = useChatRuntimeStore.getState().activeProjectId;
   if (!projectId) {
