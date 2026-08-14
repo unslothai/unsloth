@@ -397,7 +397,13 @@ export function ThreadDocumentsBar({
         : Promise.resolve([]),
     [effectiveThreadId],
   );
-  const { documents, uploading, upload, remove } = useRagDocuments(
+  const {
+    documents,
+    uploading,
+    hasIndexing: threadIndexing,
+    upload,
+    remove,
+  } = useRagDocuments(
     effectiveThreadId && ragEnabled && ragSource.type === "thread"
       ? { type: "thread", threadId: effectiveThreadId }
       : null,
@@ -414,6 +420,7 @@ export function ThreadDocumentsBar({
   const {
     documents: projectDocuments,
     uploading: projectUploading,
+    hasIndexing: projectIndexing,
     upload: uploadToProject,
     remove: removeFromProject,
   } = useRagDocuments(
@@ -424,9 +431,9 @@ export function ThreadDocumentsBar({
   // Tell the composer whether any doc is still indexing, so it can hold a queued
   // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
   // is null, so both lists are empty and this reads false.
-  const hasIndexing = [...documents, ...projectDocuments].some(
-    (d) => d.status === "pending" || d.status === "running",
-  );
+  // From the hooks, not the rows: a project upload started in the Sources panel
+  // is in flight before either instance has a row for it.
+  const hasIndexing = threadIndexing || projectIndexing;
   useEffect(() => {
     onIndexingChange?.(hasIndexing);
   }, [hasIndexing, onIndexingChange]);

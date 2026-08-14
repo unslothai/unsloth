@@ -64,6 +64,31 @@ export type RagDocumentScope =
 
 type Lister = () => Promise<RagDocument[]>;
 
+/**
+ * Project uploads in flight, by project. A project's sources are uploaded from
+ * both the Sources panel and the composer, and only the instance doing it holds
+ * an optimistic row. Without this the other one reports nothing indexing for the
+ * length of the POST, and the composer would let a send go out that cannot use
+ * the file.
+ */
+const projectUploadsInFlight = new Map<string, number>();
+const PROJECT_UPLOADS_CHANGED_EVENT = "unsloth-project-uploads-changed";
+
+function noteProjectUpload(projectId: string, delta: number): void {
+  const next = (projectUploadsInFlight.get(projectId) ?? 0) + delta;
+  if (next > 0) {
+    projectUploadsInFlight.set(projectId, next);
+  } else {
+    projectUploadsInFlight.delete(projectId);
+  }
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent(PROJECT_UPLOADS_CHANGED_EVENT, { detail: { projectId } }),
+  );
+}
+
 export function useRagDocuments(
   scope: RagDocumentScope | null,
   lister: Lister,
@@ -297,9 +322,26 @@ export function useRagDocuments(
   // concurrent connections, so streams past the cap may never deliver a terminal
   // frame and leave a chip spinning. While anything is indexing, reconcile against
   // the document list (one request covers every doc) so chips always resolve.
-  const hasIndexing = documents.some(
-    (d) => d.status === "pending" || d.status === "running",
-  );
+  // An upload running in the other instance for this project, which this one
+  // holds no row for until the POST lands.
+  const [uploadsElsewhere, setUploadsElsewhere] = useState(0);
+  const uploadCountScopeId = scope?.type === "project" ? scope.projectId : null;
+  useEffect(() => {
+    if (!uploadCountScopeId) {
+      setUploadsElsewhere(0);
+      return;
+    }
+    const read = () =>
+      setUploadsElsewhere(projectUploadsInFlight.get(uploadCountScopeId) ?? 0);
+    read();
+    window.addEventListener(PROJECT_UPLOADS_CHANGED_EVENT, read);
+    return () =>
+      window.removeEventListener(PROJECT_UPLOADS_CHANGED_EVENT, read);
+  }, [uploadCountScopeId]);
+
+  const hasIndexing =
+    uploadsElsewhere > 0 ||
+    documents.some((d) => d.status === "pending" || d.status === "running");
   useEffect(() => {
     if (!scopeKey || !hasIndexing) return;
     const id = setInterval(() => void refresh({ quiet: true }), 4000);
@@ -410,6 +452,17 @@ export function useRagDocuments(
       // job tracking and optimistic chips alone.
       uploadInFlightRef.current = true;
       setUploading(true);
+      // Published before the first await so the other instance gates from the
+      // moment the upload starts, not once the bytes are in.
+      // The composer passes its project scope explicitly, since the hook's own
+      // can still be null on the render that starts the upload.
+      const knownScope =
+        overrideScope instanceof Promise ? null : (overrideScope ?? scope);
+      const uploadingProjectId =
+        knownScope?.type === "project" ? knownScope.projectId : null;
+      if (uploadingProjectId) {
+        noteProjectUpload(uploadingProjectId, 1);
+      }
       try {
         // Show an optimistic chip per file before awaiting the thread id;
         // materialization is a round-trip and gating chips behind it makes a slow
@@ -468,6 +521,9 @@ export function useRagDocuments(
       } finally {
         setUploading(false);
         uploadInFlightRef.current = false;
+        if (uploadingProjectId) {
+          noteProjectUpload(uploadingProjectId, -1);
+        }
       }
     },
     [scope, uploadOne, sigBlocksReupload],
@@ -496,5 +552,13 @@ export function useRagDocuments(
     [documents, scope],
   );
 
-  return { documents, loading, uploading, refresh, upload, remove };
+  return {
+    documents,
+    loading,
+    uploading,
+    hasIndexing,
+    refresh,
+    upload,
+    remove,
+  };
 }

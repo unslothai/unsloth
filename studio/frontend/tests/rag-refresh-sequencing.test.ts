@@ -155,3 +155,59 @@ test("no project scope is opened where RAG cannot run", () => {
     /projectId && !ragUnavailable \? \{ type: "project", projectId \} : null/,
   );
 });
+
+// A project's sources are uploaded from the Sources panel as well as the
+// composer, and the panel invalidates before the POST as well as after. The
+// composer holds no row for a file the panel is still uploading, so re-listing
+// alone left it reporting nothing indexing for the length of the upload, and a
+// send could go out that the file could not reach.
+test("an upload in the other instance counts as indexing", () => {
+  const inFlight = new Map<string, number>();
+  const note = (projectId: string, delta: number) => {
+    const next = (inFlight.get(projectId) ?? 0) + delta;
+    if (next > 0) {
+      inFlight.set(projectId, next);
+    } else {
+      inFlight.delete(projectId);
+    }
+  };
+  // What the composer's instance reports: its own rows, plus uploads elsewhere.
+  const composerIndexing = (rows: Row[]) =>
+    (inFlight.get("proj-1") ?? 0) > 0 ||
+    rows.some((row) => row.status === "pending" || row.status === "running");
+
+  assert.equal(composerIndexing(EMPTY), false, "nothing happening");
+
+  note("proj-1", 1);
+  assert.equal(
+    composerIndexing(EMPTY),
+    true,
+    "the panel's POST gates the composer before any row exists",
+  );
+
+  // The upload finishes and the row the panel created is now listed.
+  note("proj-1", -1);
+  assert.equal(composerIndexing(INDEXING), true, "still indexing");
+  assert.equal(composerIndexing(EMPTY), false);
+});
+
+test("the composer reads indexing from the hooks, not the listed rows", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /noteProjectUpload\(uploadingProjectId, 1\)/);
+  assert.match(hook, /noteProjectUpload\(uploadingProjectId, -1\)/);
+  assert.match(hook, /uploadsElsewhere > 0 \|\|/);
+  const bar = readFileSync(
+    new URL(
+      "../src/features/rag/components/thread-documents-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /const hasIndexing = threadIndexing \|\| projectIndexing;/);
+});
