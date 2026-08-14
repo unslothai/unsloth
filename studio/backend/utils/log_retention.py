@@ -16,7 +16,11 @@ from pathlib import Path
 DEFAULT_KEEP = 20
 
 
-def prune_log_dir(log_dir: Path, pattern: str, keep: int = DEFAULT_KEEP) -> None:
+def prune_log_dir(
+    log_dir: Path,
+    pattern: str,
+    keep: int = DEFAULT_KEEP,
+) -> None:
     """Delete all but the ``keep`` most recently modified ``pattern`` files in ``log_dir``.
 
     Best effort in every direction: retention must never take down the thing it is
