@@ -61,6 +61,9 @@ _QUIET_POLL_PATHS = {
     "/api/inference/images/status",
     "/api/inference/video/status",
     "/api/inference/audio/stt/status",
+    # Re-read whenever the settings dialog or the remote-access section is open, and it is
+    # a plain read of a toggle: 116 lines in the 4h sample.
+    "/api/settings/remote-access",
     # List polls the tabs refetch on a timer and on every tab switch.
     "/api/train/runs",
     "/api/models/checkpoints",

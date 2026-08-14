@@ -1709,15 +1709,52 @@ class _TeeStream:
     Console behavior is unchanged (writes/returns delegate to the original
     stream; Tauri's structured-stdout protocol and isatty probes see exactly
     what they saw before). The file copy is best-effort: a full disk or a
-    closed handle must never break the console."""
+    closed handle must never break the console.
+
+    The file copy also drops carriage-return progress frames. A tqdm bar redraws
+    by writing "\\r<frame>" tens or hundreds of times, and a terminal overwrites
+    in place while a file keeps every one: a single "Loading weights" bar landed
+    as 5 KB of near-identical text. Only the last frame is kept, and only frames
+    are ever withheld -- a partial line with no "\\r" in it (a prompt, or a
+    traceback torn by a hang) is still written the moment it arrives, so nothing
+    diagnostic waits on a newline that may never come."""
 
     def __init__(self, stream, log_fh):
         self._stream = stream
         self._log_fh = log_fh
+        # Last progress frame seen with no newline yet; superseded by the next
+        # frame, flushed ahead of the next real line.
+        self._pending_frame = ""
+
+    @staticmethod
+    def _last_frame(line):
+        return line.rpartition("\r")[2] if "\r" in line else line
+
+    def _write_file(self, data):
+        # Overwhelmingly the common case, and the one that must stay cheap.
+        if "\r" not in data and not self._pending_frame:
+            self._log_fh.write(data)
+            return
+
+        buf = self._pending_frame + data
+        self._pending_frame = ""
+        head, newline, tail = buf.rpartition("\n")
+        if newline:
+            complete = head + newline
+            self._log_fh.write(
+                "\n".join(self._last_frame(line) for line in complete.split("\n"))
+            )
+        if tail:
+            # An unterminated remainder: hold it only if it is a redraw, otherwise
+            # write it now so a hang cannot swallow real output.
+            if "\r" in tail:
+                self._pending_frame = self._last_frame(tail)
+            else:
+                self._log_fh.write(tail)
 
     def write(self, data):
         try:
-            self._log_fh.write(data)
+            self._write_file(data)
         except Exception:
             pass
         if self._stream is None:
