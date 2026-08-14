@@ -15,9 +15,9 @@ export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 /**
  * The cross-document counterpart to `authSessionEpoch`, which is per-document memory and so
- * says nothing to another tab. Written when a session begins and removed when it ends, never
- * on a token refresh, so a `storage` listener can tell an account switch from an hourly
- * rotation. An opaque value: it identifies a session boundary, not the account.
+ * says nothing to another tab. Written when a session begins, removed when it ends, never on
+ * a refresh, so a `storage` listener can tell an account switch from an hourly rotation. The
+ * value is opaque: it marks a session boundary, not the account.
  */
 export const AUTH_SESSION_MARK_KEY = "unsloth_auth_session_mark";
 

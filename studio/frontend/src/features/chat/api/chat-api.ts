@@ -96,7 +96,7 @@ export class GenerationLengthError extends Error {
 /**
  * Announces a history change to this document and, through localStorage, to the others.
  *
- * `coalesce` is for the per-chunk streaming path alone: it delays the cross-tab write until
+ * `coalesce` is for the per-chunk streaming path alone: it holds the cross-tab write until
  * the writes stop. Structural changes must not use it.
  */
 export function notifyChatHistoryUpdated(options?: {
@@ -104,8 +104,7 @@ export function notifyChatHistoryUpdated(options?: {
 }): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
-    // The event above is same-document, so another tab's delete or rename cannot reach a
-    // cache built here. A storage write is what crosses, and the value only has to differ.
+    // The event above is same-document; a storage write is what crosses.
     publishChatHistoryRevision(options?.coalesce === true);
   }
 }
@@ -1053,9 +1052,8 @@ export async function syncChatMessages(
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
-  // Pruning is how a message is deleted, which no other tab should go on matching for the
-  // length of some unrelated generation. Without it this is the streaming autosave in its
-  // batched form, and it coalesces like the single-message one.
+  // Pruning is how a message is deleted, which no other tab should keep matching for a
+  // whole unrelated generation. Without it this is the batched streaming autosave.
   notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
   return data.messages;
 }

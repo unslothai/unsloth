@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The index build itself is not under test here, only the cache and hint bookkeeping around
-// it, so the Dexie-backed history is a pair of empty readers.
+// Only the cache and hint bookkeeping is under test, not the build, so the Dexie-backed
+// history is a set of empty readers.
 
 export async function listStoredChatThreads(): Promise<unknown[]> {
   return [];

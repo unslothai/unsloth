@@ -21,8 +21,8 @@ import {
 import { useChatSearchStore } from "../stores/chat-search-store";
 import { isCompactChatSearchList } from "../utils/chat-search-list-height";
 
-// Rows mounted while the dialog animates open; the rest follow once it settles,
-// so a long history never lays out hundreds of rows mid-transition.
+// Rows mounted while the dialog animates open; the rest follow once it settles, so a long
+// history never lays out hundreds of rows mid-transition.
 const INITIAL_ROW_COUNT = 24;
 const FULL_ROW_REVEAL_MS = 220;
 
@@ -68,20 +68,18 @@ export function ChatSearchDialog() {
   const [query, setQuery] = useState("");
   // Filtering scans every conversation's text, so keep it off the keystroke path.
   const deferredQuery = useDeferredValue(query);
-  // An empty query needs no scan, so never let the deferred value hold a previous filter
-  // over a reopened dialog whose input is empty.
+  // An empty query needs no scan, and the deferred value must not hold a previous filter
+  // over a reopened dialog.
   const activeQuery = query === "" ? "" : deferredQuery;
   const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
-  // The dialog is centered, so the list height is decided per open and only ever relaxed
-  // from compact to fixed, never back, for that whole open.
+  // Centered, so the height is decided per open and only ever relaxed compact -> fixed.
   const [compactList, setCompactList] = useState(() =>
     isCompactChatSearchList(true, chatSearchIndexHasRows()),
   );
 
-  // Reset during the opening render rather than in an effect: Radix mounts the portal as
-  // this render commits, and an effect would trim rows only after React had already built
-  // the previous result set into the DOM. Resetting on close instead would tear rows down
-  // inside the exit animation.
+  // Reset in the opening render, not an effect: Radix mounts the portal as this render
+  // commits, so an effect would trim rows only after the previous set was in the DOM.
+  // Resetting on close instead would tear rows down inside the exit animation.
   const [wasOpen, setWasOpen] = useState(isOpen);
   if (isOpen !== wasOpen) {
     setWasOpen(isOpen);
@@ -91,8 +89,8 @@ export function ChatSearchDialog() {
       setCompactList(isCompactChatSearchList(true, chatSearchIndexHasRows()));
     }
   } else if (compactList !== isCompactChatSearchList(compactList, items.length > 0)) {
-    // Backstop for an open that started with no hint at all (a browser that has never built
-    // the index): the fixed height is taken when that first build lands.
+    // Backstop for an open with no hint at all: the fixed height is taken when the first
+    // build lands.
     setCompactList(false);
   }
 
@@ -140,7 +138,7 @@ export function ChatSearchDialog() {
           <CommandPrimitive.Input
             placeholder="Search chats..."
             // Controlled: reopening inside the exit animation reuses the mounted tree, so
-            // cmdk would otherwise keep the previous text while the filter state is clear.
+            // cmdk would keep the previous text while the filter state is clear.
             value={query}
             onValueChange={setQuery}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
@@ -173,9 +171,8 @@ export function ChatSearchDialog() {
                 key={item.id}
                 value={item.id}
                 onSelect={() => {
-                  // The rendered list can trail the input by a render, so a row is only
-                  // activatable if it is still in the result set for the live query. The
-                  // scan runs on activation alone, never per keystroke.
+                  // The list can trail the input by a render, so a row is activatable only
+                  // if the live query still matches it. Scanned on activation, not per key.
                   if (
                     query !== activeQuery &&
                     !selectVisibleChats(items, query).some(

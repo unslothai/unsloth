@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The dialog sizes its list before its opening paint, so the answer has to be available
-// synchronously. The index is only built while the dialog is open, so on the first open of a
-// page load the in-memory cache is empty whatever the history holds; the persisted hint left
-// by the last completed build is what tells an empty history from an unread one.
+// The dialog sizes its list before its opening paint, so the answer must be synchronous. On
+// the first open of a page load the in-memory cache is empty whatever the history holds, so
+// the persisted hint is what tells an empty history from an unread one.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -34,8 +33,7 @@ test("a history known to have rows opens at the fixed height", () => {
   assert.equal(isCompactChatSearchList(true, true), false);
 });
 
-// The point of the fixed height: once the list has rows, a query that narrows it to a few
-// rows, or to none at all, must not resize the dialog.
+// The point of the fixed height: once the list has rows, narrowing it must not resize.
 test("a populated open keeps the fixed height while a query narrows it", () => {
   assert.equal(isCompactChatSearchList(false, true), false);
   assert.equal(isCompactChatSearchList(false, false), false);

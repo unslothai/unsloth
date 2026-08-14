@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The two channels this publishes on: a structural change goes at once, while the per-chunk
-// streaming path waits for its quiet window. Sharing one timer is what would let a delete
-// sit unannounced for the length of a generation.
+// The two channels: a structural change goes at once, the per-chunk streaming path waits for
+// its quiet window. Sharing one timer leaves a delete unannounced for a whole generation.
 
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
@@ -78,8 +77,7 @@ test("a structural change during a stream does not wait for it", () => {
     store.clear();
     publishChatHistoryRevision(true);
     mock.timers.tick(100);
-    // The delete lands mid-generation. Under a shared timer the chunks that follow would
-    // keep pushing it back until the response finished.
+    // Under a shared timer the chunks that follow would push this back to the end.
     publishChatHistoryRevision(false);
     const published = revision();
     assert.notEqual(published, null, "the delete publishes on its own");
@@ -105,8 +103,7 @@ test("a pending write is published before the tab goes away", () => {
     publishChatHistoryRevision(true);
     assert.equal(revision(), null);
 
-    // What the pagehide handler calls: without it the write leaves with the page and the
-    // other tabs never learn the history moved.
+    // What the pagehide handler calls: otherwise the write leaves with the page.
     flushChatHistoryRevision();
     assert.notEqual(revision(), null);
 
