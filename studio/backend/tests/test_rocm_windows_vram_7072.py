@@ -19,6 +19,9 @@ The fix reads the per-adapter (LUID-instanced) Dedicated Usage performance
 counter -- Task Manager's source -- for per-GPU used, takes per-GPU total from
 torch device properties, and guards the free==total mem_get_info quirk. CI has no
 AMD GPU/Windows, so torch, the performance counter, and platform are all mocked.
+
+The last section covers the DirectX LUID join layered on top of that counter,
+which resolves the single-GPU host capacity ranking alone can never attribute.
 """
 
 from __future__ import annotations
@@ -106,6 +109,10 @@ def win_rocm(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.sys, "platform", "win32")
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi disabled
+    # Capacity-ranking path by default: without this a Windows dev box reads its
+    # own registry here and the LUID join answers instead. The LUID tests below
+    # opt in with their own map.
+    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: {})
     # Visible set via HIP mask so we don't shell out to amd-smi for the count.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -327,6 +334,146 @@ def test_perf_counter_parser_and_sentinel(monkeypatch):
     assert parsed[0][0].startswith("luid_")
     monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
     assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
+
+
+# ----------------------------------------------------------------------------- #
+# DirectX LUID join
+#
+# Capacity ranking only emits a value a pairing FORCES, and one visible GPU
+# forces nothing -- there is no smaller card for its usage to exceed -- so every
+# single-GPU AMD Windows host read Unknown, the common case. The counters name
+# each instance after the adapter LUID and DirectX records the same LUID with
+# torch's props.name, so they join on identity instead.
+# ----------------------------------------------------------------------------- #
+SOLO_DEVICE = [("AMD Radeon RX 9060 XT", 16 * GB)]
+# One dGPU at 3 GiB beside the Basic Render Driver and a second idle placeholder:
+# three counters for one visible card, straight off the reporting host.
+SOLO_ADAPTERS = [
+    ("luid_0x00000000_0x00015369_phys_0", 3 * GB),
+    ("luid_0x00000000_0x000183fe_phys_0", 0.0),
+    ("luid_0x00000000_0x0001842f_phys_0", 0.0),
+]
+SOLO_REGISTRY = {0x15369: "AMD Radeon RX 9060 XT"}
+
+
+@pytest.fixture
+def win_rocm_solo(win_rocm, monkeypatch):
+    """Windows ROCm host with a single visible GPU and a readable DirectX map."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
+    )
+    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    return monkeypatch
+
+
+def test_parse_adapter_luid():
+    # DirectX stores one 64-bit AdapterLuid; the counter names it as two halves.
+    assert hw._parse_adapter_luid("luid_0x00000000_0x00015369_phys_0") == 0x15369
+    assert hw._parse_adapter_luid("luid_0x0000000A_0x00015369_phys_0") == (0xA << 32) | 0x15369
+    assert hw._parse_adapter_luid("LUID_0X00000000_0X00015369_PHYS_0") == 0x15369
+    assert hw._parse_adapter_luid("Total") is None
+    assert hw._parse_adapter_luid("luid_zz_0x1_phys_0") is None
+
+
+def test_single_gpu_reports_used_instead_of_unknown(win_rocm_solo):
+    """The regression: one visible GPU plus placeholder counters read Unknown."""
+    result = hw.get_visible_gpu_utilization()
+    (device,) = result["devices"]
+    assert device["vram_used_gb"] == pytest.approx(3.0, abs = 0.01)
+    assert device["vram_total_gb"] == 16.0
+    assert device["vram_utilization_pct"] == pytest.approx(18.8, abs = 0.1)
+    # The System tab tile reads the aggregate, which needed len(counters) == 1.
+    assert result["vram_used_gb_aggregate"] == pytest.approx(3.0, abs = 0.01)
+
+
+def test_single_gpu_train_page_reports_used(win_rocm_solo):
+    """Same figure on get_gpu_utilization, the Train page's GPU Monitor."""
+    (device,) = hw.get_gpu_utilization()["devices"]
+    assert device["vram_used_gb"] == pytest.approx(3.0, abs = 0.01)
+    assert device["gpu_utilization_pct"] == 12.0  # 3D-engine counter, unchanged
+
+
+def test_luid_join_beats_a_busy_foreign_adapter(win_rocm, monkeypatch):
+    """An idle AMD card beside a busy foreign GPU reports the AMD card's own
+    usage. Capacity ranking has no vendor key here and declines outright."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    adapters = [
+        ("luid_0x00000000_0x00015369_phys_0", 0.4 * GB),  # visible AMD card, idle
+        ("luid_0x00000000_0x00099999_phys_0", 9 * GB),  # NVIDIA/iGPU, not ours
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] == pytest.approx(0.4, abs = 0.01)
+    assert aggregate == pytest.approx(0.4, abs = 0.01)
+
+
+def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch):
+    """Two of the same card share one Description, so nothing says which counter
+    is which ordinal. The sum does not depend on the pairing, so it survives."""
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)] * 2, free_equals_total = True),
+    )
+    adapters = [
+        ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
+        ("luid_0x00000000_0x0000bbbb_phys_0", 4 * GB),
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_names_by_luid",
+        lambda: {0xAAAA: "AMD Radeon RX 7900 XTX", 0xBBBB: "AMD Radeon RX 7900 XTX"},
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [None, None]
+    assert aggregate == pytest.approx(14.0, abs = 0.01)
+
+
+def test_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
+    """Every decline hands the counters back to capacity ranking rather than
+    inventing a figure."""
+    dev_meta = [{"name": "AMD Radeon RX 9060 XT", "total_bytes": 16 * GB}]
+    join = hw._match_adapter_used_by_luid
+
+    # No registry at all (non-Windows, missing key, denied read).
+    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: {})
+    assert join(SOLO_ADAPTERS, dev_meta) is None
+
+    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    # A visible card whose adapter has no record: its counter is unidentified.
+    assert join(SOLO_ADAPTERS, [{"name": "AMD Radeon RX 7800 XT", "total_bytes": 16 * GB}]) is None
+    # A same-named adapter HIP does not enumerate: two counters, one ordinal.
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_names_by_luid",
+        lambda: {**SOLO_REGISTRY, 0x77777: "AMD Radeon RX 9060 XT"},
+    )
+    assert (
+        join(
+            [*SOLO_ADAPTERS, ("luid_0x00000000_0x00077777_phys_0", 2 * GB)],
+            dev_meta,
+        )
+        is None
+    )
+    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    # A record outliving its hardware: usage above the card's own capacity.
+    assert join([("luid_0x00000000_0x00015369_phys_0", 20 * GB)], dev_meta) is None
+
+
+def test_registry_read_is_windows_only(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    assert hw._windows_amd_adapter_names_by_luid() == {}
 
 
 # ----------------------------------------------------------------------------- #

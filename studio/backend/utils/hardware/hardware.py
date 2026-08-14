@@ -1811,6 +1811,118 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
         return None
 
 
+# DirectX writes one record per adapter here, keyed by a GUID, holding the same
+# AdapterLuid the counter instances are named after alongside the Description
+# string torch reports as props.name. That is the join key capacity ranking lacks.
+_WINDOWS_DIRECTX_KEY = r"SOFTWARE\Microsoft\DirectX"
+
+
+def _parse_adapter_luid(instance_name: str) -> Optional[int]:
+    """The 64-bit LUID in a ``GPU Adapter Memory`` instance name, or None.
+
+    Instances are named ``luid_0x<high>_0x<low>_phys_<n>``; DirectX stores the
+    same value as one 64-bit ``AdapterLuid``, so recombine the halves.
+    """
+    m = re.match(r"luid_0x([0-9a-f]+)_0x([0-9a-f]+)", instance_name.strip(), re.IGNORECASE)
+    if m is None:
+        return None
+    try:
+        return (int(m.group(1), 16) << 32) | int(m.group(2), 16)
+    except ValueError:
+        return None
+
+
+def _windows_amd_adapter_names_by_luid() -> dict[int, str]:
+    """``{luid: description}`` for the AMD adapters DirectX has a record for.
+
+    Empty off Windows, without the key, or on any read error, which drops the
+    caller back to capacity ranking.
+    """
+    if platform.system() != "Windows":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    by_luid: dict[int, str] = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
+            for index in range(winreg.QueryInfoKey(dx_key)[0]):
+                try:
+                    with winreg.OpenKey(dx_key, winreg.EnumKey(dx_key, index)) as adapter_key:
+                        # ShaderCache and any future non-adapter subkey carry no
+                        # VendorId, so the read below skips them.
+                        vendor_id, _ = winreg.QueryValueEx(adapter_key, "VendorId")
+                        luid, _ = winreg.QueryValueEx(adapter_key, "AdapterLuid")
+                        description, _ = winreg.QueryValueEx(adapter_key, "Description")
+                except OSError:
+                    continue
+                if int(vendor_id) != _AMD_PCI_VENDOR_ID:
+                    continue
+                name = str(description).strip()
+                if name:
+                    by_luid[int(luid)] = name
+    except Exception:
+        return {}
+    return by_luid
+
+
+def _match_adapter_used_by_luid(
+    adapters: list[tuple[str, float]], dev_meta: list[Dict[str, Any]]
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Attribute per-adapter used bytes to torch devices on the adapter LUID.
+
+    Joins each counter to a DirectX adapter record by the LUID in its instance
+    name, then to a torch device by the Description string torch reports as
+    props.name. Identity, not capacity, so it resolves the single-GPU case that
+    _match_adapter_used_to_devices can never force (nothing smaller exists to
+    exceed) and stays right when a busy foreign adapter outweighs an idle card.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when the
+    join is not established -- no registry, a visible device with no AMD record
+    holding a counter, or a usage above its own card's capacity (a record
+    outliving its hardware) -- so the caller falls back to capacity ranking.
+
+    Two identical cards share one Description, so nothing says which counter is
+    which ordinal: per-device reports unknown while the aggregate, which the
+    pairing does not change, stays exact.
+    """
+    names_by_luid = _windows_amd_adapter_names_by_luid()
+    if not names_by_luid:
+        return None
+
+    useds_by_name: dict[str, list[float]] = {}
+    for instance, used in adapters:
+        luid = _parse_adapter_luid(instance)
+        if luid is None:
+            continue
+        name = names_by_luid.get(luid)
+        if name is not None:
+            useds_by_name.setdefault(name, []).append(used)
+
+    devices_by_name: dict[str, list[int]] = {}
+    for position, meta in enumerate(dev_meta):
+        devices_by_name.setdefault(str(meta.get("name", "")).strip(), []).append(position)
+
+    assigned: list[Optional[float]] = [None] * len(dev_meta)
+    total_used = 0.0
+    for name, positions in devices_by_name.items():
+        useds = useds_by_name.get(name, [])
+        # Fewer counters than cards of this name means a visible card has no
+        # reading; more means a same-named adapter HIP does not enumerate, or one
+        # adapter emitting several _phys_N instances. Either way this name's
+        # counters are not exactly its devices'.
+        if len(useds) != len(positions):
+            return None
+        for used, position in zip(sorted(useds, reverse = True), positions):
+            if used > dev_meta[position]["total_bytes"]:
+                return None
+            total_used += used
+        if len(positions) == 1:
+            assigned[positions[0]] = useds[0]
+    return assigned, total_used
+
+
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
@@ -1963,10 +2075,16 @@ def _rocm_windows_per_device_vram(
     adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
     if adapters:
-        adapter_useds = [used for _, used in adapters]
-        totals = [d["total_bytes"] for d in dev_meta]
-        assigned = _match_adapter_used_to_devices(adapter_useds, totals)
-        aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        # LUID first: it answers by identity, where capacity ranking declines
+        # unless the sizes force a pairing -- which one visible GPU never does.
+        by_luid = _match_adapter_used_by_luid(adapters, dev_meta)
+        if by_luid is not None:
+            assigned, aggregate_bytes = by_luid
+        else:
+            adapter_useds = [used for _, used in adapters]
+            totals = [d["total_bytes"] for d in dev_meta]
+            assigned = _match_adapter_used_to_devices(adapter_useds, totals)
+            aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
         if aggregate_bytes is not None:
             aggregate_gb = round(aggregate_bytes / (1024**3), 2)
     else:
