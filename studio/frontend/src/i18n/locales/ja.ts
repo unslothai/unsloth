@@ -1919,7 +1919,7 @@ export const ja = {
       tab: "アシスタント",
       title: "アシスタント",
       description:
-        "この Mac のどのアプリでも、選択したテキストにローカルモデルを使えます。",
+        "この Mac のどのアプリからでもローカルモデルに質問できます。",
       enable: "質問バーを有効にする",
       enableDescription: "どのアプリでも {hotkey} を押します。",
       setUp: "設定...",

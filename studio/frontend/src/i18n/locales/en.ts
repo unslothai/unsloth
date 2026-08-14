@@ -1947,8 +1947,7 @@ export const en = {
     settings: {
       tab: "Assistant",
       title: "Assistant",
-      description:
-        "Use your local model on selected text in any app on this Mac.",
+      description: "Ask your local model from any app on this Mac.",
       enable: "Enable ask bar",
       enableDescription: "Press {hotkey} in any app.",
       setUp: "Set up...",

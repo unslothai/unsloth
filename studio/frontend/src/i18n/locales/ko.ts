@@ -1963,8 +1963,7 @@ export const ko = {
     settings: {
       tab: "어시스턴트",
       title: "어시스턴트",
-      description:
-        "이 Mac의 모든 앱에서 선택한 텍스트에 로컬 모델을 사용하세요.",
+      description: "이 Mac의 모든 앱에서 로컬 모델에게 질문하세요.",
       enable: "질문 바 사용",
       enableDescription: "모든 앱에서 {hotkey}를 누르세요.",
       setUp: "설정...",

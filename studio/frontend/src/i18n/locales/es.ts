@@ -2028,7 +2028,7 @@ export const es = {
       tab: "Asistente",
       title: "Asistente",
       description:
-        "Usa tu modelo local sobre el texto seleccionado en cualquier app de este Mac.",
+        "Pregunta a tu modelo local desde cualquier app de este Mac.",
       enable: "Activar la barra de preguntas",
       enableDescription: "Pulsa {hotkey} en cualquier app.",
       setUp: "Configurar...",

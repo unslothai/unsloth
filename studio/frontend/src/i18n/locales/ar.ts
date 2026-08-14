@@ -1963,8 +1963,7 @@ export const ar = {
     settings: {
       tab: "المساعد",
       title: "المساعد",
-      description:
-        "استخدم نموذجك المحلي على النص المحدد في أي تطبيق على هذا الـ Mac.",
+      description: "اسأل نموذجك المحلي من أي تطبيق على هذا الـ Mac.",
       enable: "تفعيل شريط السؤال",
       enableDescription: "اضغط {hotkey} في أي تطبيق.",
       setUp: "الإعداد...",

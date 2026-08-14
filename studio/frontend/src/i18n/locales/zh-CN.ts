@@ -1889,7 +1889,7 @@ export const zhCN = {
     settings: {
       tab: "助手",
       title: "助手",
-      description: "在这台 Mac 的任意应用中，对选中的文本使用你的本地模型。",
+      description: "在这台 Mac 的任意应用中向你的本地模型提问。",
       enable: "启用提问栏",
       enableDescription: "在任意应用中按 {hotkey}。",
       setUp: "设置...",

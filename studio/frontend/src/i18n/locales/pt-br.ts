@@ -1990,8 +1990,7 @@ export const ptBR = {
     settings: {
       tab: "Assistente",
       title: "Assistente",
-      description:
-        "Use seu modelo local no texto selecionado em qualquer app deste Mac.",
+      description: "Pergunte ao seu modelo local em qualquer app deste Mac.",
       enable: "Ativar a barra de perguntas",
       enableDescription: "Pressione {hotkey} em qualquer app.",
       setUp: "Configurar...",

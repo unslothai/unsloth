@@ -2031,7 +2031,7 @@ export const de = {
       tab: "Assistent",
       title: "Assistent",
       description:
-        "Verwenden Sie Ihr lokales Modell für ausgewählten Text in jeder App auf diesem Mac.",
+        "Fragen Sie Ihr lokales Modell aus jeder App auf diesem Mac.",
       enable: "Fragenleiste aktivieren",
       enableDescription: "Drücken Sie {hotkey} in einer beliebigen App.",
       setUp: "Einrichten...",

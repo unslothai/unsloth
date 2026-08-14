@@ -2029,7 +2029,7 @@ export const it = {
       tab: "Assistente",
       title: "Assistente",
       description:
-        "Usa il tuo modello locale sul testo selezionato in qualsiasi app su questo Mac.",
+        "Chiedi al tuo modello locale da qualsiasi app su questo Mac.",
       enable: "Attiva la barra delle domande",
       enableDescription: "Premi {hotkey} in qualsiasi app.",
       setUp: "Configura...",
