@@ -415,3 +415,39 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
         model_name = MODEL,
     )
     assert labels == [config.embedding_identity("sentence-transformers", MODEL)]
+
+
+def test_resolving_the_embedder_does_not_hold_the_write_lock(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """Naming the embedder can take seconds on a fresh process: it searches for the
+    llama-server binary, runs nvidia-smi with a ten second timeout, and on a host
+    without it imports torch. Inside the admission transaction that is a RESERVED
+    lock held for all of it, and rag.db opens every connection with a five second
+    busy_timeout, so an unrelated ingest or a job heartbeat fails outright with
+    "database is locked" rather than waiting."""
+    import sqlite3
+
+    from utils.paths import rag_db_path
+
+    probes: list[tuple[bool, str]] = []
+    real_identity = embeddings.embedding_identity
+
+    def probing_identity(model_name = None):
+        other = sqlite3.connect(str(rag_db_path()))
+        try:
+            other.execute("PRAGMA busy_timeout = 100")
+            other.execute("BEGIN IMMEDIATE")
+            other.rollback()
+            probes.append((True, ""))
+        except sqlite3.OperationalError as exc:
+            probes.append((False, str(exc)))
+        finally:
+            other.close()
+        return real_identity(model_name)
+
+    monkeypatch.setattr(embeddings, "embedding_identity", probing_identity)
+    _ingest(tmp_path, store.kb_scope("K1"), "doc.txt", "alpha bravo charlie")
+
+    assert probes, "embedding_identity was never called"
+    assert all(ok for ok, _ in probes), [err for ok, err in probes if not ok]

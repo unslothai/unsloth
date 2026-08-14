@@ -371,6 +371,15 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        # Named before the transaction opens, because naming the embedder on a fresh
+        # process is slow work that touches no database: it searches for the
+        # llama-server binary, runs nvidia-smi under a ten second timeout, and on a
+        # host without it imports torch. Under BEGIN IMMEDIATE that is a RESERVED
+        # lock held for all of it, and connections wait only busy_timeout (5s) for
+        # one, so a concurrent ingest or job heartbeat fails with "database is
+        # locked" instead of queueing.
+        effective_model = model_name or config.effective_embedding_model()
+        effective_identity = embeddings.embedding_identity(effective_model)
         # Serialize admission with durable scope retirement across backend
         # processes. The job lease is committed in the same transaction as the
         # document, so cleanup never observes an unowned in-flight document.
@@ -380,8 +389,6 @@ def start_ingestion(
         ).fetchone():
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
-        effective_model = model_name or config.effective_embedding_model()
-        effective_identity = embeddings.embedding_identity(effective_model)
         # (old_document_id, old_stored_path) replaced by this upload; deleted by
         # the worker only after the replacement completes, so a failed re-index
         # never destroys the still-searchable original.
