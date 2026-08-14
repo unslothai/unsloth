@@ -6741,6 +6741,7 @@ def _embedding_clamped_slots(
     if not _is_embedding_gguf(config):
         return slots
     from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
+
     effective_ubatch = _extra_args_n_ubatch(
         extra_args,
         n_ctx = n_ctx if n_ctx and n_ctx > 0 else None,
@@ -6771,6 +6772,7 @@ async def _batch_floor_survives_embedding_clamp(
     so the header read is paid on the way to a 400 rather than on every load.
     """
     from core.inference.llama_server_args import check_batch_floor
+
     # Off the event loop: the classification reads the GGUF header from disk, and
     # both routes reach this from an async handler serving download progress polls.
     slots = await asyncio.to_thread(
@@ -9080,7 +9082,6 @@ async def validate_model(
         # too, which is a 500 where the same list is a 400 on the load.
         if config.is_gguf and effective_extra_args:
             from core.inference.llama_server_args import validate_extra_args
-
             try:
                 validate_extra_args(effective_extra_args)
             except ValueError as exc:
@@ -9140,7 +9141,6 @@ async def validate_model(
             # translation could rewrite it, and re-validating the STRIPPED list would
             # answer for a command neither route sends.
             from core.inference.llama_server_args import check_batch_floor
-
             _requested_slots = _resolve_parallel_slots(request, fastapi_request)
             try:
                 check_batch_floor(
