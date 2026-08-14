@@ -304,8 +304,9 @@ async def load_video_model_gated(
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)
-        # Recorded once the load is accepted, so the idle unload knows whom it belongs to.
-        note_load_origin(VIDEO, user_action = user_initiated)
+        # Keyed to the target: this load can still fail with the previous model resident, and
+        # its origin must not be read off that model.
+        note_load_origin(VIDEO, request.model_path, user_action = user_initiated)
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

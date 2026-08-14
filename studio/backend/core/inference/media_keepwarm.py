@@ -93,23 +93,34 @@ class _Tracker:
 _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
 
 # Per backend, not per engine object: a diffusers <-> sd.cpp switch replaces that object.
-_LOAD_ORIGINS: dict[str, bool] = {}
+# Keyed by the target a load was started for, since a load route records this the moment the
+# background load is accepted and that load can still fail with the previous model resident.
+_LOAD_ORIGINS: dict[str, tuple[str, bool]] = {}
 _LOAD_ORIGINS_GUARD = threading.Lock()
 
 
-def note_load_origin(owner: str, *, user_action: bool) -> None:
+def note_load_origin(owner: str, target: Optional[str], *, user_action: bool) -> None:
     """Record who asked for the model a load route is bringing up."""
     with _LOAD_ORIGINS_GUARD:
-        _LOAD_ORIGINS[owner] = user_action
+        _LOAD_ORIGINS[owner] = (str(target or "").strip().lower(), user_action)
 
 
-def loaded_by_user_action(owner: str) -> bool:
-    """Whether the resident model was loaded from Studio rather than by an API request.
+def loaded_by_user_action(owner: str, resident: Optional[str] = None) -> bool:
+    """Whether the RESIDENT model was loaded from Studio rather than by an API request.
 
-    Unknown reads as user-loaded: sparing a model is the safe direction for the setting.
+    The record only answers for the target it was written against: a load that was accepted and
+    then failed leaves the previous model resident, and reading its origin off the failed
+    load would let the idle unload free a model the user had pinned. Anything unrecognised
+    reads as user-loaded, which is the direction that spares a model.
     """
     with _LOAD_ORIGINS_GUARD:
-        return _LOAD_ORIGINS.get(owner, True)
+        entry = _LOAD_ORIGINS.get(owner)
+    if entry is None:
+        return True
+    target, user_action = entry
+    if resident is not None and target and target != str(resident).strip().lower():
+        return True
+    return user_action
 
 
 def other_request_count(owner: str, *, current_request_counted: bool = False) -> int:
@@ -150,6 +161,19 @@ _TRACKED_PATHS = {
 def owner_for_path(path: str) -> Optional[str]:
     """Which media backend a tracked inference path generates or loads on, if any."""
     return _TRACKED_PATHS.get(path)
+
+
+@contextlib.asynccontextmanager
+async def admission_gate(owner: str):
+    """Hold new tracked media requests off *owner* for the duration of the block.
+
+    The media auto-switch keeps this closed from its final drain check through registering
+    the load: the load path cancels active work as it tears the pipeline down, so a
+    generation admitted in that gap would be cut short by a swap that just waited for the
+    queue to clear. Requests arriving meanwhile park in ``begin_request`` until it reopens.
+    """
+    async with _gate(_TRACKERS[owner]):
+        yield
 
 
 @contextlib.asynccontextmanager
@@ -302,7 +326,11 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         # (Model Memory, or the TTL itself moved) would otherwise be ignored by every teardown
         # left in the step, freeing a model the settings page now calls pinned.
         ttl = _effective_ttl()
-        if ttl <= 0 or not tracker.is_idle(ttl) or _user_pinned(tracker.owner):
+        if (
+            ttl <= 0
+            or not tracker.is_idle(ttl)
+            or _user_pinned(tracker.owner, status.get("repo_id"))
+        ):
             return
         await asyncio.to_thread(backend.unload)
         # Drop ownership only if nothing came back meanwhile, and check it under the arbiter
@@ -322,14 +350,14 @@ def _effective_ttl() -> float:
     return float(get_media_auto_unload_idle_seconds())
 
 
-def _user_pinned(owner: str) -> bool:
+def _user_pinned(owner: str, resident: Optional[str]) -> bool:
     """Whether "only unload models loaded by the API" spares this backend's model.
 
     Read immediately before the teardown, like the TTL: the setting can be turned on
     while a step is running, and a model it now pins must not be freed by the rest of it.
     """
     from utils.openai_auto_switch_settings import get_auto_unload_api_only
-    return get_auto_unload_api_only() and loaded_by_user_action(owner)
+    return get_auto_unload_api_only() and loaded_by_user_action(owner, resident)
 
 
 async def idle_unload_step() -> None:

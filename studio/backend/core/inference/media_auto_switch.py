@@ -24,6 +24,7 @@ seconds. Exceeding a bound leaves the work running and asks the caller to retry,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 import weakref
@@ -44,10 +45,12 @@ _INDEX_TTL_S = 5.0
 _index_lock = threading.Lock()
 _index: dict[str, tuple[float, dict[str, "MediaModelPick"]]] = {}
 
-# A generation the caller cannot see must not be cut short, so the swap yields instead.
+# One end-to-end budget for the whole switch, under the ~100s tunnel window: a drain and a load
+# with separate budgets add up past it, and the socket dies instead of returning the 503.
+_SWITCH_BUDGET_S = 90.0
+# A generation the caller cannot see must not be cut short, so the swap yields instead. Capped
+# inside the budget, never on top of it.
 _DRAIN_WAIT_S = 30.0
-# Under the ~100s tunnel window, so a slow load ends in a retryable 503, not a dropped socket.
-_LOAD_WAIT_S = 90.0
 _POLL_S = 0.2
 _RETRY_AFTER_S = 15
 
@@ -58,6 +61,10 @@ _BUSY_MSG = (
 _LOADING_MSG = (
     "Loading '{model}'. It was not resident when this request arrived and is still coming up; "
     "retry shortly."
+)
+_INCOMPLETE_MSG = (
+    "'{model}' is not fully downloaded: about {gb:.1f} GB of its companion weights are missing. "
+    "Auto-switch never downloads, so load it once from the {kind} page and retry."
 )
 # Cap on ids a "not found" error lists, so it stays readable in a terminal.
 _MAX_LISTED_MODELS = 8
@@ -246,6 +253,11 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
     either has to count as already serving or every request reswaps. Never on ``base_repo``,
     which is a companion encoder/VAE repo and would answer a request for that full pipeline
     with whichever GGUF happens to borrow it.
+
+    A GGUF also has to match on quant. Loose ``.gguf`` files in one scan folder share that
+    folder as their ``model_path``, so the path alone would report a sibling as already
+    serving and generate on the wrong weights. The quant is the per-file identity the backend
+    publishes, and the same one media_keepwarm treats as part of the build.
     """
     if not status.get("loaded"):
         return False
@@ -255,11 +267,24 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
     wanted = {name.strip().lower(), pick.model_id.strip().lower(), pick.model_path.strip().lower()}
     if resident not in wanted:
         return False
-    # A quant-qualified request needs that quant; a bare one takes whichever is loaded.
-    if pick.model_kind == "gguf" and ":" in name:
-        loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
-        return bool(loaded_quant) and name.strip().lower().endswith(f":{loaded_quant}")
-    return True
+    if pick.model_kind != "gguf":
+        return True
+    loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
+    wanted_quant = _pick_quant(pick)
+    if wanted_quant is None:
+        # No quant label to compare (an unlabelled checkpoint): the path match is all there is.
+        return True
+    return loaded_quant == wanted_quant
+
+
+def _pick_quant(pick: MediaModelPick) -> Optional[str]:
+    """The quant label of a GGUF pick's checkpoint, lowercased, or None when it has none."""
+    from hub.utils.gguf import extract_quant_token
+
+    if not pick.gguf_filename:
+        return None
+    token = extract_quant_token(pick.gguf_filename)
+    return token.strip().lower() if token else None
 
 
 def _backend_busy(backend: Any) -> bool:
@@ -269,14 +294,19 @@ def _backend_busy(backend: Any) -> bool:
     return bool((backend.generate_progress() or {}).get("active"))
 
 
-async def _drain(owner: str, backend: Any) -> bool:
-    """Wait out other tracked requests and any in-flight load or generation."""
-    from core.inference.media_keepwarm import other_request_count
+async def _drain(owner: str, backend: Any, deadline: float) -> bool:
+    """Wait out other tracked requests and any in-flight load or generation.
 
-    deadline = time.monotonic() + _DRAIN_WAIT_S
+    A request queued on this backend's switch lock is counted by the middleware but is not
+    doing any work, so it is discounted here: two concurrent requests for the same absent
+    model would otherwise each wait the other out and both return 409. Mirrors the chat
+    switch, which excludes its own waiters from ``_wait_for_model_switch_idle``.
+    """
+    from core.inference.media_keepwarm import other_request_count
     while True:
-        # This request is itself tracked, so it must not count itself as other work.
+        # This request is itself tracked and itself a waiter, so it counts as neither.
         others = other_request_count(owner, current_request_counted = True)
+        others -= max(0, _waiter_count(owner) - 1)
         if others <= 0 and not await asyncio.to_thread(_backend_busy, backend):
             return True
         if time.monotonic() >= deadline:
@@ -284,9 +314,8 @@ async def _drain(owner: str, backend: Any) -> bool:
         await asyncio.sleep(_POLL_S)
 
 
-async def _await_loaded(backend: Any, pick: MediaModelPick) -> bool:
+async def _await_loaded(backend: Any, pick: MediaModelPick, deadline: float) -> bool:
     """Poll the background load until the model is resident; False if it is still going."""
-    deadline = time.monotonic() + _LOAD_WAIT_S
     while True:
         progress = await asyncio.to_thread(backend.load_progress) or {}
         phase = progress.get("phase")
@@ -322,6 +351,31 @@ def _refuse(
         detail = detail,
         headers = {"Retry-After": str(retry_after)} if retry_after else None,
     )
+
+
+def _missing_download_bytes(owner: str, pick: MediaModelPick) -> int:
+    """Bytes this pick would still have to fetch, or 0 when nothing is missing.
+
+    The resolver only indexes downloaded CHECKPOINTS, but a GGUF or single-file pick loads its
+    text encoders and VAE from a companion base repo, and the loader prefetches whatever of that
+    is absent. Without this an API request could pull tens of gigabytes, which is exactly what
+    the setting promises it cannot do. Same planner ``/images/download-plan`` serves, so the
+    answer matches what the UI would have staged.
+
+    Returns 0 when the plan itself cannot be built: that is almost always an unreachable Hub,
+    where no download can happen either, and refusing a cached model over it would be worse.
+    """
+    backend = _backend_for(owner)
+    try:
+        plan = backend.download_plan(
+            pick.model_path,
+            gguf_filename = pick.gguf_filename,
+            model_kind = pick.model_kind,
+        )
+    except Exception as exc:  # noqa: BLE001 -- see the docstring
+        logger.debug("media auto-switch: download plan for %s failed: %s", pick.model_id, exc)
+        return 0
+    return max(0, int((plan or {}).get("total_bytes") or 0))
 
 
 async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) -> None:
@@ -388,39 +442,63 @@ async def maybe_auto_switch_media_model(
     if _satisfied_by(await asyncio.to_thread(_backend_for(owner).status), name, pick):
         return
 
-    async with _switch_lock(owner):
-        backend = _backend_for(owner)
-        # Re-read under the lock: a concurrent request may have just loaded this model.
-        if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
-            return
-        if not await _drain(owner, backend):
-            raise _refuse(
-                _BUSY_MSG.format(kind = kind),
-                status_code = 409,
-                openai_errors = openai_errors,
-                code = "model_busy",
-                retry_after = _RETRY_AFTER_S,
-            )
-        await _start_load(owner, pick, current_subject)
-        try:
-            # Re-resolved: an engine switch (diffusers <-> native sd.cpp) replaces the object.
-            ready = await _await_loaded(_backend_for(owner), pick)
-        except RuntimeError as exc:
-            # The loader already redacts this text; a bare raise would 500 with it instead.
-            raise _refuse(
-                f"'{pick.model_id}' could not be loaded: {exc}",
-                status_code = 503,
-                openai_errors = openai_errors,
-                code = "model_load_failed",
-            )
-        if not ready:
-            raise _refuse(
-                _LOADING_MSG.format(model = pick.model_id),
-                status_code = 503,
-                openai_errors = openai_errors,
-                code = "model_loading",
-                retry_after = _RETRY_AFTER_S,
-            )
+    from core.inference.media_keepwarm import admission_gate
+
+    deadline = time.monotonic() + _SWITCH_BUDGET_S
+    with _note_waiter(owner):
+        async with _switch_lock(owner):
+            backend = _backend_for(owner)
+            # Re-read under the lock: a concurrent request may have just loaded this model.
+            if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
+                return
+            missing = await asyncio.to_thread(_missing_download_bytes, owner, pick)
+            if missing:
+                raise _refuse(
+                    _INCOMPLETE_MSG.format(model = pick.model_id, gb = missing / 1e9, kind = kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_not_downloaded",
+                )
+            if not await _drain(owner, backend, min(deadline, time.monotonic() + _DRAIN_WAIT_S)):
+                raise _refuse(
+                    _BUSY_MSG.format(kind = kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_busy",
+                    retry_after = _RETRY_AFTER_S,
+                )
+            # Held from the last drain check through load registration. The load path cancels
+            # active work during teardown, so a generation admitted in that gap would be cut
+            # short by the very swap that just waited for the queue to clear.
+            async with admission_gate(owner):
+                if await asyncio.to_thread(_backend_busy, backend):
+                    raise _refuse(
+                        _BUSY_MSG.format(kind = kind),
+                        status_code = 409,
+                        openai_errors = openai_errors,
+                        code = "model_busy",
+                        retry_after = _RETRY_AFTER_S,
+                    )
+                await _start_load(owner, pick, current_subject)
+            try:
+                # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
+                ready = await _await_loaded(_backend_for(owner), pick, deadline)
+            except RuntimeError as exc:
+                # The loader already redacts this text; a bare raise would 500 with it.
+                raise _refuse(
+                    f"'{pick.model_id}' could not be loaded: {exc}",
+                    status_code = 503,
+                    openai_errors = openai_errors,
+                    code = "model_load_failed",
+                )
+            if not ready:
+                raise _refuse(
+                    _LOADING_MSG.format(model = pick.model_id),
+                    status_code = 503,
+                    openai_errors = openai_errors,
+                    code = "model_loading",
+                    retry_after = _RETRY_AFTER_S,
+                )
 
 
 # One switch at a time per backend, so two requests cannot race the single pipeline slot.
@@ -428,6 +506,31 @@ async def maybe_auto_switch_media_model(
 # binds to the loop that first awaited it and hangs a second one.
 _switch_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _switch_locks_guard = threading.Lock()
+
+
+# Requests parked on a backend's switch lock. They hold no work, so the drain discounts them.
+_waiters: dict[str, int] = {}
+_waiters_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def _note_waiter(owner: str):
+    with _waiters_guard:
+        _waiters[owner] = _waiters.get(owner, 0) + 1
+    try:
+        yield
+    finally:
+        with _waiters_guard:
+            remaining = _waiters.get(owner, 0) - 1
+            if remaining > 0:
+                _waiters[owner] = remaining
+            else:
+                _waiters.pop(owner, None)
+
+
+def _waiter_count(owner: str) -> int:
+    with _waiters_guard:
+        return _waiters.get(owner, 0)
 
 
 def _switch_lock(owner: str) -> asyncio.Lock:

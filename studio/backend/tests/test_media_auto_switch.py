@@ -11,6 +11,7 @@ error envelopes without torch, diffusers, weights or a GPU.
 from __future__ import annotations
 
 import asyncio
+import time
 import types
 
 import pytest
@@ -205,18 +206,25 @@ def test_an_absolute_path_is_not_an_advertised_name(catalog, tmp_path):
 
 
 class _FakeMediaBackend:
-    def __init__(self, repo_id = None):
+    def __init__(
+        self,
+        repo_id = None,
+        gguf_variant = None,
+    ):
         self.repo_id = repo_id
+        self.gguf_variant = gguf_variant
         self.loading: tuple[str, ...] = ()
         self.active = False
         self.phase = "ready" if repo_id else None
+        # Bytes the planner reports as still to fetch; the guard refuses anything above 0.
+        self.missing_bytes = 0
 
     def status(self):
         return {
             "loaded": self.repo_id is not None,
             "repo_id": self.repo_id,
             "base_repo": None,
-            "gguf_variant": None,
+            "gguf_variant": self.gguf_variant,
         }
 
     def loading_repo_ids(self):
@@ -227,6 +235,9 @@ class _FakeMediaBackend:
 
     def load_progress(self):
         return {"phase": self.phase}
+
+    def download_plan(self, model_path, **kwargs):
+        return {"total_bytes": self.missing_bytes}
 
 
 @pytest.fixture
@@ -245,7 +256,7 @@ def loads(monkeypatch, backend):
         started.append((owner, pick))
         backend.repo_id = pick.model_path
         backend.phase = "ready"
-        mk.note_load_origin(owner, user_action = False)
+        mk.note_load_origin(owner, pick.model_path, user_action = False)
 
     monkeypatch.setattr(mas, "_start_load", _start)
     return started
@@ -365,7 +376,7 @@ def test_a_busy_backend_is_not_swapped_out_from_under_its_generation(
 def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
     catalog, enabled, tmp_path, backend, monkeypatch
 ):
-    monkeypatch.setattr(mas, "_LOAD_WAIT_S", 0.0)
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.0)
     pipeline = tmp_path / "my-flux"
     pipeline.mkdir()
     catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
@@ -448,6 +459,103 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
     assert resp.status_code == 200
     # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
     assert calls == [("unsloth/Wan2.2", arb.VIDEO, False)]
+
+
+def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # Loose .gguf files in one scan folder share that folder as their model_path, so the path
+    # alone would report a sibling as serving and generate on the wrong weights.
+    for quant in ("Q4_K_M", "Q8_0"):
+        (tmp_path / f"z-image-{quant}.gguf").write_bytes(b"")
+        catalog.append(
+            _info(
+                f"z-image-{quant}",
+                tmp_path / f"z-image-{quant}.gguf",
+                task = mas.IMAGE_TASK,
+                model_format = "gguf",
+            )
+        )
+    backend.repo_id = str(tmp_path)
+    backend.gguf_variant = "Q4_K_M"
+
+    _switch("z-image-Q8_0")
+
+    assert [pick.gguf_filename for _owner, pick in loads] == ["z-image-Q8_0.gguf"]
+    # And the one that IS loaded still short-circuits.
+    loads.clear()
+    _switch("z-image-Q4_K_M")
+    assert loads == []
+
+
+def test_a_pick_whose_companions_are_missing_is_refused_rather_than_downloaded(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The resolver only indexes downloaded checkpoints; a GGUF still loads its encoders and VAE
+    # from a base repo the loader would fetch. Auto-switch promises it never downloads.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.missing_bytes = 4_300_000_000
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
+    assert "4.3 GB" in excinfo.value.detail["error"]["message"]
+    assert loads == []
+
+
+def test_a_request_queued_on_the_switch_lock_does_not_block_the_drain(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # Two concurrent requests for the same absent model are both counted by the middleware.
+    # Counting the queued one as work to drain made each wait the other out and both 409.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.5)
+    # Two tracked requests in flight, and both parked on the switch: only one holds the lock.
+    monkeypatch.setattr(mk, "other_request_count", lambda owner, current_request_counted = False: 1)
+    monkeypatch.setattr(mas, "_waiter_count", lambda owner: 2)
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
+def test_the_drain_and_the_load_share_one_budget(catalog, enabled, tmp_path, backend, monkeypatch):
+    # Separate budgets added up past the ~100s tunnel window, so a slow switch lost the socket
+    # instead of returning the retryable 503 the bounds exist to produce.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.6)
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 30.0)
+    busy_until = [True]
+
+    def _busy(_backend):
+        # Busy for the first poll only, so the drain eats part of the shared budget.
+        was = busy_until[0]
+        busy_until[0] = False
+        return was
+
+    monkeypatch.setattr(mas, "_backend_busy", _busy)
+
+    async def _start(owner, pick, current_subject):
+        backend.phase = "downloading"
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+
+    began = time.monotonic()
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 503
+    # The load wait inherits what the drain left, so the whole switch stays inside the budget.
+    assert time.monotonic() - began < 2.0
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

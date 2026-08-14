@@ -377,7 +377,7 @@ def test_api_only_spares_a_model_the_user_loaded(media, store):
     # spared exactly as it was before media auto-switch existed.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", user_action = True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
@@ -395,12 +395,25 @@ def test_api_only_still_frees_a_model_the_api_loaded(media, store):
     # is what the setting exists to collect.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, user_action = False)
-    mk.note_load_origin(arb.VIDEO, user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", user_action = False)
+    mk.note_load_origin(arb.VIDEO, "unsloth/Wan2.2", user_action = True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
     assert media[arb.VIDEO].unloads == 0
+
+
+def test_a_failed_api_load_does_not_unpin_the_resident_user_model(media, store):
+    # A load is recorded when it is accepted, and it can still fail with the previous model
+    # resident. Reading that failed load's origin off the surviving model would evict a
+    # pipeline the setting promises to keep.
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/Z-Image-Turbo", user_action = False)
+    _step()
+    _step(*_BOTH)
+    assert media[arb.DIFFUSION].unloads == 0
 
 
 def test_a_cached_reload_of_another_h3_partition_is_not_unloaded(media, monkeypatch):

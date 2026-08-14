@@ -22856,8 +22856,9 @@ async def load_diffusion_model_gated(
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
             status_dict = await asyncio.to_thread(_begin_load)
-        # Recorded once the load is accepted, so the idle unload knows whom it belongs to.
-        note_media_load_origin(DIFFUSION, user_action = user_initiated)
+        # Keyed to the target: this load can still fail with the previous model resident, and
+        # its origin must not be read off that model.
+        note_media_load_origin(DIFFUSION, request.model_path, user_action = user_initiated)
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
