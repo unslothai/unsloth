@@ -42,8 +42,8 @@ def _is_retryable_cache_error(error: OSError) -> bool:
 class _NoSymlinkSupport(dict):
     """Answers "already probed, unsupported" for every cache dir.
 
-    Hub before 1.9 has no disable flag and re-probes dirs missing from this
-    cache, which can lose the same race again, so leave it nothing to probe.
+    Hub before 1.9 has no disable flag and re-probes any dir missing from this
+    mapping, losing the same race again, so leave it nothing to probe.
     """
 
     def __contains__(self, cache_dir) -> bool:
@@ -57,8 +57,7 @@ def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
     # huggingface_hub is already imported, so update its live state too. Hub 1.9
-    # added this constant; older installs, including the Python 3.9 pin (0.36.2),
-    # decide purely from the per-directory capability cache below.
+    # added this constant; older installs decide purely from the mapping below.
     try:
         from huggingface_hub import constants, file_download
     except ImportError:  # never mask the load error we are recovering from
