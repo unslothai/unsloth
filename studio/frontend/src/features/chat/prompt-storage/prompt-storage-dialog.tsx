@@ -1242,8 +1242,10 @@ function ExportModal({
 type PromptDraft = { name: string; text: string };
 type ListDraft = { name: string; items: string[] };
 
-const EMPTY_PROMPT_DRAFT: PromptDraft = { name: "", text: "" };
-const EMPTY_LIST_DRAFT: ListDraft = { name: "", items: ["", ""] };
+// Factories, not shared constants: every reset would otherwise hand back the
+// same `items` array, one in-place edit from corrupting it for good.
+const emptyPromptDraft = (): PromptDraft => ({ name: "", text: "" });
+const emptyListDraft = (): ListDraft => ({ name: "", items: ["", ""] });
 
 function relativeTime(ts: number): string {
   const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -1893,8 +1895,8 @@ export function PromptStorageDialog({
 
   // In-progress new entries, held here rather than inside the forms so that
   // hiding a form (by selecting a row in the rail) does not destroy the work.
-  const [newPromptDraft, setNewPromptDraft] = useState<PromptDraft>(EMPTY_PROMPT_DRAFT);
-  const [newListDraft, setNewListDraft] = useState<ListDraft>(EMPTY_LIST_DRAFT);
+  const [newPromptDraft, setNewPromptDraft] = useState<PromptDraft>(emptyPromptDraft);
+  const [newListDraft, setNewListDraft] = useState<ListDraft>(emptyListDraft);
   const newPromptStarted =
     newPromptDraft.name.trim() !== "" || newPromptDraft.text.trim() !== "";
   const newListStarted =
@@ -2303,7 +2305,7 @@ export function PromptStorageDialog({
                     draft={newPromptDraft}
                     onDraftChange={setNewPromptDraft}
                     onClose={() => {
-                      setNewPromptDraft(EMPTY_PROMPT_DRAFT);
+                      setNewPromptDraft(emptyPromptDraft());
                       setShowNewPrompt(false);
                     }}
                     onRefresh={refreshEntries}
@@ -2337,7 +2339,7 @@ export function PromptStorageDialog({
                     draft={newListDraft}
                     onDraftChange={setNewListDraft}
                     onClose={() => {
-                      setNewListDraft(EMPTY_LIST_DRAFT);
+                      setNewListDraft(emptyListDraft());
                       setShowNewList(false);
                     }}
                     onRefresh={refreshLists}

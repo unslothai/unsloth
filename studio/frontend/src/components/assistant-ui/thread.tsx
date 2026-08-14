@@ -4841,9 +4841,11 @@ const ComposerToolsMenu: FC<{
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
+          {/* Keys are namespaced: prompts and lists are separate tables, so the
+              two id spaces can collide and these render as siblings. */}
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => aui.composer().setText(p.text)}
             >
               <span className="truncate">{p.name}</span>
@@ -4851,7 +4853,7 @@ const ComposerToolsMenu: FC<{
             </DropdownMenuItem>
           ))}
           {recentLists.map((l) => (
-            <DropdownMenuItem key={l.id} onSelect={() => runPromptList(l.items)}>
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
               <span className="truncate">{l.name}</span>
               <PromptKindPill kind="list" count={l.items.length} />
             </DropdownMenuItem>
