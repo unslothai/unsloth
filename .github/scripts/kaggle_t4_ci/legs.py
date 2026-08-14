@@ -3,50 +3,39 @@
 
 """The payloads this CI can run, and what each one is FOR.
 
-A Kaggle session is 2xT4 and the account allows 2 concurrent batch kernels,
-so the ceiling is four payloads at once. This file is the registry of what
-those four are. Each entry is a *leg*: an install recipe, a script, and the
-arguments it runs with. `build_kernel.py` turns a list of legs into kernel
-notebooks; nothing else in this directory knows what a leg contains.
+A Kaggle session is 2xT4 and the account allows 2 concurrent batch kernels, so
+the ceiling is four payloads at once, and this is the registry of what those
+four are. Each entry is a *leg*: an install recipe, a script and its arguments.
+`build_kernel.py` turns a list of legs into kernel notebooks; nothing else here
+knows what a leg contains.
 
-The four legs, and why this particular four
--------------------------------------------
-**control** and **canary** are a matched pair and the core of the design.
-They run the SAME payload, seed, dataset and step count on the same card.
-The only difference between them is the version of transformers, trl, peft,
-accelerate and bitsandbytes that gets installed: the control pins them
-(tests/kaggle/t4_smoke/pins/control.txt), the canary takes the newest
-release of each that Unsloth's own declared constraints allow.
+**control** and **canary** are a matched pair and the core of the design: the
+SAME payload, seed, dataset and step count on the same card, differing only in
+the transformers/trl/peft/accelerate/bitsandbytes versions installed. Control
+pins them (tests/kaggle/t4_smoke/pins/control.txt); canary takes the newest
+release of each that Unsloth's declared constraints allow. Either leg failing
+alone says something specific:
 
-That pairing is the whole instrument. Either leg failing alone says
-something specific:
-
-* canary red, control green -> a library RELEASE broke Unsloth. The canary's
-  report names the resolved version of every package in the set, so the
-  bisect is a diff of two reports rather than an investigation.
-* both red -> not a version bump. The base image, the model download, the
+* canary red, control green -> a library RELEASE broke Unsloth, and the
+  canary's report names every resolved version, so the bisect is a diff of two
+  reports rather than an investigation.
+* both red -> not a version bump: the base image, the model download, the
   Kaggle side, or Unsloth's own code.
-* control red, canary green -> the pins no longer resolve, which is a
-  maintenance signal for the pin file and not a regression.
+* control red, canary green -> the pins no longer resolve, a maintenance signal
+  for the pin file rather than a regression.
 
-If they ever differ in anything but versions, all three of those readings
-become wrong at once, so `--smoke-args` and the reference are deliberately
-shared between them rather than configured per leg.
+All three readings break at once if the legs differ in anything but versions,
+which is why `--smoke-args` and the reference are shared rather than per leg.
 
-**gptoss** covers `torch.compile` and the forced-float32 path. gpt-oss is in
+**gptoss** covers `torch.compile` and the forced-float32 path: gpt-oss is in
 Unsloth's FORCE_FLOAT32 list precisely because this card has no bf16, and
-that path exists for T4 and is exercised by nothing else in CI.
+nothing else in CI exercises it. **grpo** covers vLLM, which
+`fast_inference=True` puts on the same 16GB card as the training loop, and
+whose sm_75 support is a version-by-version question.
 
-**grpo** covers vLLM. `fast_inference=True` puts a vLLM engine and a
-training loop on the same 16GB card, and vLLM's support for sm_75 is a
-version-by-version question rather than a settled one.
-
-Adding a leg
-------------
-Append an entry and add its name to a kernel in `KERNELS`. The tests in
-tests/kaggle/test_t4_smoke_harness.py build every leg and parse every
-generated cell, so a leg that cannot produce valid Python never reaches a
-Kaggle session.
+To add a leg, append an entry and name it in a `KERNELS` kernel. The tests in
+tests/kaggle/test_t4_smoke_harness.py build every leg and parse every generated
+cell, so a leg that cannot produce valid Python never reaches Kaggle.
 """
 
 from __future__ import annotations
@@ -58,16 +47,14 @@ from pathlib import Path
 ZOO = "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@{zoo_ref}"
 UNSLOTH = "unsloth @ git+https://github.com/unslothai/unsloth@{unsloth_ref}"
 
-# The sentinel that expands to the contents of a pin file, one requirement
-# per argument. Expanded at BUILD time rather than read on the kernel, so the
-# generated notebook states the versions it is about to install and the test
-# suite can read them without executing anything.
+# Expands to a pin file's contents, one requirement per argument. Expanded at
+# BUILD time, not read on the kernel, so the generated notebook states the
+# versions it will install and the tests can read them without executing it.
 PINS = "@PINS:{file}"
 
-# The version set the canary leg upgrades. Named explicitly rather than
-# "--upgrade everything": upgrading the whole environment would move torch
-# and the CUDA stack too, and a leg that changes ten things at once cannot
-# attribute a failure to any of them.
+# What the canary upgrades. Named explicitly rather than "--upgrade
+# everything", which would move torch and the CUDA stack too: a leg that
+# changes ten things at once cannot attribute a failure to any of them.
 CANARY_UPGRADES = ("transformers", "trl", "peft", "accelerate", "bitsandbytes")
 
 
@@ -100,38 +87,61 @@ class Leg:
     env: dict = field(default_factory = dict)
     # Does this leg's virtualenv see the Kaggle image's site-packages?
     #
-    # True is the default and is what makes the control leg honest: it runs
-    # against the image's torch, which is the situation a notebook user is
-    # in, and installs only what the image lacks.
+    # True by default, which is what makes the control leg honest: it runs
+    # against the image's torch, the situation a notebook user is in, and
+    # installs only what the image lacks.
     #
-    # False is for a leg that REPLACES torch, and it is not a preference. It
-    # is the measured consequence of trying the other way. `vllm==0.11.2`
-    # pins `torch==2.9.0`, so installing it downgrades the image's 2.10.0,
-    # and with the image's site-packages visible pip treats torch's pinned
-    # NVIDIA runtime packages as already satisfied by the copies that belong
-    # to 2.10. The result is a torch that installs cleanly and cannot be
-    # imported. Two probe kernels found two different faces of it:
+    # False is for a leg that REPLACES torch, and it is measured rather than
+    # preferred. `vllm==0.11.2` pins `torch==2.9.0`, downgrading the image's
+    # 2.10.0, and with the image's site-packages visible pip treats torch's
+    # pinned NVIDIA runtime packages as satisfied by the 2.10 copies, giving a
+    # torch that installs cleanly and cannot be imported. Two probe kernels
+    # found two faces of it:
     #
     #   libcusparseLt.so.0: cannot open shared object file
     #   libtorch_cuda.so: undefined symbol: ncclCommWindowRegister
     #
-    # Naming the packages individually fixes them one at a time and there is
-    # no reason to think the list is short. A venv that cannot see the image
-    # fixes the class: pip has to resolve the whole stack, so it resolves a
-    # consistent one. The cost is the download, which is minutes.
+    # Naming the packages fixes them one at a time, and the list has no reason
+    # to be short. A venv that cannot see the image fixes the class: pip must
+    # resolve the whole stack, so it resolves a consistent one, at the cost of
+    # a download of a few minutes.
     system_site_packages: bool = True
 
 
-# Files every leg needs: the version recorder and the canary dataset. The
-# recorder is what makes any red leg attributable to a version, so no leg is
-# allowed to ship without it.
-COMMON_FILES = ("versions.py", "canary_dataset.jsonl")
+# Files every leg needs: the version recorder, which makes a red leg
+# attributable to a version; the canary dataset; and the "did the optimizer
+# apply anything" evidence, without which every payload here can pass on a run
+# that trained nothing.
+COMMON_FILES = ("versions.py", "canary_dataset.jsonl", "training_evidence.py")
 
-# The install prefix shared by every leg. unsloth_zoo first and WITH deps,
-# then unsloth --no-deps on top, so the overlay does not fight the dependency
-# set zoo resolved; then bitsandbytes, which neither of them pulls and the
-# Kaggle image does not carry, and without which `import unsloth` raises.
-BASE_INSTALL = ((ZOO,), ("--no-deps", UNSLOTH), ("bitsandbytes",))
+# The install prefix shared by every leg. unsloth_zoo first and WITH deps, then
+# unsloth on top, then bitsandbytes, which neither pulls and the image does not
+# carry, and without which `import unsloth` raises.
+#
+# UNSLOTH RESOLVES ITS DEPENDENCIES, and used to carry --no-deps so the overlay
+# could not walk the set zoo had just resolved. That made the one file this
+# workflow watches for packaging changes -- pyproject.toml is in its trigger
+# paths -- the one thing it could not test: pip enforces the requirements of
+# packages IN a resolution (see the frontier leg), so with the tested
+# distribution outside every resolution, a dependency it adds is never
+# installed, one it tightens is never checked against what is here, and the
+# import probe still passes whenever the dependency is reached by a delayed
+# code path. `pip install unsloth` is what a user runs, and this is now the
+# same call.
+#
+# The --no-deps concern is answered by what unsloth actually declares: typer,
+# rich, pydantic, pyyaml, nest-asyncio, structlog and click, none of which zoo
+# resolves and none of which any leg pins, so there is nothing here for pip to
+# fight over. A pyproject that DOES name one of zoo's packages would move it,
+# and that is the regression this exists to show rather than a side effect to
+# suppress -- a user's install would move it too.
+BASE_INSTALL = ((ZOO,), (UNSLOTH,), ("bitsandbytes",))
+
+# The distribution under test, read off the requirement above rather than
+# restated: the verify cell asks pip whether THIS distribution's declared
+# requirements are satisfied, and a name that drifted from the one actually
+# installed would check nothing and say so quietly.
+PACKAGE_UNDER_TEST = UNSLOTH.split("@", 1)[0].strip()
 
 SMOKE_FILES = COMMON_FILES + ("run_t4_smoke.py", "determinism.py")
 
@@ -140,9 +150,9 @@ LEGS: dict[str, Leg] = {
     "control": Leg(
         name = "control",
         summary = "tiny SFT determinism run, pinned library set",
-        # The pins go in LAST and as their own resolution step, so they beat
-        # whatever the preceding groups resolved. Installing them first would
-        # let zoo's own dependency set quietly walk them forward again.
+        # Pins go in LAST, as their own resolution step, so they beat what the
+        # preceding groups resolved; first, zoo's dependency set would quietly
+        # walk them forward again.
         install = BASE_INSTALL + ((PINS.format(file = "control.txt"),),),
         entry = "run_t4_smoke.py",
         files = SMOKE_FILES + ("pins/control.txt",),
@@ -152,157 +162,140 @@ LEGS: dict[str, Leg] = {
     "canary": Leg(
         name = "canary",
         summary = "the same SFT run on the newest permitted library set",
-        # One resolution, with the zoo requirement present, so pip picks the
-        # newest release of each that zoo's constraints actually allow.
-        # Upgrading them in a separate call would let pip install a version
-        # zoo forbids and merely warn about it, and the leg would then be
-        # measuring an environment Unsloth never claimed to support.
+        # One resolution with the zoo requirement present, so pip picks the
+        # newest release of each that zoo's constraints allow. A separate
+        # upgrade call would let pip install a version zoo forbids and merely
+        # warn, measuring an environment Unsloth never claimed to support.
         install = BASE_INSTALL + ((("--upgrade", ZOO) + CANARY_UPGRADES),),
         entry = "run_t4_smoke.py",
         files = SMOKE_FILES,
-        # No reference. Two library sets do not produce the same fp16
-        # trajectory, so band-checking the canary against the control's
-        # committed trace would fail on drift rather than on a regression.
-        # What the canary asserts instead is everything that is
-        # version-independent: the canary string, that the optimizer applied
-        # updates, that two fresh processes agreed bitwise WITH EACH OTHER,
-        # and that nothing raised. See tests/kaggle/t4_smoke/references/README.md.
+        # No reference: two library sets do not produce the same fp16
+        # trajectory, so band-checking against the control's committed trace
+        # would fail on drift rather than on a regression. The canary asserts
+        # the version-independent things instead -- the canary string, that the
+        # optimizer applied updates, that two fresh processes agreed bitwise
+        # WITH EACH OTHER, and that nothing raised. See
+        # tests/kaggle/t4_smoke/references/README.md.
         reference = "",
     ),
     "frontier": Leg(
         name = "frontier",
         summary = "the same SFT run on the newest transformers and trl on PyPI",
-        # WHY THIS EXISTS, given the canary above already says "newest".
-        #
-        # The canary installs the newest set zoo's own metadata ALLOWS, and
-        # that ceiling is low. unsloth_zoo/pyproject.toml pins
+        # WHY THIS EXISTS, given the canary already says "newest": the canary
+        # installs the newest set zoo's metadata ALLOWS, and that ceiling is
+        # low. unsloth_zoo/pyproject.toml pins
         #
         #     transformers >=4.51.3,...,<=5.5.0
         #     trl          >=0.18.2,!=0.19.0,<=0.24.0
         #
         # so on 2026-08-11 the canary resolved transformers 5.5.0 against a
-        # PyPI latest of 5.15.0, and trl 0.24.0 against a latest of 1.9.2 --
-        # a whole major version. It moved peft 0.19.1 -> 0.20.0 and accelerate
-        # 1.13.0 -> 1.14.0 (both genuinely latest, both uncapped), which is
-        # what made the leg look like it was doing its job. Two of the five
-        # packages never moved at all, and they are the two that break most.
+        # PyPI latest of 5.15.0, and trl 0.24.0 against a latest of 1.9.2, a
+        # whole major version. It moved peft 0.19.1 -> 0.20.0 and accelerate
+        # 1.13.0 -> 1.14.0 (both latest, both uncapped), which made the leg look
+        # like it was working; two of the five never moved, and they are the two
+        # that break most. So with only the canary this CI CANNOT detect a
+        # transformers 5.6+ or trl 1.x regression, having never installed one,
+        # and the cap is raised only after someone checks -- this is what
+        # checks.
         #
-        # The consequence is structural: with only the canary, this CI CANNOT
-        # detect a transformers 5.6+ or trl 1.x regression, because it never
-        # installs one. The cap is exactly what a regression detector has to
-        # step over, since the cap is raised only after someone has checked,
-        # and this is the thing that checks.
-        #
-        # WITH dependencies, and NOT --no-deps. Getting this wrong is what the
-        # first probe measured. `--no-deps transformers trl` plus a blanket
-        # `--upgrade tokenizers` did reach transformers 5.15.0 and trl 1.9.2 --
-        # kernel unsloth-t4-ci-bd0c49e5, the first time this CI ever installed
-        # either -- and then died before running anything:
+        # WITH dependencies, NOT --no-deps. `--no-deps transformers trl` plus a
+        # blanket `--upgrade tokenizers` did reach transformers 5.15.0 and trl
+        # 1.9.2 (kernel unsloth-t4-ci-bd0c49e5, the first time this CI installed
+        # either) and then died before running anything:
         #
         #   tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1
         #   safetensors>=0.8.0 is required, but found safetensors==0.7.0
         #
-        # An unbounded upgrade overshoots the ceiling transformers declares, and
-        # --no-deps means nothing repairs it. Letting pip resolve the deps fixes
-        # both, because pip only enforces the requirements of the packages IN
-        # the resolution: unsloth_zoo is merely installed, so its `<=5.5.0` is a
-        # warning here rather than a ceiling. Verified by dry run against an
-        # environment with zoo installed: "Would install datasets-5.0.1
-        # huggingface_hub-1.27.0 transformers-5.15.0 trl-1.9.2".
-        #
-        # So this leg moves more than the two packages it is named for -- it
-        # moves whatever transformers and trl now require. That is the honest
-        # scope: those bumps are part of taking the new version.
+        # An unbounded upgrade overshoots transformers' declared ceiling and
+        # --no-deps leaves nothing to repair it. Resolving the deps fixes both,
+        # because pip enforces only the requirements of packages IN the
+        # resolution: unsloth_zoo is merely installed, so its `<=5.5.0` is a
+        # warning rather than a ceiling. Dry run against an environment with zoo
+        # installed: "Would install datasets-5.0.1 huggingface_hub-1.27.0
+        # transformers-5.15.0 trl-1.9.2". So this leg moves whatever
+        # transformers and trl now require, which is the honest scope of taking
+        # the new version.
         #
         # I expected this leg to go red. IT DOES NOT. Kernel from
         # temp/frontier_kernel2.ipynb on a real T4: transformers 5.15.0, trl
-        # 1.9.2, datasets 5.0.1, ten steps, canary emitted, and the two fresh
-        # processes agreed BITWISE (max_abs_diff 0.0 on both loss and
-        # grad_norm). Unsloth trains and generates correctly a whole trl major
-        # above what zoo's metadata permits.
+        # 1.9.2, datasets 5.0.1, ten steps, canary emitted, two fresh processes
+        # agreeing BITWISE (max_abs_diff 0.0 on both loss and grad_norm).
+        # Unsloth trains and generates correctly a whole trl major above what
+        # zoo's metadata permits. A red here would be a to-do about the next
+        # version bump rather than a broken main, and should be wired so a
+        # reader can tell those apart.
         #
-        # A red here would still be a to-do about the next version bump rather
-        # than a broken main, and it should be wired so a reader can tell those
-        # apart. But the current answer is green.
-        #
-        # WHAT IT DOES NOT CATCH, and what a reader should look at by hand:
-        # the loss trajectory is not the control's.
+        # WHAT IT DOES NOT CATCH, worth a reader's eye: the loss trajectory is
+        # not the control's.
         #
         #   control  tf 5.5.0  trl 0.24.0: 10.3222 10.4956 9.9563 10.3892 5.0523 ...
         #   frontier tf 5.15.0 trl 1.9.2 :  6.4367  6.6086 5.9956  3.6721 2.0265 ...
         #
-        # Step 1 is computed before any parameter update, on identical initial
-        # weights, identical data and identical seed, so 10.32 against 6.44 is
-        # not optimisation drift: the loss FUNCTION differs, in masking or in
-        # normalisation. Both runs converge, so neither is obviously wrong, and
-        # this leg deliberately has no reference band (see the canary above),
-        # which is exactly why it passes without noticing. Settling which of
-        # the two objectives is the intended one is separate work.
+        # Step 1 is computed before any update, on identical initial weights,
+        # data and seed, so 10.32 against 6.44 is not optimisation drift: the
+        # loss FUNCTION differs, in masking or normalisation. Both converge, so
+        # neither is obviously wrong, and this leg has no reference band (see
+        # the canary), which is why it passes without noticing. Settling which
+        # objective is intended is separate work.
         install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
         entry = "run_t4_smoke.py",
         files = SMOKE_FILES,
-        # Same reasoning as the canary, more so: this set is further from the
-        # committed trace than the canary's is.
+        # Same reasoning as the canary, more so: this set is further still from
+        # the committed trace.
         reference = "",
     ),
     "gptoss": Leg(
         name = "gptoss",
         summary = "gpt-oss-20b LoRA: torch.compile and the float32 path",
-        # The base install and nothing else, and specifically WITHOUT the
-        # `triton_kernels` git dependency the gpt-oss notebook installs.
+        # The base install and nothing else, specifically WITHOUT the
+        # `triton_kernels` git dependency the gpt-oss notebook installs. That
+        # omission is measured: two probe kernels on 2026-08-11 ran this leg on
+        # a T4, one with triton_kernels and torchao (the notebook's own install
+        # cell) and one with neither, and produced the SAME three losses to the
+        # last bit (5.76492166519165, 4.781009674072266, 4.027626991271973), the
+        # same peak memory (12.78 GB) and the same compile counters (32 graphs,
+        # 779 calls, 2 breaks).
         #
-        # That omission is measured, not assumed. Two probe kernels on
-        # 2026-08-11 ran this leg on a T4, one with triton_kernels and
-        # torchao (the notebook's own install cell) and one with neither,
-        # and they produced the SAME three losses to the last bit:
-        # 5.76492166519165, 4.781009674072266, 4.027626991271973. They
-        # agreed on the peak memory (12.78 GB) and on the compile counters
-        # (32 graphs, 779 calls, 2 breaks) too.
-        #
-        # The reason they agree is that `load_in_4bit=True` never reaches
-        # MXFP4 at all: Unsloth's FLOAT_TO_INT_MAPPER redirects
-        # `unsloth/gpt-oss-20b` to `unsloth/gpt-oss-20b-unsloth-bnb-4bit`,
-        # an NF4 checkpoint, and MXFP4 has no backward pass to reach. So
-        # triton_kernels would be a pinned git checkout of a third-party
-        # repository, on every run, for no observable effect.
+        # They agree because `load_in_4bit=True` never reaches MXFP4: Unsloth's
+        # FLOAT_TO_INT_MAPPER redirects `unsloth/gpt-oss-20b` to the NF4
+        # `unsloth/gpt-oss-20b-unsloth-bnb-4bit`, and MXFP4 has no backward pass
+        # to reach. triton_kernels would be a pinned git checkout of a
+        # third-party repo on every run for no observable effect.
         install = BASE_INSTALL,
         entry = "run_gptoss_t4.py",
         files = COMMON_FILES + ("run_gptoss_t4.py",),
         args = ("--max-steps", "3", "--max-seq-length", "1024"),
     ),
-    # NOT WIRED, but for a smaller reason than it used to be. See UNWIRED
-    # below: the install that killed three probe sessions has been re-solved
-    # and what remains is a runtime question that needs one session on a
-    # real T4.
+    # NOT WIRED, for a smaller reason than it used to be. See UNWIRED below:
+    # the install that killed three probe sessions is re-solved, and what
+    # remains is a runtime question needing one session on a real T4.
     "grpo": Leg(
         name = "grpo",
         summary = "Qwen3-4B GRPO through a vLLM engine on the same card",
-        # vLLM FIRST and alone, because it pins torch and letting it resolve
-        # after unsloth means pip walks torch underneath an already installed
-        # stack.
+        # vLLM FIRST and alone: it pins torch, and resolving it after unsloth
+        # walks torch underneath an already installed stack.
         #
-        # THE VERSION IS CHOSEN TO MATCH THE IMAGE, NOT TO BE OLD. Kaggle's
-        # image ships torch 2.10.0+cu128. vLLM's torch pin by release:
+        # THE VERSION MATCHES THE IMAGE, IT IS NOT MERELY OLD. Kaggle ships
+        # torch 2.10.0+cu128, and vLLM's torch pin by release is
         #
         #   0.11.2 .. 0.16.0   torch==2.9.0 / 2.9.1
         #   0.17.0 .. 0.19.1   torch==2.10.0      <- the whole window
         #   0.20.0 .. 0.26.0   torch==2.11.0
         #   0.27.0 ..          torch==2.13.0
         #
-        # Every other choice REPLACES the image's torch, and replacing it is
-        # what all three probe sessions died of: the image's NVIDIA runtime
-        # packages belong to 2.10 and pip treats them as satisfying the new
-        # torch's pins. 0.19.1 is the newest release that needs no
-        # replacement at all, so the install is a normal one and the leg can
-        # keep `system_site_packages`.
+        # Every other choice REPLACES the image's torch, which is what all three
+        # probe sessions died of: the image's NVIDIA runtime packages belong to
+        # 2.10 and pip treats them as satisfying the new torch's pins. 0.19.1 is
+        # the newest release needing no replacement, so the install is ordinary
+        # and the leg keeps `system_site_packages`.
         #
-        # No xformers. Its vLLM attention backend was deleted in 0.12.0, so
-        # carrying it here would install a package nothing selects. sm_75 has
-        # no FlashAttention and no FlashInfer, and the backend ladder in
-        # vllm/platforms/cuda.py falls through those to TRITON_ATTN, which is
-        # what this leg pins below rather than leaving to a probe order that
-        # moves between releases. sm_75 is still in CUDA_SUPPORTED_ARCHS at
-        # v0.19.1, and fp16 is a supported dtype below capability 8.0.
+        # No xformers: its vLLM attention backend was deleted in 0.12.0, so it
+        # would install a package nothing selects. sm_75 has no FlashAttention
+        # and no FlashInfer, and the ladder in vllm/platforms/cuda.py falls
+        # through those to TRITON_ATTN, pinned below rather than left to a probe
+        # order that moves between releases. sm_75 is still in
+        # CUDA_SUPPORTED_ARCHS at v0.19.1, and fp16 is supported below
+        # capability 8.0.
         install = (("vllm==0.19.1",),) + BASE_INSTALL,
         entry = "run_grpo_t4.py",
         files = COMMON_FILES + ("run_grpo_t4.py",),
@@ -317,19 +310,18 @@ LEGS: dict[str, Leg] = {
             "unsloth",
             "unsloth_zoo",
         ),
-        # EVERY ONE OF THESE FIVE IS LOAD-BEARING ON A 14.56GB CARD, and the
-        # values are the ones that passed rather than the ones that look
-        # reasonable. Two probes with the notebook's own settings -- seq 2048,
-        # 4 generations, rank 32, utilization 0.9 -- died in the BACKWARD at
+        # ALL FIVE ARE LOAD-BEARING ON A 14.56GB CARD, and are the values that
+        # passed rather than the ones that look reasonable. Two probes with the
+        # notebook's own settings (seq 2048, 4 generations, rank 32, utilization
+        # 0.9) died in the BACKWARD at
         # unsloth_zoo/gradient_checkpointing.py:1013, peaking at 15.97GB in
         # 16-bit and 19.25GB in 4-bit.
         #
-        # 4-bit is not the lever it looks like: it peaked HIGHER than 16-bit,
-        # because quantizing weights does nothing for activations while
+        # 4-bit is not the lever it looks like -- it peaked HIGHER than 16-bit,
+        # since quantizing weights does nothing for activations while
         # utilization 0.9 still hands vLLM ~13GB up front. UNSLOTH_VLLM_STANDBY
-        # returns the weights during training but not the KV cache
-        # reservation, so the utilization figure is the one that decides
-        # whether a backward has anywhere to run.
+        # returns the weights during training but not the KV cache reservation,
+        # so utilization is what decides whether a backward has anywhere to run.
         #
         # Measured on kernel unsloth-t4-ci-53efcc4e: peak 13.60GB allocated of
         # 14.56GB, three steps in 192s.
@@ -348,52 +340,46 @@ LEGS: dict[str, Leg] = {
         ),
         env = {
             "UNSLOTH_VLLM_STANDBY": "1",
-            # See the install comment. Named rather than probed so that a
-            # release reordering the ladder shows up as this leg going red,
-            # not as it silently selecting something else.
+            # See the install comment. Named rather than probed so a release
+            # reordering the ladder turns this leg red instead of silently
+            # selecting something else.
             "VLLM_ATTENTION_BACKEND": "TRITON_ATTN",
-            # Kaggle cannot link what flashinfer JIT-compiles. Measured on
-            # kernel unsloth-t4-ci-e2d9ce9b: vLLM 0.19.1 reached engine
-            # construction on a real T4, flashinfer 0.6.6 started building its
-            # sampling ops, all three .cu files compiled CLEANLY for
-            # `-gencode=arch=compute_75,code=sm_75`, and the link step died on
+            # Kaggle cannot link what flashinfer JIT-compiles. On kernel
+            # unsloth-t4-ci-e2d9ce9b, vLLM 0.19.1 reached engine construction on
+            # a real T4, flashinfer 0.6.6 compiled all three sampling .cu files
+            # CLEANLY for `-gencode=arch=compute_75,code=sm_75`, and the link
+            # died on
             #
             #   /usr/bin/ld: cannot find -lcuda
             #
             # `-L/usr/local/cuda/lib64/stubs` is on the command line, so the
-            # driver stub `libcuda.so` is simply not in this image; only the
-            # runtime `libcuda.so.1` is. Nothing about that is sm_75, and
-            # nothing about it is fixable from here.
-            #
-            # So do not JIT at all. The sampler has a native path, and skipping
-            # the build also saves a four-file nvcc compile inside a session
-            # billed by wall clock.
+            # driver stub `libcuda.so` is simply absent from this image; only
+            # the runtime `libcuda.so.1` is there. That is not an sm_75 problem
+            # and is not fixable from here. So do not JIT: the sampler has a
+            # native path, and skipping the build saves a four-file nvcc compile
+            # in a session billed by wall clock.
             "VLLM_USE_FLASHINFER_SAMPLER": "0",
         },
-        # Now true, and that is the point of the version choice above: this
-        # leg no longer replaces torch, so it can share the image's view
-        # instead of resolving a whole CUDA stack from scratch. Probe 3 spent
-        # about an hour of quota doing exactly that and never got past venv
-        # creation.
+        # Now true, which is the point of the version choice above: this leg no
+        # longer replaces torch, so it shares the image's view instead of
+        # resolving a whole CUDA stack from scratch. Probe 3 spent about an hour
+        # of quota doing that and never got past venv creation.
         system_site_packages = True,
     ),
 }
 
 
-# GPUs in a Kaggle session, and therefore legs one kernel can carry. A third
-# leg in a kernel would not fail; it would share a card with another and
-# quietly change what both of them measure.
+# GPUs in a Kaggle session, so legs one kernel can carry. A third leg would not
+# fail; it would share a card and quietly change what both of them measure.
 MAX_LEGS_PER_KERNEL = 2
 
-# Legs that are defined here and deliberately NOT run, with the reason.
-#
-# A leg is unwired rather than deleted when the payload is right and the
-# environment is not: the next person to try owes nothing but a working
-# install, and deleting it would mean rediscovering the install problem from
-# scratch. Every entry must say what was measured.
+# Legs defined here and deliberately NOT run, with the reason. A leg is unwired
+# rather than deleted when the payload is right and the environment is not, so
+# the next person to try owes nothing but a working install. Every entry must
+# say what was measured.
 UNWIRED: dict[str, str] = {
-    # A leg belongs here only while there is a specific unanswered question
-    # about it that a session would answer. "Not tried yet" is not that.
+    # A leg belongs here only while a specific unanswered question about it
+    # would be answered by a session. "Not tried yet" is not that.
     "grpo": (
         "vLLM standby sleep hits an illegal memory access on Turing, and it is "
         "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "
@@ -430,33 +416,28 @@ UNWIRED: dict[str, str] = {
     ),
 }
 
-# Which legs travel in which kernel. One entry per kernel, and a kernel runs
-# its legs one per T4 of its session.
+# Which legs travel in which kernel, one entry per kernel, each running its legs
+# one per T4 of its session.
 #
-# The pairing is not arbitrary. control and canary share a kernel so they run
-# on the two cards of the SAME session: same image, same driver, same hour.
-# Splitting them across sessions would put an uncontrolled variable between
-# the only two legs whose comparison has to be clean.
+# control and canary share a kernel so they run on the two cards of the SAME
+# session: same image, same driver, same hour. Splitting them across sessions
+# would put an uncontrolled variable between the only two legs whose comparison
+# has to be clean.
 #
-# The second kernel's free T4 now carries `frontier`, and that seat is free
-# in the literal sense: a session bills its wall clock once, not per card, so
-# testing the newest transformers and trl every run costs no quota at all.
-# It went there rather than beside control and canary because those two must
-# differ in nothing but versions within the zoo-permitted window, and
-# frontier deliberately leaves that window.
+# The second kernel's free T4 carries `frontier`, and the seat is literally
+# free: a session bills its wall clock once, not per card, so testing the newest
+# transformers and trl costs no quota. It went there rather than beside control
+# and canary because those two must differ in nothing but versions within the
+# zoo-permitted window, which frontier deliberately leaves.
 #
-# `grpo` was the previous claimant on that seat and goes back to it once the
-# illegal memory access in UNWIRED is understood.
-#
-# `grpo` briefly had a third kernel of its own, on the reasoning that pairing
-# it with gpt-oss was what broke it: it failed paired and had passed alone,
-# so the pairing looked like the variable. Running it ALONE again
-# (unsloth-t4-ci-c98f14be) reproduced the paired failure exactly -- same
-# stack, same 13.8GB peak, same engine_built false. So the pairing was never
-# the variable and that reasoning was wrong; one contrasting observation was
-# not enough to blame a shared host. The leg is unwired rather than
-# re-paired, because a leg that passes one session in three cannot tell CI
-# anything either way.
+# `grpo` held that seat before, and returns to it once the illegal memory access
+# in UNWIRED is understood. It briefly had a third kernel of its own, on the
+# reasoning that pairing with gpt-oss broke it: it failed paired and had passed
+# alone. Running it ALONE again (unsloth-t4-ci-c98f14be) reproduced the paired
+# failure exactly, same stack, same 13.8GB peak, same engine_built false, so the
+# pairing was never the variable and one contrasting observation was not enough
+# to blame a shared host. It stays unwired rather than re-paired, since a leg
+# passing one session in three tells CI nothing either way.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("control", "canary"),
     ("gptoss", "frontier"),
@@ -498,8 +479,8 @@ def _read_pins(path: Path) -> list[str]:
 def resolve(names) -> list[Leg]:
     """Legs by name, in the order given. Unknown names fail loudly here.
 
-    Failing at build time rather than on the kernel is the point: a typo in
-    a workflow input must cost a runner second, not a Kaggle session.
+    At build time rather than on the kernel: a typo in a workflow input must
+    cost a runner second, not a Kaggle session.
     """
     legs = []
     for name in names:

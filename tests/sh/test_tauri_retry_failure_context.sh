@@ -219,13 +219,90 @@ if [ "$_setup_mode_count" -ne 2 ]; then
     exit 1
 fi
 
-_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_SH")
-if [ "$_setup_exit_count" -ne 1 ] ||
-    ! grep -q '^[[:space:]]*exit "\$exit_code"$' "$SETUP_SH"; then
+# setup.sh has exactly two exits. setup_fail is the only failure exit: every failure path goes
+# through it so the desktop gets a [TAURI:ERROR] line, not a bare exit code. The pinned-uv signal
+# handler is not a failure, it re-raises as 128+signal like install.sh's _on_install_signal,
+# because install.rs cancels an install by SIGTERMing the process group with intentional_stop and
+# a cancel must not raise a failure banner. A third exit, or a second inside either, is unrouted.
+# `|| true`: grep -c reports 0 with status 1, which under set -e would abort with no explanation.
+_setup_fail_exits=$(sed -n '/^setup_fail()/,/^}/p' "$SETUP_SH" |
+    grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)
+_setup_signal_exits=$(sed -n '/^_setup_uv_on_signal()/,/^}/p' "$SETUP_SH" |
+    grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)
+_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_SH" || true)
+if [ "$_setup_fail_exits" -ne 1 ] ||
+    [ "$_setup_signal_exits" -ne 1 ] ||
+    [ "$_setup_exit_count" -ne $((_setup_fail_exits + _setup_signal_exits)) ] ||
+    ! grep -q '^[[:space:]]*exit "\$exit_code"$' "$SETUP_SH" ||
+    ! grep -q '^[[:space:]]*exit "\$1"$' "$SETUP_SH"; then
     echo "  FAIL: Unix setup has explicit exits outside setup_fail"
     exit 1
 fi
+# Trap-only: called from ordinary control flow the handler is the unrouted failure exit again.
+_setup_signal_refs=$(grep -c '_setup_uv_on_signal' "$SETUP_SH" || true)
+if [ "$_setup_signal_refs" -ne 4 ] ||
+    ! grep -qF "trap '_setup_uv_on_signal 129' HUP" "$SETUP_SH" ||
+    ! grep -qF "trap '_setup_uv_on_signal 130' INT" "$SETUP_SH" ||
+    ! grep -qF "trap '_setup_uv_on_signal 143' TERM" "$SETUP_SH"; then
+    echo "  FAIL: Unix setup signal handler is reachable outside its HUP/INT/TERM traps"
+    exit 1
+fi
 echo "  PASS: Unix setup routes explicit exits through setup_fail"
+
+# Prove the exception behaves as claimed: a stubbed pinned-uv install, interrupted for real in
+# Tauri mode, must report 128+signal, leave no temporaries behind, and print no cancel failure.
+_signal_dir=$(mktemp -d)
+trap 'rm -f "$_stdout_file" "$_stderr_file"; rm -rf "$_signal_dir"' EXIT
+{
+    sed -n '/^_setup_uv_cleanup_temporaries()/,/^}/p' "$SETUP_SH"
+    sed -n '/^_setup_uv_on_signal()/,/^}/p' "$SETUP_SH"
+} > "$_signal_dir/uv_signal_fns.sh"
+cat > "$_signal_dir/interrupted_install.sh" <<'SIGNAL_STUB'
+# shellcheck disable=SC1090
+. "$1/uv_signal_fns.sh"
+_SIUP_WORK="$1/work"
+_SIUP_STAGE="$1/dest/.uv.stage"
+_SIUP_STAGE2="$1/dest/.uvx.stage"
+trap _setup_uv_cleanup_temporaries EXIT
+trap '_setup_uv_on_signal 129' HUP
+trap '_setup_uv_on_signal 130' INT
+trap '_setup_uv_on_signal 143' TERM
+: > "$1/ready"
+# Short sleeps: a trap runs only once the foreground command returns.
+while :; do sleep 0.1; done
+SIGNAL_STUB
+mkdir -p "$_signal_dir/work/uv-x86_64-unknown-linux-gnu" "$_signal_dir/dest"
+: > "$_signal_dir/work/uv-x86_64-unknown-linux-gnu/uv"
+: > "$_signal_dir/dest/.uv.stage"
+: > "$_signal_dir/dest/.uvx.stage"
+set +e
+UNSLOTH_TAURI_MODE=1 bash "$_signal_dir/interrupted_install.sh" "$_signal_dir" \
+    >"$_stdout_file" 2>"$_stderr_file" &
+_signal_pid=$!
+_signal_waited=0
+while [ ! -e "$_signal_dir/ready" ] && [ "$_signal_waited" -lt 100 ]; do
+    command sleep 0.1
+    _signal_waited=$((_signal_waited + 1))
+done
+kill -TERM "$_signal_pid" 2>/dev/null
+wait "$_signal_pid"
+_exit_code=$?
+set -e
+if [ "$_exit_code" -ne 143 ]; then
+    echo "  FAIL: interrupted setup reported exit code $_exit_code instead of 143"
+    exit 1
+fi
+if [ -d "$_signal_dir/work" ] ||
+    [ -e "$_signal_dir/dest/.uv.stage" ] ||
+    [ -e "$_signal_dir/dest/.uvx.stage" ]; then
+    echo "  FAIL: interrupted setup left the pinned uv temporaries behind"
+    exit 1
+fi
+if grep -q '^\[TAURI:' "$_stdout_file" || grep -q '^\[TAURI:' "$_stderr_file"; then
+    echo "  FAIL: interrupted setup reported a cancel as an installer failure"
+    exit 1
+fi
+echo "  PASS: interrupted setup cleans up and re-raises the signal without failure context"
 
 _rollback_block=$(sed -n \
     '/^_restore_studio_venv_replacement()/,/^}/p' \

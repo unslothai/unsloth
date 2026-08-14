@@ -1331,6 +1331,18 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
     )
+    run_tools_locally: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "asking the provider to run its own hosted builtins. Only meaningful "
+            "for providers that ship hosted tools of the same name (OpenAI, "
+            "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
+            "the same request means hosted search to a client written before "
+            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "behaviour, so an older client is unaffected."
+        ),
+    )
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
@@ -2648,6 +2660,13 @@ class DiffusionLoadRequest(BaseModel):
         "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
         "shifts the residual distribution).",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a diffusion checkpoint, so a selection of several cards resolves "
+        "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
+        "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -3427,6 +3446,14 @@ class VideoLoadRequest(BaseModel):
         "and first/last-frame video, the default) or ref2va (omni-reference video). They are "
         "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
         "whose filename already names the partition; rejected if it contradicts that filename.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a video checkpoint, so a selection of several cards resolves to "
+        "the one with the most free VRAM. Refused with a 400 when an index does not exist here; "
+        "ignored on XPU / MPS / CPU, which have no applicator for a physical index. Mirrors the "
+        "image backend's field.",
     )
 
     @field_validator("attention_backend", mode = "before")

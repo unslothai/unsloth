@@ -3,15 +3,12 @@
 
 """Turn collected Kaggle evidence into a job summary and an exit code.
 
-This is the only place that decides whether the workflow goes red, and it
-holds a deliberately narrow line: red means the payload RAN on a T4 and
-disagreed with its assertions. Everything else is a warning.
-
-That distinction matters more than it looks. Kaggle is a free external
-service with a hard concurrency cap, a weekly quota and its own queue, and
-every one of those can stop the test from producing a result. If any of them
-turned a pull request red, the check would be noise within a week and would
-be ignored the one time it was right.
+The only place that decides whether the workflow goes red, on a deliberately
+narrow line: red means the payload RAN on a T4 and disagreed with its
+assertions. Everything else is a warning, because Kaggle is a free service with
+a hard concurrency cap, a weekly quota and its own queue, any of which can stop
+the test from producing a result; if those turned a PR red the check would be
+noise within a week and ignored the one time it was right.
 
 Exit codes:
     0  passed, partially reported, or never ran
@@ -43,8 +40,7 @@ def _fmt_metric(value) -> str:
     if value is None:
         return "-"
     if isinstance(value, float):
-        # NaN is a real, reproducible fp16 gradient-scaler outcome, not a
-        # missing value, so name it rather than blanking it.
+        # NaN is a real fp16 gradient-scaler outcome, not a missing value.
         if value != value:
             return "NaN (step skipped)"
         return f"{value:.6g}"
@@ -56,8 +52,7 @@ def resolved_versions(report: dict) -> dict:
 
     The SFT payload nests it under ``environment.resolved`` because its
     environment block predates this and the committed reference carries that
-    shape; the gpt-oss and GRPO payloads write ``versions_flat`` at the top
-    level. Both are read here so the summary does not have to care.
+    shape; gpt-oss and GRPO write ``versions_flat`` at the top level.
     """
     flat = report.get("versions_flat")
     if isinstance(flat, dict):
@@ -69,10 +64,9 @@ def resolved_versions(report: dict) -> dict:
 def version_table(reports: list) -> list[str]:
     """Every leg's library set side by side, with what differs called out.
 
-    This is the payoff of running a pinned control next to a canary. When
-    the canary is the only red leg, the answer to "which bump did it" is
-    already on the summary page, and nobody has to download an artifact or
-    reconstruct an install log to bisect it.
+    The payoff of a pinned control beside a canary: when the canary is the only
+    red leg, "which bump did it" is answered on the summary page, without
+    downloading an artifact or reconstructing an install log.
     """
     columns = [(r.get("label", "?"), resolved_versions(r)) for r in reports]
     columns = [(label, versions) for label, versions in columns if versions]
@@ -122,8 +116,8 @@ def render(report: dict) -> list[str]:
 
     config = report.get("config", {})
     if config:
-        # max_steps is on the face of the summary because it is what decides
-        # whether the committed reference applies to this run at all.
+        # max_steps is up front: it decides whether the committed reference
+        # applies to this run at all.
         lines.append(
             f"Config: max_steps `{config.get('max_steps')}` - lr "
             f"`{config.get('learning_rate')}` - batch "
@@ -183,12 +177,23 @@ def render(report: dict) -> list[str]:
                 "configuration, so nothing was compared."
             )
         elif ref.get("note"):
-            # A refusal, not a deviation. Say what was refused and why, in
-            # the summary itself: the deviations list is empty for these and
-            # printing it alone would read like a clean result.
+            # A refusal, not a deviation: the deviations list is empty for
+            # these, so printing it alone would read like a clean result.
             lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
+        # What the band did NOT compare, up front rather than buried in the
+        # evidence. A key the reference predates is skipped, not refused ("it
+        # does not say" is not "it differs"), but an invisible skip reads as a
+        # check that ran, and a pin can sit unchecked for months that way.
+        unchecked = ref.get("config_unchecked")
+        if unchecked:
+            lines.append(
+                "Not compared, absent from one side: "
+                + ", ".join(f"`{key}`" for key in unchecked)
+                + ". Recapture the reference (references/README.md) to bring "
+                "them into the check."
+            )
         lines.append("")
 
     pins = report.get("pins")
@@ -232,8 +237,8 @@ def render(report: dict) -> list[str]:
 
     history = report.get("log_history")
     if history:
-        # GRPO. The loss is ~0 by construction at num_iterations=1 and
-        # beta=0, so reward and reward_std are what is worth showing.
+        # GRPO: loss is ~0 by construction at num_iterations=1 and beta=0, so
+        # reward and reward_std are what is worth showing.
         lines += ["| step | reward | reward_std |", "| --- | --- | --- |"]
         for entry in history:
             if entry.get("reward") is None:
@@ -275,14 +280,13 @@ SENTINELS = (
 def kernel_log_text(evidence: Path) -> str:
     """The kernel log as flat text, whichever shape Kaggle returned it in.
 
-    Kaggle's `kernels/output` hands the log back as a JSON array of
-    ``{stream_name, time, data}`` records rather than as text, so reading the
-    file directly shows a wall of JSON with one word of the actual message
-    per line.
+    Kaggle's `kernels/output` returns the log as a JSON array of
+    ``{stream_name, time, data}`` records, not as text, so reading the file
+    directly shows a wall of JSON with one word of message per line.
     """
     chunks = []
-    # rglob: a run is several kernels now and each collects into its own
-    # directory, so there is no single kernel.log any more.
+    # rglob: a run is several kernels, each collecting into its own directory,
+    # so there is no single kernel.log any more.
     for path in sorted(evidence.rglob("kernel.log")):
         raw = path.read_text(encoding = "utf-8", errors = "replace")
         try:
@@ -300,11 +304,10 @@ def kernel_log_text(evidence: Path) -> str:
 def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
     """The lines of the kernel log worth putting in front of a human.
 
-    A kernel that finished but reported nothing is the hardest outcome to
-    read, because the summary has no metrics to show and the cause is buried
-    in an artifact nobody downloads. Both real instances of it so far -- a
-    dependency probe that mis-ordered its imports, and a generated cell with
-    a syntax error -- were one grep away in this log.
+    A kernel that finished but reported nothing is the hardest outcome to read:
+    no metrics to show, cause buried in an artifact nobody downloads. Both real
+    instances so far, a dependency probe that mis-ordered its imports and a
+    generated cell with a syntax error, were one grep away in this log.
     """
     text = kernel_log_text(evidence)
     if not text:

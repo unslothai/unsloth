@@ -3,57 +3,66 @@
 
 """gpt-oss-20b LoRA on a single T4: does the compile-and-offload path hold?
 
-This is the payload behind the `gptoss` leg of the Kaggle T4 notebook CI,
-and it was written first as a FEASIBILITY PROBE. The question it exists to
-answer is not "is the loss right" -- it is "can a 20B checkpoint be loaded,
-LoRA-trained and generated from at all on 16GB of sm_75, with the compiled
-float32 path this card forces".
+The payload behind the `gptoss` leg, written first as a FEASIBILITY PROBE. The
+question is not "is the loss right" but "can a 20B checkpoint be loaded,
+LoRA-trained and generated from at all on 16GB of sm_75, on the compiled float32
+path this card forces".
 
-What the probe found, so the report can be read against it
------------------------------------------------------------
-Kernels `unsloth-t4-ci-8161ceb9` and `unsloth-t4-ci-7ab727f1`, 2026-08-11,
-Tesla T4 / sm_75 / 14.56 GB. It works, and three of the four things that
-looked most likely to break turned out not to be in the path at all.
+What the probe found, so the report can be read against it: kernels
+`unsloth-t4-ci-8161ceb9` and `unsloth-t4-ci-7ab727f1`, 2026-08-11, Tesla T4 /
+sm_75 / 14.56 GB. It works, and three of the four things likeliest to break are
+not in the path at all.
 
-* **MXFP4 is never reached.** `unsloth/gpt-oss-20b` is an MXFP4 checkpoint
-  and MXFP4 has no backward pass in unsloth_zoo at all, but
-  `load_in_4bit=True` makes Unsloth's FLOAT_TO_INT_MAPPER redirect the load
-  to `unsloth/gpt-oss-20b-unsloth-bnb-4bit`, which is NF4. The probe
-  confirmed the redirect from `model.config._name_or_path`, and that is
-  recorded on every run: a change to that mapping would move this leg onto
-  a checkpoint that cannot train, and nothing else here would notice.
-* **No bf16, and Unsloth already knows.** gpt-oss is in `FORCE_FLOAT32`.
-  The probe saw `UNSLOTH_FORCE_FLOAT32=1`, `fp16=False`, `bf16=False`, and
-  `UNSLOTH_FORCE_CUSTOM_DTYPE` pinning `down_projs` and `mlp.router` to
-  float32. That is the path this leg exists to keep working; it exists for
-  this card and nothing else in CI exercises it.
-* **No offload.** 12.78 GB reserved of 14.56, every parameter on `cuda:0`,
-  no `hf_device_map`. It fits, with about 1.8 GB of headroom, which is thin
-  enough that placement is still counted on every run rather than assumed.
+* **MXFP4 is never reached.** `unsloth/gpt-oss-20b` is an MXFP4 checkpoint and
+  MXFP4 has no backward pass in unsloth_zoo, but `load_in_4bit=True` makes
+  Unsloth's FLOAT_TO_INT_MAPPER redirect the load to the NF4
+  `unsloth/gpt-oss-20b-unsloth-bnb-4bit`. The probe confirmed the redirect from
+  `model.config._name_or_path`, recorded on every run: a change to that mapping
+  would move this leg onto a checkpoint that cannot train unnoticed.
+* **No bf16, and Unsloth already knows.** gpt-oss is in `FORCE_FLOAT32`. The
+  probe saw `UNSLOTH_FORCE_FLOAT32=1`, `fp16=False`, `bf16=False`, and
+  `UNSLOTH_FORCE_CUSTOM_DTYPE` pinning `down_projs` and `mlp.router` to float32.
+  That path exists for this card and nothing else in CI exercises it.
+* **No offload.** 12.78 GB reserved of 14.56, every parameter on `cuda:0`, no
+  `hf_device_map`. About 1.8 GB of headroom, thin enough that placement is
+  counted on every run rather than assumed -- and asserted, since a run that
+  offloads passes everything else.
 * **torch.compile engages**: 32 unique graphs, 779 calls captured, 2 graph
-  breaks, both of them `_warnings.warn`. A silent fall back to eager would
-  leave every other number in this report looking healthy while the thing
-  the leg covers was not exercised, so this is asserted, not just recorded.
+  breaks, both `_warnings.warn`. A silent fall back to eager leaves every other
+  number healthy while the leg's coverage goes unexercised, so this is asserted.
 
-What it asserts
----------------
-1. The model loads, and the report says in what dtype and across which
-   devices.
-2. Training runs for the requested number of steps and every logged loss is
-   finite. There is no committed reference band here: the run is too short
-   and the model too large for a per-step trace to be worth capturing, and a
-   band nobody can recapture cheaply is a check that gets disabled the first
-   time it is inconvenient.
-3. `torch.compile` captured at least one graph (`--require-compile`, on by
-   default).
-4. Generation after training returns non-empty text without raising. This is
-   the assertion that catches a training run which "succeeds" and leaves the
-   model unusable, which on a quantised offloaded path is a real outcome.
+What it asserts:
 
-`--probe` records every one of those and fails on none of them. That mode is
-for the deliberate one-off feasibility runs: a probe whose job is to find
-out whether the payload is viable must come back with evidence, not with a
-nonzero exit and a truncated report.
+1. The model loads, in a recorded dtype, with every parameter on the one
+   visible T4. Offload to CPU, disk or meta is a FAILURE rather than a slow
+   pass: it is the documented result of this leg (a 20B checkpoint fitting and
+   training on 16GB, with about 1.8GB to spare) ceasing to hold, and every other
+   number in the report survives it.
+2. Training runs the requested steps, every logged loss is finite, and the
+   optimizer applied something -- a run with all-zero gradients looks healthy
+   everywhere else and trained nothing. Decided on the ADAPTER, fingerprinted
+   before and after training, with `grad_norm` as fallback rather than source:
+   this leg saves and reloads no adapter, so a trainer that stops logging that
+   field would otherwise take the only evidence with it. See
+   training_evidence.py. There is no committed reference band, the run being too
+   short and the model too large for a per-step trace to be worth capturing, and
+   a band nobody can recapture cheaply gets disabled the first time it is
+   inconvenient.
+2a. The forced-float32 path was taken: on a card without bf16, `fp16`/`bf16`
+   must both be off and `UNSLOTH_FORCE_FLOAT32` must be set. This is the
+   coverage the leg uniquely claims, and it was recorded on every run and
+   asserted on none.
+3. `torch.compile` captured at least one graph DURING TRAINING
+   (`--require-compile`, on by default). The Dynamo counters are process-global
+   and loading a 20B checkpoint fills them, so the assertion is on the delta
+   across `trainer.train()`, not the total.
+4. Generation after training returns non-empty text without raising, catching a
+   training run that "succeeds" and leaves the model unusable, which on a
+   quantised offloaded path is a real outcome.
+
+`--probe` records all of those and fails on none, for the one-off feasibility
+runs: a probe must come back with evidence, not a nonzero exit and a truncated
+report.
 """
 
 from __future__ import annotations
@@ -71,6 +80,11 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from training_evidence import (  # noqa: E402
+    adapter_fingerprint,
+    adapter_update,
+    update_verdict,
+)
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
     flatten_versions,
@@ -87,15 +101,20 @@ def _log(msg: str) -> None:
     print(f"[gptoss-t4] {msg}", flush = True)
 
 
-def compile_counters() -> dict:
+def compile_counters(before: dict | None = None) -> dict:
     """What `torch.compile` actually did, from Dynamo's own bookkeeping.
 
-    `unique_graphs` is the number that decides whether compilation engaged:
-    zero means every region fell back to eager, whatever the banner said.
-    `graph_breaks` is kept beside it because a run that captured graphs and
-    broke a hundred times is a different, and reportable, state from one
-    that captured cleanly -- on a card with no bf16 a break is often the
-    first visible symptom of a dtype the compiled path refused.
+    `unique_graphs` decides whether compilation engaged: zero means every region
+    fell back to eager, whatever the banner said. `graph_breaks` sits beside it
+    because capturing graphs and breaking a hundred times is a different,
+    reportable state, and on a card with no bf16 a break is often the first
+    symptom of a dtype the compiled path refused.
+
+    The counters are process-global and never reset, and loading a model through
+    Unsloth compiles plenty before `trainer.train()`, so the absolute number
+    cannot answer "did TRAINING compile": an entirely eager training path still
+    leaves the loader's graphs standing. Pass the pre-training reading as
+    ``before`` and the delta is the answer; `failures_for` asserts on the delta.
     """
     state: dict = {"available": False}
     try:
@@ -109,24 +128,28 @@ def compile_counters() -> dict:
             "unique_graphs": int(stats.get("unique_graphs", 0)),
             "calls_captured": int(stats.get("calls_captured", 0)),
             "graph_breaks_total": sum(int(v) for v in breaks.values()),
-            # Truncated: the reasons are free text and a pathological run
-            # produces hundreds of distinct ones.
+            # Truncated: free text, and a pathological run produces hundreds.
             "graph_break_reasons": sorted(breaks)[:10],
         }
     except Exception as exc:  # noqa: BLE001
         state = {"available": False, "error": f"{type(exc).__name__}: {exc}"}
+    if before and before.get("available") and state.get("available"):
+        for key in ("unique_graphs", "calls_captured", "graph_breaks_total"):
+            state[f"{key}_delta"] = state[key] - int(before.get(key, 0))
+        state["before"] = {
+            k: before.get(k) for k in ("unique_graphs", "calls_captured", "graph_breaks_total")
+        }
     return state
 
 
 def placement(model) -> dict:
     """Where the weights ended up, counted rather than trusted.
 
-    A 20B checkpoint on a 16GB card either offloads or does not fit, and
-    "did it offload" is answerable only by looking. `hf_device_map` is the
-    accelerate-side answer and is absent when nothing dispatched; the
-    parameter walk is the answer that is always available, and it is the one
-    that distinguishes a model that quietly landed on the CPU (correct, slow)
-    from one that landed on meta (loaded nothing at all).
+    A 20B checkpoint on a 16GB card either offloads or does not fit, and "did it
+    offload" is answerable only by looking. `hf_device_map` is the
+    accelerate-side answer and is absent when nothing dispatched; the parameter
+    walk is always available and is what distinguishes a model that quietly
+    landed on the CPU (correct, slow) from one on meta (loaded nothing).
     """
     counts: dict = {}
     try:
@@ -164,10 +187,9 @@ def memory() -> dict:
 def build_dataset(tokenizer, rows: list[dict]):
     """The canary rows as chat turns, through the model's own template.
 
-    Going through `apply_chat_template` rather than hand-rolling a prompt is
-    deliberate: gpt-oss has a template with channels and a reasoning-effort
-    knob, and a payload that bypassed it would exercise a text format no user
-    of this notebook ever produces.
+    Through `apply_chat_template` rather than a hand-rolled prompt: gpt-oss has
+    a template with channels and a reasoning-effort knob, and bypassing it would
+    exercise a text format no user of this notebook ever produces.
     """
     from datasets import Dataset
 
@@ -202,14 +224,13 @@ def train_and_infer(args) -> dict:
     )
     result["load_seconds"] = round(time.time() - t0, 1)
     result["model_dtype"] = str(getattr(model, "dtype", None))
-    # What was REALLY loaded. `unsloth/gpt-oss-20b` is an MXFP4 checkpoint,
-    # and MXFP4 has no backward pass at all (unsloth_zoo raises
-    # "Backwards pass using MXFP4 is still under construction"). Asking for
-    # load_in_4bit=True makes Unsloth's FLOAT_TO_INT_MAPPER redirect the
-    # request to `unsloth/gpt-oss-20b-unsloth-bnb-4bit`, an NF4 checkpoint
-    # that does train. So the name in the config is not the name that was
-    # asked for, and a change to that redirect would silently move this leg
-    # onto a path that cannot train. Record it and let the report show it.
+    # What was REALLY loaded. `unsloth/gpt-oss-20b` is MXFP4, which has no
+    # backward pass at all (unsloth_zoo raises "Backwards pass using MXFP4 is
+    # still under construction"), so load_in_4bit=True makes Unsloth's
+    # FLOAT_TO_INT_MAPPER redirect to the NF4
+    # `unsloth/gpt-oss-20b-unsloth-bnb-4bit`, which does train. The config name
+    # is therefore not the name asked for, and a change to that redirect would
+    # silently move this leg onto a path that cannot train.
     model_config = getattr(model, "config", None)
     result["resolved_checkpoint"] = getattr(model_config, "_name_or_path", None)
     quant = getattr(model_config, "quantization_config", None)
@@ -268,15 +289,14 @@ def train_and_infer(args) -> dict:
         weight_decay = 0.0,
         seed = SEED,
         data_seed = SEED,
-        # fp16/bf16 are deliberately NOT set here, and that is the opposite
-        # of what the tiny SFT payload does. gpt-oss is in Unsloth's
-        # FORCE_FLOAT32 list: on a card without bf16 the loader sets
-        # UNSLOTH_FORCE_FLOAT32=1 and the RL/SFT patch switches the run to
-        # float32 ("Unsloth: Switching to float32 training since model cannot
-        # work with float16"), because fp16 autocast through the MXFP4-derived
-        # weights produces infinities. Asking for fp16 here would fight that
-        # patch, and whichever won, the run would no longer be the one a
-        # notebook user gets. What was actually chosen is recorded below.
+        # fp16/bf16 are deliberately NOT set, the opposite of the tiny SFT
+        # payload. gpt-oss is in Unsloth's FORCE_FLOAT32 list: on a card without
+        # bf16 the loader sets UNSLOTH_FORCE_FLOAT32=1 and the RL/SFT patch
+        # switches to float32 ("Unsloth: Switching to float32 training since
+        # model cannot work with float16"), because fp16 autocast through the
+        # MXFP4-derived weights produces infinities. Asking for fp16 would fight
+        # that patch, and whichever won, the run would not be the one a notebook
+        # user gets. What was chosen is recorded below.
         dataloader_num_workers = 0,
         dataloader_pin_memory = False,
         report_to = "none",
@@ -289,10 +309,9 @@ def train_and_infer(args) -> dict:
         args = config,
     )
 
-    # Which precision the run ended up in, after Unsloth's patches have had
-    # their say. On a T4 this is expected to be float32 and NOT fp16; if it
-    # ever reads fp16 here, the FORCE_FLOAT32 path stopped firing and the
-    # infinities it exists to prevent are back.
+    # The precision after Unsloth's patches have had their say. On a T4 this
+    # should be float32 and NOT fp16; fp16 here means FORCE_FLOAT32 stopped
+    # firing and the infinities it prevents are back.
     result["precision"] = {
         "fp16": bool(getattr(trainer.args, "fp16", None)),
         "bf16": bool(getattr(trainer.args, "bf16", None)),
@@ -300,6 +319,20 @@ def train_and_infer(args) -> dict:
         "custom_dtype_env": os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE"),
     }
     _log(f"precision {json.dumps(result['precision'])}")
+
+    # The counters BEFORE training, so what training compiled is a subtraction
+    # rather than an inference: loading a 20B checkpoint through Unsloth
+    # compiles a great deal into the same process-global counter.
+    compile_before = compile_counters()
+    _log(f"compile counters before training: {json.dumps(compile_before)}")
+
+    # The adapter before a single step, so "did the optimizer apply anything" is
+    # a subtraction rather than a reading of what the trainer chose to log. This
+    # leg saves and reloads no adapter, so without it the only evidence is
+    # grad_norm, and a trainer that stops logging it leaves the leg asserting
+    # nothing. See training_evidence.py.
+    adapter_before = adapter_fingerprint(model)
+    _log(f"adapter before training: {json.dumps(adapter_before)}")
 
     t0 = time.time()
     stats = trainer.train()
@@ -310,15 +343,17 @@ def train_and_infer(args) -> dict:
         if "loss" in entry
     ]
     result["train_metrics"] = {k: v for k, v in (stats.metrics or {}).items()}
-    result["compile"] = compile_counters()
+    result["adapter_update"] = adapter_update(adapter_before, adapter_fingerprint(model))
+    _log(f"adapter update: {json.dumps(result['adapter_update'])}")
+    result["compile"] = compile_counters(before = compile_before)
     result["memory_after_train"] = memory()
     _log(
         f"trained {len(result['metrics'])} logged steps in "
         f"{result['train_seconds']}s; compile {result['compile']}"
     )
 
-    # Inference on the trained model. The notebook's own shape: chat
-    # template with a reasoning effort, greedy decode, short.
+    # Inference in the notebook's own shape: chat template with a reasoning
+    # effort, greedy decode, short.
     FastLanguageModel.for_inference(model)
     try:
         inputs = tokenizer.apply_chat_template(
@@ -329,8 +364,8 @@ def train_and_infer(args) -> dict:
             reasoning_effort = "low",
         ).to("cuda")
     except TypeError:
-        # reasoning_effort is a gpt-oss template keyword. A template that
-        # does not take it is a finding worth recording, not a crash.
+        # reasoning_effort is a gpt-oss template keyword; a template that does
+        # not take it is a finding to record, not a crash.
         result["reasoning_effort_supported"] = False
         inputs = tokenizer.apply_chat_template(
             [{"role": "user", "content": rows[0]["question"]}],
@@ -361,11 +396,63 @@ def train_and_infer(args) -> dict:
     return result
 
 
+def _placement_failures(placement: dict | None) -> list[str]:
+    """Every parameter on the one visible GPU, or this leg measured something else.
+
+    The driver gives each payload a single CUDA device
+    (``CUDA_VISIBLE_DEVICES``), so on a healthy run every parameter reports
+    ``cuda:0`` and ``hf_device_map`` is absent entirely. Anything else is one of
+    the three ways a 20B checkpoint stops fitting: ``cpu``/``disk`` through
+    accelerate's dispatch, ``meta`` for a shard that was never materialised, or
+    a device the payload cannot see.
+
+    Unreadable is a failure, not a skip, for the same reason it is one for the
+    bf16 reading and the dynamo counters: the check that switches itself off
+    when its instrument breaks is the one that never fires.
+    """
+    if not isinstance(placement, dict):
+        return [
+            "where the weights landed was never recorded, so whether the "
+            "checkpoint fit on the GPU at all could not be established, and "
+            "every other number in this report is produced either way"
+        ]
+    failures: list[str] = []
+    counts = placement.get("parameters_by_device")
+    if not isinstance(counts, dict) or not counts:
+        failures.append(f"the parameter walk recorded no devices: {placement}")
+    elif "error" in counts:
+        failures.append(f"the parameters could not be walked: {counts['error']}")
+    else:
+        elsewhere = {
+            device: n for device, n in counts.items() if not str(device).startswith("cuda")
+        }
+        if elsewhere:
+            failures.append(
+                f"parameters are off the GPU: {elsewhere} (all devices: {counts}). "
+                f"This leg's result is that the 20B checkpoint fits and trains "
+                f"wholly on one T4; a run that offloads to CPU, disk or meta is "
+                f"not a slower version of that, it is a different run, and "
+                f"accelerate's offload does not support training at all"
+            )
+    # The accelerate-side answer, which is absent on a healthy run and says
+    # `cpu`/`disk` when dispatch offloaded. Three-way: `placement()` always
+    # writes a bool, so anything else is a record this file cannot read.
+    offloaded = placement.get("offloaded")
+    if offloaded is True:
+        failures.append(
+            f"the loader dispatched part of the model off the GPU: "
+            f"hf_device_map devices {placement.get('hf_device_map_devices')}"
+        )
+    elif offloaded is not False:
+        failures.append(f"whether the loader offloaded could not be established: {placement}")
+    return failures
+
+
 def failures_for(result: dict, args) -> list[str]:
     """The assertions, separated from the run so they can be unit-tested.
 
-    Nothing here needs a GPU, which is the point: the pass/fail rule for a
-    leg that costs a Kaggle session has to be checkable without one.
+    Nothing here needs a GPU, which is the point: the pass/fail rule for a leg
+    that costs a Kaggle session has to be checkable without one.
     """
     failures: list[str] = []
     metrics = result.get("metrics") or []
@@ -378,19 +465,138 @@ def failures_for(result: dict, args) -> list[str]:
     if bad:
         failures.append(f"non-finite loss: {losses}")
 
+    # Did the optimizer apply anything? Every number above stays healthy with
+    # all-zero gradients: the loss is finite, compilation engaged, and the
+    # untrained base model still generates text.
+    #
+    # The adapter fingerprints before and after training decide it, with
+    # grad_norm as fallback rather than the other way round. This USED to be
+    # `if norms and not applied`, which passes on an empty list: a trainer that
+    # stopped logging grad_norm silently took the only instrument this leg had,
+    # and unlike the SFT leg there is no saved adapter to read back. See
+    # training_evidence.py.
+    update = update_verdict(metrics, result.get("adapter_update"))
+    if update["verdict"] == "not_applied":
+        failures.append(
+            f"no optimizer update was applied: {update['detail']}, so the adapter "
+            f"is the adapter it started with and this leg measured a forward pass "
+            f"rather than LoRA training"
+        )
+    elif update["verdict"] == "non_finite":
+        failures.append(
+            f"the adapter holds non-finite weights after training: {update['detail']}. "
+            f"gpt-oss is in the FORCE_FLOAT32 list precisely because reduced "
+            f"precision through these weights produces infinities, so this is that "
+            f"failure landing in the adapter rather than in the loss"
+        )
+    elif update["verdict"] != "applied":
+        # Not `== "unverifiable"`: any verdict this file has not been taught
+        # about is a failure rather than a silent pass.
+        failures.append(
+            f"whether the optimizer applied anything could not be established: "
+            f"{update['detail']}. LoRA training on this path is the only thing "
+            f"this leg claims, and the base model on its own produces every other "
+            f"number in this report"
+        )
+
+    # The float32 path, the coverage this leg uniquely claims, recorded on every
+    # run and asserted on none: a run that quietly went through fp16 logs finite
+    # losses, compiles, generates and reports green while that path was never
+    # exercised.
+    #
+    # Conditioned on the card, not hardcoded to T4: FORCE_FLOAT32 exists because
+    # this hardware has no bf16, so on a card that has it, the patch not firing
+    # is correct and a red would be this check's own bug.
+    #
+    # Three-way, not two-way. `is False` alone made the block conditional on a
+    # reading allowed to be absent -- main() records `{"error": ...}` for the
+    # whole environment when the probe raises -- so a torch build that changed
+    # or failed `is_bf16_supported()` skipped this leg's one unique assertion
+    # while everything else passed. Anything but a literal True or False is
+    # unverifiable, and unverifiable is red here.
+    environment = result.get("environment") or {}
+    bf16_supported = environment.get("bf16_supported")
+    if bf16_supported is not True and bf16_supported is not False:
+        failures.append(
+            f"the card's bf16 support was not recorded, so whether the forced "
+            f"float32 path had to fire could not be established: "
+            f"environment={environment}. This leg exists to cover that path on "
+            f"hardware without bf16, and every other number in this report is "
+            f"produced with or without it"
+        )
+    elif bf16_supported is False:
+        precision = result.get("precision")
+        if not precision:
+            failures.append(
+                "the training precision was never recorded, so whether the forced "
+                "float32 path fired could not be established"
+            )
+        else:
+            if precision.get("fp16") or precision.get("bf16"):
+                failures.append(
+                    f"the run trained in reduced precision on a card without bf16: "
+                    f"{precision}. gpt-oss is in Unsloth's FORCE_FLOAT32 list because "
+                    f"fp16 autocast through these weights produces infinities, so this "
+                    f"is the patch having stopped firing, not a slow pass."
+                )
+            elif precision.get("force_float32_env") != "1":
+                # The exact string, not truthiness: the loader writes "0" here
+                # on its normal branch before deciding whether to force
+                # (models/loader.py), so a nonempty check accepts the very
+                # regression it is here to catch -- forcing off, fp16 and bf16
+                # still false, leg green. Every production consumer reads
+                # `== "1"`.
+                failures.append(
+                    f'UNSLOTH_FORCE_FLOAT32 is not "1": {precision}. The loader sets '
+                    f'it to "0" and only writes "1" when the forcing actually fired, '
+                    f"and the float32 path is the only thing this leg covers that "
+                    f"nothing else in CI does."
+                )
+
+    # Where the weights ended up, recorded on every run since the feasibility
+    # probe and asserted on none. "the 20B checkpoint fits and trains WHOLLY on
+    # one T4" is the result this leg exists to hold, and it is the one that
+    # degrades quietly: a loader or memory-management regression that sends
+    # layers to the CPU still logs finite losses, still updates the adapter,
+    # still compiles and still generates, so the leg reports green having
+    # measured a different, slower thing. The probe's own margin is the reason
+    # to check rather than assume -- 12.78 GB reserved of 14.56, about 1.8 GB.
+    #
+    # accelerate's offload is also inference-only ("This only supports
+    # inference, not training" -- huggingface.co/docs/accelerate big model
+    # inference), so a training run that reaches it is not a slower version of
+    # this leg. It is a different one.
+    failures.extend(_placement_failures(result.get("placement_after_load")))
+
     if args.require_compile:
         compiled = result.get("compile") or {}
+        # The DELTA across training, not the process-global total, which is
+        # nonzero the moment the loader compiles anything and so used to be
+        # satisfied by an entirely eager training path.
+        graphs = compiled.get("unique_graphs_delta")
         if not compiled.get("available"):
             failures.append(
                 "torch._dynamo counters were unreadable, so whether "
                 "torch.compile engaged could not be established: "
                 f"{compiled.get('error')}"
             )
-        elif compiled.get("unique_graphs", 0) < 1:
+        elif graphs is None:
+            # No baseline means no subtraction, and falling back to the absolute
+            # count would assert on a number the LOADER made nonzero, turning
+            # the one case where training cannot be isolated into the one most
+            # likely to pass.
             failures.append(
-                "torch.compile captured zero graphs, so this run exercised "
-                "the eager path only. That is the silent fallback this leg "
-                "exists to catch; it is a failure, not a slow pass."
+                "the pre-training dynamo counters were not readable, so what "
+                "training itself compiled cannot be separated from what loading the "
+                "model compiled, and this leg requires compilation: "
+                f"{compiled}"
+            )
+        elif graphs < 1:
+            failures.append(
+                "torch.compile captured zero graphs across training itself, so the "
+                "training path ran eager whatever was compiled at load time. That is "
+                "the silent fallback this leg exists to catch; it is a failure, not a "
+                f"slow pass. Counters: {compiled}"
             )
 
     generated = result.get("generated")
@@ -441,9 +647,9 @@ def main() -> int:
         "failures": [],
     }
 
-    # Versions first, and before anything can crash. A payload that died in
-    # the loader still has to say which library set it died with, or the
-    # crash is unattributable and the session was spent for nothing.
+    # Versions first, before anything can crash: a payload that died in the
+    # loader still has to say which library set it died with, or the crash is
+    # unattributable and the session was spent for nothing.
     report["versions"] = resolved_versions(
         GOAL_PACKAGES, import_check = ("torch", "transformers", "trl")
     )
@@ -471,8 +677,8 @@ def main() -> int:
     try:
         result = train_and_infer(args)
         report.update(result)
-        # The metrics key the launcher and report renderer already know how
-        # to display, so this leg needs no special case downstream.
+        # The metrics key the launcher and report renderer already display, so
+        # this leg needs no special case downstream.
         report["metrics"] = result.get("metrics", [])
         failures = failures_for(report, args)
     except BaseException as exc:  # noqa: BLE001
@@ -486,9 +692,8 @@ def main() -> int:
 
     report["observed_failures"] = failures
     if args.probe:
-        # A probe reports; it does not judge. The verdict is read off
-        # observed_failures by a human, and the leg is not wired into CI
-        # until that reading says it can be.
+        # A probe reports; it does not judge. A human reads the verdict off
+        # observed_failures, and the leg is not wired into CI until it can be.
         report["failures"] = []
         report["passed"] = True
     else:

@@ -3,46 +3,21 @@
 
 """Determinism and metric-capture primitives for the Kaggle T4 smoke test.
 
-Self-contained on purpose. The payload for this test is shipped to a Kaggle
-kernel as an inlined notebook with no repo checkout and no network fetch of
-our sources, so it cannot import a helper that only exists on the machine
-that built it. Everything the payload needs is either in this file or in the
-notebook that carries it.
+Self-contained on purpose: the payload ships to a Kaggle kernel as an inlined
+notebook with no repo checkout and no network fetch of our sources, so it
+cannot import a helper that exists only on the machine that built it.
 
-Four primitives, mirroring the workspace debugging utilities they were
-modelled on:
+``enable_full_determinism`` is separate from ``set_all_seeds_fast`` because it
+MUST run before ``import torch`` for the cuBLAS workspace setting to take
+effect. ``StatisticsCallback`` requires ``logging_steps=1``.
+``RepeatingSequentialSampler`` makes the sample sequence a pure function of the
+step index.
 
-``set_all_seeds_fast(seed)``
-    Seeds ``random`` / ``numpy`` / ``torch`` (+ CUDA). Fast path: does NOT
-    turn on deterministic algorithms.
-
-``enable_full_determinism()``
-    The slow path. MUST be called before ``import torch`` for the cuBLAS
-    workspace setting to take effect, so it is exposed separately rather
-    than folded into the seeding call.
-
-``StatisticsCallback``
-    ``transformers.TrainerCallback`` that accumulates one dict per logged
-    step into ``.logs`` -- ``step``, ``loss``, ``grad_norm``, ``learning_rate``.
-    Requires ``logging_steps=1``.
-
-``RepeatingSequentialSampler``
-    Fixed, shuffle-free sampling order. Step *i* draws row ``i % len(dataset)``
-    repeated across the whole effective batch, so the sample sequence is a
-    pure function of the step index and nothing else.
-
-``compare_metrics``
-    Compares two metric lists and reports max absolute deviation per field.
-
-A note on what these can and cannot buy, because the assertions in
-``run_t4_smoke.py`` depend on the distinction:
-
-* Run-to-run inside ONE process/session: bitwise reproducible is achievable
-  and is asserted exactly.
-* Across GPU architectures, driver versions or library versions: bitwise is
-  NOT achievable. Reduction order, kernel selection and the fp16 vs bf16
-  choice all move the low bits. Cross-environment checks are tolerance
-  bands, never equality.
+What these can buy, since ``run_t4_smoke.py``'s assertions depend on it:
+run-to-run inside ONE process is bitwise reproducible and is asserted exactly;
+across GPU architectures, drivers or library versions it is not, since
+reduction order, kernel selection and fp16 vs bf16 all move the low bits, so
+those checks are tolerance bands, never equality.
 """
 
 from __future__ import annotations
@@ -53,10 +28,9 @@ import random
 from typing import Any
 
 
-# cuBLAS needs a fixed workspace for its GEMM reductions to be reproducible.
-# CUDA reads this when the cuBLAS handle is created, which happens on first
-# use after `import torch` -- setting it later is silently ignored, which is
-# the classic way to believe you have determinism and not have it.
+# cuBLAS needs a fixed workspace for reproducible GEMM reductions. CUDA reads
+# this when the handle is created, on first use after `import torch`; setting it
+# later is silently ignored.
 CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 
 
@@ -67,9 +41,8 @@ def enable_full_determinism() -> None:
     """
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG
     os.environ["PYTHONHASHSEED"] = "0"
-    # A tokenizers worker pool introduces a nondeterministic interleave in
-    # dataset .map ordering under some versions; the dataset here is tiny so
-    # there is nothing to gain from it either way.
+    # A tokenizers worker pool interleaves dataset .map ordering
+    # nondeterministically on some versions, and this dataset is tiny anyway.
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -89,14 +62,12 @@ def set_all_seeds_fast(seed: int = 3407) -> None:
 def set_deterministic_algorithms(warn_only: bool = True) -> dict:
     """Ask torch for deterministic kernels. Returns what actually took.
 
-    ``warn_only=True`` is the default and is deliberate. Unsloth's 4-bit path
-    goes through bitsandbytes and through fused Triton kernels, and at least
-    some of those have no deterministic implementation registered. With
-    ``warn_only=False`` torch raises and the smoke test dies having proved
-    nothing about the notebook. With ``warn_only=True`` torch uses the
-    deterministic kernel wherever one exists and warns where one does not,
-    which is strictly better than not asking, and the run-to-run equality
-    assertion is what actually verifies the result.
+    ``warn_only=True`` is deliberate. Unsloth's 4-bit path runs through
+    bitsandbytes and fused Triton kernels, some of which register no
+    deterministic implementation, so ``warn_only=False`` raises and the smoke
+    test dies having proved nothing. Warning instead uses the deterministic
+    kernel wherever one exists, and the run-to-run equality assertion is what
+    actually verifies the result.
     """
     import torch
 
@@ -125,15 +96,13 @@ def _trainer_callback_base():
 class StatisticsCallback(_trainer_callback_base()):  # type: ignore[misc]
     """Accumulate per-step loss / grad_norm / lr into ``.logs``.
 
-    Reads the values the Trainer itself logs rather than recomputing a grad
-    norm from the parameters. Recomputing would report a norm measured AFTER
-    the optimizer step and after gradients were zeroed, which is either a
-    different quantity or zero depending on the transformers version. The
-    logged value is the pre-clip norm the trainer used, which is the number
-    a regression would actually move.
+    Reads what the Trainer logs rather than recomputing a grad norm from the
+    parameters: recomputing measures AFTER the optimizer step and after
+    gradients were zeroed, giving a different quantity or zero depending on the
+    transformers version. The logged value is the pre-clip norm the trainer
+    used.
 
-    Only fires on steps the Trainer logs, so the caller must set
-    ``logging_steps=1``.
+    Only fires on logged steps, so the caller must set ``logging_steps=1``.
     """
 
     def __init__(self) -> None:
@@ -170,10 +139,9 @@ class RepeatingSequentialSampler(_sampler_base()):  # type: ignore[misc]
     """Deterministic, shuffle-free index order.
 
     Step *i* yields row ``i % dataset_length``, repeated
-    ``batch_size * gradient_accumulation_steps`` times. The order is a pure
-    function of the step index, so it does not depend on the RNG state, on
-    the dataset length modulo the batch size, or on which epoch boundary the
-    run happens to land near.
+    ``batch_size * gradient_accumulation_steps`` times: a pure function of the
+    step index, independent of RNG state, of dataset length modulo batch size,
+    and of which epoch boundary the run lands near.
     """
 
     def __init__(
@@ -215,6 +183,17 @@ def compare_metrics(
 
     ``identical`` is bitwise equality of every compared field, not equality
     within a tolerance: the caller decides what tolerance means.
+
+    Two non-numeric differences count too, both being this comparison's own
+    subject matter:
+
+    * A field logged by one run and not the other. Same-length lists carrying
+      different keys are two different traces, which ``check_reference`` already
+      calls "a change in the SHAPE of what the trainer logged"; the exact
+      comparator cannot be laxer than the tolerance band beside it.
+    * A moved ``step`` coordinate. The lists are zipped positionally, so a
+      shifted, duplicated or reordered step makes every later pairing
+      meaningless AND is itself the trainer nondeterminism this exists to catch.
     """
     result: dict[str, Any] = {
         "identical": True,
@@ -222,29 +201,55 @@ def compare_metrics(
         "length_b": len(b),
         "max_abs_diff": {},
         "first_diff_step": None,
+        "step_mismatch": [],
     }
     if len(a) != len(b):
         result["identical"] = False
         result["length_mismatch"] = True
         return result
+    for index, (ea, eb) in enumerate(zip(a, b)):
+        sa, sb = ea.get("step"), eb.get("step")
+        if sa != sb:
+            result["step_mismatch"].append({"index": index, "a": sa, "b": sb})
+            if result["identical"]:
+                result["identical"] = False
+                result["first_diff_step"] = sa
     for field in fields:
         worst = 0.0
         for ea, eb in zip(a, b):
-            if field not in ea or field not in eb:
+            has_a, has_b = field in ea, field in eb
+            if not has_a and not has_b:
+                continue
+            if has_a != has_b:
+                if result["identical"]:
+                    result["identical"] = False
+                    result["first_diff_step"] = (ea if has_a else eb).get("step")
+                result.setdefault("one_sided_fields", []).append(
+                    {
+                        "step": (ea if has_a else eb).get("step"),
+                        "field": field,
+                        "present_in": "a" if has_a else "b",
+                    }
+                )
                 continue
             va, vb = float(ea[field]), float(eb[field])
-            # NaN is a legitimate, REPRODUCIBLE value here. Under fp16 the
-            # gradient scaler reports a NaN grad_norm on any step whose
-            # gradients overflowed, and it then skips that step -- which
-            # step overflows is itself deterministic. Comparing with
-            # abs(a - b) would make every such step register as a
-            # difference, because NaN != NaN, and the run-to-run assertion
-            # would fail on runs that are in fact identical.
+            # NaN is legitimate and REPRODUCIBLE here: under fp16 the gradient
+            # scaler logs a NaN grad_norm on every overflowing step and skips
+            # it, and which step overflows is deterministic. abs(a - b) would
+            # flag each of those as a difference since NaN != NaN.
             na, nb = va != va, vb != vb
             if na or nb:
                 if na != nb and result["identical"]:
                     result["identical"] = False
                     result["first_diff_step"] = ea.get("step")
+                continue
+            # Equal is equal: subtracting is unsafe once a value can be
+            # infinite. An fp16 overflow logs as NaN OR as inf (clip_grad_norm_
+            # over an inf gradient returns inf), and abs(inf - inf) is NaN,
+            # != 0.0, so two runs overflowing on the same step read as differing
+            # with max_abs_diff 0.0. One-sided and oppositely signed infinities
+            # still fall through to the subtraction and come out as differences.
+            if va == vb:
                 continue
             diff = abs(va - vb)
             worst = max(worst, diff)

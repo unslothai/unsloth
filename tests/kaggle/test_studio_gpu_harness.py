@@ -872,7 +872,14 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     # enforces the priority: the cheap leg stops first so the expensive one
     # gets the tail of the week.
     assert "The split is Studio 35, this leg 15" in notebook
-    assert "--reserve-hours 25" in notebook and "--reserve-hours 10" in studio
+    assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
+
+    # The Studio block states the notebook leg's reserve in PROSE, so the number
+    # lives in two files and one of them is not executable. Raising the notebook
+    # reserve without touching that sentence leaves the Studio budget arguing from
+    # a figure that is no longer true, which is exactly how the "cheap leg yields
+    # first" priority gets documented backwards. Assert the sentence agrees.
+    assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
 
     # Both budget blocks must name the other leg. Two independently-tuned
     # rates against one account is how the 50h ceiling gets exceeded by

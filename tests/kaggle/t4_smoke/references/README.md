@@ -77,6 +77,46 @@ Changing `--max-steps`, `--init-loss-scale`, the learning rate, the model or
 the optimizer therefore invalidates the committed file. There is no
 tolerance that covers it and widening the band is never the answer.
 
+That is enforced rather than left to the reader. `check_reference` compares
+the whole `config` block, plus the model and the resolved checkpoint commit,
+against the run in hand and refuses with status `config_mismatch` before it
+looks at a number -- the same refusal the step count already got, for the same
+reason. `repeat` is deliberately not one of them: each cycle is a fresh
+process running the identical configuration, so running three of them rather
+than two does not change any one of them. A key the committed file does not
+carry is listed under `config_unchecked` and is not treated as a mismatch,
+so an older reference keeps working until it is next recaptured.
+
+## The dataset is part of the reference too
+
+A trace is of one experiment, and which rows trained is as much a part of
+that experiment as the step count is. `canary_dataset.jsonl` is inside this
+workflow's `paths:` filter, so editing it is a supported way to TRIGGER the
+run that would then be compared against a curve captured on the old rows: a
+small edit passes the band and reports green on a comparison that means
+nothing, a larger one is reported as a code regression.
+
+So `config.dataset_digest` records a sha256 of the parsed rows, in order,
+and `check_reference` refuses on it exactly as it refuses on `max_steps`.
+Two things follow. Reformatting the file -- whitespace, key order within a
+row -- changes neither what trains nor the order it trains in and does not
+invalidate the reference. Changing a question, an answer, the row order or
+the row count does, and takes a recapture.
+
+`test_the_committed_reference_names_the_dataset_it_was_captured_on` compares
+the committed digest against the committed dataset on every CI run, on the
+runner, before a Kaggle session is paid for. A dataset edit therefore turns
+that test red in the same job that would have launched the comparison, which
+is where the recapture is cheapest to notice.
+
+The per-step `step` coordinates are compared too, before any value is. The
+observed and reference traces are zipped positionally, so a trace whose steps
+were renumbered pairs values that describe different iterates; that is status
+`step_mismatch`, and nothing is compared. It is safe to be strict about it
+here because the only leg carrying a reference is the control, whose library
+set is pinned to the one the trace was captured with and whose pin failure is
+itself fatal.
+
 ## Tolerance
 
 Default `--rel-tol 0.10`, with `--abs-floor 0.05` on the denominator.
@@ -138,7 +178,8 @@ hardware:
 * All four cycles emitted the canary `__UNSLOTH__!!!` exactly.
 * The fp16 scaler skipped steps 1, 2 and 3 on every cycle.
 
-The committed file is `reports[0]` of that run, per the recipe below. Peak
+The committed file is the `control`-labelled report of that run, per the
+recipe below. Peak
 reserved memory was 0.7 GB per payload and each cycle trained in 15-26 s.
 
 Do not fill this file with numbers from other hardware. A trace captured on
@@ -155,20 +196,60 @@ reports, so it does not need its own Kaggle session. From the
 ```
 python - <<'PY'
 import json, pathlib
-result = json.loads(pathlib.Path("kaggle_evidence/launch_result.json").read_text())
-report = result["reports"][0]
+evidence = pathlib.Path("kaggle_evidence")
+result = json.loads((evidence / "launch_result.json").read_text())
+control = [r for r in result["reports"] if r.get("label") == "control"]
+assert len(control) == 1, [r.get("label") for r in result["reports"]]
+report = control[0]
+assert report["passed"], report["failures"]
+# The Kaggle kernel it ran on. The evidence directory of each kernel is named
+# after the last segment of its slug and each leg's executed notebook is named
+# after the leg, so this identifies the session rather than guessing at it.
+dirs = {p.parent.name for p in evidence.rglob("t4_control_output.ipynb")}
+slugs = [k["slug"] for k in result["kernels"]
+         if k.get("slug") and k["slug"].rsplit("/", 1)[-1] in dirs]
+assert len(slugs) == 1, (dirs, [k.get("slug") for k in result["kernels"]])
 pathlib.Path("tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json").write_text(
     json.dumps({"metrics": report["metrics"],
                 "environment": report["environment"],
                 "config": report["config"],
-                "source_kernel": result["slug"]}, indent=2))
+                "model": report["model"],
+                "resolved_checkpoint": report.get("resolved_checkpoint"),
+                "resolved_revision": report.get("resolved_revision"),
+                "source_kernel": slugs[0]}, indent=2))
 PY
 ```
 
-Take it from `reports[0]`, whose metrics are cycle 0 of the payload that
-passed. Both payloads in a session run the same configuration on the two
-T4s of that session; if their traces disagree, that disagreement is itself
-the finding and nothing should be committed until it is understood.
+`source_kernel` is the one field in the file that points OUTWARDS, at the
+hardware execution the band came from, and it is what makes a suspicious
+recapture auditable while the `kaggle-t4-evidence` artifact is still around
+(14 days). A leg label put there names something every reference has and no
+run in particular.
+
+**Select it by `label`, never by position.** `reports[0]` is not the control
+and never was: `launch.extract_reports` walks `sorted(outdir.rglob(...))` over
+per-kernel directories named after a random Kaggle slug, so which kernel comes
+first is decided by that slug, and inside the control/canary kernel
+`t4_canary_output.ipynb` sorts before `t4_control_output.ipynb` anyway. On a
+four-leg run the first report is as likely to be `frontier` or `gptoss` as
+anything else. Committing one of those as the control reference gives every
+later run a band it has nothing to do with, and the failures it then produces
+look like regressions.
+
+The control leg's metrics are cycle 0 of the payload that passed. Both
+payloads in a session run the same configuration on the two T4s of that
+session; if their traces disagree, that disagreement is itself the finding
+and nothing should be committed until it is understood.
+
+`model`, `resolved_checkpoint` and `resolved_revision` travel with the file
+for the same reason `config` does. `load_in_4bit=True` sends the requested
+name through Unsloth's `FLOAT_TO_INT_MAPPER`, so the repository that was read
+is `unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit` and not the name in
+`--model`; recording its commit is what makes a mirror re-uploaded in place
+show up as `config_mismatch` rather than as an unexplained band failure. A
+`revision=` on the load would not do this job: Unsloth drops a revision once
+the mapper has remapped the repo, since the revision names a commit on the
+repo that was asked for and not on the one that was loaded.
 
 `json.dumps` writes `NaN` for the scaler-skipped steps. That is not valid
 strict JSON but Python's `json.loads` reads it back, which is what both the
@@ -187,8 +268,9 @@ the numbers came from.
 
 ## Recapturing after a configuration change
 
-A change to `--max-steps`, `--init-loss-scale`, the learning rate, the model
-or the optimizer means the committed reference no longer describes the run.
+A change to `--max-steps`, `--init-loss-scale`, the learning rate, the model,
+the optimizer or `canary_dataset.jsonl` means the committed reference no
+longer describes the run.
 The band check then refuses, loudly, on every run. Clearing that takes
 exactly one Kaggle session:
 
@@ -204,7 +286,8 @@ exactly one Kaggle session:
 3. Download the `kaggle-t4-evidence` artifact from that run and apply the
    recipe above.
 4. Commit the new file with the kernel slug in the message, and check the
-   diff: `config.max_steps` must be the new count, and `environment` must
+   diff: `config.max_steps` must be the new count, `config.dataset_digest`
+   must match the committed `canary_dataset.jsonl`, and `environment` must
    still say `Tesla T4` / `sm_75`.
 
 The run in step 1 is also the first hardware evidence for the new

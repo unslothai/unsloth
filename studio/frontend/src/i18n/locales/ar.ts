@@ -17,7 +17,6 @@ export const ar = {
     searchAriaLabel: "البحث في {noun}",
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
-    pickModelFile: "اختيار ملف نموذج من القرص",
     modelDropped: "لم يعد متاحًا",
     modelDroppedByProvider: "{provider} · لم يعد متاحًا",
     modelDisabled: "غير مُفعَّل",
@@ -155,7 +154,32 @@ export const ar = {
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
+      debugging: "السجلات",
       voice: "الصوت",
+    },
+    debugging: {
+      logSection: "ملف السجل",
+      source: "ملف السجل",
+      sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
+      path: "الموقع",
+      pathCopy: "نسخ المسار",
+      refreshSection: "التحديث",
+      mode: "الوضع",
+      modeLive: "مباشر",
+      modeInterval: "كل 3 ثوانٍ",
+      modeManual: "يدوي",
+      refreshNow: "تحديث الآن",
+      privacyNote: "تُخفى بيانات الاعتماد في هذا العرض. أما في الملف الموجود على القرص فلا تُخفى.",
+      copyVisible: "نسخ السجل الظاهر",
+      empty: "لم يُسجَّل أي شيء بعد.",
+      disabled: "التسجيل في ملف مُعطَّل (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "لم يُعثر على أي ملف سجل.",
+      unreadable: "تعذّرت قراءة ملف السجل.",
+      timeout: "انتهت مهلة طلب السجل. قد يتعذر الوصول إلى الخادم.",
+      droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
+      morePending: "لا يزال يجري قراءة أسطر إضافية، وستظهر عند التحديث التالي.",
+      staleSession: "تسجيل الملفات معطل، لذا هذه جلسة سابقة ولن يتم تحديثها.",
+      keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
       title: "الصوت",
@@ -370,6 +394,13 @@ export const ar = {
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
         idleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول",
+        mediaIdleUnload: "التفريغ التلقائي عند الخمول للصور والفيديو",
+        mediaIdleUnloadDescription:
+          "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. إنه إعداد مستقل: الإعداد أعلاه يخصّ نموذج المحادثة فقط. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
+        mediaIdleSecondsAriaLabel:
+          "عدد الثواني قبل التفريغ التلقائي عند الخمول للصور والفيديو",
+        mediaIdlePaused:
+          "متوقف مؤقتًا ما دام «إبقاء النموذج في ذاكرة كرت الرسوميات» أو «تفريغ النماذج التي حمّلتها واجهة API فقط» مفعّلًا.",
         idleNeedsEnable: "فعّل «تبديل النموذج حسب الطلب» أولًا.",
         idleActiveViaEnv:
           "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
@@ -419,6 +450,11 @@ export const ar = {
         launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+
+        closeToTray: "الإغلاق إلى علبة النظام",
+        closeToTrayDescription:
+          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+        closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
@@ -716,6 +752,39 @@ export const ar = {
         free: "{value} متاح",
         total: "{value} إجمالي",
       },
+      llamaBackend: {
+        title: "محرك استدلال GGUF",
+        label: "خلفية الحوسبة",
+        description: "الخلفية التي يستخدمها llama.cpp لتشغيل نماذج GGUF.",
+        runningOn: "يعمل llama.cpp حاليًا على {backend}.",
+        hint: "يثبّت إصدار llama.cpp الخاص بهذه الخلفية ويحافظ عليه عبر التحديثات. مفيد عندما ينهار الاختيار التلقائي أو لا يدعمه تعريف كرت الشاشة لديك. تظهر فقط الخلفيات التي يتوفر لها إصدار لهذا الجهاز، والتدريب لا يتأثر.",
+        autoWith: "تلقائي ({backend})",
+        apply: "تطبيق",
+        applying: "جارٍ التثبيت...",
+        applyHint: "ينزّل الإصدار الجديد ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        applyHintWithSize: "ينزّل {size} ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        switchedTo: "يعمل llama.cpp الآن على {backend}.",
+        switchFailed: "تعذّر تغيير خلفية llama.cpp.",
+        switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
+        envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
+        backends: {
+          auto: "تلقائي",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
+          localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
+          sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
+          unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
+        },
+        // لا يظهر: كلمات إضافية لبحث الإعدادات.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
+      },
       modelMemory: {
         title: "ذاكرة النموذج",
         keepResident: "إبقاء النموذج في ذاكرة كرت الرسوميات",
@@ -926,12 +995,14 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
+        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
         "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
+      importingChats: "جارٍ استيراد المحادثات: {count} حتى الآن ({percent}%)...",
+      importedChatCountPartial: "تم استيراد {count} محادثة إلى الأخيرة؛ تعذّر حفظ {failed} منها.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",

@@ -77,6 +77,7 @@
   },
   "config": {
     "max_steps": 10,
+    "dataset_digest": "847095f51df8d86429cd2cd095824369d6d95c36bd461c363599651d356946df",
     "batch_size": 2,
     "grad_accum": 1,
     "max_seq_length": 512,
@@ -87,5 +88,6 @@
     "gradient_checkpointing": "unsloth",
     "repeat": 2
   },
+  "model": "unsloth/Qwen2.5-0.5B-Instruct",
   "source_kernel": "danielhanchen/unsloth-t4-ci-e3c6661f"
 }

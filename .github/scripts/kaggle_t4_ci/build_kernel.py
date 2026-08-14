@@ -7,46 +7,36 @@ Two layers, because a Kaggle GPU session is 2xT4 and each payload is written
 for one card:
 
 **Payload notebook** -- one per GPU, one per *leg* (see ``legs.py``).
-Materialises its sources from inlined copies, installs that leg's library
-set, probes that the imports it needs are there, runs the leg's entry
-script, prints a machine-readable result line.
+Materialises its sources from inlined copies, installs that leg's library set,
+probes its imports, runs the leg's entry script, prints a machine-readable
+result line.
 
 **Driver notebook** -- one per kernel. Carries its payloads inline (gzip +
-base64) so the kernel needs no dataset attachment and no network fetch of
-our sources, gives each payload its own virtualenv and its own GPU, and runs
-them concurrently under papermill.
+base64) so the kernel needs no dataset attachment and no network fetch of our
+sources, gives each payload its own virtualenv and GPU, and runs them
+concurrently under papermill. Nothing is checked out on the Kaggle side.
 
-Everything the kernel needs travels inside the notebook. There is no
-checkout on the Kaggle side.
+Cell order is load-bearing: **materialise, install, verify, run**. The control
+leg installs from a pin file carried inside the notebook, so materialising last
+(as an earlier version did) wrote that file after the install needing it.
 
-Cell order is load-bearing: **materialise, install, verify, run**. The
-control leg installs from a pin file that is carried inside the notebook, so
-the files have to exist on disk before the first pip call. Materialising
-last, as an earlier version did, meant the pin file was written after the
-install that needed it.
+Four details that are NOT safe to simplify away:
 
-Four hard-won details are load-bearing and are NOT safe to simplify away:
-
-1. **Per-child virtualenv.** Every payload pip-installs a torch/transformers
-   stack, and the legs deliberately install DIFFERENT ones. Sharing one
-   site-packages does not merely risk corruption here, it destroys the
-   experiment: the control leg's pins and the canary leg's upgrades would
-   land in the same tree and the last writer would win.
-2. **``uv venv --seed``.** Without it the venv has no pip, so a notebook's
-   ``!pip install`` falls through PATH to the system pip while the kernel
-   runs the venv interpreter: installs and imports then target different
-   site-packages.
+1. **Per-child virtualenv.** The legs deliberately pip-install DIFFERENT
+   torch/transformers stacks. One shared site-packages destroys the
+   experiment: control's pins and canary's upgrades land in the same tree and
+   the last writer wins.
+2. **``uv venv --seed``.** Without it the venv has no pip, so ``!pip install``
+   falls through PATH to the system pip while the kernel runs the venv
+   interpreter: installs and imports target different site-packages.
 3. **``UV_SYSTEM_PYTHON=0``.** The Kaggle image ships ``UV_SYSTEM_PYTHON=1``,
-   and it BEATS ``VIRTUAL_ENV``. Left alone, ``uv pip install`` writes to
-   the base image while ``--system-site-packages`` lets the kernel import
-   from there anyway, so both children silently share one tree and the
-   isolation the venv exists to provide is undone by an environment
-   variable.
-4. **Runtime paths are built in Python, from ROOT.** Anything spliced into a
-   generated cell as a shell-shaped fragment is a SyntaxError waiting for a
-   Kaggle session; ``@ROOT/`` arguments are expanded into ``str(ROOT / ...)``
-   expressions instead. ``test_generated_cells_compile`` is the cheap
-   version of finding that out.
+   which BEATS ``VIRTUAL_ENV``: ``uv pip install`` writes to the base image
+   while ``--system-site-packages`` lets the kernel import from there anyway,
+   so both children silently share one tree.
+4. **Runtime paths are built in Python, from ROOT.** A shell-shaped fragment
+   spliced into a generated cell is a SyntaxError waiting for a Kaggle session,
+   so ``@ROOT/`` arguments expand into ``str(ROOT / ...)`` expressions.
+   ``test_generated_cells_compile`` is the cheap way to find that out.
 
 Usage:
     python build_kernel.py --payload-dir tests/kaggle/t4_smoke \\
@@ -66,16 +56,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from legs import KERNELS, Leg, expand_install, resolve  # noqa: E402
+from legs import KERNELS, PACKAGE_UNDER_TEST, Leg, expand_install, resolve  # noqa: E402
 
 DRIVER_SENTINEL = "KAGGLE_T4_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_T4_CI_PAYLOAD"
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 
-# Where the payload sources land on the Kaggle side. One directory PER LEG:
-# the payloads of a kernel run concurrently and carry byte-identical copies of
-# the same files, and `write_bytes` truncates before it writes, so a single
-# shared directory lets one payload empty a file the other is importing.
+# Where the payload sources land on the Kaggle side, one directory PER LEG: a
+# kernel's payloads run concurrently with byte-identical copies of the same
+# files, and `write_bytes` truncates first, so one shared directory lets a
+# payload empty a file the other is importing.
 KERNEL_ROOT = "/kaggle/working/t4_smoke_src"
 
 
@@ -101,12 +91,11 @@ def _code_cell(source: str) -> dict:
 def _shared_args_for(leg: Leg, extra_args: tuple[str, ...]) -> list[str]:
     """``--smoke-args``, minus any option the leg already sets for itself.
 
-    The shared arguments exist so the control and canary legs differ in
-    nothing but versions, and they are appended AFTER each leg's own. For a
-    leg that names the same option that is an override, because argparse
-    takes the last value: the gpt-oss leg asks for 3 steps -- a measured fit
-    for a 16GB card -- and the workflow's ``--max-steps 10`` silently
-    retrained the 20B model for ten.
+    Shared arguments keep the control and canary legs differing in nothing but
+    versions, and are appended AFTER each leg's own, so for a leg naming the
+    same option they override it (argparse takes the last value): the gpt-oss
+    leg asks for 3 steps, a measured fit for a 16GB card, and the workflow's
+    ``--max-steps 10`` silently retrained the 20B model for ten.
     """
     own = {a.split("=", 1)[0] for a in leg.args if a.startswith("--")}
     kept: list[str] = []
@@ -129,11 +118,10 @@ def _shared_args_for(leg: Leg, extra_args: tuple[str, ...]) -> list[str]:
 def _arg_expression(value: str) -> str:
     """One entry of the child's argv, as a Python expression.
 
-    ``@ROOT/x/y`` becomes ``str(ROOT / "x" / "y")`` so the path is assembled
-    on the kernel from the kernel's own ROOT. Everything else is a plain
-    string literal. The alternative -- interpolating the path into the
-    generated source -- is what produced a cell that read
-    ``"--label", "gpu0" --reference "{ROOT}/..."`` and died with a
+    ``@ROOT/x/y`` becomes ``str(ROOT / "x" / "y")`` so the path is assembled on
+    the kernel from its own ROOT; everything else is a string literal.
+    Interpolating the path into the generated source instead produced a cell
+    reading ``"--label", "gpu0" --reference "{ROOT}/..."`` that died with a
     SyntaxError before a single training step ran.
     """
     if value.startswith("@ROOT/"):
@@ -158,9 +146,8 @@ def build_payload_notebook(
     if leg.entry not in wanted:
         wanted.append(leg.entry)
 
-    # `reference=None` means "whatever the leg asks for"; an explicit ""
-    # means the caller is turning the band check off for this run, which is
-    # how a reference recapture is dispatched.
+    # `reference=None` means "whatever the leg asks for"; an explicit "" turns
+    # the band check off, which is how a reference recapture is dispatched.
     ref_name = leg.reference if reference is None else reference
     if ref_name:
         wanted.append(f"references/{ref_name}")
@@ -193,7 +180,7 @@ print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
 # differs between the control leg and the version canary. They are printed
 # before they run so the kernel log alone says what was asked for, which is
 # what makes a canary failure attributable without downloading anything.
-import json, subprocess, sys
+import json, subprocess, sys, time
 print("{PAYLOAD_SENTINEL} leg {leg.name}: {leg.summary}", flush=True)
 GROUPS = {json.dumps(groups)}
 print("{PAYLOAD_SENTINEL} install plan " + json.dumps(GROUPS), flush=True)
@@ -203,7 +190,9 @@ def pip(args):
     print("  $ " + " ".join(cmd[3:]), flush=True)
     # github.com occasionally 500s on a git fetch, and PyPI occasionally
     # times out; a single upstream blip must not be reported as a notebook
-    # regression. A resolution that is genuinely impossible fails all three.
+    # regression. The backoff is what lets the third failure be read as a
+    # resolution that is genuinely impossible rather than as one bad minute:
+    # three immediate retries all land inside the same outage.
     for attempt in (1, 2, 3):
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode == 0:
@@ -211,10 +200,27 @@ def pip(args):
         print(f"  install attempt {{attempt}} failed rc={{proc.returncode}}",
               flush=True)
         print("  " + proc.stderr.strip()[-1500:], flush=True)
-        if attempt == 3:
-            print("{PAYLOAD_SENTINEL} INSTALL FAILED " + json.dumps(list(args)),
-                  flush=True)
-            raise SystemExit(f"pip install failed: {{args}}")
+        if attempt < 3:
+            time.sleep(15 * attempt)
+            continue
+        print("{PAYLOAD_SENTINEL} INSTALL FAILED " + json.dumps(list(args)),
+              flush=True)
+        # A VERDICT, not missing evidence, for the same reason the dependency
+        # probe below writes one: the launcher classifies a leg that reported
+        # NOTHING as `partial` or `infra` and the workflow stays green. So a
+        # commit whose distribution cannot be resolved -- conflicting
+        # requirements in pyproject.toml, a dropped dependency -- used to pass
+        # the one job added to test its packaging metadata, by failing early
+        # enough that nothing was ever reported.
+        print("{RESULT_PREFIX}" + json.dumps({{
+            "label": {json.dumps(leg.name)},
+            "model": "install",
+            "passed": False,
+            "failures": ["pip install failed after 3 attempts: "
+                         + " ".join(args) + " -- rc=" + str(proc.returncode)
+                         + ": " + proc.stderr.strip()[-500:]],
+        }}), flush=True)
+        raise SystemExit(f"pip install failed: {{args}}")
 
 for group in GROUPS:
     pip(group)
@@ -226,7 +232,7 @@ print("{PAYLOAD_SENTINEL} install done", flush=True)
 # Without this, a missing dependency surfaces as a traceback buried in a
 # child process's captured stdout, forty minutes and one GPU session later.
 # Here it surfaces immediately, named, in the driver log.
-import importlib, json, sys
+import importlib, json, subprocess, sys
 # Everything above was pip-installed AFTER this interpreter started, and the
 # import system caches the directory listing of each sys.path entry. Without
 # this, a just-installed package can be invisible to the very next import.
@@ -237,9 +243,18 @@ importlib.invalidate_caches()
 # line a reader diffs between the control leg and the canary leg to name
 # what moved, so it is printed before anything can crash.
 sys.path.insert(0, {json.dumps(root)})
-import versions
-print("{PAYLOAD_SENTINEL} resolved " + json.dumps(
-    versions.flatten_versions(versions.resolved_versions())), flush=True)
+# Kept in a name rather than printed and discarded: report.version_table
+# builds the per-leg comparison out of the REPORTS, not out of the log, so a
+# leg whose report omits this is missing from the one table that says which
+# release differed from the healthy control. Wrapped because a half-installed
+# distribution can make importlib.metadata raise, and losing the report to a
+# diagnostic would put this leg back to reporting nothing at all.
+try:
+    import versions
+    RESOLVED = versions.flatten_versions(versions.resolved_versions())
+except Exception as exc:
+    RESOLVED = {{"error": f"{{type(exc).__name__}}: {{exc}}"[:200]}}
+print("{PAYLOAD_SENTINEL} resolved " + json.dumps(RESOLVED), flush=True)
 
 missing = []
 # ORDER IS PART OF THE TEST, not cosmetic. `unsloth` comes before
@@ -255,7 +270,16 @@ missing = []
 for mod in {json.dumps(list(leg.imports))}:
     try:
         importlib.import_module(mod)
-    except Exception as exc:
+    # BaseException, for the reason the GPU probe below gives: an import that
+    # ends in `sys.exit()` raises SystemExit, which is NOT an Exception, and a
+    # package refusing an accelerator or a version at import time is exactly
+    # how that happens. Uncaught it aborts this cell before the report below
+    # is written, the run cell never runs, and a leg that reported nothing is
+    # `partial` or `infra` at the launcher -- both green. KeyboardInterrupt is
+    # re-raised: that is the runner cancelling the job, not a bad dependency.
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
         missing.append(f"{{mod}}: {{type(exc).__name__}}: {{exc}}")
 if missing:
     print("{PAYLOAD_SENTINEL} MISSING " + json.dumps(missing), flush=True)
@@ -270,21 +294,91 @@ if missing:
         "label": {json.dumps(leg.name)},
         "model": "dependency probe",
         "passed": False,
+        "versions_flat": RESOLVED,
         "failures": ["import failed -- " + m for m in missing],
     }}), flush=True)
     raise SystemExit("payload dependencies incomplete: " + "; ".join(missing))
 
-import torch
-print("{PAYLOAD_SENTINEL} gpu " + json.dumps({{
-    "count": torch.cuda.device_count(),
-    "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-    "visible": __import__("os").environ.get("CUDA_VISIBLE_DEVICES"),
-}}), flush=True)
-# Exactly one GPU must be visible: two would mean the driver failed to pin
-# this payload to its own card, and accelerate would shard across both,
-# which is a different test from the single T4 a Colab user gets.
-assert torch.cuda.device_count() == 1, (
-    f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
+# The GPU check, under the same rule as the import probe above: whatever
+# goes wrong in here is a VERDICT and has to leave a report behind, because
+# nothing further down this notebook ever runs to write one.
+#
+# The case that made it necessary: the driver shows the T4s to `nvidia-smi`,
+# but dependency resolution picked a CPU-only or CUDA-incompatible torch
+# wheel, so `device_count()` is 0. The bare assert aborted the cell, the
+# launcher extracted no report for this leg, and no report is `infra` (or
+# `partial` next to its partner) -- both of which exit 0. A regression that
+# makes CUDA unusable was therefore invisible.
+#
+# `except BaseException`, and every line of the check inside it: the count
+# is only one of the ways this fails. `import torch` can raise on a broken
+# wheel, and get_device_properties can raise where device_count did not.
+try:
+    import torch
+    print("{PAYLOAD_SENTINEL} gpu " + json.dumps({{
+        "count": torch.cuda.device_count(),
+        "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "visible": __import__("os").environ.get("CUDA_VISIBLE_DEVICES"),
+    }}), flush=True)
+    # Exactly one GPU must be visible: two would mean the driver failed to pin
+    # this payload to its own card, and accelerate would shard across both,
+    # which is a different test from the single T4 a Colab user gets. Zero
+    # means the payload cannot run at all on the hardware it was billed for.
+    assert torch.cuda.device_count() == 1, (
+        f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
+except BaseException as exc:
+    detail = f"{{type(exc).__name__}}: {{exc}}"
+    print("{PAYLOAD_SENTINEL} GPU_UNUSABLE " + json.dumps(detail), flush=True)
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "gpu probe",
+        "passed": False,
+        "versions_flat": RESOLVED,
+        "failures": ["the payload could not use its GPU -- " + detail],
+    }}), flush=True)
+    raise
+
+# Is what the distribution under test DECLARES it needs actually satisfied?
+#
+# The import probe above asks the weaker question: a requirement reached only
+# by a delayed code path is absent all through a green run. pyproject.toml is
+# in this workflow's trigger paths, so a commit that drops a requirement, adds
+# one this image cannot satisfy, or tightens a bound past what is installed
+# arrives here to be tested, and `pip install unsloth` is where a user meets
+# it. LAST of the three checks because it is the only one that says nothing
+# about whether this session can run: a card it cannot use is the more urgent
+# verdict, and the GPU probe re-raises before reaching this.
+#
+# `pip check` is pip's own answer rather than a re-implementation of version
+# comparison, and ONLY the lines owned by the distribution under test are read.
+# The Kaggle image carries pre-existing conflicts of its own, and the frontier
+# leg deliberately installs a transformers that unsloth_zoo's metadata forbids;
+# both are other packages' lines and neither is this leg's verdict.
+OWNER = {json.dumps(PACKAGE_UNDER_TEST)}
+def _owned(line):
+    head = line.strip().split(" ")[0].lower().replace("_", "-")
+    return head == OWNER.lower().replace("_", "-")
+_check = subprocess.run([sys.executable, "-m", "pip", "check"],
+                        capture_output=True, text=True)
+unsatisfied = [ln.strip() for ln in (_check.stdout + _check.stderr).splitlines()
+               if _owned(ln)]
+if unsatisfied:
+    print("{PAYLOAD_SENTINEL} REQUIREMENTS_UNSATISFIED "
+          + json.dumps(unsatisfied), flush=True)
+    # A VERDICT, for the third time in this cell and for the same reason: the
+    # run cell below is the only other thing that writes a report, it is never
+    # reached from here, and a leg that reported nothing leaves the workflow
+    # green.
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "requirements",
+        "passed": False,
+        "versions_flat": RESOLVED,
+        "failures": ["declared requirement unsatisfied -- " + u
+                     for u in unsatisfied],
+    }}), flush=True)
+    raise SystemExit("declared requirements unsatisfied: "
+                     + "; ".join(unsatisfied))
 """
 
     argv = list(leg.args) + _shared_args_for(leg, tuple(extra_args))
@@ -312,7 +406,13 @@ cmd = [sys.executable, str(ROOT / {json.dumps(leg.entry)}),
 cmd += [{arg_exprs}]
 print("{PAYLOAD_SENTINEL} exec " + " ".join(cmd), flush=True)
 
-proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+# errors="replace", because the alternative is losing the verdict to the
+# output. text=True decodes strictly, and a payload that dies in native code
+# writes whatever bytes the crash handler had; one of them not being UTF-8
+# raised UnicodeDecodeError HERE, before the synthetic report below, so
+# papermill aborted the cell and the launcher, finding no report for this leg,
+# called the run partial or infra. Both are green, on a leg that died.
+proc = subprocess.run(cmd, env=env, capture_output=True, text=True, errors="replace")
 print(proc.stdout[-40000:], flush=True)
 if proc.stderr.strip():
     print("----- stderr (tail) -----", flush=True)
@@ -321,12 +421,45 @@ if proc.stderr.strip():
 print("{PAYLOAD_SENTINEL} returncode " + str(proc.returncode), flush=True)
 
 # Re-emit the report on its own line so the driver log alone is enough to
-# judge the run, even if artifact collection fails entirely.
+# judge the run, even if artifact collection fails entirely. Parsed and
+# re-serialized COMPACTLY rather than echoed: every payload writes this file
+# indented, the launcher scans whole lines for the prefix, and echoing the
+# indented text verbatim therefore hands it a lone `{{` to decode. The
+# recovery path meant for the case where the payload's own compact line fell
+# out of the retained stdout tail was thus the one case it could not recover.
+report = None
 report_path = OUT / "t4_smoke_report.json"
 if report_path.exists():
-    print("{RESULT_PREFIX}" + report_path.read_text(), flush=True)
+    try:
+        report = json.loads(report_path.read_text())
+    except Exception as exc:
+        print("{PAYLOAD_SENTINEL} REPORT UNREADABLE " + repr(exc)[:300], flush=True)
+        report = None
+
+if isinstance(report, dict):
+    print("{RESULT_PREFIX}" + json.dumps(report), flush=True)
 else:
-    print("{PAYLOAD_SENTINEL} NO REPORT WRITTEN", flush=True)
+    # A VERDICT, not missing evidence, and the distinction decides whether
+    # this job can go red at all. The child ran; a nonzero exit with no
+    # readable report is a CUDA segfault, a native abort or an OOM kill, and
+    # the definitive exit status for it is in hand right here. Printing only
+    # "NO REPORT WRITTEN" left the launcher with nothing to extract, and no
+    # reports at all is `infra` while a partner report is `partial` -- both
+    # green. So the crash is reported as the failure it is.
+    print("{PAYLOAD_SENTINEL} NO USABLE REPORT WRITTEN rc=" + str(proc.returncode), flush=True)
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "payload process",
+        "passed": False,
+        "returncode": proc.returncode,
+        "failures": [
+            "the payload process exited " + str(proc.returncode) + " and left no "
+            "readable t4_smoke_report.json, so it died before it could judge "
+            "itself. Its own report is the only thing that could have made this "
+            "leg green.",
+        ],
+        "stderr_tail": proc.stderr[-2000:],
+    }}), flush=True)
 
 print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # Deliberately does NOT raise. A failing payload must not abort its partner
@@ -358,10 +491,9 @@ def build_driver(
 ) -> dict:
     """Kernel notebook that fans the payloads out one per GPU.
 
-    ``isolation`` maps a payload to whether its virtualenv may see the
-    Kaggle image's site-packages. It is per payload rather than per kernel
-    because the legs that share a kernel do not share an answer: see
-    ``Leg.system_site_packages``.
+    ``isolation`` maps a payload to whether its virtualenv may see the Kaggle
+    image's site-packages. Per payload, not per kernel, because legs sharing a
+    kernel do not share an answer: see ``Leg.system_site_packages``.
     """
     encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
@@ -662,8 +794,8 @@ def main() -> int:
             f"{len(names)} leg(s): {', '.join(names)}"
         )
     # The launcher needs one --notebook per kernel and the expected payload
-    # count; both are consequences of the plan, so they are emitted here
-    # rather than restated in the workflow.
+    # count; both follow from the plan, so they are emitted here rather than
+    # restated in the workflow.
     _github_output("notebooks", " ".join(f"--notebook {o}" for o in outputs))
     _github_output("payloads", str(sum(len(n) for n in plan)))
     return 0
