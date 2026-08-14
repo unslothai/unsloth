@@ -26,7 +26,7 @@
       "@/*": ["./src/*"]
     }
   },
-  // The ambient Web Speech types too: a test that reaches the dictation adapter
-  // through a barrel gets the app's globals, not bare DOM.
+  // The ambient declarations too: a test that reaches a src module pulling in
+  // the dictation adapter needs the SpeechRecognition globals it declares.
   "include": ["tests", "src/speech-recognition.d.ts"]
 }

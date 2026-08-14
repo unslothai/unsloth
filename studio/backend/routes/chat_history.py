@@ -10,7 +10,7 @@ mixed handlers explicitly send their database transaction through Starlette's th
 
 import asyncio
 import sqlite3
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
+from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
@@ -175,7 +176,13 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    # allow_inf_nan: json.loads accepts bare NaN and Infinity, and pydantic takes them
+    # for a float, so `{"temperature": NaN}` used to be stored as a bare NaN token in
+    # value_json. Python reads that back, so the row is never quarantined, while the
+    # response model renders it as null: the value is silently lost and the row is not
+    # valid JSON for any strict reader. Refuse it at the door instead, the way
+    # models/training.py already does for every numeric training field.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
@@ -192,7 +199,7 @@ class ChatInferenceSettings(BaseModel):
 
 
 class ChatPresetLoadConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
@@ -229,8 +236,33 @@ class ChatPreset(BaseModel):
     loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
-class ChatSettingsPayload(BaseModel):
+class ChatRagThreadSource(BaseModel):
     model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["thread"]
+
+
+class ChatRagKnowledgeBaseSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["kb"]
+    kbId: str = Field(min_length = 1, max_length = 256)
+
+
+class ChatResearchWebsitePolicy(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    # 253 is the maximum length of a DNS name.
+    allowedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+    blockedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+
+
+class ChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     inferenceParams: Optional[ChatInferenceSettings] = None
     # Last-used params per checkpoint id. Deep-merged per key, so patching one
@@ -251,6 +283,42 @@ class ChatSettingsPayload(BaseModel):
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
+
+    # Composer and RAG toggles. They describe the installation, not the browser
+    # that set them, so a second browser or a remote session reads them back here
+    # instead of falling back to defaults.
+    reasoningEnabled: Optional[bool] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    artifactsEnabled: Optional[bool] = None
+    showCanvasMenuItem: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    confirmToolCalls: Optional[bool] = None
+    # "full" (Full access) is session-only by design and never persisted.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    ragOcrScanned: Optional[bool] = None
+    ragCaptionFigures: Optional[bool] = None
+    # Standing load preferences the model-load path reads outside the store.
+    speculativeType: Optional[Literal["auto", "ngram", "off"]] = None
+    gpuMemoryMode: Optional[Literal["auto", "manual"]] = None
+    expandQuantizations: Optional[bool] = None
+    showAllQuantizations: Optional[bool] = None
+    fitOnDeviceOnly: Optional[bool] = None
 
 
 class ChatSettingsResponse(BaseModel):
@@ -1098,7 +1166,12 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code = 400, detail = exc.errors()) from exc
+        # safe_validation_errors, not exc.errors(): the raw errors echo the offending
+        # input, and Starlette's JSONResponse dumps with allow_nan = False, so a
+        # rejected NaN or Infinity made the 400 handler itself unrenderable and the
+        # caller got a 500 for a request the validator had already refused. It also
+        # bounds a multi-megabyte value being quoted back.
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
