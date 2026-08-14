@@ -186,7 +186,7 @@ huggingface = [
 # studio/backend/requirements/no-torch-runtime.txt, not plain pip resolution.
 # Kept byte-identical to main so the two branches can be diffed for drift.
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.11",
+    "unsloth_zoo>=2026.8.12",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -228,7 +228,7 @@ amd = [
     # install.sh and studio/install_python_stack.py.
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "unsloth_zoo>=2026.8.11",
+    "unsloth_zoo>=2026.8.12",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -659,7 +659,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.11",
+    "unsloth_zoo>=2026.8.12",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
